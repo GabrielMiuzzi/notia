@@ -10,7 +10,8 @@
 //! waits in the queue (see `backend_core::turn_interrupts`). Photos, images
 //! and PDFs go to the library chat like text: the model decides what kind of
 //! request they are (see `backend_core::tool_routing`), and the parts of an
-//! album become one request. Offsets,
+//! album become one request, as do the messages Telegram splits a long text
+//! into (see `backend_core::telegram_bot::may_continue`). Offsets,
 //! processed updates and the queue survive restarts; the text of queued
 //! requests is never stored.
 //!
@@ -58,7 +59,11 @@ const CANCEL_ATTEMPTS: u32 = 120;
 /// The parts of an album arrive as separate updates, usually within a
 /// second; the album is sent once no part arrived for this long.
 const ALBUM_WINDOW: Duration = Duration::from_millis(1500);
-const ALBUM_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Telegram delivers a long text as several messages sent one after
+/// another (see `bot::may_continue`); a text that may go on is sent once
+/// no part arrived for this long, with room for a slow mobile connection.
+const TEXT_CONTINUATION_WINDOW: Duration = Duration::from_secs(3);
+const PART_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Telegram albums hold up to 10 photos or files.
 const MAX_ALBUM_PARTS: usize = 10;
 const OWNER: &str = "user-owner";
@@ -213,6 +218,54 @@ struct PendingAlbum {
     last_part: Instant,
 }
 
+/// Typed text of a chat that may go on in its next message.
+struct PendingText {
+    telegram_user_id: i64,
+    library_user_id: String,
+    parts: Vec<String>,
+    last_part: Instant,
+}
+
+impl PendingText {
+    /// Telegram drops the space or line break where it cut the text, so a
+    /// line break joins the parts.
+    fn text(&self) -> String {
+        self.parts.join("\n")
+    }
+}
+
+/// What a typed message does to the text of its chat.
+enum TextStep {
+    /// The text may go on; `opened` when this message started it.
+    Wait { opened: bool },
+    /// The text is whole.
+    Complete(PendingText),
+}
+
+/// Adds a typed message to the text of its chat: a part long enough to be
+/// followed by another keeps the text waiting (see `bot::may_continue`),
+/// and a shorter one completes it.
+fn add_text_part(
+    texts: &mut HashMap<i64, PendingText>,
+    chat_id: i64,
+    telegram_user_id: i64,
+    library_user_id: String,
+    text: String,
+) -> TextStep {
+    let continues = bot::may_continue(&text);
+    let mut pending = texts
+        .remove(&chat_id)
+        .unwrap_or_else(|| PendingText { telegram_user_id, library_user_id, parts: Vec::new(), last_part: Instant::now() });
+    let opened = pending.parts.is_empty();
+    pending.parts.push(text);
+    pending.last_part = Instant::now();
+    if !continues {
+        return TextStep::Complete(pending);
+    }
+    texts.insert(chat_id, pending);
+    TextStep::Wait { opened }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkerFile {
@@ -229,6 +282,42 @@ struct Job {
     text: String,
     /// Set when Notia queued the run by itself; such a job is never stored.
     autonomous: Option<AutonomousKind>,
+    /// Set for the run of an AI action; never stored either: an action left
+    /// in the queue by a restart is marked interrupted by `ai_actions`.
+    action: Option<ActionJob>,
+}
+
+impl Job {
+    /// Only the requests people sent survive a restart.
+    fn is_persisted(&self) -> bool {
+        self.autonomous.is_none() && self.action.is_none()
+    }
+}
+
+/// The run of an AI action (see `ai_actions`): a turn of the Owner's chat
+/// whose request is the action's prompt.
+#[derive(Debug, Clone)]
+pub(crate) struct ActionJob {
+    pub(crate) run_id: String,
+    pub(crate) prompt: crate::backend::ai_actions::prompts::ScheduledActionPrompt,
+    pub(crate) request: String,
+}
+
+/// What happened to the run an action asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActionEnqueue {
+    Queued,
+    /// No bot runs for the library here, or its Owner has not linked Telegram.
+    Unavailable,
+}
+
+/// Queues the run of an AI action in the Owner's Telegram chat of
+/// `library_id`.
+pub(crate) fn enqueue_action(app: &AppHandle, library_id: &str, job: ActionJob) -> ActionEnqueue {
+    match running_worker(app, library_id) {
+        Some(worker) => worker.enqueue_action(job),
+        None => ActionEnqueue::Unavailable,
+    }
 }
 
 /// The request running now, so a message of its chat can stop it. Its text
@@ -295,6 +384,7 @@ struct Worker {
     history: Mutex<HashMap<i64, VecDeque<BackendMessage>>>,
     links: Mutex<HashMap<i64, LinkFlow>>,
     albums: Mutex<HashMap<(i64, String), PendingAlbum>>,
+    texts: Mutex<HashMap<i64, PendingText>>,
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -332,6 +422,7 @@ impl Worker {
             history: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashMap::new()),
+            texts: Mutex::new(HashMap::new()),
         });
         worker.persist();
         worker.notify_interrupted();
@@ -355,7 +446,7 @@ impl Worker {
         jobs.extend(
             self.queue
                 .lock()
-                .map(|queue| queue.iter().filter(|job| job.autonomous.is_none()).map(|job| job.stored.clone()).collect::<Vec<_>>())
+                .map(|queue| queue.iter().filter(|job| job.is_persisted()).map(|job| job.stored.clone()).collect::<Vec<_>>())
                 .unwrap_or_default(),
         );
         persisted.jobs = jobs;
@@ -405,6 +496,11 @@ impl Worker {
         for note in bot::notes_to_deliver(&events, asking) {
             self.send_markdown(chat_id, &note);
         }
+    }
+
+    /// Like `send_markdown`, telling whether every part arrived.
+    fn send_markdown_checked(&self, chat_id: i64, markdown: &str) -> bool {
+        bot::telegram_html_parts(markdown).into_iter().all(|part| self.send_html(chat_id, &part, Vec::new()).is_some())
     }
 
     /// Sends the HTML parts of one text in order; the buttons go with the last.
@@ -478,8 +574,9 @@ impl Worker {
         // Stopping keeps the queue on disk: it becomes interrupted and is
         // only resumed with the explicit recovery command.
         if let Ok(mut queue) = self.queue.lock() {
-            // Autonomous runs are dropped: the next review asks again.
-            let drained = queue.drain(..).filter(|job| job.autonomous.is_none()).map(|job| job.stored).collect::<Vec<_>>();
+            // Autonomous runs are dropped (the next review asks again), and
+            // so are action runs (their runs end up interrupted).
+            let drained = queue.drain(..).filter(|job| job.is_persisted()).map(|job| job.stored).collect::<Vec<_>>();
             if let Ok(mut interrupted) = self.interrupted.lock() {
                 interrupted.extend(drained);
             }
@@ -541,28 +638,101 @@ impl Worker {
         }
         // The Owner comes first: a run Notia started by itself gives way.
         self.stop_autonomous_run(update.chat_id);
-        if let (Some(attachment), Some(group)) = (attachment.clone(), update.media_group_id.clone()) {
-            self.collect_album_part(update.chat_id, group, update.user.id, library_user_id, text, attachment);
+        let (chat_id, telegram_user_id) = (update.chat_id, update.user.id);
+        // Typed text may be a part of a longer one; a command never is.
+        if attachment.is_none() && update.audio.is_none() && !text.starts_with('/') {
+            self.collect_text_part(chat_id, telegram_user_id, library_user_id, text);
             return;
         }
-        if attachment.is_none() && text.to_lowercase() == bot::RECOVERY_COMMAND {
-            self.recover(update.chat_id);
+        // Anything else goes after the text still waiting for its next part.
+        self.flush_text(chat_id);
+        match (attachment, update.media_group_id) {
+            (Some(attachment), Some(group)) => {
+                self.collect_album_part(chat_id, group, telegram_user_id, library_user_id, text, attachment)
+            }
+            (Some(attachment), None) => self.enqueue(chat_id, telegram_user_id, library_user_id, text, vec![attachment], true),
+            (None, _) => self.dispatch_text(chat_id, telegram_user_id, library_user_id, text),
+        }
+    }
+
+    /// Handles a typed message. One long enough to be a part of a longer
+    /// text waits for the next (see `bot::may_continue`): the parts that
+    /// arrive meanwhile join it in order, and the whole text goes on once a
+    /// shorter part ends it or none arrived for `TEXT_CONTINUATION_WINDOW`.
+    fn collect_text_part(self: &Arc<Self>, chat_id: i64, telegram_user_id: i64, library_user_id: String, text: String) {
+        let Ok(mut texts) = self.texts.lock() else {
+            self.dispatch_text(chat_id, telegram_user_id, library_user_id, text);
+            return;
+        };
+        let step = add_text_part(&mut texts, chat_id, telegram_user_id, library_user_id, text);
+        drop(texts);
+        match step {
+            TextStep::Wait { opened: true } => self.wait_for_text_parts(chat_id),
+            TextStep::Wait { opened: false } => {}
+            TextStep::Complete(pending) => self.dispatch_pending_text(chat_id, pending),
+        }
+    }
+
+    /// Sends the text of `chat_id` on once no part arrived for
+    /// `TEXT_CONTINUATION_WINDOW`, unless another message sent it before.
+    fn wait_for_text_parts(self: &Arc<Self>, chat_id: i64) {
+        let worker = Arc::clone(self);
+        let spawned = std::thread::Builder::new().name("notia-telegram-text".into()).spawn(move || loop {
+            std::thread::sleep(PART_POLL_INTERVAL);
+            let complete = {
+                let Ok(mut texts) = worker.texts.lock() else {
+                    return;
+                };
+                match texts.get(&chat_id) {
+                    Some(pending) if pending.last_part.elapsed() >= TEXT_CONTINUATION_WINDOW => texts.remove(&chat_id),
+                    Some(_) => continue,
+                    None => return,
+                }
+            };
+            if let Some(pending) = complete {
+                worker.dispatch_pending_text(chat_id, pending);
+            }
+            return;
+        });
+        if spawned.is_err() {
+            self.flush_text(chat_id);
+        }
+    }
+
+    /// Sends on at once the text of `chat_id` still waiting for its next part.
+    fn flush_text(self: &Arc<Self>, chat_id: i64) {
+        let pending = self.texts.lock().ok().and_then(|mut texts| texts.remove(&chat_id));
+        if let Some(pending) = pending {
+            self.dispatch_pending_text(chat_id, pending);
+        }
+    }
+
+    fn dispatch_pending_text(self: &Arc<Self>, chat_id: i64, pending: PendingText) {
+        let text = pending.text();
+        self.dispatch_text(chat_id, pending.telegram_user_id, pending.library_user_id, text);
+    }
+
+    /// Sends on a whole typed or dictated text: the recovery command, the
+    /// answer to the pending confirmation or question, a message for the
+    /// chat's running request, or a new request.
+    fn dispatch_text(self: &Arc<Self>, chat_id: i64, telegram_user_id: i64, library_user_id: String, text: String) {
+        if text.to_lowercase() == bot::RECOVERY_COMMAND {
+            self.recover(chat_id);
             return;
         }
-        if attachment.is_none() && self.answer_prompt(update.chat_id, &text) {
+        if self.answer_prompt(chat_id, &text) {
             return;
         }
         // A message of the chat whose request runs may ask to stop it; the
-        // decision runs beside the request and the polling goes on.
-        if attachment.is_none() && self.running_request(update.chat_id).is_some() {
+        // decision runs beside the request, so the polling goes on.
+        if self.running_request(chat_id).is_some() {
             let worker = Arc::clone(self);
-            let (chat_id, telegram_user_id) = (update.chat_id, update.user.id);
             let _ = std::thread::Builder::new()
                 .name("notia-telegram-interrupt".into())
                 .spawn(move || worker.interrupt(chat_id, telegram_user_id, library_user_id, text));
             return;
         }
-        self.enqueue(update.chat_id, update.user.id, library_user_id, text, attachment.into_iter().collect(), true);
+        self.enqueue(chat_id, telegram_user_id, library_user_id, text, Vec::new(), true);
     }
 
     /// Adds a part of an album; the first part waits until no other part
@@ -607,7 +777,7 @@ impl Worker {
         }
         let worker = Arc::clone(self);
         let _ = std::thread::Builder::new().name("notia-telegram-album".into()).spawn(move || loop {
-            std::thread::sleep(ALBUM_POLL_INTERVAL);
+            std::thread::sleep(PART_POLL_INTERVAL);
             let complete = {
                 let Ok(mut albums) = worker.albums.lock() else {
                     return;
@@ -681,10 +851,38 @@ impl Worker {
             },
             text: trigger,
             autonomous: Some(kind),
+            action: None,
         });
         drop(queue);
         self.queue_ready.notify_all();
         AutonomousEnqueue::Queued
+    }
+
+    /// Queues the run of an AI action in the Owner's chat, after what is
+    /// already waiting; the Owner must have linked Telegram.
+    fn enqueue_action(&self, action: ActionJob) -> ActionEnqueue {
+        let Ok(Some((telegram_user_id, chat_id))) = crate::library_users::owner_telegram_link(&self.app, &self.database_context()) else {
+            return ActionEnqueue::Unavailable;
+        };
+        let Ok(mut queue) = self.queue.lock() else {
+            return ActionEnqueue::Unavailable;
+        };
+        queue.push_back(Job {
+            stored: StoredJob {
+                request_id: short_id(),
+                chat_id,
+                telegram_user_id,
+                library_user_id: OWNER.to_string(),
+                attachments: Vec::new(),
+                attachment: None,
+            },
+            text: action.request.clone(),
+            autonomous: None,
+            action: Some(action),
+        });
+        drop(queue);
+        self.queue_ready.notify_all();
+        ActionEnqueue::Queued
     }
 
     fn cancel_requested(&self, chat_id: i64) -> bool {
@@ -843,7 +1041,7 @@ impl Worker {
         let (recoverable, resend): (Vec<_>, Vec<_>) = recovered.into_iter().partition(|job| !job.attachments.is_empty());
         let count = recoverable.len();
         if let Ok(mut queue) = self.queue.lock() {
-            queue.extend(recoverable.into_iter().map(|stored| Job { stored, text: String::new(), autonomous: None }));
+            queue.extend(recoverable.into_iter().map(|stored| Job { stored, text: String::new(), autonomous: None, action: None }));
         }
         self.persist();
         self.queue_ready.notify_all();
@@ -875,7 +1073,7 @@ impl Worker {
             let Ok(mut queue) = self.queue.lock() else {
                 return;
             };
-            let pending = queue.iter().filter(|job| job.autonomous.is_none()).count();
+            let pending = queue.iter().filter(|job| job.is_persisted()).count();
             if pending >= bot::MAX_PENDING_REQUESTS {
                 drop(queue);
                 self.send(chat_id, "No puedo aceptar más de 10 solicitudes pendientes. Esperá a que termine alguna e intentá nuevamente.");
@@ -893,6 +1091,7 @@ impl Worker {
                 },
                 text,
                 autonomous: None,
+                action: None,
             });
             ahead
         };
@@ -1059,6 +1258,13 @@ impl Worker {
                 continue;
             };
             // Runs Notia started by itself are never stored nor resumed.
+            if let Some(action) = job.action.clone() {
+                self.run_action(&job, &action);
+                if let Ok(mut current) = self.current.lock() {
+                    *current = None;
+                }
+                continue;
+            }
             if let Some(kind) = job.autonomous {
                 self.run_autonomous(&job, kind);
                 if let Ok(mut current) = self.current.lock() {
@@ -1299,6 +1505,68 @@ impl Worker {
         self.keep_autonomous_message(chat_id, kind, message);
     }
 
+    /// Runs an AI action as a turn of the Owner's chat and tells
+    /// `ai_actions` how it went. Confirmations and questions reach the
+    /// Owner as in any request; the answer is the message, unless the
+    /// action allows silence and the agent chose it.
+    fn run_action(&self, job: &Job, action: &ActionJob) {
+        let context = self.database_context();
+        crate::ai_actions::mark_running(&self.app, &self.library.id, &context, &action.run_id);
+        let outcome = self.drive_action(job, action);
+        crate::ai_actions::finish_run(&self.app, &self.library.id, &context, &action.run_id, outcome);
+    }
+
+    /// The summary of the run, or the error the dashboard shows.
+    fn drive_action(&self, job: &Job, action: &ActionJob) -> Result<String, String> {
+        use crate::backend::ai_actions::prompts;
+        let chat_id = job.stored.chat_id;
+        let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
+        runtime.configure_from_library_config(&self.library_config()).map_err(|error| error.message)?;
+        let (run, request) = self.begin_run(job, &job.text, Vec::new());
+        // Every hour a progress message would be noise: only the answer,
+        // the notes before a question and the questions reach the chat.
+        let progress = Progress::start(self, chat_id, false, false);
+        let mut seen_events = 0;
+        let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
+            self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
+            match self.ask(chat_id, interaction, operation) {
+                Some((decision, _)) => Ok(decision),
+                None if run.cancelled.load(Ordering::SeqCst) => {
+                    self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
+                    Err(bot::CANCELLED_MESSAGE.to_string())
+                }
+                None => Err("No se respondió a tiempo la confirmación o la pregunta en Telegram.".to_string()),
+            }
+        });
+        if run.cancelled.load(Ordering::SeqCst) && outcome.is_err() {
+            self.remember(chat_id, job.text.clone(), bot::CANCELLED_MESSAGE.to_string());
+            return Err("La cancelaste desde Telegram.".to_string());
+        }
+        let response = match outcome {
+            Ok(response) => response,
+            Err(error) => {
+                self.remember(chat_id, job.text.clone(), format!("No pude terminar: {error}"));
+                return Err(error);
+            }
+        };
+        if response.changed {
+            let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
+        }
+        let answer = response.response.markdown;
+        if prompts::is_silent(action.prompt.kind, &answer) {
+            return Ok(prompts::SILENT_SUMMARY.to_string());
+        }
+        self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
+        if !self.send_markdown_checked(chat_id, &prompts::outgoing_message(&answer, action.prompt.test)) {
+            return Err("No se pudo enviar por Telegram.".to_string());
+        }
+        self.remember(chat_id, job.text.clone(), answer.clone());
+        if let Err(error) = crate::agent_knowledge::keep_thought(&self.app, &self.library.id, &prompts::sent_thought(&action.prompt.name, &answer)) {
+            log::error!("[notia:ai-actions] no se pudo anotar el mensaje enviado: {:?}", error.code);
+        }
+        Ok(prompts::output_summary(&answer))
+    }
+
     /// Keeps a message Notia sent by itself in the chat's history and in
     /// the agent's thoughts.
     fn keep_autonomous_message(&self, chat_id: i64, kind: AutonomousKind, message: String) {
@@ -1355,6 +1623,7 @@ impl Worker {
             tool_access: Default::default(),
             library_search: true,
             autonomous: job.autonomous.is_some(),
+            scheduled_action: job.action.as_ref().map(|action| action.prompt.clone()),
         });
         (ActiveRun { context, idempotency_key, cancelled }, request)
     }
@@ -1806,6 +2075,24 @@ mod tests {
         assert!(matches!(job.attachments.as_slice(), [JobAttachment::Document(document)] if document.file_id == "f"));
         let text = serde_json::to_string(&file).expect("json");
         assert!(text.contains("\"attachments\":[{\"kind\":\"document\"") && !text.contains("\"attachment\":") && !text.contains("finance"));
+    }
+
+    #[test]
+    fn a_long_text_split_by_telegram_becomes_one_message() {
+        let mut texts = HashMap::new();
+        let part = |label: &str| format!("{label} {}", "x".repeat(4_000));
+        assert!(matches!(add_text_part(&mut texts, 1, 2, OWNER.into(), part("uno")), TextStep::Wait { opened: true }));
+        assert!(matches!(add_text_part(&mut texts, 1, 2, OWNER.into(), part("dos")), TextStep::Wait { opened: false }));
+        // Another chat is not held by it.
+        assert!(matches!(
+            add_text_part(&mut texts, 7, 8, OWNER.into(), "hola".into()),
+            TextStep::Complete(pending) if pending.text() == "hola"
+        ));
+        let TextStep::Complete(pending) = add_text_part(&mut texts, 1, 2, OWNER.into(), "contrastalo con el tablero".into()) else {
+            panic!("the short last part completes the text");
+        };
+        assert_eq!(pending.text(), format!("{}\n{}\ncontrastalo con el tablero", part("uno"), part("dos")));
+        assert!(texts.is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@ const EMPTY_CONTEXT_PATHS: string[] = []
 
 interface UseRightPanelChatContextParams {
   activeDocument: OpenFileDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'home'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'home'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -42,7 +42,7 @@ export function resolveRightPanelAgentScope(
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
   if (activeWorkspaceView === 'finance') return 'finance'
-  if (activeWorkspaceView === 'routine' || activeWorkspaceView === 'agenda' || activeWorkspaceView === 'home') return 'library'
+  if (activeWorkspaceView === 'routine' || activeWorkspaceView === 'ai-actions' || activeWorkspaceView === 'agenda' || activeWorkspaceView === 'home') return 'library'
   return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
     ? 'document'
     : null
@@ -115,6 +115,7 @@ export function buildRightPanelChatContextChip(
   if (activeWorkspaceView === 'chat') return viewChip('Chat')
   if (activeWorkspaceView === 'finance') return viewChip('Finanzas')
   if (activeWorkspaceView === 'routine') return viewChip('Rutina')
+  if (activeWorkspaceView === 'ai-actions') return viewChip('Acciones IA')
   if (activeWorkspaceView === 'home') return viewChip('Inicio')
   if (activeWorkspaceView === 'agenda') return viewChip('Agenda')
   if (!activeDocument) return { label: 'Sin nota en contexto', kind: 'none' }

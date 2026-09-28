@@ -772,6 +772,7 @@ impl TurnSetup {
             tool_access: self.tool_access,
             library_search: self.library_search,
             autonomous: false,
+            scheduled_action: None,
         })
     }
 }

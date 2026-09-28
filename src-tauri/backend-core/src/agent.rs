@@ -1815,6 +1815,7 @@ mod tests {
             tool_access: Default::default(),
             library_search: true,
             autonomous: false,
+            scheduled_action: None,
         }
     }
 

@@ -19,6 +19,7 @@ import {
   House,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
+import { MuninIcon } from '../components/notia/icons/MuninIcon'
 
 /** Home, first in the rail and apart from the modules. */
 export const HOME_RAIL_ACTION: NotiaIconAction = { id: 'home', label: 'Inicio', icon: House }
@@ -38,6 +39,7 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
   [
     { id: 'agenda', label: 'Agenda', icon: CalendarClock },
     { id: 'routine', label: 'Rutina', icon: CalendarCheck },
+    { id: 'ai-actions', label: 'Acciones IA', icon: MuninIcon },
   ],
 ]
 

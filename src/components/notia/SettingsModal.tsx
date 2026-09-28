@@ -1489,7 +1489,7 @@ export function SettingsModal({
                       inline
                       label="Agente autónomo"
                       htmlFor="notia-settings-telegram-autonomous"
-                      description="Cada hora y al llegar un mail revisa tus cosas y, si hace falta, te escribe por Telegram (solo al Owner)."
+                      description="Al llegar un mail lo revisa y, si hace falta, te escribe por Telegram (solo al Owner). La revisión de cada hora está en Acciones IA."
                     >
                       <SettingsSwitch
                         id="notia-settings-telegram-autonomous"

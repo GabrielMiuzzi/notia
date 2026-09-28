@@ -15,6 +15,16 @@ use crate::protocol::MutationPreview;
 pub const MAX_PENDING_REQUESTS: usize = 10;
 pub const RECOVERY_COMMAND: &str = "/reanudar";
 pub const MAX_HISTORY_MESSAGES: usize = 20;
+/// Telegram clients cut a text over the 4096-character limit into several
+/// messages, each longer than half that limit. Counted in UTF-16 units, as
+/// Telegram does, leaving room for the spaces trimmed at each cut.
+const SPLIT_PART_MIN_UNITS: usize = 2_000;
+
+/// Whether a typed message is long enough to be a part of a text Telegram
+/// delivers in several messages, so the next message may continue it.
+pub fn may_continue(text: &str) -> bool {
+    text.encode_utf16().count() >= SPLIT_PART_MIN_UNITS
+}
 
 fn fold(value: &str) -> String {
     value
@@ -272,6 +282,8 @@ pub fn tool_label(tool: &str) -> &'static str {
         name if name.starts_with("get_routine_") || name.starts_with("list_routine_") => "consultando tu rutina",
         "set_routine_completions" => "registrando tus hábitos",
         name if name.contains("routine") => "preparando el cambio en tu rutina",
+        "list_ai_actions" | "get_ai_action" => "revisando tus acciones programadas",
+        name if name.contains("ai_action") => "preparando el cambio en tus acciones programadas",
         "list_agenda" => "leyendo tu agenda",
         name if name.contains("agenda") => "preparando el cambio en tu agenda",
         name if name.contains("task") => "preparando el cambio en tareas",
@@ -512,6 +524,15 @@ mod tests {
         let choices = vec!["Banco".to_string(), "Efectivo".to_string()];
         assert_eq!(resolve_choice_reply("2)", &choices), ("Efectivo".to_string(), Some(1)));
         assert_eq!(resolve_choice_reply("otra", &choices), ("otra".to_string(), None));
+    }
+
+    #[test]
+    fn only_a_message_long_enough_to_be_a_split_part_may_continue() {
+        assert!(!may_continue("contrastalo con el tablero default"));
+        assert!(!may_continue(&"a".repeat(SPLIT_PART_MIN_UNITS - 1)));
+        assert!(may_continue(&"a".repeat(SPLIT_PART_MIN_UNITS)));
+        // Telegram counts UTF-16 units: an emoji takes two.
+        assert!(may_continue(&"😀".repeat(SPLIT_PART_MIN_UNITS / 2)));
     }
 
     #[test]

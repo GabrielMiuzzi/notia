@@ -39,11 +39,19 @@ pub enum ToolArea {
     Routine,
     Agenda,
     Mail,
+    Actions,
 }
 
 impl ToolArea {
-    pub const ALL: [ToolArea; 6] =
-        [ToolArea::Library, ToolArea::Tasks, ToolArea::Finance, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail];
+    pub const ALL: [ToolArea; 7] = [
+        ToolArea::Library,
+        ToolArea::Tasks,
+        ToolArea::Finance,
+        ToolArea::Routine,
+        ToolArea::Agenda,
+        ToolArea::Mail,
+        ToolArea::Actions,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -53,6 +61,7 @@ impl ToolArea {
             Self::Routine => "rutina",
             Self::Agenda => "agenda",
             Self::Mail => "correo",
+            Self::Actions => "acciones",
         }
     }
 
@@ -65,6 +74,7 @@ impl ToolArea {
             Self::Routine => "rutina diaria y hábitos: checklist del día, marcar hábitos cumplidos, tareas recurrentes de la rutina y metas de la rueda de la vida",
             Self::Agenda => "la Agenda de Notia (no Google Calendar): ver, agendar y borrar eventos con día y hora, y el anotador de pendientes del día",
             Self::Mail => "Gmail y Google Calendar: buscar, leer, borrar, mover, marcar y enviar correos; ver y crear eventos",
+            Self::Actions => "Acciones IA: lo que la IA hace sola en un horario y te responde por Telegram (recordatorios, tareas a una hora o que se repiten, la revisión de cada hora): ver, crear, cambiar, pausar, borrar, ejecutar ahora o reintentar",
         }
     }
 
@@ -82,6 +92,7 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite => Some(ToolArea::Finance),
         ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Some(ToolArea::Routine),
         ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite => Some(ToolArea::Agenda),
+        ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite => Some(ToolArea::Actions),
         _ if matches!(name, "set_agent_execution_plan" | "create_agent_plan" | "update_agent_plan") => None,
         _ if name.contains("task") => Some(ToolArea::Tasks),
         _ => Some(ToolArea::Library),
@@ -206,7 +217,7 @@ pub fn fallback_areas(message: &str, offered: &[ToolArea], with_attachments: boo
     } else if crate::telegram_bot::is_finance_request(message) {
         &[ToolArea::Finance, ToolArea::Routine]
     } else {
-        &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail]
+        &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions]
     };
     let mut areas = Vec::new();
     if with_attachments {
@@ -305,14 +316,14 @@ mod tests {
         assert_eq!(fallback_areas("pagué la cuenta de la luz", &all, false), vec![ToolArea::Finance, ToolArea::Routine]);
         assert_eq!(
             fallback_areas("resumí la nota de ayer", &all, false),
-            vec![ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail]
+            vec![ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions]
         );
         // Without #Confidencial, finance and mail are not offered.
         assert_eq!(fallback_areas("pagué la cuenta de la luz", &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine], false), vec![ToolArea::Routine]);
         // Attachments start with Finanzas; the words add the rest.
         assert_eq!(
             fallback_areas("", &all, true),
-            vec![ToolArea::Finance, ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail]
+            vec![ToolArea::Finance, ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions]
         );
         assert_eq!(
             fallback_areas("pasá esto a mi calendario", &all, true),

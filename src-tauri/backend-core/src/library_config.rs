@@ -268,7 +268,8 @@ fn normalize_ai(value: &Value) -> Value {
 /// Telegram bot of the library. The backend worker keeps the polling offset
 /// and the processed updates in its own state, not in the configuration.
 /// `autonomousAgent` (on unless turned off) lets the agent write to the
-/// Owner by itself: every hour and when new mail arrives.
+/// Owner by itself when new mail arrives. The hourly review became an AI
+/// action; the switch only decides whether that action starts on.
 fn normalize_telegram(value: &Value) -> Value {
     json!({
         "enabled": value.get("enabled").and_then(Value::as_bool) == Some(true),

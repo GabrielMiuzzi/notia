@@ -64,7 +64,21 @@ pub fn scope_guidance(
         BackendScope::Document => document(&mut guidance, snapshot),
     }
     agenda_tools(&mut guidance, today);
+    ai_action_tools(&mut guidance, today);
     guidance.lines.join("\n")
+}
+
+/// The AI actions are the agent's own schedule: it administers them on the
+/// Owner's request, from any chat.
+fn ai_action_tools(guidance: &mut Guidance, today: &str) {
+    if !guidance.has("create_ai_action") {
+        return;
+    }
+    guidance.push(format!(
+        "Acciones IA son tus propias tareas programadas: lo que hacés solo en un horario y respondés por Telegram al Owner. Las administrás vos a pedido del Owner desde cualquier chat. Pedidos como «recordame mañana a las 10…», «todos los días a las 8 armame…», «cada 3 horas revisá…» o «avisame el viernes si…» son Acciones IA: usá create_ai_action (reminder para un aviso de una vez, one-shot para una tarea de una vez, recurring para lo que se repite), no una nota, un evento de agenda ni un ticket, salvo que el Owner lo pida así. Hoy es {today}: pasá las fechas como YYYY-MM-DD y las horas locales como HH:MM."
+    ));
+    guidance.push("El prompt de una Acción IA lo va a leer tu yo futuro sin esta conversación: escribilo completo, en imperativo, con qué revisar, qué hacer, dónde dejar el resultado y, si corresponde, «si no hay nada, no avises». El nombre es corto y claro.");
+    guidance.push_if(&["list_ai_actions"], "Para ver, cambiar, pausar, borrar, ejecutar o reintentar una acción, primero buscala con list_ai_actions (o get_ai_action para el detalle y sus ejecuciones) y usá su id; si más de una puede ser la pedida, preguntá cuál. Con update_ai_action cambiás cualquier campo y lo que no mandes queda igual; para pausar o reanudar usá set_ai_action_enabled. La «Revisión de cada hora» es una acción más: se cambia, pausa o borra igual.");
 }
 
 /// The Agenda of Notia and Google Calendar are different places: a request
@@ -145,6 +159,7 @@ fn task_tools(guidance: &mut Guidance) {
     guidance.push_if(&["read_task_tickets"], "Si piden el detalle de tickets encontrados, llamá read_task_tickets una sola vez con todos sus ticketIds antes de responder y usá una sección por ticket. Las subtareas enlazadas se incluyen en la lectura: explicá la relación padre-subtarea.");
     guidance.push_if(&["get_task_manager_options"], "Obtené boardId y groupId con get_task_manager_options, que devuelve los grupos (columnas) de cada tablero en el orden en que se ven; estados válidos: Pendiente, En progreso, Bloqueada, Finalizada y Cancelada; prioridades: Baja, Media, Alta y Urgente.");
     guidance.push_if(&["add_task_comment"], "Si el usuario pide comentar un ticket de Task Manager, usá add_task_comment; nunca reemplaces el documento para simular un comentario.");
+    guidance.push_if(&["update_task_comment", "delete_task_comment"], "Para corregir o borrar un comentario de un ticket, leé el ticket con read_task_tickets y tomá el commentId del comentario exacto; después usá update_task_comment con el texto nuevo completo o delete_task_comment. Si más de un comentario puede ser el que pide el usuario, preguntá cuál. Nunca cambies un comentario reemplazando el contenido del ticket ni editando su archivo.");
     guidance.push_if(&["create_task_group", "delete_task_group"], "Para crear un grupo, el nombre y el color hexadecimal deben estar definidos por el usuario. create_task_group lo agrega al final del tablero y el backend genera su id: nunca le pidas al usuario que lo cree desde el tablero. Solo se puede eliminar un grupo sin tickets asignados; nunca reasignes ni muevas tickets para lograrlo.");
     guidance.push_if(&["update_task_group", "reorder_task_groups"], "Para renombrar un grupo o cambiar su color usá update_task_group, que conserva su id, su posición y sus tickets. Para cambiar el orden de las columnas usá reorder_task_groups con los groupId de todos los grupos del tablero, de izquierda a derecha.");
     if guidance.has_any(&["create_task_ticket", "update_task_group"]) {
@@ -322,11 +337,14 @@ mod tests {
                 "update_task_group",
                 "reorder_task_groups",
                 "delete_task_group",
+                "update_task_comment",
+                "delete_task_comment",
             ]),
             None,
             "2026-09-28",
         );
         assert!(with_tasks.contains("reorder_task_groups con los groupId de todos los grupos"));
+        assert!(with_tasks.contains("tomá el commentId del comentario exacto"));
         assert!(with_tasks.contains("el backend genera su id"));
         assert!(with_tasks.contains("*TaskIndex.md"));
         assert!(with_tasks.contains("get_task_board_summary"));
@@ -356,6 +374,21 @@ mod tests {
             "2026-09-22",
         );
         assert!(writable.contains("2026-09-22"));
+    }
+
+    #[test]
+    fn every_chat_learns_to_administer_its_ai_actions() {
+        for (scope, channel) in [
+            (BackendScope::Library, BackendChannel::Telegram),
+            (BackendScope::Finance, BackendChannel::App),
+            (BackendScope::TaskManager, BackendChannel::App),
+            (BackendScope::Document, BackendChannel::App),
+        ] {
+            let text = scope_guidance(&context(scope.clone(), channel), &tools(&["list_ai_actions", "create_ai_action"]), None, "2026-09-28");
+            assert!(text.contains("usá create_ai_action") && text.contains("list_ai_actions") && text.contains("2026-09-28"), "{scope:?}");
+        }
+        let without = scope_guidance(&context(BackendScope::Library, BackendChannel::App), &tools(&["list_agenda"]), None, "2026-09-28");
+        assert!(!without.contains("Acciones IA"));
     }
 
     #[test]

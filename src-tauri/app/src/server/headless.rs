@@ -205,6 +205,8 @@ fn serve(options: Options, server_dir: PathBuf) -> Result<(), String> {
         AppPaths::new(Some(options.data_dir.clone()), options.resource_dir.clone()),
         HostPorts { events: None, assets: assets.clone(), dialogs: None },
     );
+    // The server runs the AI actions of its library ahead of the app.
+    crate::ai_actions::run_as_server();
     for hook in crate::startup_hooks() {
         let name = hook.name();
         if let Err(error) = hook.run_setup(&app, PluginApi::new(None)) {

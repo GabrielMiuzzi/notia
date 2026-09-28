@@ -270,6 +270,10 @@ pub struct AgentRequest {
     /// answers with the message to send, if any (see `agent_autonomy`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autonomous: bool,
+    /// The run of an AI action (see `ai_actions`): a turn of the Owner's
+    /// Telegram chat whose request is the action's prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_action: Option<crate::ai_actions::prompts::ScheduledActionPrompt>,
 }
 
 fn library_search_default() -> bool {
@@ -775,6 +779,7 @@ mod tests {
             tool_access: Default::default(),
             library_search: true,
             autonomous: false,
+            scheduled_action: None,
         }
     }
 

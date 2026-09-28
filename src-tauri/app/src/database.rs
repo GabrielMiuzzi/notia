@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 27;
+pub const CURRENT_SCHEMA_VERSION: i64 = 28;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -1095,6 +1095,55 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
              CREATE UNIQUE INDEX IF NOT EXISTS idx_agenda_google_links_event
                  ON agenda_google_links(event_id);
              INSERT INTO notia_schema_migrations (version) VALUES (27);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 28 && target >= 28 {
+        // AI actions and their runs. A run keeps the name and kind of its
+        // action and has no foreign key: the history outlives the action.
+        // One scheduled run per occurrence, whichever instance planned it.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_actions (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                 prompt TEXT NOT NULL,
+                 kind TEXT NOT NULL CHECK (kind IN ('reminder', 'one-shot', 'recurring')),
+                 schedule_json TEXT NOT NULL,
+                 time_zone TEXT NOT NULL,
+                 enabled INTEGER NOT NULL,
+                 active_since INTEGER NOT NULL,
+                 builtin TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ai_action_runs (
+                 id TEXT PRIMARY KEY,
+                 action_id TEXT,
+                 action_name TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 scheduled_for INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 started_at INTEGER,
+                 finished_at INTEGER,
+                 status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed', 'skipped')),
+                 error TEXT,
+                 output_summary TEXT,
+                 trigger TEXT NOT NULL CHECK (trigger IN ('scheduled', 'manual', 'retry', 'test')),
+                 retry_of TEXT,
+                 runner TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_ai_action_runs_scheduled
+                 ON ai_action_runs(scheduled_for);
+             CREATE INDEX IF NOT EXISTS idx_ai_action_runs_action
+                 ON ai_action_runs(action_id, created_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_action_runs_occurrence
+                 ON ai_action_runs(action_id, scheduled_for) WHERE trigger = 'scheduled';
+             CREATE TABLE IF NOT EXISTS ai_action_meta (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );
+             INSERT INTO notia_schema_migrations (version) VALUES (28);",
         )?;
         transaction.commit()?;
     }

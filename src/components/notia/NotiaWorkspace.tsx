@@ -14,6 +14,7 @@ import { MeetingView } from './views/MeetingView'
 import { FinanceView } from './views/FinanceView'
 import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
+import { AiActionsView } from './views/AiActionsView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntryView } from '../../types/coldpass'
@@ -244,6 +245,9 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'routine') {
     return <RoutineView library={activeLibrary} />
+  }
+  if (activeWorkspaceView === 'ai-actions') {
+    return <AiActionsView library={activeLibrary} />
   }
 
   return (

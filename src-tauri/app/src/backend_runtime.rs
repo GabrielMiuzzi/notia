@@ -894,6 +894,10 @@ fn compose_request_system_prompt(
         system.push_str("\n\n");
         system.push_str(&notia_backend_core::agent_autonomy::autonomous_guidance());
     }
+    if let Some(action) = &request.scheduled_action {
+        system.push_str("\n\n");
+        system.push_str(&notia_backend_core::ai_actions::prompts::action_guidance(action));
+    }
     let guidance = notia_backend_core::scope_guidance(
         &request.context,
         visible_tools,
@@ -1065,6 +1069,8 @@ impl TauriBackendToolExecutor {
             "create_task_ticket",
             "replace_task_content",
             "add_task_comment",
+            "update_task_comment",
+            "delete_task_comment",
             "add_task_subtask",
             "move_task_group",
             "change_task_state",
@@ -1152,6 +1158,14 @@ impl TauriBackendToolExecutor {
             "reorder_routine_tasks",
             "set_routine_completions",
             "set_routine_goal",
+            "list_ai_actions",
+            "get_ai_action",
+            "create_ai_action",
+            "update_ai_action",
+            "set_ai_action_enabled",
+            "delete_ai_action",
+            "run_ai_action_now",
+            "retry_ai_action_run",
             "list_agenda",
             "create_agenda_event",
             "delete_agenda_event",
@@ -1638,6 +1652,15 @@ impl TauriBackendToolExecutor {
             actor_library_user_id: context.actor.library_user_id.clone(),
             source: source.to_string(),
         })
+    }
+
+    /// The library database of the AI actions, which are the Owner's only.
+    fn ai_actions_database(&self, context: &BackendRequestContext) -> Result<crate::library_users::LibraryDatabaseContext, BackendError> {
+        if !context.actor.is_library_owner() {
+            return Err(BackendError::new(BackendErrorCode::Forbidden, "Las acciones de IA son solo del Owner de la biblioteca.", false));
+        }
+        let (library_path, android_directory_uri) = self.library_location(context)?;
+        Ok(crate::library_users::LibraryDatabaseContext { library_path, android_directory_uri })
     }
 
     fn agenda_context(&self, context: &BackendRequestContext) -> Result<crate::agenda::AgendaContext, BackendError> {
@@ -2505,6 +2528,31 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if crate::ai_actions::is_ai_action_write_tool(&call.name) {
+            // The call is read and checked as its execution will do it; a
+            // rejection goes back to the model before asking the Owner.
+            let database = self.ai_actions_database(context)?;
+            let summary = crate::ai_actions::preview_tool(&self.app, &context.library_id, &database, &call.name, &call.arguments)
+                .map_err(crate::ai_actions::tool_error)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Cambiar Acciones IA").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("ai-actions:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         if crate::routine_tools::is_routine_write_tool(&call.name) {
             // Resolution and validation run in a rolled-back transaction; any
             // rejection other than storage goes back to the model.
@@ -2610,7 +2658,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 } else {
                     let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
                     let registry = self.app.state::<LibraryBindingRegistry>();
-                    let groups = crate::task_manager_commands::backend_tool_groups(
+                    let snapshot = crate::task_manager_commands::backend_tool_snapshot(
                         &self.app,
                         task_state.inner(),
                         registry.inner(),
@@ -2621,11 +2669,12 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         &notia_backend_core::task_mutation_from_tool(
                             &call.name,
                             &call.arguments,
-                            &groups,
+                            &snapshot.groups,
                             &mut || "preview".to_string(),
                             0,
                         )?,
-                        &groups,
+                        &snapshot.groups,
+                        &snapshot.comments,
                     )
                 },
                 documents: Vec::new(),
@@ -3885,6 +3934,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &call.arguments,
                 )?
             }
+            name if crate::ai_actions::is_ai_action_tool(name) => {
+                let database = self.ai_actions_database(context)?;
+                crate::ai_actions::execute_tool(&self.app, &context.library_id, &database, name, &call.arguments)
+                    .map_err(crate::ai_actions::tool_error)?
+            }
             name if crate::routine_tools::is_routine_tool(name) => crate::routine_tools::execute_tool(
                 &self.app,
                 &self.routine_context(context)?,
@@ -3918,7 +3972,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4123,6 +4177,19 @@ pub(crate) fn execute_backend_request(
         request.tool_access,
         request.library_search,
     );
+    // An AI action runs for the Owner, in their Telegram chat, with their
+    // memory, rules and thoughts; nothing else may claim to be one.
+    if request.scheduled_action.is_some()
+        && !(request.context.actor.is_library_owner()
+            && request.context.persistence_policy.allows_memory()
+            && request.context.channel == notia_backend_core::BackendChannel::Telegram)
+    {
+        return Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "Las acciones de IA solo corren para el Owner, por Telegram.",
+            false,
+        ));
+    }
     // A run Notia started by itself only reads and keeps its thoughts.
     if request.autonomous {
         request.tools = notia_backend_core::agent_autonomy::autonomous_tools(std::mem::take(&mut request.tools));
@@ -4528,12 +4595,13 @@ fn serde_label(value: &impl Serialize) -> String {
         .unwrap_or_default()
 }
 
-/// Human-readable confirmation text for a Task Manager mutation.
-/// Confirmation text of a Task Manager tool. `groups` are the library's
-/// current groups: the text names a group, not its id.
+/// Confirmation text of a Task Manager tool. `groups` and `comments` are the
+/// library's current ones: the text names a group and quotes a comment
+/// whole, never by its id.
 fn task_mutation_summary(
     mutation: &notia_backend_core::TaskMutationDto,
     groups: &[notia_backend_core::TaskGroupDto],
+    comments: &[notia_backend_core::TaskCommentDto],
 ) -> String {
     use notia_backend_core::TaskMutationDto as Mutation;
     let group_name = |group_id: &str| {
@@ -4542,6 +4610,12 @@ fn task_mutation_summary(
             .find(|group| group.group_id == group_id)
             .map_or_else(|| group_id.to_string(), |group| format!("«{}»", group.name))
     };
+    let comment_text = |comment_id: &str| {
+        comments
+            .iter()
+            .find(|comment| comment.comment_id == comment_id)
+            .map_or_else(|| comment_id.to_string(), |comment| format!("«{}»", comment.body.trim()))
+    };
     match mutation {
         Mutation::CreateTicket { title, .. } => format!("Crear el ticket «{title}»."),
         Mutation::ReplaceTicketContent { ticket_id, .. } => {
@@ -4549,6 +4623,13 @@ fn task_mutation_summary(
         }
         Mutation::AddComment { ticket_id, body, .. } => {
             format!("Comentar en el ticket {ticket_id}: «{body}».")
+        }
+        Mutation::UpdateComment { ticket_id, comment_id, body } => format!(
+            "Cambiar el comentario {} del ticket {ticket_id} por «{body}».",
+            comment_text(comment_id)
+        ),
+        Mutation::DeleteComment { ticket_id, comment_id } => {
+            format!("Eliminar el comentario {} del ticket {ticket_id}.", comment_text(comment_id))
         }
         Mutation::AddSubtask {
             parent_ticket_id,
@@ -4715,7 +4796,7 @@ mod tests {
             order: 0,
         };
         let groups = [group("legacy-group-1", "Backlog Q"), group("legacy-group-2", "Sprint Actual")];
-        let summary = |mutation: TaskMutationDto| super::task_mutation_summary(&mutation, &groups);
+        let summary = |mutation: TaskMutationDto| super::task_mutation_summary(&mutation, &groups, &[]);
         assert_eq!(
             summary(TaskMutationDto::ReorderGroups {
                 board_id: "default".into(),
@@ -4735,6 +4816,34 @@ mod tests {
         assert_eq!(
             summary(TaskMutationDto::MoveTicket { ticket_id: "t-1".into(), group_id: Some("legacy-group-2".into()) }),
             "Mover el ticket t-1 al grupo «Sprint Actual»."
+        );
+    }
+
+    #[test]
+    fn comment_confirmations_quote_the_comment_whole() {
+        use notia_backend_core::{TaskCommentDto, TaskMutationDto};
+        let comments = [TaskCommentDto {
+            library_id: "lib".into(),
+            comment_id: "c-1".into(),
+            ticket_id: "t-1".into(),
+            author_user_id: "user-owner".into(),
+            body: "Doris finalizó los 3, listos para prueba\n".into(),
+            created_at_unix_ms: 1,
+            revision: 1,
+            logical_path: String::new(),
+        }];
+        let summary = |mutation: TaskMutationDto| super::task_mutation_summary(&mutation, &[], &comments);
+        assert_eq!(
+            summary(TaskMutationDto::UpdateComment {
+                ticket_id: "t-1".into(),
+                comment_id: "c-1".into(),
+                body: "Doris finalizó 2 de los 3".into(),
+            }),
+            "Cambiar el comentario «Doris finalizó los 3, listos para prueba» del ticket t-1 por «Doris finalizó 2 de los 3»."
+        );
+        assert_eq!(
+            summary(TaskMutationDto::DeleteComment { ticket_id: "t-1".into(), comment_id: "c-1".into() }),
+            "Eliminar el comentario «Doris finalizó los 3, listos para prueba» del ticket t-1."
         );
     }
 

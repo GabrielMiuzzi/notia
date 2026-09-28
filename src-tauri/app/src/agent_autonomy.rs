@@ -1,23 +1,23 @@
 //! The autonomous agent's clock. Every minute, for the selected library,
 //! `thoughts.md` is created again when it is missing. When the library's
 //! Telegram bot runs on this device with the autonomous agent on, the
-//! hourly review is queued when due and, every two minutes, the Gmail
-//! accounts are checked for new mail in Recibidos, all of it in one run.
+//! Gmail accounts are checked every two minutes for new mail in
+//! Recibidos, all of it in one run. The hourly review is an AI action
+//! now (`ai_actions`).
 //!
 //! The runs go through the Telegram worker (`enqueue_autonomous`), so they
-//! only happen where the bot runs and only reach the Owner. The last review
-//! and each account's Gmail history cursor are kept per device in
-//! `app_data/agent-autonomy/`, so a restart neither repeats a review nor
-//! announces old mail. The rules live in `backend_core::agent_autonomy`.
+//! only happen where the bot runs and only reach the Owner. Each account's
+//! Gmail history cursor is kept per device in `app_data/agent-autonomy/`,
+//! so a restart does not announce old mail. The rules live in `backend_core::agent_autonomy`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::backend::agent_autonomy::{
-    hourly_trigger, is_review_due, mail_trigger, new_mail, AutonomousKind, MAIL_POLL_INTERVAL_MS, MAX_TRIGGER_MAILS,
+    mail_trigger, new_mail, AutonomousKind, MAIL_POLL_INTERVAL_MS, MAX_TRIGGER_MAILS,
 };
 use crate::backend::mail_tools::{history_url, message_metadata_url, message_summary, parse_history_page, profile_history_id, profile_url, MailAccountRef};
 use crate::backend::{BackendError, BackendErrorCode};
@@ -63,8 +63,6 @@ struct Clock {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AutonomyState {
-    #[serde(default)]
-    last_review_ms: Option<i64>,
     /// Gmail history id reached per account address.
     #[serde(default)]
     gmail: HashMap<String, String>,
@@ -99,31 +97,12 @@ fn tick(app: &AppHandle, clock: &mut Clock) {
     }
     let before = read_state(app, &library.id);
     let mut state = before.clone();
-    review_when_due(app, &library.id, &mut state);
     if clock.last_mail_poll.is_none_or(|last| last.elapsed() >= Duration::from_millis(MAIL_POLL_INTERVAL_MS as u64)) {
         clock.last_mail_poll = Some(Instant::now());
         watch_mail(app, &library.id, &mut state);
     }
     if state != before {
         write_state(app, &library.id, &state);
-    }
-}
-
-/// Queues the hourly review when an hour passed since the last one. The
-/// first time, the review is due an hour later.
-fn review_when_due(app: &AppHandle, library_id: &str, state: &mut AutonomyState) {
-    let now = now_ms();
-    let Some(last) = state.last_review_ms else {
-        state.last_review_ms = Some(now);
-        return;
-    };
-    if !is_review_due(last, now) {
-        return;
-    }
-    let trigger = hourly_trigger(&crate::local_time::local_now().1);
-    // Busy or unavailable: it is tried again on the next tick.
-    if enqueue_autonomous(app, library_id, AutonomousKind::HourlyReview, trigger) == AutonomousEnqueue::Queued {
-        state.last_review_ms = Some(now);
     }
 }
 
@@ -221,10 +200,6 @@ fn read_mail(app: &AppHandle, library_id: &str, account: &MailAccountRef, id: &s
     Some(new_mail(&message_summary(&message, &[]), account))
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
-}
-
 fn state_file(app: &AppHandle, library_id: &str) -> Option<PathBuf> {
     let key = library_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect::<String>();
     app.path().app_data_dir().ok().map(|directory| directory.join(STATE_DIRECTORY).join(format!("{key}.json")))
@@ -259,11 +234,13 @@ mod tests {
 
     #[test]
     fn the_state_survives_a_round_trip_and_old_files() {
-        let mut state = AutonomyState { last_review_ms: Some(42), ..AutonomyState::default() };
+        let mut state = AutonomyState::default();
         state.gmail.insert("ana@gmail.com".into(), "901".into());
         let text = serde_json::to_string(&state).expect("json");
-        assert!(text.contains("\"lastReviewMs\":42"));
         assert_eq!(serde_json::from_str::<AutonomyState>(&text).expect("state"), state);
         assert_eq!(serde_json::from_str::<AutonomyState>("{}").expect("empty"), AutonomyState::default());
+        // Files from before the hourly review became an AI action.
+        let old = serde_json::from_str::<AutonomyState>(r#"{"lastReviewMs":42,"gmail":{"ana@gmail.com":"901"}}"#).expect("old");
+        assert_eq!(old, state);
     }
 }

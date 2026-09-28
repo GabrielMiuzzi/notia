@@ -60,6 +60,51 @@
       ]
     }
   },
+  "update_task_comment": {
+    "description": "Reemplaza el texto de un comentario existente de un ticket; conserva su fecha y su autor. El Owner puede editar cualquier comentario y los demás usuarios solo los propios. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+        },
+        "commentId": {
+          "type": "string",
+          "description": "commentId del comentario, devuelto por read_task_tickets."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Texto nuevo y completo del comentario."
+        }
+      },
+      "required": [
+        "ticketId",
+        "commentId",
+        "comment"
+      ]
+    }
+  },
+  "delete_task_comment": {
+    "description": "Elimina un comentario de un ticket. El Owner puede eliminar cualquier comentario y los demás usuarios solo los propios. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+        },
+        "commentId": {
+          "type": "string",
+          "description": "commentId del comentario, devuelto por read_task_tickets."
+        }
+      },
+      "required": [
+        "ticketId",
+        "commentId"
+      ]
+    }
+  },
   "add_task_subtask": {
     "description": "Crea una subtarea enlazada a un ticket padre. Requiere confirmación visible.",
     "parameters": {
@@ -4367,6 +4412,242 @@
           "description": "Horas de pronóstico hora por hora desde ahora (0 a 48). Por defecto, 0."
         }
       }
+    }
+  },
+  "list_ai_actions": {
+    "description": "Lista las Acciones IA del Owner (lo que la IA hace sola en un horario y responde por Telegram): id, nombre, tipo, cuándo, si está activa, su estado de hoy, la próxima ejecución y el resumen del día.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "get_ai_action": {
+    "description": "Lee una Acción IA completa: prompt, horario campo por campo, próximas ejecuciones y las últimas ejecuciones con su id, estado y error.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "id de la acción (de list_ai_actions) o su nombre exacto."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "create_ai_action": {
+    "description": "Crea una Acción IA: un recordatorio, una tarea a una hora o una tarea recurrente que la IA va a ejecutar sola y responder por Telegram al Owner. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "reminder",
+            "one-shot",
+            "recurring"
+          ],
+          "description": "reminder: una vez, la IA manda un aviso breve generado con el prompt. one-shot: una vez, la IA ejecuta el prompt como tarea y manda el resultado. recurring: se repite según every, unit, weekdays, from y to."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre corto que ve el Owner en el panel, hasta 80 caracteres."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Instrucción completa para la IA que la va a ejecutar más tarde, sin el contexto de esta charla: qué leer, qué hacer, dónde dejar el resultado y cuándo no hace falta avisar. Hasta 4000 caracteres."
+        },
+        "date": {
+          "type": "string",
+          "description": "reminder y one-shot: fecha local YYYY-MM-DD, futura."
+        },
+        "time": {
+          "type": "string",
+          "description": "reminder y one-shot: hora local HH:MM."
+        },
+        "every": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "recurring: cada cuántas unidades se repite (en minutos, al menos 5)."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "minutes",
+            "hours",
+            "days",
+            "weeks"
+          ],
+          "description": "recurring: unidad de every."
+        },
+        "weekdays": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "description": "recurring: días en que corre, 0 = lunes … 6 = domingo. Sin weekdays, todos los días."
+        },
+        "from": {
+          "type": "string",
+          "description": "recurring: HH:MM. En minutes u hours, inicio opcional de la ventana (las ejecuciones se anclan ahí). En days o weeks, la hora de ejecución, obligatoria. Una cadena vacía la borra."
+        },
+        "to": {
+          "type": "string",
+          "description": "recurring en minutes u hours: fin opcional de la ventana, HH:MM. Una cadena vacía la borra."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "false la crea pausada. Por defecto, activa."
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "prompt"
+      ]
+    }
+  },
+  "update_ai_action": {
+    "description": "Cambia cualquier campo de una Acción IA (tipo, nombre, prompt, fecha, hora, repetición, días, ventana o si está activa); lo que no se manda queda igual. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "id de la acción (de list_ai_actions) o su nombre exacto."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "reminder",
+            "one-shot",
+            "recurring"
+          ],
+          "description": "reminder: una vez, la IA manda un aviso breve generado con el prompt. one-shot: una vez, la IA ejecuta el prompt como tarea y manda el resultado. recurring: se repite según every, unit, weekdays, from y to."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre corto que ve el Owner en el panel, hasta 80 caracteres."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Instrucción completa para la IA que la va a ejecutar más tarde, sin el contexto de esta charla: qué leer, qué hacer, dónde dejar el resultado y cuándo no hace falta avisar. Hasta 4000 caracteres."
+        },
+        "date": {
+          "type": "string",
+          "description": "reminder y one-shot: fecha local YYYY-MM-DD, futura."
+        },
+        "time": {
+          "type": "string",
+          "description": "reminder y one-shot: hora local HH:MM."
+        },
+        "every": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "recurring: cada cuántas unidades se repite (en minutos, al menos 5)."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "minutes",
+            "hours",
+            "days",
+            "weeks"
+          ],
+          "description": "recurring: unidad de every."
+        },
+        "weekdays": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "description": "recurring: días en que corre, 0 = lunes … 6 = domingo. Sin weekdays, todos los días."
+        },
+        "from": {
+          "type": "string",
+          "description": "recurring: HH:MM. En minutes u hours, inicio opcional de la ventana (las ejecuciones se anclan ahí). En days o weeks, la hora de ejecución, obligatoria. Una cadena vacía la borra."
+        },
+        "to": {
+          "type": "string",
+          "description": "recurring en minutes u hours: fin opcional de la ventana, HH:MM. Una cadena vacía la borra."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "true la activa y false la pausa."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "set_ai_action_enabled": {
+    "description": "Pausa o activa una Acción IA. Al activarla no se recuperan las ejecuciones perdidas. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "id de la acción (de list_ai_actions) o su nombre exacto."
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "enabled"
+      ]
+    }
+  },
+  "delete_ai_action": {
+    "description": "Elimina una Acción IA; su historial de ejecuciones se conserva. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "id de la acción (de list_ai_actions) o su nombre exacto."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "run_ai_action_now": {
+    "description": "Ejecuta ahora una Acción IA, fuera de su horario y sin cambiarlo; la respuesta llega por Telegram cuando termine el turno actual. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "id de la acción (de list_ai_actions) o su nombre exacto."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "retry_ai_action_run": {
+    "description": "Reintenta una ejecución fallida de una Acción IA con su prompt actual; la respuesta llega por Telegram. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "description": "id de la ejecución fallida (failedRunId de list_ai_actions o runs de get_ai_action)."
+        }
+      },
+      "required": [
+        "runId"
+      ]
     }
   }
 }

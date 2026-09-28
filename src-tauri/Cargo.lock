@@ -2792,6 +2792,7 @@ name = "notia-backend-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "jiff",
  "lopdf",
  "miniz_oxide",
  "pdf-writer",

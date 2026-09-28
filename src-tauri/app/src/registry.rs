@@ -123,6 +123,16 @@ fn route(command: &str) -> Option<Route> {
         "routine_apply_mutation" => routine_apply_mutation,
         "agenda_get_view" => agenda_get_view,
         "agenda_apply_mutation" => agenda_apply_mutation,
+        "ai_actions_dashboard" => ai_actions_dashboard,
+        "ai_action_preview" => ai_action_preview,
+        "ai_action_get" => ai_action_get,
+        "ai_action_create" => ai_action_create,
+        "ai_action_update" => ai_action_update,
+        "ai_action_set_enabled" => ai_action_set_enabled,
+        "ai_action_delete" => ai_action_delete,
+        "ai_action_runs" => ai_action_runs,
+        "ai_action_retry" => ai_action_retry,
+        "ai_action_test" => ai_action_test,
         "finance_dev_list_tables" => finance_dev_list_tables,
         "finance_dev_query_table" => finance_dev_query_table,
         "finance_dev_query_sql" => finance_dev_query_sql,
@@ -348,6 +358,16 @@ pub const COMMAND_NAMES: &[&str] = &[
     "routine_apply_mutation",
     "agenda_get_view",
     "agenda_apply_mutation",
+    "ai_actions_dashboard",
+    "ai_action_preview",
+    "ai_action_get",
+    "ai_action_create",
+    "ai_action_update",
+    "ai_action_set_enabled",
+    "ai_action_delete",
+    "ai_action_runs",
+    "ai_action_retry",
+    "ai_action_test",
     "finance_dev_list_tables",
     "finance_dev_query_table",
     "finance_dev_query_sql",
@@ -1006,6 +1026,56 @@ fn agenda_get_view(app: &AppHandle, _window_label: &str, command: &str, args: &V
 fn agenda_apply_mutation(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1) = (app.clone(), arg(command, args, "payload")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::agenda::agenda_apply_mutation(arg0, arg1).await) })))
+}
+
+fn ai_actions_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "filter")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_actions_dashboard(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn ai_action_preview(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?, arg(command, args, "input")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_preview(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn ai_action_get(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_get(arg0, arg1, arg2).await) })))
+}
+
+fn ai_action_create(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "input")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_create(arg0, arg1, arg2).await) })))
+}
+
+fn ai_action_update(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?, arg(command, args, "input")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_update(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn ai_action_set_enabled(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?, arg(command, args, "enabled")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_set_enabled(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn ai_action_delete(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_delete(arg0, arg1, arg2).await) })))
+}
+
+fn ai_action_runs(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "actionId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_runs(arg0, arg1, arg2).await) })))
+}
+
+fn ai_action_retry(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "runId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_retry(arg0, arg1, arg2).await) })))
+}
+
+fn ai_action_test(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "input")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_test(arg0, arg1, arg2).await) })))
 }
 
 fn finance_dev_list_tables(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

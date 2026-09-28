@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
+use super::context::OWNER_LIBRARY_USER_ID;
 use super::error::{BackendError, BackendErrorCode};
 use super::library_tools::BoundedPage;
 use super::protocol::{MutationPreviewAction, ToolDefinition};
@@ -18,7 +19,8 @@ use super::BackendScope;
 pub const MAX_TASK_BOARDS: usize = 64;
 pub const MAX_TASK_GROUPS: usize = 512;
 pub const MAX_TASK_TICKETS: usize = 2_000;
-pub const MAX_TASK_COMMENTS: usize = 100;
+/// Comments a library may hold in total, 100 per ticket on average.
+pub const MAX_TASK_LIBRARY_COMMENTS: usize = MAX_TASK_TICKETS * 100;
 pub const MAX_TASK_RESULTS: usize = 100;
 pub const MAX_TASK_BULK_TICKETS: usize = 50;
 pub const MAX_TASK_TEXT_CHARS: usize = 30_000;
@@ -243,6 +245,16 @@ pub struct TaskCommentDto {
     pub revision: u64,
     #[serde(default)]
     pub logical_path: String,
+}
+
+impl TaskCommentDto {
+    /// The order comments are written in: by creation time, then by id.
+    /// The ticket document, its card preview and its reads all use it.
+    pub fn written_order(&self, other: &Self) -> std::cmp::Ordering {
+        self.created_at_unix_ms
+            .cmp(&other.created_at_unix_ms)
+            .then_with(|| self.comment_id.cmp(&other.comment_id))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -531,6 +543,16 @@ pub enum TaskMutationDto {
         comment_id: String,
         body: String,
         created_at_unix_ms: i64,
+    },
+    /// Replaces the text of a comment; its author and date stay.
+    UpdateComment {
+        ticket_id: String,
+        comment_id: String,
+        body: String,
+    },
+    DeleteComment {
+        ticket_id: String,
+        comment_id: String,
     },
     AddSubtask {
         parent_ticket_id: String,
@@ -1108,6 +1130,47 @@ impl PersistentTaskManager {
             .ok_or_else(|| invalid("El estado persistente no contiene la biblioteca abierta."))
     }
 
+    /// Stores the library after the mutation of `receipt` and returns where
+    /// the store wrote each ticket and comment.
+    fn commit_applied(
+        &self,
+        receipt: &TaskMutationReceiptDto,
+    ) -> Result<Vec<TaskDocumentRouteDto>, BackendError> {
+        let next_snapshot = self.library_snapshot()?;
+        let routes = next_snapshot
+            .tickets
+            .iter()
+            .map(|ticket| TaskDocumentRouteDto {
+                entity_type: "ticket".to_string(),
+                entity_id: ticket.summary.ticket_id.clone(),
+                logical_path: ticket.summary.logical_path.clone(),
+            })
+            .chain(
+                next_snapshot
+                    .comments
+                    .iter()
+                    .map(|comment| TaskDocumentRouteDto {
+                        entity_type: "comment".to_string(),
+                        entity_id: comment.comment_id.clone(),
+                        logical_path: comment.logical_path.clone(),
+                    }),
+            )
+            .collect();
+        self.store.commit(&TaskManagerStoreCommit {
+            library_id: self.library_id.clone(),
+            snapshot: next_snapshot,
+            routes,
+            revisions: receipt.revisions.clone(),
+            operation: TaskManagerAppliedOperationDto {
+                library_id: receipt.library_id.clone(),
+                library_user_id: receipt.library_user_id.clone(),
+                operation_id: receipt.operation_id.clone(),
+                idempotency_key: receipt.idempotency_key.clone(),
+                affected_ids: receipt.affected_ids.clone(),
+            },
+        })
+    }
+
     pub fn read_snapshot(
         &self,
         context: &TaskManagerContextDto,
@@ -1206,41 +1269,9 @@ impl TaskManagerMutationPort for PersistentTaskManager {
         if receipt.replayed {
             return Ok(receipt);
         }
-        let next_snapshot = self.library_snapshot()?;
-        let routes = next_snapshot
-            .tickets
-            .iter()
-            .map(|ticket| TaskDocumentRouteDto {
-                entity_type: "ticket".to_string(),
-                entity_id: ticket.summary.ticket_id.clone(),
-                logical_path: ticket.summary.logical_path.clone(),
-            })
-            .chain(
-                next_snapshot
-                    .comments
-                    .iter()
-                    .map(|comment| TaskDocumentRouteDto {
-                        entity_type: "comment".to_string(),
-                        entity_id: comment.comment_id.clone(),
-                        logical_path: comment.logical_path.clone(),
-                    }),
-            )
-            .collect();
-        let revisions = receipt.revisions.clone();
-        let commit = TaskManagerStoreCommit {
-            library_id: self.library_id.clone(),
-            snapshot: next_snapshot,
-            routes,
-            revisions,
-            operation: TaskManagerAppliedOperationDto {
-                library_id: receipt.library_id.clone(),
-                library_user_id: receipt.library_user_id.clone(),
-                operation_id: receipt.operation_id.clone(),
-                idempotency_key: receipt.idempotency_key.clone(),
-                affected_ids: receipt.affected_ids.clone(),
-            },
-        };
-        match self.store.commit(&commit) {
+        // Whatever keeps the change from being stored also undoes it in
+        // memory: an unstored change would make every later access fail.
+        match self.commit_applied(&receipt) {
             Ok(routes) => self.manager.set_document_routes(&self.library_id, &routes)?,
             Err(error) => {
                 self.manager.replace_snapshot(before)?;
@@ -1645,11 +1676,7 @@ impl TaskManagerReadPort for InMemoryTaskManager {
             .filter(|comment| comment.ticket_id == request.ticket_id)
             .cloned()
             .collect::<Vec<_>>();
-        comments.sort_by(|left, right| {
-            left.created_at_unix_ms
-                .cmp(&right.created_at_unix_ms)
-                .then_with(|| left.comment_id.cmp(&right.comment_id))
-        });
+        comments.sort_by(TaskCommentDto::written_order);
         Ok(TaskTicketReadDto {
             ticket: ticket.clone(),
             subtasks: task_page(subtasks, request.subtask_offset, request.subtask_limit),
@@ -2165,6 +2192,32 @@ fn validate_mutation(
                 ticket.summary.revision,
             ));
         }
+        TaskMutationDto::UpdateComment {
+            ticket_id,
+            comment_id,
+            body,
+        } => {
+            validate_text("comment", body, MAX_TASK_TEXT_CHARS)?;
+            let ticket = accessible_ticket(library, context, ticket_id)?;
+            editable_comment(library, context, ticket_id, comment_id)?;
+            revisions.push(entity_revision(
+                "ticket",
+                ticket_id,
+                ticket.summary.revision,
+            ));
+        }
+        TaskMutationDto::DeleteComment {
+            ticket_id,
+            comment_id,
+        } => {
+            let ticket = accessible_ticket(library, context, ticket_id)?;
+            editable_comment(library, context, ticket_id, comment_id)?;
+            revisions.push(entity_revision(
+                "ticket",
+                ticket_id,
+                ticket.summary.revision,
+            ));
+        }
         TaskMutationDto::AddSubtask {
             parent_ticket_id,
             ticket_id,
@@ -2530,6 +2583,46 @@ fn apply_mutation_to_library(
             affected_ids.push(comment_id.clone());
             entity_keys.push(EntityKey::new("ticket", ticket_id));
         }
+        TaskMutationDto::UpdateComment {
+            ticket_id,
+            comment_id,
+            body,
+        } => {
+            let comment = library
+                .comments
+                .get_mut(comment_id)
+                .filter(|comment| comment.ticket_id == *ticket_id)
+                .ok_or_else(|| not_found("El comentario no existe en ese ticket."))?;
+            comment.body = body.clone();
+            comment.revision = comment.revision.saturating_add(1);
+            let ticket = library
+                .tickets
+                .get_mut(ticket_id)
+                .ok_or_else(|| not_found("El ticket no existe."))?;
+            ticket.summary.revision = ticket.summary.revision.saturating_add(1);
+            affected_ids.push(comment_id.clone());
+            entity_keys.push(EntityKey::new("ticket", ticket_id));
+        }
+        TaskMutationDto::DeleteComment {
+            ticket_id,
+            comment_id,
+        } => {
+            if library
+                .comments
+                .get(comment_id)
+                .is_none_or(|comment| comment.ticket_id != *ticket_id)
+            {
+                return Err(not_found("El comentario no existe en ese ticket."));
+            }
+            library.comments.remove(comment_id);
+            let ticket = library
+                .tickets
+                .get_mut(ticket_id)
+                .ok_or_else(|| not_found("El ticket no existe."))?;
+            ticket.summary.revision = ticket.summary.revision.saturating_add(1);
+            affected_ids.push(comment_id.clone());
+            entity_keys.push(EntityKey::new("ticket", ticket_id));
+        }
         TaskMutationDto::AddSubtask {
             parent_ticket_id,
             ticket_id,
@@ -2697,11 +2790,7 @@ pub fn ticket_detail_preview<'a>(
     comments: impl IntoIterator<Item = &'a TaskCommentDto>,
 ) -> String {
     let mut comments = comments.into_iter().collect::<Vec<_>>();
-    comments.sort_by(|left, right| {
-        left.created_at_unix_ms
-            .cmp(&right.created_at_unix_ms)
-            .then_with(|| left.comment_id.cmp(&right.comment_id))
-    });
+    comments.sort_by(|left, right| left.written_order(right));
     let text = std::iter::once(content)
         .chain(comments.iter().map(|comment| comment.body.as_str()))
         .collect::<Vec<_>>()
@@ -2952,6 +3041,22 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             validate_id("commentId", comment_id)?;
             validate_text("comment", body, MAX_TASK_TEXT_CHARS)?;
         }
+        TaskMutationDto::UpdateComment {
+            ticket_id,
+            comment_id,
+            body,
+        } => {
+            validate_id("ticketId", ticket_id)?;
+            validate_id("commentId", comment_id)?;
+            validate_text("comment", body, MAX_TASK_TEXT_CHARS)?;
+        }
+        TaskMutationDto::DeleteComment {
+            ticket_id,
+            comment_id,
+        } => {
+            validate_id("ticketId", ticket_id)?;
+            validate_id("commentId", comment_id)?;
+        }
         TaskMutationDto::AddSubtask {
             parent_ticket_id,
             ticket_id,
@@ -3053,6 +3158,28 @@ fn accessible_ticket<'a>(
         .ok_or_else(|| not_found("El ticket no existe."))?;
     ensure_board_access(context, library, &ticket.summary.board_id)?;
     Ok(ticket)
+}
+/// Checks that `comment_id` is a comment of `ticket_id` the actor may edit
+/// or delete: the Owner may change any comment, everyone else only their own.
+fn editable_comment(
+    library: &LibraryState,
+    context: &TaskManagerContextDto,
+    ticket_id: &str,
+    comment_id: &str,
+) -> Result<(), BackendError> {
+    let comment = library
+        .comments
+        .get(comment_id)
+        .filter(|comment| comment.ticket_id == ticket_id)
+        .ok_or_else(|| {
+            not_found("El comentario no existe en ese ticket; leelo con read_task_tickets.")
+        })?;
+    if context.library_user_id != OWNER_LIBRARY_USER_ID
+        && comment.author_user_id != context.library_user_id
+    {
+        return Err(forbidden("Solo el autor del comentario o el Owner pueden cambiarlo."));
+    }
+    Ok(())
 }
 fn ensure_board_access(
     context: &TaskManagerContextDto,
@@ -3227,6 +3354,8 @@ fn mutation_summary(mutation: &TaskMutationDto) -> String {
             "Reemplazar contenido del ticket".to_string()
         }
         TaskMutationDto::AddComment { .. } => "Agregar comentario".to_string(),
+        TaskMutationDto::UpdateComment { .. } => "Editar comentario".to_string(),
+        TaskMutationDto::DeleteComment { .. } => "Eliminar comentario".to_string(),
         TaskMutationDto::AddSubtask { .. } => "Crear subtarea".to_string(),
         TaskMutationDto::MoveTicket { .. } => "Mover ticket".to_string(),
         TaskMutationDto::ChangeState { .. } => "Cambiar estado".to_string(),
@@ -3245,6 +3374,8 @@ fn affected_ids(mutation: &TaskMutationDto) -> (Vec<String>, Vec<String>) {
         | TaskMutationDto::AddSubtask { ticket_id, .. }
         | TaskMutationDto::ReplaceTicketContent { ticket_id, .. }
         | TaskMutationDto::AddComment { ticket_id, .. }
+        | TaskMutationDto::UpdateComment { ticket_id, .. }
+        | TaskMutationDto::DeleteComment { ticket_id, .. }
         | TaskMutationDto::MoveTicket { ticket_id, .. }
         | TaskMutationDto::ChangeState { ticket_id, .. }
         | TaskMutationDto::ChangePriority { ticket_id, .. }
@@ -3272,6 +3403,8 @@ fn affected_ids(mutation: &TaskMutationDto) -> (Vec<String>, Vec<String>) {
         TaskMutationDto::AddSubtask { .. }
         | TaskMutationDto::ReplaceTicketContent { .. }
         | TaskMutationDto::AddComment { .. }
+        | TaskMutationDto::UpdateComment { .. }
+        | TaskMutationDto::DeleteComment { .. }
         | TaskMutationDto::MoveTicket { .. }
         | TaskMutationDto::ChangeState { .. }
         | TaskMutationDto::ChangePriority { .. }
@@ -3392,7 +3525,7 @@ fn library_state_from_snapshot(
     if snapshot.tickets.len() > MAX_TASK_TICKETS {
         return Err(invalid("La biblioteca supera el límite de tickets."));
     }
-    if snapshot.comments.len() > MAX_TASK_COMMENTS {
+    if snapshot.comments.len() > MAX_TASK_LIBRARY_COMMENTS {
         return Err(invalid("La biblioteca supera el límite de comentarios."));
     }
 
@@ -3673,6 +3806,14 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
         (
             "add_task_comment",
             "Prepara un comentario asociado al usuario autorizado.",
+        ),
+        (
+            "update_task_comment",
+            "Prepara el cambio de texto de un comentario.",
+        ),
+        (
+            "delete_task_comment",
+            "Prepara la eliminación de un comentario.",
         ),
         (
             "add_task_subtask",
@@ -4678,5 +4819,196 @@ mod tests {
             })
             .unwrap();
         assert_eq!(read.ticket.summary.state, TaskState::Pending);
+    }
+
+    fn persistent_from(source: &InMemoryTaskManager) -> (PersistentTaskManager, Arc<TestSnapshotStore>) {
+        let store = Arc::new(TestSnapshotStore {
+            snapshot: Mutex::new(source.export_snapshot().unwrap().libraries.into_iter().next()),
+            fail_save: Mutex::new(false),
+        });
+        (PersistentTaskManager::open("library-a", store.clone()).unwrap(), store)
+    }
+
+    fn preview_and_apply(
+        manager: &PersistentTaskManager,
+        context: &TaskManagerContextDto,
+        key: &str,
+        mutation: TaskMutationDto,
+    ) -> Result<TaskMutationReceiptDto, BackendError> {
+        manager.preview_mutation(&TaskMutationRequestDto {
+            context: context.clone(),
+            operation_id: format!("op-{key}"),
+            idempotency_key: format!("idem-{key}"),
+            mutation,
+        })?;
+        manager.apply_mutation(&TaskMutationApplyRequestDto {
+            context: context.clone(),
+            operation_id: format!("op-{key}"),
+            idempotency_key: format!("idem-{key}"),
+            confirmed: true,
+        })
+    }
+
+    #[test]
+    fn a_comment_is_edited_and_deleted_by_its_author_or_the_owner() {
+        let (manager, context) = setup();
+        manager.add_user("library-a", "user-b").unwrap();
+        manager.add_user("library-a", OWNER_LIBRARY_USER_ID).unwrap();
+        for ticket_id in ["ticket-1", "ticket-2"] {
+            manager.seed_ticket(ticket(ticket_id, "Ticket", None)).unwrap();
+        }
+        manager
+            .seed_comment(TaskCommentDto {
+                library_id: "library-a".into(),
+                comment_id: "comment-1".into(),
+                ticket_id: "ticket-1".into(),
+                author_user_id: "user-a".into(),
+                body: "Doris finalizó los 3".into(),
+                created_at_unix_ms: 10,
+                revision: 1,
+                logical_path: String::new(),
+            })
+            .unwrap();
+        let apply = |context: &TaskManagerContextDto, key: &str, mutation: TaskMutationDto| {
+            manager.preview_mutation(&TaskMutationRequestDto {
+                context: context.clone(),
+                operation_id: format!("op-{key}"),
+                idempotency_key: format!("idem-{key}"),
+                mutation,
+            })?;
+            manager.apply_mutation(&TaskMutationApplyRequestDto {
+                context: context.clone(),
+                operation_id: format!("op-{key}"),
+                idempotency_key: format!("idem-{key}"),
+                confirmed: true,
+            })
+        };
+        let read = || {
+            manager
+                .read_ticket(&TaskTicketReadRequest {
+                    context: context.clone(),
+                    ticket_id: "ticket-1".into(),
+                    include_archived: false,
+                    subtask_offset: 0,
+                    subtask_limit: 10,
+                    comment_offset: 0,
+                    comment_limit: 10,
+                })
+                .unwrap()
+        };
+        let edit = |body: &str| TaskMutationDto::UpdateComment {
+            ticket_id: "ticket-1".into(),
+            comment_id: "comment-1".into(),
+            body: body.into(),
+        };
+
+        let other_user = TaskManagerContextDto::new("library-a", "user-b").unwrap();
+        assert_eq!(apply(&other_user, "other", edit("Ajeno")).unwrap_err().code, BackendErrorCode::Forbidden);
+        let wrong_ticket = TaskMutationDto::DeleteComment { ticket_id: "ticket-2".into(), comment_id: "comment-1".into() };
+        assert_eq!(apply(&context, "wrong", wrong_ticket).unwrap_err().code, BackendErrorCode::NotFound);
+
+        apply(&context, "author", edit("Doris finalizó 2 de los 3")).unwrap();
+        let owner = TaskManagerContextDto::new("library-a", OWNER_LIBRARY_USER_ID).unwrap();
+        apply(&owner, "owner", edit("Doris finalizó los 3, listos para prueba")).unwrap();
+        let edited = read();
+        let comment = &edited.comments.items[0];
+        assert_eq!(comment.body, "Doris finalizó los 3, listos para prueba");
+        assert_eq!((comment.author_user_id.as_str(), comment.created_at_unix_ms), ("user-a", 10));
+        assert!(edited.ticket.summary.detail_preview.ends_with("Doris finalizó los 3, listos para prueba"));
+
+        apply(&owner, "delete", TaskMutationDto::DeleteComment { ticket_id: "ticket-1".into(), comment_id: "comment-1".into() }).unwrap();
+        let deleted = read();
+        assert_eq!(deleted.comments.total, 0);
+        assert_eq!(deleted.ticket.summary.detail_preview, "Contenido de Ticket");
+    }
+
+    #[test]
+    fn a_library_keeps_saving_past_one_hundred_comments() {
+        let (source, context) = setup();
+        for ticket_id in ["ticket-1", "ticket-2"] {
+            source.seed_ticket(ticket(ticket_id, "Ticket", None)).unwrap();
+        }
+        for index in 0..100 {
+            source
+                .seed_comment(TaskCommentDto {
+                    library_id: "library-a".into(),
+                    comment_id: format!("comment-{index}"),
+                    ticket_id: if index % 2 == 0 { "ticket-1" } else { "ticket-2" }.into(),
+                    author_user_id: "user-a".into(),
+                    body: "Seguimiento".into(),
+                    created_at_unix_ms: index,
+                    revision: 1,
+                    logical_path: String::new(),
+                })
+                .unwrap();
+        }
+        let (manager, store) = persistent_from(&source);
+        preview_and_apply(
+            &manager,
+            &context,
+            "comment-101",
+            TaskMutationDto::AddComment {
+                ticket_id: "ticket-1".into(),
+                comment_id: "comment-101".into(),
+                body: "Estado según ServiceNow".into(),
+                created_at_unix_ms: 200,
+            },
+        )
+        .unwrap();
+        preview_and_apply(
+            &manager,
+            &context,
+            "state",
+            TaskMutationDto::ChangeState { ticket_id: "ticket-2".into(), state: TaskState::InProgress },
+        )
+        .unwrap();
+        let persisted = store.snapshot.lock().unwrap().clone().unwrap();
+        assert_eq!(persisted.comments.len(), 101);
+        assert!(persisted
+            .tickets
+            .iter()
+            .any(|ticket| ticket.summary.ticket_id == "ticket-2" && ticket.summary.state == TaskState::InProgress));
+    }
+
+    #[test]
+    fn a_change_the_limits_reject_is_undone_and_later_changes_still_save() {
+        let (source, context) = setup();
+        for index in 0..MAX_TASK_TICKETS {
+            source.seed_ticket(ticket(&format!("ticket-{index}"), "Ticket", None)).unwrap();
+        }
+        let (manager, store) = persistent_from(&source);
+        let error = preview_and_apply(
+            &manager,
+            &context,
+            "create",
+            TaskMutationDto::CreateTicket {
+                board_id: "board-a".into(),
+                ticket_id: "ticket-extra".into(),
+                group_id: None,
+                title: "Extra".into(),
+                content: String::new(),
+                state: TaskState::Pending,
+                priority: TaskPriority::Low,
+                parent_ticket_id: None,
+                tags: vec![],
+                initial_fields: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, BackendErrorCode::InvalidInput);
+        assert_eq!(manager.read_snapshot(&context).unwrap().tickets.len(), MAX_TASK_TICKETS);
+        preview_and_apply(
+            &manager,
+            &context,
+            "state",
+            TaskMutationDto::ChangeState { ticket_id: "ticket-0".into(), state: TaskState::Completed },
+        )
+        .unwrap();
+        let persisted = store.snapshot.lock().unwrap().clone().unwrap();
+        assert_eq!(persisted.tickets.len(), MAX_TASK_TICKETS);
+        assert!(persisted
+            .tickets
+            .iter()
+            .any(|ticket| ticket.summary.ticket_id == "ticket-0" && ticket.summary.state == TaskState::Completed));
     }
 }

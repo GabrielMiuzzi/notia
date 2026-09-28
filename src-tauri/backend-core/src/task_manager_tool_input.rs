@@ -16,10 +16,12 @@ use crate::task_manager_tools::{
 pub const MAX_TASK_TOOL_READ_TICKETS: usize = 20;
 
 /// Task Manager tools that change data; each one maps to one store mutation.
-pub const TASK_MUTATION_TOOLS: [&str; 16] = [
+pub const TASK_MUTATION_TOOLS: [&str; 18] = [
     "create_task_ticket",
     "replace_task_content",
     "add_task_comment",
+    "update_task_comment",
+    "delete_task_comment",
     "add_task_subtask",
     "move_task_group",
     "change_task_state",
@@ -162,6 +164,15 @@ pub fn task_mutation_from_tool(
             comment_id: new_id(),
             body: required(arguments, "comment")?,
             created_at_unix_ms: now_unix_ms,
+        },
+        "update_task_comment" => TaskMutationDto::UpdateComment {
+            ticket_id: required(arguments, "ticketId")?,
+            comment_id: required(arguments, "commentId")?,
+            body: required(arguments, "comment")?,
+        },
+        "delete_task_comment" => TaskMutationDto::DeleteComment {
+            ticket_id: required(arguments, "ticketId")?,
+            comment_id: required(arguments, "commentId")?,
         },
         "add_task_subtask" => TaskMutationDto::AddSubtask {
             parent_ticket_id: required(arguments, "ticketId")?,
@@ -345,6 +356,32 @@ mod tests {
                 created_at_unix_ms: 42,
             }
         );
+    }
+
+    #[test]
+    fn comment_edits_and_deletions_name_an_existing_comment() {
+        let edit = task_mutation_from_tool(
+            "update_task_comment",
+            &json!({"ticketId": "t-1", "commentId": "c-1", "comment": " Texto corregido "}),
+            &[],
+            &mut ids(),
+            0,
+        )
+        .expect("edit");
+        assert_eq!(
+            edit,
+            TaskMutationDto::UpdateComment {
+                ticket_id: "t-1".into(),
+                comment_id: "c-1".into(),
+                body: "Texto corregido".into(),
+            }
+        );
+        let deletion = task_mutation_from_tool("delete_task_comment", &json!({"ticketId": "t-1", "commentId": "c-1"}), &[], &mut ids(), 0)
+            .expect("delete");
+        assert_eq!(deletion, TaskMutationDto::DeleteComment { ticket_id: "t-1".into(), comment_id: "c-1".into() });
+        assert!(task_mutation_from_tool("update_task_comment", &json!({"ticketId": "t-1", "comment": "x"}), &[], &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("update_task_comment", &json!({"ticketId": "t-1", "commentId": "c-1"}), &[], &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("delete_task_comment", &json!({"commentId": "c-1"}), &[], &mut ids(), 0).is_err());
     }
 
     fn group(id: &str, name: &str, color: &str) -> TaskGroupDto {

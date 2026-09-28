@@ -34,7 +34,7 @@
 - Pensamientos propios del agente en `.agent/memory/thoughts.md` (qué notó, avisó, preguntó o propuso, con fecha), siempre presente, con límite, reorganizados en cada guardado y usados como contexto en todos los chats del Owner.
 - Confirmaciones y planes con Confirmar, Confirmar todos (sin volver a preguntar en ese pedido), Proponer otra cosa y Cancelar, en el chat y en Telegram; en Telegram el progreso sigue en un mensaje nuevo después de cada respuesta.
 - Reflexión al terminar cada pedido del Owner (también si falló o se canceló): memorias y pensamientos nuevos guardados solos.
-- Agente autónomo por Telegram (solo al Owner): cada hora y al llegar mails nuevos a Gmail revisa agenda, tareas, rutina, correo y finanzas y, si vale la pena, recuerda, pregunta o propone mejoras sin repetirse; solo lee y se apaga desde Configuraciones → Telegram.
+- Agente autónomo por Telegram (solo al Owner): al llegar mails nuevos a Gmail los revisa y, si vale la pena, recuerda, pregunta o propone mejoras sin repetirse; solo lee y se apaga desde Configuraciones → Telegram (la revisión de cada hora es una acción de Acciones IA).
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
 - Meeting: transcripción de archivos de audio (MP3, WAV, M4A, OGG, FLAC) y video (MP4, MOV, MKV, WEBM) elegidos o arrastrados, con duración, onda, progreso y cancelación; después, separación de hablantes y todo lo de una reunión grabada.
 - Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
@@ -48,6 +48,7 @@
 - Adjuntos de Telegram decididos por el modelo: fotos, imágenes JPG/PNG como archivo y PDF van al chat de la biblioteca y el router mira el adjunto (comprobante → Finanzas, calendario → Google Calendar, apuntes → nota); un álbum es un solo pedido.
 - Trabajo continuo del agente: rondas con herramientas también por streaming (escritorio y Android) y una revisión corta del modelo que lo hace seguir cuando solo anunció un paso; notas de estado en el progreso de Telegram.
 - Cola de mensajes durante una respuesta (chat de la app y Telegram): una llamada corta al modelo decide si el mensaje cancela, cancela y sigue con el pedido nuevo, o queda en cola; `/cancelar` sin modelo y respaldo por palabras.
+- Textos largos de Telegram que llegan partidos en varios mensajes se leen como un solo pedido.
 - Elección de herramientas por el modelo en el chat principal y en Telegram: áreas (notas, tareas, finanzas, rutina, correo y calendario) según el pedido y la conversación, limitadas a las que el usuario tiene autorizadas, con respaldo por palabras.
 - Herramientas del asistente para Gmail (buscar, leer, papelera, mover de carpeta, spam, leídos, enviar y responder) y Google Calendar (listar y crear eventos), confidenciales (Owner o acceso a #Confidencial), que distinguen de qué cuenta y tipo es cada correo o evento, con confirmación antes de cada cambio o envío.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
@@ -56,7 +57,7 @@
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
 - Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
 - Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.
-- Herramientas de Task Manager del asistente en el chat del tablero, el chat principal y Telegram: tickets, comentarios, subtareas y grupos (crear, renombrar, cambiar color, reordenar columnas y eliminar vacíos).
+- Herramientas de Task Manager del asistente en el chat del tablero, el chat principal y Telegram: tickets, comentarios (agregar, corregir y eliminar), subtareas y grupos (crear, renombrar, cambiar color, reordenar columnas y eliminar vacíos).
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager, guardado en el backend para cada biblioteca y usuario.
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
@@ -75,6 +76,7 @@
 - Agenda por usuario con calendario mensual, semana en bloques de 15 minutos para agendar tareas con prioridad (mouse, táctil y teclado), tareas superpuestas lado a lado, anotador rápido del día y próximos eventos, persistida en SQLite y operable con herramientas de IA confirmadas (chat y Telegram).
 - Feriados de Argentina (nacionales y bancarios, de argentinadatos.com) en el calendario de la Agenda, con leyenda por tipo y cuenta regresiva al próximo feriado.
 - Sincronización bidireccional de la Agenda con Google Calendar cada 5 minutos, con todas las cuentas conectadas; ante cambios en los dos lados gana Notia.
+- Acciones IA: recordatorios, tareas a una hora y tareas recurrentes que la IA ejecuta sola y responde por Telegram (solo al Owner, con reglas, memoria, pensamientos y herramientas), con estados, métricas, línea del día, reintento, prueba, historial y la revisión de cada hora como acción por defecto; la IA las crea, cambia, pausa, borra, ejecuta y reintenta desde cualquier chat o Telegram, con confirmación.
 - Rutina de hábitos por usuario con rutinas, tareas por días, marcas diarias, rachas, calendario, evolución, progreso semanal y rueda de la vida con metas, persistida en SQLite y operable con tools de IA confirmadas.
 - Temas claro y oscuro.
 - Backups automáticos de bibliotecas en Windows.

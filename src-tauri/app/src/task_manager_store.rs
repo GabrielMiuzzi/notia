@@ -13,8 +13,8 @@ use notia_backend_core::{
     BackendError, BackendErrorCode, TaskBoardDto, TaskCommentDto, TaskDocumentRouteDto,
     TaskEntityRevisionDto, TaskGroupDto, TaskManagerConfigDto, TaskManagerLibrarySnapshotDto,
     TaskManagerSnapshotDto, TaskManagerSnapshotStore, TaskManagerStoreCommit, TaskPriority,
-    TaskState, TaskTicketDto, TaskTicketSummaryDto, MAX_TASK_COMMENTS, MAX_TASK_DATE_CHARS,
-    MAX_TASK_HOURS, MAX_TASK_ORDER, MAX_TASK_REFERENCE_CHARS, MAX_TASK_RELATED_REFERENCES,
+    TaskState, TaskTicketDto, TaskTicketSummaryDto, MAX_TASK_DATE_CHARS, MAX_TASK_HOURS,
+    MAX_TASK_LIBRARY_COMMENTS, MAX_TASK_ORDER, MAX_TASK_REFERENCE_CHARS, MAX_TASK_RELATED_REFERENCES,
     MAX_TASK_SNAPSHOT_BYTES, MAX_TASK_TICKETS,
 };
 use sha2::{Digest, Sha256};
@@ -853,7 +853,7 @@ fn hydrate_snapshot(
     }
     detach_invalid_parents(&mut tickets);
     validate_parent_relationships(&tickets)?;
-    if comments.len() > MAX_TASK_TICKETS.saturating_mul(MAX_TASK_COMMENTS) {
+    if comments.len() > MAX_TASK_LIBRARY_COMMENTS {
         return Err(BackendError::invalid_input(
             "La biblioteca supera el límite de comentarios.",
         ));
@@ -1294,9 +1294,11 @@ fn split_comments(
         let author = field_string(&metadata, "author")
             .or_else(|| parsed_heading.as_ref().map(|(_, author)| author.clone()))
             .unwrap_or_else(|| OWNER_USER_ID.to_string());
+        // A heading has minute precision: the position breaks ties, so
+        // comments written in the same minute keep their order.
         let created_at = field_string(&metadata, "created_at")
             .and_then(|value| parse_timestamp_millis(&value))
-            .or_else(|| parsed_heading.as_ref().map(|(time, _)| *time))
+            .or_else(|| parsed_heading.as_ref().map(|(time, _)| *time + ordinal as i64))
             .unwrap_or_else(|| stable_revision("comment-time", &seed) as i64);
         let revision =
             field_u64(&metadata, "revision").unwrap_or_else(|| stable_revision("comment", &seed));
@@ -1742,11 +1744,14 @@ fn render_ticket(
     set_array(&mut fields, "relatedDocuments", &ticket.related_documents);
     set_array(&mut fields, "relatedTasks", &ticket.related_tasks);
     let mut body = ticket.content.trim().to_string();
-    let comments = snapshot
+    let mut comments = snapshot
         .comments
         .iter()
         .filter(|comment| comment.ticket_id == ticket.summary.ticket_id)
         .collect::<Vec<_>>();
+    // The snapshot lists comments by id; the document keeps them in the
+    // order they were written.
+    comments.sort_by(|left, right| left.written_order(right));
     for comment in comments {
         body.push_str("\n\n");
         body.push_str(&comment_heading(comment, user_names));
@@ -2917,7 +2922,72 @@ mod tests {
         )
         .expect("comments");
         assert_eq!(body, "Texto");
-        assert_eq!(parsed[0].created_at_unix_ms, legacy[1].created_at_unix_ms);
+        assert_eq!(comment_heading(&parsed[0], &names), heading);
+    }
+
+    #[test]
+    fn comments_are_written_in_the_order_they_were_written() {
+        let names = HashMap::from([("user-owner".to_string(), "Gabriel".to_string())]);
+        let ticket = TaskTicketDto {
+            summary: TaskTicketSummaryDto {
+                library_id: "library".into(),
+                ticket_id: "ticket".into(),
+                board_id: "default".into(),
+                group_id: None,
+                title: "Pago de tarjetas".into(),
+                state: TaskState::Pending,
+                priority: TaskPriority::Medium,
+                parent_ticket_id: None,
+                detail_preview: String::new(),
+                revision: 1,
+                logical_path: "task-mannager/default/Pago de tarjetas.md".into(),
+            },
+            content: "Detalle".into(),
+            tags: vec![],
+            dependencies: vec![],
+            checklist: vec![],
+            start_date: String::new(),
+            end_date: String::new(),
+            dynamic_end_date: true,
+            dedicated_hours: 0.0,
+            estimated_hours: 0.0,
+            deviation_hours: 0.0,
+            order: 0.0,
+            context: None,
+            related_documents: vec![],
+            related_tasks: vec![],
+        };
+        let comment = |id: &str, minute: i64, body: &str| TaskCommentDto {
+            library_id: "library".into(),
+            comment_id: id.into(),
+            ticket_id: "ticket".into(),
+            author_user_id: OWNER_USER_ID.into(),
+            body: body.into(),
+            created_at_unix_ms: 1_789_000_000_000 + minute * 60_000,
+            revision: 1,
+            logical_path: String::new(),
+        };
+        let mut snapshot = empty_snapshot("library");
+        snapshot.tickets = vec![ticket.clone()];
+        // The snapshot lists comments by id, the opposite of their dates.
+        snapshot.comments = vec![comment("a", 2, "Tercero"), comment("b", 1, "Segundo"), comment("c", 0, "Primero")];
+        let path = PathBuf::from("C:/library/task-mannager/default/Pago de tarjetas.md");
+        let content = render_ticket(&ticket, &snapshot, None, &path, &names).expect("ticket");
+        let position = |text: &str| content.find(text).expect(text);
+        assert!(position("Primero") < position("Segundo") && position("Segundo") < position("Tercero"));
+
+        // Comments of the same minute keep the order of the file.
+        let (_, parsed) = split_comments(
+            "## Comentario - 13/09/2026 09:05\nZeta\n\n## Comentario - 13/09/2026 09:05\nAlfa",
+            "library",
+            "ticket",
+            "task-mannager/default/a.md",
+            &names,
+        )
+        .expect("comments");
+        let mut ordered = parsed.iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| left.written_order(right));
+        assert_eq!(ordered.iter().map(|comment| comment.body.as_str()).collect::<Vec<_>>(), ["Zeta", "Alfa"]);
     }
 
     #[test]
@@ -3172,6 +3242,66 @@ parent: \"[[borrada]]\"
         assert!(a.dynamic_end_date);
         let c = snapshot.tickets.iter().find(|ticket| ticket.summary.title == "C").expect("C");
         assert!(c.summary.parent_ticket_id.is_none());
+        let _ = std::fs::remove_dir_all(library_root);
+    }
+
+    #[test]
+    fn an_edited_or_deleted_comment_is_rewritten_in_the_ticket_file() {
+        use notia_backend_core::{
+            TaskManagerContextDto, TaskManagerMutationPort, TaskMutationApplyRequestDto, TaskMutationDto,
+            TaskMutationRequestDto,
+        };
+        let library_root = std::env::temp_dir().join(format!("notia-task-comments-{}", uuid::Uuid::new_v4()));
+        let board = library_root.join(PRIMARY_ROOT).join("default");
+        std::fs::create_dir_all(&board).expect("board");
+        let file = board.join("Pago de tarjetas.md");
+        std::fs::write(
+            &file,
+            "---\ntarea: Pago de tarjetas\n---\nDetalle\n\n## Comentario - 12/09/2026 13:11\nBloqueada por BPC\n\n## Comentario - 28/09/2026 14:50\nEstado según SN 28/9\n",
+        )
+        .expect("ticket");
+        let registry = LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-comments", &library_root).expect("binding");
+        let store = Arc::new(MarkdownTaskManagerStore::new("library-comments".to_string(), registry, Arc::new(Mutex::new(()))));
+        let manager = notia_backend_core::PersistentTaskManager::open("library-comments", store).expect("manager");
+        let context = TaskManagerContextDto::new("library-comments", OWNER_USER_ID).expect("context");
+        let snapshot = manager.read_snapshot(&context).expect("snapshot");
+        let ticket_id = snapshot.tickets[0].summary.ticket_id.clone();
+        let comment_id = |body: &str| {
+            snapshot.comments.iter().find(|comment| comment.body == body).expect(body).comment_id.clone()
+        };
+        let apply = |key: &str, mutation: TaskMutationDto| {
+            manager
+                .preview_mutation(&TaskMutationRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    mutation,
+                })
+                .expect("preview");
+            manager
+                .apply_mutation(&TaskMutationApplyRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    confirmed: true,
+                })
+                .expect("apply");
+        };
+        apply(
+            "edit",
+            TaskMutationDto::UpdateComment {
+                ticket_id: ticket_id.clone(),
+                comment_id: comment_id("Estado según SN 28/9"),
+                body: "Estado según ServiceNow del 28/9".into(),
+            },
+        );
+        apply("delete", TaskMutationDto::DeleteComment { ticket_id, comment_id: comment_id("Bloqueada por BPC") });
+        let written = std::fs::read_to_string(&file).expect("written");
+        assert!(written.contains("## Comentario - 28/09/2026 14:50"), "{written}");
+        assert!(written.contains("Estado según ServiceNow del 28/9"), "{written}");
+        assert!(!written.contains("Bloqueada por BPC") && !written.contains("12/09/2026"), "{written}");
+        assert!(written.contains("Detalle"), "{written}");
         let _ = std::fs::remove_dir_all(library_root);
     }
 }

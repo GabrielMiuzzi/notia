@@ -22,6 +22,9 @@ pub enum ToolPolicy {
     /// library user like Rutina.
     AgendaRead,
     AgendaWrite,
+    /// The AI actions of the library: the Owner's only.
+    AiActionRead,
+    AiActionWrite,
     Memory,
     /// Gmail and Google Calendar of the library's connected accounts;
     /// confidential, like finance.
@@ -200,6 +203,8 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ],
         false,
     ));
+    catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_READ_TOOLS, true));
+    catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
         ["undo_ai_operation"],
         BackendScope::Library,
@@ -372,6 +377,28 @@ fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
         .collect()
 }
 
+/// The AI actions are the agent's own schedule, so every chat of the app
+/// and Telegram reach them; the policy keeps them to the Owner.
+fn ai_action_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
+    names
+        .iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Tool versionada del catálogo backend.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![
+                BackendScope::Library,
+                BackendScope::Finance,
+                BackendScope::TaskManager,
+                BackendScope::Document,
+                BackendScope::Graph,
+            ],
+            read_only,
+            requires_confirmation: !read_only,
+        })
+        .collect()
+}
+
 fn document_mutation_alias_tools<const N: usize>(names: [&str; N]) -> Vec<ToolDefinition> {
     names
         .into_iter()
@@ -481,6 +508,8 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "reorder_routine_tasks"
         | "set_routine_completions"
         | "set_routine_goal" => ToolPolicy::RoutineWrite,
+        name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
+        name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
         "list_agenda" => ToolPolicy::AgendaRead,
         "create_agenda_event"
         | "delete_agenda_event"
@@ -546,7 +575,9 @@ pub fn authorize_tool_call(
         ));
     }
     if matches!(projection, ToolCatalogProjection::PublishedTaskManager)
-        && (!is_task_scope(tool) || tool.name == "search_web")
+        && (!is_task_scope(tool)
+            || tool.name == "search_web"
+            || matches!(tool_policy(&tool.name), ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite))
     {
         return Err(BackendError::new(
             BackendErrorCode::Forbidden,
@@ -609,6 +640,13 @@ pub fn authorize_tool_call(
         ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta de Agenda no está autorizada para este scope.",
+            false,
+        )),
+        // The actions answer only the Owner, by Telegram.
+        ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite if context.actor.is_library_owner() => Ok(()),
+        ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "Las acciones de IA son solo del Owner de la biblioteca.",
             false,
         )),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite
@@ -740,6 +778,36 @@ mod tests {
             read_only,
             requires_confirmation: !read_only,
         }
+    }
+
+    #[test]
+    fn ai_action_tools_reach_every_chat_for_the_owner_only() {
+        let limits = crate::protocol::BackendLimits::default();
+        let names = crate::ai_actions::tools::AI_ACTION_READ_TOOLS
+            .iter()
+            .chain(crate::ai_actions::tools::AI_ACTION_WRITE_TOOLS.iter())
+            .collect::<Vec<_>>();
+        for scope in [BackendScope::Library, BackendScope::Finance, BackendScope::TaskManager, BackendScope::Document, BackendScope::Graph] {
+            let tools = project_tool_catalog(&context(scope.clone()), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+            for name in &names {
+                let tool = tools.iter().find(|tool| &&tool.name.as_str() == name).unwrap_or_else(|| panic!("{name} in {scope:?}"));
+                assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
+            }
+            if scope != BackendScope::Library {
+                assert!(restrict_tool_access(tools, ToolAccess::All, true).len() <= limits.max_tools, "{scope:?}");
+            }
+        }
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), ..principal() };
+        let create = canonical_tool_catalog().into_iter().find(|tool| tool.name == "create_ai_action").expect("tool");
+        assert_eq!(
+            authorize_tool_call(&guest, &guest_principal, &create, ToolCatalogProjection::Full).expect_err("owner only").code,
+            BackendErrorCode::Forbidden
+        );
+        let published = project_tool_catalog(&context(BackendScope::Library), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::PublishedTaskManager).expect("published");
+        assert!(published.iter().all(|tool| !tool.name.contains("ai_action")));
+        assert_eq!(crate::tool_routing::tool_area("create_ai_action"), Some(crate::tool_routing::ToolArea::Actions));
     }
 
     #[test]

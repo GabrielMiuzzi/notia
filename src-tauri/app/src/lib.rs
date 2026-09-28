@@ -44,6 +44,7 @@ mod host_server;
 mod config_vault;
 mod device_secret;
 mod agent_autonomy;
+mod ai_actions;
 mod app_auth;
 mod agent_history;
 mod agent_knowledge;
@@ -199,6 +200,7 @@ pub fn startup_hooks() -> Vec<TauriPlugin> {
         backup::service::init(),
         telegram_worker::init(),
         agent_autonomy::init(),
+        ai_actions::init(),
         agenda_sync::init(),
         task_manager_publication_source::init(),
         database::init(),

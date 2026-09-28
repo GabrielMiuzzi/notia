@@ -16,6 +16,9 @@ subsetter = { version = "0.2", default-features = false }
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 miniz_oxide = "0.8"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# AI actions: schedules in the library's IANA time zone (bundled tzdb on
+# Windows, the system's on Android and Linux).
+jiff = "0.2"
 
 [dev-dependencies]
 lopdf = "0.38"

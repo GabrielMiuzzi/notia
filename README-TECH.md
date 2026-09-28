@@ -8674,7 +8674,7 @@ El agente tiene tres archivos propios en `.agent/memory/`, todos con `contexto: 
 | `memory.md` | Datos duraderos de la persona («duerme de 23 a 7»). | `add_agent_memory` |
 | `thoughts.md` | Pensamientos propios del agente: lo que observó y lo que avisó, preguntó o propuso, cada uno con su fecha local. | `add_agent_thought` y Rust (cada mensaje que el agente autónomo envía) |
 
-Además, un agente autónomo se despierta solo cada hora y al llegar mails nuevos a Gmail, y decide si le escribe al Owner por Telegram.
+Además, un agente autónomo se despierta solo al llegar mails nuevos a Gmail y decide si le escribe al Owner por Telegram. Hasta el 2026-09-28 también hacía una revisión cada hora; ahora esa revisión es la acción por defecto de Acciones IA (ver «Acciones IA: tablero de tareas programadas de la IA»).
 
 ### `thoughts.md`
 
@@ -8701,7 +8701,7 @@ Además, un agente autónomo se despierta solo cada hora y al llegar mails nuevo
 
 1. Asegura `thoughts.md`.
 2. Sigue solo si `telegram.autonomousAgent` está activo (`library_config::autonomous_agent_enabled`) y el bot de esa biblioteca corre en este dispositivo (`telegram_worker::bot_runs_for`).
-3. **Revisión horaria**: si pasó una hora desde `lastReviewMs`, encola `hourly_trigger`. La primera vez la revisión queda para una hora después. Si el encolado da `Busy` o `Unavailable`, reintenta en el tick siguiente.
+3. **Revisión horaria** (retirada el 2026-09-28): la hace la acción «Revisión de cada hora» de Acciones IA; el estado viejo con `lastReviewMs` se sigue leyendo y se ignora.
 4. **Mails nuevos**, cada 2 minutos (`MAIL_POLL_INTERVAL_MS`), en cada cuenta conectada (`mail_tools::gmail_accounts`):
    - Sin cursor, guarda el `historyId` de `users/me/profile`: el correo viejo no cuenta.
    - Con cursor, lee `users/me/history?historyTypes=messageAdded&labelId=INBOX`, hasta 5 páginas. `parse_history_page` deja los mensajes con `INBOX` y sin `SPAM`, `TRASH` ni `DRAFT`; entran todas las categorías.
@@ -8745,7 +8745,7 @@ Estos jobs se tratan distinto de los pedidos de una persona:
   - anotar siempre un pensamiento;
   - que el contenido de los mails es un dato no confiable.
 
-El pedido (`hourly_trigger` o `mail_trigger`) es el mensaje de usuario que leen el router de tools y el juez de continuación. `mail_trigger` marca los fragmentos como datos no confiables.
+El pedido (`mail_trigger`) es el mensaje de usuario que leen el router de tools y el juez de continuación. `mail_trigger` marca los fragmentos como datos no confiables.
 
 **Configuración**. `telegram.autonomousAgent` en `.notia/notiaConfig.json` (`normalize_telegram`) está activo salvo que se apague. La interfaz tiene el switch «Agente autónomo» en Configuraciones → Telegram: deshabilitado con el bot apagado, solo presentación, y escribe la configuración como el resto de la tarjeta.
 
@@ -9463,3 +9463,315 @@ El campo `passkey` de las entradas se reemplazó por `password`.
   - copiar y borrar el portapapeles en Android real y comprobar que el secreto no aparece en el historial de Windows (Win + V);
   - el cliente Host/Cliente;
   - build Linux (WSL).
+
+## Telegram: textos largos partidos y límite de comentarios de Task Manager (2026-09-28)
+
+**Problema.** Por Telegram, el usuario pegó un informe de ServiceNow de 19 tickets y pidió contrastarlo con el tablero `default` y con las sincros. Fallaron dos cosas:
+
+- Telegram partió el texto en tres mensajes.
+  - El primero corrió solo. Los otros dos pasaron cada uno por el clasificador de interrupciones y quedaron en cola («Solicitud en cola. Hay 1 solicitud antes», «Hay 2 solicitudes antes»).
+  - El agente respondió con 6 de las 19 filas y preguntó qué hacer. Cuando el usuario le pidió leer los tres mensajes juntos, contestó que solo le había llegado uno.
+  - Recién el tercer pedido tuvo el texto completo.
+- El usuario aprobó el plan: comentarios, cambios de estado y 10 tickets nuevos.
+  - Se aplicaron el primer comentario y el cambio de grupo.
+  - Todas las mutaciones siguientes fallaron con «La biblioteca supera el límite de comentarios.», también las que no eran comentarios.
+
+**Causa raíz.**
+
+1. **Límite de comentarios.** `MAX_TASK_COMMENTS` (100) tenía dos sentidos:
+   - el store Markdown lo tomaba como promedio por ticket (`MAX_TASK_TICKETS × 100` para toda la biblioteca);
+   - `library_state_from_snapshot` lo comparaba contra el total de comentarios de la biblioteca.
+
+   La biblioteca real tenía exactamente 100 comentarios en 55 tickets, así que el comentario 101 superó el límite.
+2. **Sin rollback.** `PersistentTaskManager::apply_mutation` aplica la mutación en memoria y después arma el snapshot (`library_snapshot`, que valida los límites) y lo guarda.
+   - Solo deshacía el cambio si fallaba `store.commit`. Si fallaba la validación del snapshot, el `?` salía con el cambio aplicado en memoria y sin guardar.
+   - Desde ahí `export_snapshot` fallaba al principio de cada mutación. El manager queda en caché por biblioteca y usuario, así que cualquier escritura fallaba hasta reiniciar Notia o hasta que un cambio en los archivos forzara la recarga.
+   - Mientras tanto, las lecturas mostraban un comentario que no estaba en disco.
+3. **Mensajes partidos.** Telegram corta un texto de más de 4096 caracteres en varios mensajes, cada uno de más de la mitad del límite, y los manda seguidos. El worker trataba cada update como un pedido aparte.
+
+**Solución.**
+
+- **`backend-core/src/task_manager_tools.rs`.**
+  - `MAX_TASK_LIBRARY_COMMENTS` reemplaza a `MAX_TASK_COMMENTS`. Vale `MAX_TASK_TICKETS × 100` = 200 000 y es el total de la biblioteca.
+  - Lo usan la validación del snapshot y el store Markdown (`task_manager_store.rs`), que antes calculaba lo mismo por su cuenta.
+  - No hay límite por ticket. En la práctica rige antes el tope de 8 MiB del snapshot.
+  - `apply_mutation` arma y guarda el snapshot en `commit_applied`. Si cualquiera de los dos pasos falla, vuelve al snapshot previo (`replace_snapshot(before)`) y devuelve el error.
+  - Así, una mutación que supera un límite (por ejemplo, crear el ticket 2001) se rechaza sin bloquear la biblioteca.
+- **`backend-core/src/telegram_bot.rs`.** `may_continue` dice si un mensaje puede ser parte de un texto partido: tiene que medir 2000 unidades UTF-16 o más. Telegram cuenta así, y el valor deja margen por los espacios que se pierden en el corte.
+- **`app/src/telegram_worker.rs`.**
+  - Un texto escrito pasa por `collect_text_part`/`add_text_part`, que guardan por chat las partes pendientes (`PendingText`). Cuenta como texto escrito si no trae adjuntos ni audio y no empieza con `/`.
+  - Una parte que puede seguir espera, y las que llegan mientras tanto se suman en orden.
+  - El texto sale entero cuando llega una parte más corta o cuando pasan 3 s sin partes (`TEXT_CONTINUATION_WINDOW`). Las partes se unen con salto de línea, porque Telegram descarta el espacio o el salto donde cortó.
+  - El texto completo sigue el camino de siempre (`dispatch_text`): `/reanudar`, respuesta a la confirmación o pregunta pendiente, clasificador de interrupciones si el chat tiene un pedido en curso, o cola. Así se clasifica una sola vez y ocupa un solo lugar de la cola.
+  - Un mensaje corto sin texto pendiente sale sin demora, como antes.
+  - Un adjunto, un audio o un comando manda primero el texto pendiente del chat (`flush_text`) para conservar el orden.
+
+**Contratos y compatibilidad.**
+
+- No cambian los DTO, el formato de los tickets ni el archivo de estado del worker. `MAX_TASK_COMMENTS` era solo una constante Rust.
+- Una biblioteca que quedó bloqueada se destraba al reiniciar Notia: el comentario que no se guardó desaparece de memoria.
+
+**Validaciones.**
+
+- `cargo test --offline -p notia-backend-core` → 417 (antes 414). Pruebas nuevas:
+  - `a_library_keeps_saving_past_one_hundred_comments`;
+  - `a_change_the_limits_reject_is_undone_and_later_changes_still_save`;
+  - `only_a_message_long_enough_to_be_a_split_part_may_continue`.
+- `cargo test --offline -p notia-app --features bluetooth` → 435 aprobados + 3 ignorados (antes 434 + 3). Prueba nueva: `a_long_text_split_by_telegram_becomes_one_message`.
+- `cargo check --offline` del workspace: sin errores. Android (`aarch64-linux-android`): sin errores, 59 warnings. Escritorio con tests: 37 warnings. Ninguno nuevo.
+- Frontend: sin cambios.
+- **Pendiente:**
+  - repetir por Telegram, con el modelo real, el pegado del informe y el plan completo, en Windows y en Android;
+  - build Linux (WSL).
+
+## Task Manager: editar y eliminar comentarios desde el asistente (2026-09-28)
+
+**Problema.** El agente de Telegram respondía que no podía editar ni borrar comentarios de los tickets. El dominio solo tenía `AddComment`, así que no existía ninguna herramienta para eso.
+
+**Dominio (`backend-core/src/task_manager_tools.rs`).**
+
+- `TaskMutationDto` suma dos variantes:
+  - `UpdateComment { ticketId, commentId, body }` (kind `update-comment`) reemplaza el texto y conserva autor y fecha;
+  - `DeleteComment { ticketId, commentId }` (kind `delete-comment`).
+- El preview valida el texto con el mismo límite de `AddComment`, exige acceso al tablero del ticket y llama a `editable_comment`. El comentario tiene que existir y pertenecer a ese ticket (si no, `not-found`, con la indicación de leerlo con `read_task_tickets`).
+- **Permiso:** el Owner (`OWNER_LIBRARY_USER_ID`) puede cambiar cualquier comentario; los demás usuarios, solo los suyos (`forbidden`, «Solo el autor del comentario o el Owner pueden cambiarlo.»). Los comentarios heredados sin autor se atribuyen al Owner al leerlos, así que solo él puede cambiarlos.
+- El apply incrementa la revisión del comentario editado y la del ticket, y recalcula la vista previa de la tarjeta. La precondición de revisión es la del ticket, como en `AddComment`.
+
+**Herramientas (`defaults/tool_schemas.json`, `task_manager_tool_input.rs`).**
+
+- `update_task_comment {ticketId, commentId, comment}` y `delete_task_comment {ticketId, commentId}`. El `commentId` sale de `read_task_tickets`, que ya devolvía cada comentario con su id, autor, texto y fecha.
+- Están en `TASK_MUTATION_TOOLS` (18), así que toman la política `TaskWrite`, el área «tareas» del router y confirmación obligatoria. También se agregaron a los contratos de escritura (`task_manager_mutation_tool_contracts`) y a las herramientas soportadas de `backend_runtime.rs`.
+- **Guía (`prompt_guidance.rs`):** leer el ticket, tomar el `commentId` exacto, preguntar si más de un comentario puede ser el pedido y nunca cambiar un comentario reemplazando el contenido del ticket ni editando su archivo.
+- **Confirmación (`task_mutation_summary`):** cita el comentario entero. Recibe los comentarios del snapshot del usuario: `backend_tool_groups` pasó a ser `backend_tool_snapshot`. Ejemplos:
+  - «Cambiar el comentario «Doris finalizó los 3, listos para prueba» del ticket t-1 por «Doris finalizó 2 de los 3».»
+  - «Eliminar el comentario «…» del ticket t-1.»
+
+**Orden de los comentarios en el archivo (`task_manager_store.rs`).**
+
+- **Error previo:** `render_ticket` escribía los comentarios en el orden del snapshot, que sale de un `BTreeMap` por id, así que cada commit que reescribía un ticket los dejaba desordenados. En la biblioteca real, 16 de los 19 tickets con dos o más comentarios estaban fuera de orden cronológico.
+- `TaskCommentDto::written_order` (fecha de creación, después id) es el orden único que usan el archivo, la lectura (`read_ticket`) y la vista previa de la tarjeta (`ticket_detail_preview`).
+- El encabezado tiene precisión de minutos. Al leer, `split_comments` suma la posición en milisegundos a la hora del encabezado, así que dos comentarios del mismo minuto conservan el orden del archivo. El encabezado que se vuelve a escribir no cambia.
+- Los tickets ya desordenados se reordenan por fecha la próxima vez que un commit los reescribe. En el caso de comentarios del mismo minuto, se conserva el orden que ya tienen.
+
+**Contratos y compatibilidad.**
+
+- `TaskMutationDto` gana dos variantes serializadas; no hay mutaciones en TypeScript que las espejen. No cambia el formato de los tickets.
+- Los ids de los comentarios leídos de disco se derivan del ticket, la posición, el encabezado y el texto. Por eso un comentario editado o los que siguen a uno eliminado cambian de id la próxima vez que la biblioteca se recarga desde disco.
+  - Dentro de la sesión el manager conserva los ids en memoria.
+  - Si la biblioteca se recarga entre la lectura y la confirmación, la mutación falla con `not-found` y el agente vuelve a leer el ticket.
+- La edición manual de comentarios en el editor de notas sigue disponible como antes.
+
+**Validaciones.**
+
+- `cargo test --offline -p notia-backend-core` → 419 (antes 417). Pruebas nuevas:
+  - `a_comment_is_edited_and_deleted_by_its_author_or_the_owner`: permiso de autor y Owner, comentario de otro ticket, autor y fecha conservados, vista previa recalculada;
+  - `comment_edits_and_deletions_name_an_existing_comment`: mapeo y campos obligatorios.
+  - La prueba de la guía de Telegram también cubre las reglas nuevas.
+- `cargo test --offline -p notia-app --features bluetooth` → 438 aprobados + 3 ignorados (antes 435 + 3). Pruebas nuevas:
+  - `an_edited_or_deleted_comment_is_rewritten_in_the_ticket_file`: store Markdown real sobre una carpeta temporal;
+  - `comments_are_written_in_the_order_they_were_written`;
+  - `comment_confirmations_quote_the_comment_whole`.
+  - `comments_use_the_readable_heading_and_round_trip` ahora compara el encabezado reescrito en lugar de los milisegundos.
+- `cargo check --offline` del workspace: sin errores. Android (`aarch64-linux-android`): sin errores, 59 warnings. Escritorio con tests: 37 warnings. Ninguno nuevo.
+- Frontend: sin cambios.
+- **Pendiente:**
+  - pedirle al agente por Telegram, con el modelo real, que corrija y que borre un comentario, en Windows y en Android;
+  - build Linux (WSL).
+
+## Acciones IA: tablero de tareas programadas de la IA (2026-09-28)
+
+Sigue el canvas de diseño «Acciones IA» (tableros «Acciones IA — Dashboard» y «Nueva acción»). El panel se abre desde el rail, debajo de Rutina, con el ícono del cuervo Munin (`src/components/notia/icons/MuninIcon.ts`, hecho con `createLucideIcon` para respetar la grilla y el trazo del rail).
+
+### Reglas del usuario
+
+- Toda la lógica vive en Rust; React solo presenta y dispara comandos.
+- La IA responde siempre por Telegram: no hay selector de canal.
+- Las acciones son solo del Owner. Cada ejecución usa reglas, memoria, pensamientos y herramientas.
+- La revisión de cada hora del agente autónomo pasó a ser una acción por defecto del panel.
+- El scheduler corre en una sola instancia por biblioteca, con un lease guardado en el core.
+
+### Núcleo (`backend-core/src/ai_actions/`)
+
+- **`mod.rs`: modelo y validación.**
+  - Tipos: `AiAction`, `AiSchedule`, `AiActionRun` y `AiActionInput`.
+    - `AiSchedule` es `Once { atMs }` o `Recurring { rule }`, con `Recurrence { every, unit, weekdays (0 = lunes), from?, to?, anchorDate }`.
+    - `AiActionRun` guarda `status` (pending, running, success, failed, skipped), `trigger` (scheduled, manual, retry, test), `retryOf` y `runner`.
+  - `validate_input` devuelve todos los errores por campo:
+    - nombre de 1 a 80 caracteres y prompt de 1 a 4000;
+    - fecha y hora futuras (una edición puede conservar el momento que ya tenía);
+    - N ≥ 1, y ≥ 5 en minutos; máximos: 1440 min, 24 h, 365 días, 52 semanas;
+    - al menos un día; `desde` < `hasta`;
+    - en días o semanas, `desde` es obligatorio y `hasta` se descarta.
+  - `active_since_ms`: las ocurrencias anteriores no cuentan. Se fija al crear, al cambiar el horario y al reactivar, así una acción reactivada no recupera lo perdido.
+  - Zona: `library_time_zone` usa la zona IANA del lugar de Clima (`weather::configured_location`), si no la del sistema y si no UTC. Cada acción guarda su zona; los instantes son milisegundos UTC. `jiff` 0.2 (ya estaba en el lockfile) resuelve las zonas: tzdb embebida en Windows y la del sistema en Android y Linux.
+- **`schedule.rs`: ocurrencias.**
+  - Minutos y horas: desde `desde` (o 00:00), sumando N, hasta `hasta` (o 23:59), en los días elegidos. Ejemplo: cada 3 h de 09 a 21, L–V → 09, 12, 15, 18, 21.
+  - Días: cada N días desde `anchorDate`, a la hora `desde`.
+  - Semanas: cada N semanas desde la semana (lunes) de `anchorDate`, en los días elegidos.
+  - Una hora que no existe por cambio de horario se corre hacia adelante (`compatible`).
+- **`labels.rs`: textos es-AR.** «Hoy · 17:00», «Mañana · 10:00», «Jue 1 oct · 09:00», «Todos los días · 08:00», «Cada 3 h · 09 a 21 h», «Lun a Vie · 16:00», «Semanal · Dom 20:00», el resumen del formulario («de lunes a viernes», «los fines de semana», «los lunes, miércoles y viernes») y «en 48 min / en 1 h 5 min».
+- **`dashboard.rs`: el tablero entero.**
+  - Estado de cada tarjeta, por prioridad:
+    1. Pausada.
+    2. Falló · HH:MM, con `retryRunId`.
+    3. En curso · HH:MM (agregado: una ejecución esperando o corriendo).
+    4. Próxima · HH:MM.
+    5. Ejecutada, Enviado o Reintentada · HH:MM (hora de fin).
+    6. Pendiente · HH:MM.
+    7. Programada, o Programado en recordatorios.
+  - Métricas, contadores por tipo (filtrados por la búsqueda), columnas filtradas y ordenadas (las de hoy primero, por hora).
+  - Las acciones de una vez que vencieron antes de hoy no se muestran.
+  - Línea «Hoy»: todas las ocurrencias del día (las de acciones pausadas tachadas) con el marcador AHORA y notas como «Ejecutada 09:01», «2 de 5», el error, «Omitida» o «en 48 min».
+  - Una ocurrencia pasada sin ejecución se muestra omitida después de 2 min.
+  - «Próxima ejecución» es siempre el primer ítem futuro activo de la línea.
+  - `run_history` arma el historial de una acción (hasta 50, lo más nuevo primero).
+- **`scheduler.rs`: decisiones del reloj.**
+  - Una vez, vencida hace menos de 1 h: corre al arrancar. Vencida hace más: `Skipped`.
+  - Recurrente: corre la ocurrencia de los últimos 2 min. Las perdidas de hoy quedan `Skipped` («Notia no estaba abierta a esa hora»); las de días anteriores no se registran.
+  - Superposición: si la acción tiene una ejecución esperando o corriendo, la ocurrencia nueva queda `Skipped`.
+  - Lease: `claim_lease` libera un lease vencido; su dueño lo renueva, y un tipo de instancia de mayor prioridad (server > desktop > android) lo toma. Dura 90 s y se escribe solo cuando falta menos de la mitad (`lease_needs_renewal`), así un reloj sin trabajo no escribe; en Android cada escritura copia la base por SAF.
+  - `interrupted_runs`: ejecuciones de esta instancia que ya no tiene en mano (reinicio), o de otra instancia con más de 6 h, pasan a fallidas con «Se interrumpió…».
+- **`prompts.rs`.**
+  - `action_guidance` es la sección del system prompt: por qué despertó, que use reglas, memoria, pensamientos y herramientas, y que la respuesta es el mensaje de Telegram. En recordatorios pide un aviso breve y accionable. En las demás permite `[SIN_MENSAJE]` cuando el prompt pide avisar solo si hay algo, y pide `add_agent_thought`.
+  - `action_request` es el pedido con el prompt tal cual.
+  - `HOURLY_REVIEW_PROMPT`: la revisión horaria como prompt de acción (propone, no cambia; usa `[SIN_MENSAJE]`).
+  - `sent_thought`: el pensamiento que Rust guarda por cada mensaje enviado.
+
+### App (`app/src/ai_actions.rs`)
+
+- **Esquema 28** (`database.rs`), en la base de la biblioteca:
+  - `ai_actions`;
+  - `ai_action_runs`, sin clave foránea: el historial sobrevive a la acción; índice único `(action_id, scheduled_for) WHERE trigger='scheduled'`, así una ocurrencia tiene una sola ejecución programada aunque la intenten dos instancias;
+  - `ai_action_meta`: lease, último tick y marca de la acción por defecto.
+  - Las conexiones usan `busy_timeout` de 5 s. Cada escritura se sincroniza por SAF en Android (`sync_user_data_connection`).
+- **Comandos** (registro único, también por el servidor y reenviados al host desde un cliente). Todos exigen `actorLibraryUserId = user-owner`.
+  - `ai_actions_dashboard(context, filter, query)`;
+  - `ai_action_preview(context, actionId?, input)`: errores, resumen, «cuándo» y las 3 próximas;
+  - `ai_action_get`, `ai_action_create`, `ai_action_update`, `ai_action_set_enabled`, `ai_action_delete`;
+  - `ai_action_runs(context, actionId)`, `ai_action_retry(context, runId)`, `ai_action_test(context, input)`.
+- **Errores** `AiActionsError { code: validation | not-found | forbidden | unavailable | storage, message, fields }`.
+- **Eventos**: `notia://ai-action-changed` y `notia://ai-run-updated`, con el id de la biblioteca.
+- **Acción por defecto**: `ensure_defaults` crea una vez por biblioteca «Revisión de cada hora» (cada 1 h, todos los días, sin ventana, `builtin = hourly-review`), activa si `telegram.autonomousAgent` estaba prendido. Corre al abrir el panel y en el reloj. Si el usuario la elimina, no se vuelve a crear.
+- **Reloj** (startup hook `ai-actions`, tick cada 15 s, el primero a los 20 s):
+  - Solo corre donde corre el bot de Telegram de la biblioteca seleccionada, y nunca en un cliente.
+  - Lee sin escribir. Si hay algo que hacer, en una transacción: vuelve a verificar el lease, registra lo planificado, marca las interrumpidas y renueva el lease. Después entrega las ejecuciones al worker de Telegram.
+  - El id de la instancia se guarda en `app_data/ai-actions/instance.json`. La ventana y el headless de una misma carpeta de datos nunca corren a la vez (`DataDirLock`).
+  - El servidor se marca con `run_as_server()` antes de sus hooks.
+  - Las ejecuciones de más de 90 días se borran.
+- **Reintento y prueba**: ambos exigen el bot activo en el equipo (si no, `unavailable`).
+  - Reintentar crea un run `retry` con el mismo `scheduled_for` y el prompt actual.
+  - Probar crea un run `test` sin acción, que no sale en la línea «Hoy», y su respuesta lleva el prefijo «[Prueba]».
+
+### Ejecución (`telegram_worker.rs`)
+
+- `enqueue_action` pone un `ActionJob` en la cola del chat del Owner. No se persiste: una que quedó en cola al reiniciar termina interrumpida.
+- `run_action`:
+  - arma el turno con `begin_run` (Owner, `Persistent`, canal Telegram, scope library, con ruteo de herramientas) y `AgentRequest.scheduled_action`;
+  - las confirmaciones y preguntas se piden por Telegram como en cualquier pedido;
+  - el progreso no se muestra;
+  - al terminar manda el mensaje (`send_markdown_checked`: si falla, «No se pudo enviar por Telegram.»), lo guarda en el historial del chat y como pensamiento, y avisa a `ai_actions::finish_run`.
+- Un mensaje del Owner durante la ejecución pasa por el clasificador de interrupciones, como en un pedido normal.
+- `backend_runtime`: `compose_request_system_prompt` agrega `action_guidance`. Un pedido con `scheduled_action` que no sea del Owner, persistente y por Telegram se rechaza con `forbidden`. La reflexión posterior al turno también corre.
+
+### Agente autónomo
+
+`app/src/agent_autonomy.rs` ya no tiene la revisión horaria: solo recrea `thoughts.md` y mira los mails nuevos. Se quitaron `hourly_trigger`, `is_review_due`, `REVIEW_INTERVAL_MS` y `AutonomousKind::HourlyReview`. El estado viejo con `lastReviewMs` se sigue leyendo (el campo se ignora). El texto del switch en Configuraciones → Telegram ahora habla solo de mails y remite a Acciones IA.
+
+### Interfaz (`src/modules/ai-actions/`)
+
+- `aiActionsService` (comandos y eventos), `useAiActionsDashboard` y los componentes:
+  - `useAiActionsDashboard` recarga con cada evento, cada minuto (los «en N min» los recalcula Rust) y al recuperar el foco;
+  - `AiActionsDashboardView`, `AiActionCardView`, `AiActionsTimeline` y `AiActionFormPanel`.
+- Pestaña especial `aiActions` / vista `ai-actions`.
+- **Tarjeta**: el nombre es el botón que abre la edición y cubre la tarjeta. El switch (`role="switch"`, «Pausar: …» / «Activar: …») y «Reintentar» quedan por encima.
+- **Formulario**: los errores los calcula Rust mientras se escribe (`ai_action_preview`) y se muestran al tocar o dejar cada campo. «Guardar» queda deshabilitado con una línea que explica por qué. En días o semanas, «Desde» pasa a llamarse «Hora de ejecución» y «Hasta» no se muestra.
+- **Estilos** (`aiActions.css`): tokens de la paleta de Notia en oscuro y claro, controles de 44 px, container queries:
+  - ≤ 1180 px: la línea «Hoy» pasa abajo;
+  - ≤ 900 px: columnas apiladas y métricas 2×2;
+  - ≤ 480 px: métricas compactas.
+
+### Desvíos del canvas
+
+- Fuentes: Space Grotesk y Public Sans no se empaquetan (como en ColdPass y Rutina), así que se ven con Segoe UI.
+- Se agregaron el estado «En curso», «Omitida», el historial, «Eliminar» y los estados de carga, error y vacío, que el canvas no dibuja.
+- La bajada de columna que no entra se corta con «…».
+- El resumen del formulario usa el texto del pedido (sin «Vas a ver cada ejecución en la línea de Hoy») y lista las próximas 3 ocurrencias.
+
+### Validaciones
+
+- `cargo test --offline -p notia-backend-core` → 432 (antes 419; −1 prueba de la revisión horaria). 14 pruebas nuevas en `ai_actions::tests`:
+  - validación de una vez y recurrente;
+  - cada 3 h de 09 a 21 L–V;
+  - días y semanas;
+  - textos;
+  - prioridad de estados, reintento, próxima = primer ítem futuro;
+  - filtro y búsqueda;
+  - ocurrencias antes de crear la acción;
+  - vencidas y superpuestas;
+  - lease y renovación;
+  - interrumpidas;
+  - historial;
+  - acción por defecto;
+  - prompts y silencio.
+- `cargo test --offline -p notia-app --features bluetooth` → 441 aprobados + 3 ignorados (antes 438): ida y vuelta de acciones y ejecuciones con el índice único, vista previa, metadatos y estado viejo del agente autónomo.
+- `cargo check --offline` del workspace: sin errores. Android (`aarch64-linux-android`): sin errores, 59 warnings. Escritorio con tests: 36 warnings. Ninguno nuevo.
+- `npx tsc --noEmit -p tsconfig.app.json` y ESLint de lo tocado: sin errores.
+- `npx vitest run` → 381 (89 archivos). Suma `AiActionsDashboardView.test.tsx` (4): métricas y línea, filtro, búsqueda, switch y reintento, creación con vista previa, y «Guardar» deshabilitado con errores.
+- **Visual**: harness temporal con Vite y Chrome headless con los datos del canvas, a 1376 px (oscuro y claro), con el filtro Recurrentes, el formulario, 760 px y 390 px. Corrigió: columnas colapsadas al apilarse, bajada de columna en dos líneas, contorno de foco del panel y «en 48 min» partido.
+- **Pendiente:**
+  - probar con Telegram y el modelo real una acción de cada tipo, «Probar ahora», un reintento y la revisión horaria migrada;
+  - servidor headless y app de escritorio abiertos a la vez con la misma biblioteca;
+  - Android real (SAF, suspensión);
+  - build Linux (WSL).
+
+### Herramientas de la IA para administrar sus acciones (2026-09-28)
+
+**Pedido.** La IA tiene que poder cambiar cualquier parámetro del panel desde todos los canales, porque el panel es suyo: lo administra a pedido del Owner.
+
+**Herramientas** (`backend-core/src/ai_actions/tools.rs`, esquemas en `defaults/tool_schemas.json`):
+
+| Herramienta | Qué hace |
+|---|---|
+| `list_ai_actions` | Todas las acciones con id, tipo, cuándo, si está activa, el estado de su tarjeta (o «Ya pasó»), `failedRunId`, próxima ejecución y resumen del día. |
+| `get_ai_action` | Una acción entera: prompt, horario campo por campo, próximas 3 y últimas 10 ejecuciones. |
+| `create_ai_action` | `kind`, `name`, `prompt`, `date`, `time`, `every`, `unit`, `weekdays`, `from`, `to`, `enabled`. |
+| `update_ai_action` | `action` más cualquier campo; lo omitido queda igual, y una cadena vacía borra `from`, `to`, `date` o `time`. |
+| `set_ai_action_enabled` | Pausar o activar. |
+| `delete_ai_action` | Eliminar; el historial queda. |
+| `run_ai_action_now` | Ejecución `manual` fuera de horario, sin tocar el horario; entra en la cola de Telegram detrás del turno actual. |
+| `retry_ai_action_run` | Reintentar una ejecución fallida. |
+
+**Detalle de los argumentos:**
+- `action` acepta el id o el nombre exacto, sin distinguir mayúsculas ni acentos. Si hay varios con ese nombre, el error los lista (`resolve_action`).
+- `kind`, `unit` y `weekdays` aceptan también nombres en castellano (`recurrente`, `horas`, `lunes`, `vie`).
+- Un recurrente sin días corre todos los días, y sin unidad, en horas.
+
+**Mismas reglas que el panel.** La validación es `validate_input`. En `app/src/ai_actions.rs`, los comandos y las herramientas usan las mismas funciones: `create_action`, `update_action` (con `edited`: un horario nuevo o una reactivación arrancan ahora), `set_action_enabled`, `delete_action`, `retry_run` y `run_now`. Cada cambio emite `notia://ai-action-changed`, así el panel abierto se recarga.
+
+**Confirmación.**
+- Las seis de escritura piden confirmación. `preview_tool` lee y valida la llamada como la ejecución, sin guardar.
+- Un error vuelve al modelo antes de preguntarle al Owner. Los errores de campos llegan juntos en un mensaje (`field_errors_message`).
+- Ejemplos: «Crear la acción recurrente «Gastos» · Cada 3 h · 09 a 21 h · Lun a Vie. Prompt: …», «Cambiar «Revisión de cada hora»: horario «Cada hora» → «Cada 2 h»; pausarla.».
+
+**Acceso.**
+- Políticas `AiActionRead` / `AiActionWrite`, solo para el Owner (`authorize_tool_call`).
+- Scopes Library (chat principal, chat lateral y Telegram), Finance, TaskManager, Document y Graph. La publicación de Task Manager nunca las ofrece.
+- El executor vuelve a exigir Owner (`ai_actions_database`).
+- Área nueva del router, `acciones`, que también entra en el respaldo por palabras. Etiquetas de progreso en Telegram y en el chat de la app.
+
+**Guía** (`prompt_guidance::ai_action_tools`, en todos los scopes que tienen las herramientas):
+- «recordame…», «todos los días…» o «cada 3 horas…» son Acciones IA, no notas, eventos ni tickets;
+- el prompt se escribe completo para una ejecución futura sin esta charla;
+- se busca con `list_ai_actions` antes de cambiar y se pregunta si hay ambigüedad;
+- la fecha de hoy va en el texto.
+
+**Validaciones.**
+- `cargo test --offline -p notia-backend-core` → 437 (antes 432). Pruebas nuevas:
+  - resolución por id o nombre y ambigüedad;
+  - argumentos sobre el formulario guardado;
+  - textos de confirmación;
+  - acceso por scope, solo Owner, fuera de la publicación, área `acciones`, dentro del límite de herramientas;
+  - guía en cada chat.
+- `cargo test --offline -p notia-app --features bluetooth` → 442 aprobados + 3 ignorados (antes 441): `an_edit_starts_a_new_schedule_and_a_reactivation_now`.
+- `cargo check` de escritorio y Android sin errores ni warnings nuevos (36 y 59). `tsc` sin errores; `vitest` → 381.
+- **Pendiente:** pedirle a la IA, con el modelo real, que cree, cambie, pause, borre, ejecute y reintente acciones desde el chat de la app y desde Telegram.

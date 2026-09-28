@@ -9,6 +9,7 @@ pub mod agent;
 pub mod agent_autonomy;
 pub mod agent_knowledge;
 pub mod agent_workspace;
+pub mod ai_actions;
 pub mod ai_settings;
 pub mod audio_resample;
 pub mod catalog;
@@ -187,8 +188,8 @@ pub use task_manager_tools::{
     TaskMutationPreviewDto, TaskMutationReceiptDto, TaskMutationRequestDto, TaskPriority,
     TaskState, TaskTicketDto, TaskTicketListRequest, TaskTicketReadDto, TaskTicketReadRequest,
     TaskTicketSummaryDto, TaskUpdateFieldsDto, MAX_TASK_BOARDS, MAX_TASK_BULK_TICKETS,
-    MAX_TASK_COMMENTS, MAX_TASK_DATE_CHARS, MAX_TASK_GROUPS, MAX_TASK_HOURS, MAX_TASK_LIBRARIES,
-    MAX_TASK_ORDER, MAX_TASK_REFERENCE_CHARS, MAX_TASK_RELATED_REFERENCES, MAX_TASK_RESULTS,
+    MAX_TASK_DATE_CHARS, MAX_TASK_GROUPS, MAX_TASK_HOURS, MAX_TASK_LIBRARIES,
+    MAX_TASK_LIBRARY_COMMENTS, MAX_TASK_ORDER, MAX_TASK_REFERENCE_CHARS, MAX_TASK_RELATED_REFERENCES, MAX_TASK_RESULTS,
     MAX_TASK_SNAPSHOT_BYTES, MAX_TASK_TEXT_CHARS, MAX_TASK_TICKETS, MAX_TASK_USERS,
     TASK_MANAGER_SNAPSHOT_READ_VERSION, TASK_MANAGER_SNAPSHOT_VERSION,
 };
