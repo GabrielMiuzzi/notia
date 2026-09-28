@@ -1,6 +1,6 @@
 //! ColdPass vault content: the decrypted Markdown table of credentials, its
-//! metadata block, edits with password history and CSV import. Encryption and
-//! storage live in the platform adapter.
+//! metadata block, edits with password history, the health of each password
+//! and CSV import. Encryption and storage live in the platform adapter.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,47 @@ const CSV_COLUMNS: [&str; 6] = ["name", "website", "username", "secondary_userna
 pub const MAX_COLDPASS_ENTRIES: usize = 10_000;
 const MAX_FIELD_CHARS: usize = 10_000;
 const MAX_PASSWORD_HISTORY: usize = 50;
+/// A password shorter than this is weak whatever it contains.
+const MIN_STRONG_PASSWORD_CHARS: usize = 10;
+/// Bits of a brute-force search below which a password is weak.
+const MIN_STRONG_PASSWORD_BITS: f64 = 50.0;
+/// Fewer distinct characters than this make a password weak («aaaaaaaaaa1»).
+const MIN_DISTINCT_PASSWORD_CHARS: usize = 5;
+/// Words of the name, site or user shorter than this are not searched in it.
+const MIN_PERSONAL_WORD_CHARS: usize = 4;
+/// A password unchanged for longer than a year should be rotated.
+const ROTATE_AFTER_MS: i64 = 365 * 24 * 60 * 60 * 1000;
+
+/// A replaced password and when it was replaced. Vaults written before the
+/// dates were kept store plain strings, read here without a date.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", from = "StoredPasswordRecord")]
+pub struct ColdPassPasswordRecord {
+    pub password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredPasswordRecord {
+    Undated(String),
+    #[serde(rename_all = "camelCase")]
+    Dated {
+        password: String,
+        #[serde(default)]
+        replaced_at: Option<i64>,
+    },
+}
+
+impl From<StoredPasswordRecord> for ColdPassPasswordRecord {
+    fn from(stored: StoredPasswordRecord) -> Self {
+        match stored {
+            StoredPasswordRecord::Undated(password) => Self { password, replaced_at: None },
+            StoredPasswordRecord::Dated { password, replaced_at } => Self { password, replaced_at },
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,8 +72,81 @@ pub struct ColdPassEntryDto {
     pub password: String,
     #[serde(default)]
     pub notes: String,
+    /// Newest first.
     #[serde(default)]
-    pub password_history: Vec<String>,
+    pub password_history: Vec<ColdPassPasswordRecord>,
+    /// When the current password was set (Unix ms); unknown for credentials
+    /// saved before the dates were kept or imported from a CSV.
+    #[serde(default)]
+    pub password_changed_at: Option<i64>,
+}
+
+/// How safe the current password looks: `Weak` (short, guessable or made of
+/// the credential's own name, site or user) wins over `Old` (unchanged for
+/// more than a year).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ColdPassHealth {
+    Strong,
+    Weak,
+    Old,
+}
+
+/// A credential as the vault view shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColdPassEntryView {
+    #[serde(flatten)]
+    pub entry: ColdPassEntryDto,
+    pub health: ColdPassHealth,
+}
+
+pub fn coldpass_entry_views(entries: &[ColdPassEntryDto], now_ms: i64) -> Vec<ColdPassEntryView> {
+    entries
+        .iter()
+        .map(|entry| ColdPassEntryView { entry: entry.clone(), health: password_health(entry, now_ms) })
+        .collect()
+}
+
+pub fn password_health(entry: &ColdPassEntryDto, now_ms: i64) -> ColdPassHealth {
+    if is_weak_password(&entry.password, &[&entry.name, &entry.website, &entry.username]) {
+        ColdPassHealth::Weak
+    } else if entry.password_changed_at.is_some_and(|changed| now_ms.saturating_sub(changed) > ROTATE_AFTER_MS) {
+        ColdPassHealth::Old
+    } else {
+        ColdPassHealth::Strong
+    }
+}
+
+fn is_weak_password(password: &str, personal: &[&str]) -> bool {
+    let characters = password.chars().collect::<Vec<_>>();
+    if characters.len() < MIN_STRONG_PASSWORD_CHARS {
+        return true;
+    }
+    let mut distinct = characters.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.len() < MIN_DISTINCT_PASSWORD_CHARS {
+        return true;
+    }
+    let pool = [
+        (characters.iter().any(char::is_ascii_lowercase), 26),
+        (characters.iter().any(char::is_ascii_uppercase), 26),
+        (characters.iter().any(char::is_ascii_digit), 10),
+        (characters.iter().any(|character| !character.is_ascii_alphanumeric()), 33),
+    ]
+    .into_iter()
+    .filter_map(|(present, size)| present.then_some(size))
+    .sum::<u32>();
+    if characters.len() as f64 * f64::from(pool).log2() < MIN_STRONG_PASSWORD_BITS {
+        return true;
+    }
+    let lower = password.to_lowercase();
+    personal
+        .iter()
+        .flat_map(|value| value.split(|character: char| !character.is_alphanumeric()))
+        .map(str::to_lowercase)
+        .any(|word| word.chars().count() >= MIN_PERSONAL_WORD_CHARS && lower.contains(&word))
 }
 
 impl ColdPassEntryDto {
@@ -63,7 +177,9 @@ impl ColdPassEntryDto {
 struct MetadataEntry {
     id: String,
     #[serde(default)]
-    password_history: Vec<String>,
+    password_history: Vec<ColdPassPasswordRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password_changed_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -163,6 +279,7 @@ pub fn parse_coldpass_markdown(markdown: &str, new_id: &mut dyn FnMut() -> Strin
                 password: cell(4),
                 notes: cell(5),
                 password_history: stored.map(|entry| entry.password_history.clone()).unwrap_or_default(),
+                password_changed_at: stored.and_then(|entry| entry.password_changed_at),
             }
         })
         .collect()
@@ -187,6 +304,7 @@ pub fn stringify_coldpass_markdown(entries: &[ColdPassEntryDto]) -> Result<Strin
             .map(|entry| MetadataEntry {
                 id: entry.id.clone(),
                 password_history: entry.password_history.clone(),
+                password_changed_at: entry.password_changed_at,
             })
             .collect(),
     };
@@ -195,13 +313,16 @@ pub fn stringify_coldpass_markdown(entries: &[ColdPassEntryDto]) -> Result<Strin
     Ok(format!("{HEADER}\n{}\n\n{METADATA_START}\n{metadata}\n{METADATA_END}", rows.join("\n")))
 }
 
-/// Adds a credential or replaces the one with `editing_id`. Editing keeps the
-/// id and moves a changed password to the front of the history.
+/// Adds a credential or replaces the one with `editing_id`. The history and
+/// the change date come from the vault, never from the form: editing keeps
+/// the id and, when the password changes, moves the old one to the front of
+/// the history dated `now_ms`.
 pub fn upsert_coldpass_entry(
     entries: &mut Vec<ColdPassEntryDto>,
     mut entry: ColdPassEntryDto,
     editing_id: Option<&str>,
     new_id: &mut dyn FnMut() -> String,
+    now_ms: i64,
 ) -> Result<(), BackendError> {
     entry.validate()?;
     // The form saves only named credentials; imported rows may lack a name.
@@ -215,12 +336,18 @@ pub fn upsert_coldpass_entry(
                 .find(|candidate| candidate.id == editing_id)
                 .ok_or_else(|| BackendError::invalid_input("La credencial ya no existe."))?;
             let mut history = current.password_history.clone();
-            if !current.password.is_empty() && current.password != entry.password {
-                history.insert(0, current.password.clone());
+            let changed = current.password != entry.password;
+            if changed && !current.password.is_empty() {
+                history.insert(0, ColdPassPasswordRecord { password: current.password.clone(), replaced_at: Some(now_ms) });
             }
             history.truncate(MAX_PASSWORD_HISTORY);
             entry.id = current.id.clone();
             entry.password_history = history;
+            entry.password_changed_at = if changed {
+                (!entry.password.is_empty()).then_some(now_ms)
+            } else {
+                current.password_changed_at
+            };
             *current = entry;
         }
         None => {
@@ -228,7 +355,8 @@ pub fn upsert_coldpass_entry(
                 return Err(BackendError::invalid_input("El vault alcanzó el máximo de credenciales."));
             }
             entry.id = new_id();
-            entry.password_history.truncate(MAX_PASSWORD_HISTORY);
+            entry.password_history = Vec::new();
+            entry.password_changed_at = (!entry.password.is_empty()).then_some(now_ms);
             entries.push(entry);
         }
     }
@@ -306,6 +434,7 @@ pub fn parse_coldpass_csv(content: &str, new_id: &mut dyn FnMut() -> String) -> 
             password: cell(4),
             notes: cell(5),
             password_history: Vec::new(),
+            password_changed_at: None,
         };
         if entry.fields().iter().all(|value| value.trim().is_empty()) {
             skipped += 1;
@@ -381,29 +510,79 @@ mod tests {
             password: password.into(),
             notes: "linea 1\nlinea 2".into(),
             password_history: Vec::new(),
+            password_changed_at: None,
         }
     }
+
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
     #[test]
     fn round_trips_the_vault_markdown_with_escapes_and_metadata() {
         let mut new_id = ids();
         let mut entries = Vec::new();
-        upsert_coldpass_entry(&mut entries, entry("Banco", "uno"), None, &mut new_id).expect("add");
+        upsert_coldpass_entry(&mut entries, entry("Banco", "uno"), None, &mut new_id, 1_000).expect("add");
+        let id = entries[0].id.clone();
+        upsert_coldpass_entry(&mut entries, entry("Banco", "dos"), Some(&id), &mut new_id, 2_000).expect("edit");
         let markdown = stringify_coldpass_markdown(&entries).expect("stringify");
         let parsed = parse_coldpass_markdown(&markdown, &mut ids());
         assert_eq!(parsed, entries);
     }
 
     #[test]
-    fn editing_moves_a_changed_password_to_the_history() {
+    fn editing_moves_a_changed_password_to_the_history_with_its_date() {
         let mut new_id = ids();
         let mut entries = Vec::new();
-        upsert_coldpass_entry(&mut entries, entry("Banco", "uno"), None, &mut new_id).expect("add");
+        let mut forged = entry("Banco", "uno");
+        forged.password_history = vec![ColdPassPasswordRecord { password: "inventada".into(), replaced_at: None }];
+        forged.password_changed_at = Some(5);
+        upsert_coldpass_entry(&mut entries, forged, None, &mut new_id, 1_000).expect("add");
+        assert!(entries[0].password_history.is_empty(), "a new credential starts without history");
+        assert_eq!(entries[0].password_changed_at, Some(1_000));
         let id = entries[0].id.clone();
-        upsert_coldpass_entry(&mut entries, entry("Banco", "dos"), Some(&id), &mut new_id).expect("edit");
+        upsert_coldpass_entry(&mut entries, entry("Banco", "uno"), Some(&id), &mut new_id, 1_500).expect("same password");
+        assert_eq!(entries[0].password_changed_at, Some(1_000), "an edit that keeps the password keeps its date");
+        upsert_coldpass_entry(&mut entries, entry("Banco", "dos"), Some(&id), &mut new_id, 2_000).expect("edit");
         assert_eq!(entries[0].id, id);
-        assert_eq!(entries[0].password_history, vec!["uno".to_string()]);
-        assert!(upsert_coldpass_entry(&mut entries, entry("", ""), None, &mut new_id).is_err());
+        assert_eq!(entries[0].password_history, vec![ColdPassPasswordRecord { password: "uno".into(), replaced_at: Some(2_000) }]);
+        assert_eq!(entries[0].password_changed_at, Some(2_000));
+        assert!(upsert_coldpass_entry(&mut entries, entry("", ""), None, &mut new_id, 3_000).is_err());
+    }
+
+    #[test]
+    fn a_vault_from_before_the_dates_reads_its_history_without_them() {
+        let markdown = format!(
+            "{HEADER}\n| Banco | b.com | ana |  | dos |  |\n\n{METADATA_START}\n{{\"entries\":[{{\"id\":\"a\",\"passwordHistory\":[\"uno\"]}}]}}\n{METADATA_END}"
+        );
+        let parsed = parse_coldpass_markdown(&markdown, &mut ids());
+        assert_eq!(parsed[0].password_history, vec![ColdPassPasswordRecord { password: "uno".into(), replaced_at: None }]);
+        assert_eq!(parsed[0].password_changed_at, None);
+    }
+
+    #[test]
+    fn health_flags_weak_passwords_before_old_ones() {
+        let now = 800 * DAY_MS;
+        let with = |name: &str, password: &str, changed_days_ago: Option<i64>| ColdPassEntryDto {
+            name: name.into(),
+            website: "mercadopago.com.ar".into(),
+            username: "gabmiuzzi".into(),
+            password_changed_at: changed_days_ago.map(|days| now - days * DAY_MS),
+            ..entry(name, password)
+        };
+        assert_eq!(password_health(&with("GitHub", "r9$Lk2@pWz7!eN", Some(30)), now), ColdPassHealth::Strong);
+        assert_eq!(password_health(&with("AWS", "Nube!2025deploy", Some(420)), now), ColdPassHealth::Old);
+        assert_eq!(password_health(&with("Router", "Fibra#Casa22", None), now), ColdPassHealth::Strong, "no date is never old");
+        // Weak wins over old.
+        assert_eq!(password_health(&with("Mercado Pago", "mercado123", Some(1_000)), now), ColdPassHealth::Weak);
+        assert_eq!(password_health(&with("Banco", "Ab1!Ab1!", Some(1)), now), ColdPassHealth::Weak, "short");
+        assert_eq!(password_health(&with("Banco", "aaaaaaaaaaaa1", Some(1)), now), ColdPassHealth::Weak, "repeated");
+        assert_eq!(password_health(&with("Banco", "zxcvbnmqwe", Some(1)), now), ColdPassHealth::Weak, "ten lowercase letters");
+        assert_eq!(password_health(&with("Banco", "Gabmiuzzi#2026x", Some(1)), now), ColdPassHealth::Weak, "the user name");
+        assert_eq!(password_health(&with("Banco", "", None), now), ColdPassHealth::Weak);
+        let views = coldpass_entry_views(&[with("AWS", "Nube!2025deploy", Some(420))], now);
+        let json = serde_json::to_value(&views[0]).expect("json");
+        assert_eq!(json["health"], "old");
+        assert_eq!(json["name"], "AWS");
+        assert_eq!(json["passwordChangedAt"], now - 420 * DAY_MS);
     }
 
     #[test]

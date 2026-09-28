@@ -32,6 +32,7 @@ mod routine_dashboard;
 mod routine_tools;
 mod agenda_tools;
 mod coldpass;
+mod secret_clipboard;
 mod collab;
 mod config_crypto;
 mod connection;

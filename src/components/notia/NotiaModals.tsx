@@ -13,7 +13,7 @@ import { SettingsModal } from './SettingsModal'
 import { LibraryManagerModal } from './LibraryManagerModal'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { AppDialogModal } from './AppDialogModal'
-import { ColdPassPasskeyModal } from './ColdPassPasskeyModal'
+import { ColdPassOwnerPasswordModal } from './ColdPassOwnerPasswordModal'
 import { ColdPassCredentialModal } from './ColdPassCredentialModal'
 import { mutateLibraryEntry } from '../../services/libraries/libraryRuntime'
 import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPath'
@@ -22,7 +22,8 @@ import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import type { AiPreferences } from '../../services/preferences/aiSettingsStorage'
 import type { InkMathPreferences } from '../../services/preferences/inkMathSettingsStorage'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
-import type { ColdPassEntry } from '../../types/coldpass'
+import type { ColdPassEntry, ColdPassEntryView } from '../../types/coldpass'
+import type { ColdPassUnlockValues } from './hooks/useColdPassSession'
 import type { TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 
@@ -47,7 +48,8 @@ interface NotiaModalsProps {
   onContextsChange: (value: LibraryContext[]) => void
   coldPassPromptState: {
     open: boolean
-    requiresConfirmation: boolean
+    isNew: boolean
+    needsLegacyPasskey: boolean
     errorMessage: string | null
     isSubmitting: boolean
   }
@@ -68,15 +70,16 @@ interface NotiaModalsProps {
     open: boolean
     mode: 'create' | 'edit'
     editingIndex: number | null
+    generate: boolean
     errorMessage: string | null
     isSubmitting: boolean
   }
-  coldPassSession: { entries: ColdPassEntry[] } | null
-  handleSubmitColdPassPasskey: (passkey: string) => void
+  coldPassSession: { entries: ColdPassEntryView[] } | null
+  handleSubmitColdPassUnlock: (values: ColdPassUnlockValues) => void
   handleCloseColdPassPrompt: () => void
-  handleSubmitColdPassDeletePasskey: (passkey: string) => void
+  handleSubmitColdPassDeletePassword: (password: string) => void
   handleCloseColdPassDeletePrompt: () => void
-  handleSubmitColdPassImportPasskey: (passkey: string) => void
+  handleSubmitColdPassImportPassword: (password: string) => void
   handleCloseColdPassImportPrompt: () => void
   handleSubmitColdPassCredential: (entry: ColdPassEntry) => void
   handleCloseColdPassCredentialModal: () => void
@@ -96,11 +99,11 @@ function NotiaModalsComponent({
   coldPassImportPromptState,
   coldPassCredentialModalState,
   coldPassSession,
-  handleSubmitColdPassPasskey,
+  handleSubmitColdPassUnlock,
   handleCloseColdPassPrompt,
-  handleSubmitColdPassDeletePasskey,
+  handleSubmitColdPassDeletePassword,
   handleCloseColdPassDeletePrompt,
-  handleSubmitColdPassImportPasskey,
+  handleSubmitColdPassImportPassword,
   handleCloseColdPassImportPrompt,
   handleSubmitColdPassCredential,
   handleCloseColdPassCredentialModal,
@@ -325,36 +328,44 @@ function NotiaModalsComponent({
         onConfirm={handleAppDialogConfirm}
         onClose={handleDialogClose}
       />
-      <ColdPassPasskeyModal
+      <ColdPassOwnerPasswordModal
         open={coldPassPromptState.open}
-        title={coldPassPromptState.requiresConfirmation ? 'Crear ColdPass' : 'Desbloquear ColdPass'}
-        message={coldPassPromptState.requiresConfirmation
-          ? 'ColdPass/ColdPass.md no existe todavia. Ingresá una passkey para crear la bóveda cifrada. Si la olvidás, no hay forma de recuperar el contenido cifrado.'
-          : 'La passkey se usa para desencriptar ColdPass/ColdPass.md solo en memoria. Si la olvidás, no hay forma de recuperar el contenido cifrado. Al cerrar la pestaña, el contenido se olvida.'}
-        requiresConfirmation={coldPassPromptState.requiresConfirmation}
+        title={coldPassPromptState.isNew ? 'Crear ColdPass' : 'Desbloquear ColdPass'}
+        message={coldPassPromptState.isNew
+          ? 'ColdPass se cifra con la contraseña del Owner. Si la olvidás, no hay forma de recuperar las credenciales.'
+          : coldPassPromptState.needsLegacyPasskey
+            ? 'ColdPass ahora usa la contraseña del Owner. Ingresala junto con la passkey anterior del vault para pasarlo, una sola vez.'
+            : 'Ingresá la contraseña del Owner. El vault se descifra solo en memoria y se bloquea al salir de ColdPass.'}
+        submitLabel={coldPassPromptState.isNew ? 'Crear' : 'Desbloquear'}
+        submittingLabel={coldPassPromptState.isNew ? 'Creando…' : 'Desbloqueando…'}
+        needsLegacyPasskey={coldPassPromptState.needsLegacyPasskey}
         errorMessage={coldPassPromptState.errorMessage}
         isSubmitting={coldPassPromptState.isSubmitting}
-        onSubmit={handleSubmitColdPassPasskey}
+        onSubmit={handleSubmitColdPassUnlock}
         onClose={handleCloseColdPassPrompt}
       />
-      <ColdPassPasskeyModal
+      <ColdPassOwnerPasswordModal
         open={coldPassDeletePromptState.open}
-        title="Confirmar eliminacion"
-        message="Ingresá la passkey de ColdPass para confirmar la eliminacion de esta credencial."
+        title="Confirmar eliminación"
+        message="Ingresá la contraseña del Owner para eliminar esta credencial."
+        submitLabel="Eliminar"
+        submittingLabel="Eliminando…"
         errorMessage={coldPassDeletePromptState.errorMessage}
         isSubmitting={coldPassDeletePromptState.isSubmitting}
-        onSubmit={handleSubmitColdPassDeletePasskey}
+        onSubmit={({ password }) => handleSubmitColdPassDeletePassword(password)}
         onClose={handleCloseColdPassDeletePrompt}
       />
-      <ColdPassPasskeyModal
+      <ColdPassOwnerPasswordModal
         open={coldPassImportPromptState.open}
-        title="Confirmar importacion"
+        title="Confirmar importación"
         message={coldPassImportPromptState.pendingImport
-          ? `Se validaron ${coldPassImportPromptState.pendingImport.importedCount} credenciales desde ${coldPassImportPromptState.pendingImport.sourceFileName}. Ingresá la passkey de ColdPass para importarlas dentro de la bóveda cifrada.`
-          : 'Ingresá la passkey de ColdPass para confirmar la importacion del vault.'}
+          ? `Se validaron ${coldPassImportPromptState.pendingImport.importedCount} credenciales desde ${coldPassImportPromptState.pendingImport.sourceFileName}. Ingresá la contraseña del Owner para importarlas al vault.`
+          : 'Ingresá la contraseña del Owner para confirmar la importación del vault.'}
+        submitLabel="Importar"
+        submittingLabel="Importando…"
         errorMessage={coldPassImportPromptState.errorMessage}
         isSubmitting={coldPassImportPromptState.isSubmitting}
-        onSubmit={handleSubmitColdPassImportPasskey}
+        onSubmit={({ password }) => handleSubmitColdPassImportPassword(password)}
         onClose={handleCloseColdPassImportPrompt}
       />
       <ColdPassCredentialModal
@@ -366,6 +377,7 @@ function NotiaModalsComponent({
             ? coldPassSession?.entries[coldPassCredentialModalState.editingIndex] ?? null
             : null
         }
+        openGenerator={coldPassCredentialModalState.generate}
         isSubmitting={coldPassCredentialModalState.isSubmitting}
         errorMessage={coldPassCredentialModalState.errorMessage}
         onSubmit={handleSubmitColdPassCredential}

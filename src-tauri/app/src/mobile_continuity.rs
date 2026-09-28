@@ -112,6 +112,26 @@ pub fn open_android_url(state: &ContinuityState, url: &str) -> Result<(), String
     }
 }
 
+/// Copies a secret marked as sensitive; Android clears it after
+/// `clear_after_ms` if the clipboard still holds it.
+#[cfg(target_os = "android")]
+pub fn copy_android_secret(state: &ContinuityState, text: &str, clear_after_ms: u64) -> Result<(), String> {
+    let failed = || "No se pudo copiar al portapapeles.".to_string();
+    let guard = state.handle.lock().map_err(|_| failed())?;
+    let handle = guard.as_ref().ok_or_else(failed)?;
+    let response = handle
+        .run_mobile_plugin::<ContinuityResponse>(
+            "copySecret",
+            serde_json::json!({ "text": text, "clearAfterMs": clear_after_ms }),
+        )
+        .map_err(|_| failed())?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(response.error.unwrap_or_else(failed))
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn begin_android_work(_state: &ContinuityState, _work_kind: Option<&str>) -> bool {
     true

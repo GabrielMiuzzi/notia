@@ -16,7 +16,7 @@ import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
-import type { ColdPassEntry } from '../../types/coldpass'
+import type { ColdPassEntryView } from '../../types/coldpass'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
@@ -37,7 +37,7 @@ const TaskManagerApp = lazy(async () => {
 interface NotiaWorkspaceProps {
   mountedHeavyWorkspaceView: string
   isAndroidRuntime: boolean
-  coldPassEntries: ColdPassEntry[]
+  coldPassEntries: ColdPassEntryView[]
   coldPassSession: object | null
   activeTaskManagerVault: TaskManagerVaultRef | null
   libraryContexts: LibraryContext[]

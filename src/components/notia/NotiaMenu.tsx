@@ -89,7 +89,7 @@ function NotiaMenuComponent() {
     coldPassDeletePromptState,
     coldPassImportPromptState,
     isImportingVault,
-    handleSubmitColdPassPasskey,
+    handleSubmitColdPassUnlock,
     handleCloseColdPassPrompt,
     handleOpenColdPassCredentialModal,
     handleEditColdPassCredential,
@@ -98,9 +98,9 @@ function NotiaMenuComponent() {
     handleImportColdPassVault,
     handleSubmitColdPassCredential,
     handleCloseColdPassDeletePrompt,
-    handleSubmitColdPassDeletePasskey,
+    handleSubmitColdPassDeletePassword,
     handleCloseColdPassImportPrompt,
-    handleSubmitColdPassImportPasskey,
+    handleSubmitColdPassImportPassword,
     resetColdPassSession,
   } = useColdPassSession({
     activeLibrary,
@@ -587,11 +587,11 @@ function NotiaMenuComponent() {
           coldPassImportPromptState={coldPassImportPromptState}
           coldPassCredentialModalState={coldPassCredentialModalState}
           coldPassSession={coldPassSession}
-          handleSubmitColdPassPasskey={handleSubmitColdPassPasskey}
+          handleSubmitColdPassUnlock={handleSubmitColdPassUnlock}
           handleCloseColdPassPrompt={handleCloseColdPassPrompt}
-          handleSubmitColdPassDeletePasskey={handleSubmitColdPassDeletePasskey}
+          handleSubmitColdPassDeletePassword={handleSubmitColdPassDeletePassword}
           handleCloseColdPassDeletePrompt={handleCloseColdPassDeletePrompt}
-          handleSubmitColdPassImportPasskey={handleSubmitColdPassImportPasskey}
+          handleSubmitColdPassImportPassword={handleSubmitColdPassImportPassword}
           handleCloseColdPassImportPrompt={handleCloseColdPassImportPrompt}
           handleSubmitColdPassCredential={handleSubmitColdPassCredential}
           handleCloseColdPassCredentialModal={handleCloseColdPassCredentialModal}

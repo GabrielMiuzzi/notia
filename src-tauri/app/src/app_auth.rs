@@ -329,12 +329,29 @@ fn after_owner_password_changed(app: &AppHandle, library_id: &str, password: &st
     );
 }
 
-/// Signs out of the library: its key leaves memory and this device.
+/// Signs out of the library: its key leaves memory and this device, and
+/// ColdPass locks.
 pub(crate) fn app_auth_logout(app: &AppHandle, payload: AuthLibraryPayload) -> Result<AuthStatus, BackendError> {
     if let Some(library) = library(app, payload.library_id.as_deref()) {
         crate::config_vault::lock(app, &library.id);
+        app.state::<crate::coldpass::ColdPassState>().lock_library(&library.id);
     }
     app_auth_status(app, payload)
+}
+
+/// The data key of the library's configuration, opened with the Owner's
+/// password as it is stored now. ColdPass derives its vault key from it, so
+/// it asks for the same password and follows its changes. Failed attempts
+/// share the sign-in cooldown.
+pub(crate) fn owner_data_key(app: &AppHandle, library_id: &str, password: &str) -> Result<DataKey, BackendError> {
+    let library = known_library(app, library_id)?;
+    check_cooldown(&library.id)?;
+    let result = stored_envelope(app, &library.id).and_then(|envelope| {
+        let envelope = envelope.ok_or_else(|| unauthorized("Iniciá sesión con el Owner antes de usar ColdPass."))?;
+        unwrap_key(&envelope.key, password).ok_or_else(|| unauthorized("La contraseña del Owner no es correcta."))
+    });
+    record_attempt(&library.id, result.is_ok());
+    result
 }
 
 /// Seals the configuration of the library at `library_path` with the

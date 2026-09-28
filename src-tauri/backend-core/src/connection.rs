@@ -177,6 +177,8 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "pick_copy_folder",
     "backend_device_preferences",
     "backend_save_device_preferences",
+    // The clipboard of the device the person is using.
+    "coldpass_copy_secret",
 ];
 
 pub fn is_client_local_command(command: &str) -> bool {

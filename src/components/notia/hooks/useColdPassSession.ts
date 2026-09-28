@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { setDialogState } from '../../../features/documents/documentsSlice'
 import type { NotiaLibrary } from '../../../types/notia'
-import type { ColdPassEntry } from '../../../types/coldpass'
+import type { ColdPassEntry, ColdPassEntryView } from '../../../types/coldpass'
 import {
   confirmColdPassImport,
   deleteColdPassEntry,
@@ -16,26 +16,38 @@ import {
 } from '../../../services/coldpass/coldpassStorage'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 
-const EMPTY_COLDPASS_ENTRIES: ColdPassEntry[] = []
+const EMPTY_COLDPASS_ENTRIES: ColdPassEntryView[] = []
 
 interface ColdPassPromptState {
   open: boolean
-  requiresConfirmation: boolean
+  /** The library has no vault yet: unlocking creates it. */
+  isNew: boolean
+  /** The vault still uses its own passkey, asked once to migrate it. */
+  needsLegacyPasskey: boolean
   errorMessage: string | null
   isSubmitting: boolean
 }
 
 const INITIAL_PROMPT_STATE: ColdPassPromptState = {
   open: false,
-  requiresConfirmation: false,
+  isNew: false,
+  needsLegacyPasskey: false,
   errorMessage: null,
   isSubmitting: false,
+}
+
+/** What the unlock prompt sends. */
+export interface ColdPassUnlockValues {
+  password: string
+  legacyPasskey?: string
 }
 
 interface ColdPassCredentialModalState {
   open: boolean
   mode: 'create' | 'edit'
   editingIndex: number | null
+  /** Open the password generator at once («Generar nueva»). */
+  generate: boolean
   errorMessage: string | null
   isSubmitting: boolean
 }
@@ -44,6 +56,7 @@ const INITIAL_CREDENTIAL_MODAL_STATE: ColdPassCredentialModalState = {
   open: false,
   mode: 'create',
   editingIndex: null,
+  generate: false,
   errorMessage: null,
   isSubmitting: false,
 }
@@ -86,24 +99,24 @@ interface UseColdPassSessionDeps {
 
 export interface UseColdPassSessionReturn {
   coldPassSession: ColdPassSessionData | null
-  coldPassEntries: ColdPassEntry[]
+  coldPassEntries: ColdPassEntryView[]
   coldPassPromptState: ColdPassPromptState
   coldPassCredentialModalState: ColdPassCredentialModalState
   coldPassDeletePromptState: ColdPassDeletePromptState
   coldPassImportPromptState: ColdPassImportPromptState
   isImportingVault: boolean
-  handleSubmitColdPassPasskey: (passkey: string) => void
+  handleSubmitColdPassUnlock: (values: ColdPassUnlockValues) => void
   handleCloseColdPassPrompt: () => void
   handleOpenColdPassCredentialModal: () => void
-  handleEditColdPassCredential: (index: number) => void
+  handleEditColdPassCredential: (index: number, options?: { generate?: boolean }) => void
   handleCloseColdPassCredentialModal: () => void
   handleDeleteColdPassCredential: (index: number) => Promise<void>
   handleImportColdPassVault: () => void
   handleSubmitColdPassCredential: (entry: ColdPassEntry) => void
   handleCloseColdPassDeletePrompt: () => void
-  handleSubmitColdPassDeletePasskey: (passkey: string) => void
+  handleSubmitColdPassDeletePassword: (password: string) => void
   handleCloseColdPassImportPrompt: () => void
-  handleSubmitColdPassImportPasskey: (passkey: string) => void
+  handleSubmitColdPassImportPassword: (password: string) => void
   resetColdPassSession: () => void
 }
 
@@ -127,9 +140,8 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     let cancelled = false
 
     const openColdPassPrompt = async () => {
-      const coldPassFileExists = await getColdPassStatus(activeLibrary.id)
-        .then((status) => status.exists)
-        .catch(() => false)
+      const status = await getColdPassStatus(activeLibrary.id)
+        .catch(() => ({ exists: true, needsLegacyPasskey: false }))
       if (cancelled) {
         return
       }
@@ -139,7 +151,8 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
           ? current
           : {
               open: true,
-              requiresConfirmation: !coldPassFileExists,
+              isNew: !status.exists,
+              needsLegacyPasskey: status.needsLegacyPasskey,
               errorMessage: null,
               isSubmitting: false,
             }
@@ -153,46 +166,31 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     }
   }, [activeLibrary, activeWorkspaceView, coldPassSession])
 
-  const handleSubmitColdPassPasskey = useCallback((passkey: string) => {
+  const handleSubmitColdPassUnlock = useCallback(({ password, legacyPasskey }: ColdPassUnlockValues) => {
     if (!activeLibrary) {
       return
     }
 
-    setColdPassPromptState({
-      open: true,
-      requiresConfirmation: coldPassPromptState.requiresConfirmation,
-      errorMessage: null,
-      isSubmitting: true,
-    })
+    setColdPassPromptState((current) => ({ ...current, open: true, errorMessage: null, isSubmitting: true }))
 
-    void unlockColdPassSession(activeLibrary.id, passkey)
+    void unlockColdPassSession(activeLibrary.id, password, legacyPasskey)
       .then((session) => {
         setColdPassSession(session)
-        setColdPassPromptState({
-          open: false,
-          requiresConfirmation: false,
-          errorMessage: null,
-          isSubmitting: false,
-        })
+        setColdPassPromptState(INITIAL_PROMPT_STATE)
       })
       .catch((error) => {
         setColdPassSession(null)
-        setColdPassPromptState({
+        setColdPassPromptState((current) => ({
+          ...current,
           open: true,
-          requiresConfirmation: coldPassPromptState.requiresConfirmation,
           errorMessage: error instanceof Error ? error.message : 'No se pudo desbloquear ColdPass.',
           isSubmitting: false,
-        })
+        }))
       })
-  }, [activeLibrary, coldPassPromptState.requiresConfirmation])
+  }, [activeLibrary])
 
   const handleCloseColdPassPrompt = useCallback(() => {
-    setColdPassPromptState({
-      open: false,
-      requiresConfirmation: false,
-      errorMessage: null,
-      isSubmitting: false,
-    })
+    setColdPassPromptState(INITIAL_PROMPT_STATE)
 
     if (activeWorkspaceView === 'coldpass' && !coldPassSession) {
       closeColdPassTab()
@@ -204,37 +202,25 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       return
     }
 
-    setColdPassCredentialModalState({
-      open: true,
-      mode: 'create',
-      editingIndex: null,
-      errorMessage: null,
-      isSubmitting: false,
-    })
+    setColdPassCredentialModalState({ ...INITIAL_CREDENTIAL_MODAL_STATE, open: true })
   }, [coldPassSession])
 
-  const handleEditColdPassCredential = useCallback((index: number) => {
+  const handleEditColdPassCredential = useCallback((index: number, options?: { generate?: boolean }) => {
     if (!coldPassSession || !coldPassSession.entries[index]) {
       return
     }
 
     setColdPassCredentialModalState({
+      ...INITIAL_CREDENTIAL_MODAL_STATE,
       open: true,
       mode: 'edit',
       editingIndex: index,
-      errorMessage: null,
-      isSubmitting: false,
+      generate: Boolean(options?.generate),
     })
   }, [coldPassSession])
 
   const handleCloseColdPassCredentialModal = useCallback(() => {
-    setColdPassCredentialModalState({
-      open: false,
-      mode: 'create',
-      editingIndex: null,
-      errorMessage: null,
-      isSubmitting: false,
-    })
+    setColdPassCredentialModalState(INITIAL_CREDENTIAL_MODAL_STATE)
   }, [])
 
   const handleDeleteColdPassCredential = useCallback(async (index: number) => {
@@ -323,13 +309,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     const editingEntry = coldPassCredentialModalState.mode === 'edit' && coldPassCredentialModalState.editingIndex !== null
       ? coldPassSession.entries[coldPassCredentialModalState.editingIndex]
       : undefined
-    setColdPassCredentialModalState({
-      open: true,
-      mode: coldPassCredentialModalState.mode,
-      editingIndex: coldPassCredentialModalState.editingIndex,
-      errorMessage: null,
-      isSubmitting: true,
-    })
+    setColdPassCredentialModalState((current) => ({ ...current, open: true, errorMessage: null, isSubmitting: true }))
 
     void saveColdPassEntry(activeLibrary.id, entry, editingEntry?.id)
       .then((session) => {
@@ -337,13 +317,12 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
         setColdPassCredentialModalState(INITIAL_CREDENTIAL_MODAL_STATE)
       })
       .catch((error) => {
-        setColdPassCredentialModalState({
+        setColdPassCredentialModalState((current) => ({
+          ...current,
           open: true,
-          mode: coldPassCredentialModalState.mode,
-          editingIndex: coldPassCredentialModalState.editingIndex,
           errorMessage: error instanceof Error ? error.message : 'No se pudo guardar la credencial.',
           isSubmitting: false,
-        })
+        }))
       })
   }, [activeLibrary, coldPassCredentialModalState.editingIndex, coldPassCredentialModalState.mode, coldPassSession])
 
@@ -366,7 +345,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     })
   }, [])
 
-  const handleSubmitColdPassDeletePasskey = useCallback((passkey: string) => {
+  const handleSubmitColdPassDeletePassword = useCallback((password: string) => {
     const deletingEntry = coldPassDeletePromptState.deletingIndex === null
       ? undefined
       : coldPassSession?.entries[coldPassDeletePromptState.deletingIndex]
@@ -381,7 +360,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     }))
 
-    void deleteColdPassEntry(activeLibrary.id, deletingEntry.id, passkey)
+    void deleteColdPassEntry(activeLibrary.id, deletingEntry.id, password)
       .then((session) => {
         setColdPassSession(session)
         setColdPassDeletePromptState(INITIAL_DELETE_PROMPT_STATE)
@@ -396,7 +375,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       })
   }, [activeLibrary, coldPassDeletePromptState.deletingIndex, coldPassSession])
 
-  const handleSubmitColdPassImportPasskey = useCallback((passkey: string) => {
+  const handleSubmitColdPassImportPassword = useCallback((password: string) => {
     const importSummary = coldPassImportPromptState.pendingImport
     if (!activeLibrary || !coldPassSession || !importSummary) {
       return
@@ -409,7 +388,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       isSubmitting: true,
     }))
 
-    void confirmColdPassImport(activeLibrary.id, passkey)
+    void confirmColdPassImport(activeLibrary.id, password)
       .then((session) => {
         setColdPassSession(session)
         dispatch(setDialogState({
@@ -453,7 +432,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     coldPassDeletePromptState,
     coldPassImportPromptState,
     isImportingVault: coldPassImportPromptState.isSelectingFile,
-    handleSubmitColdPassPasskey,
+    handleSubmitColdPassUnlock,
     handleCloseColdPassPrompt,
     handleOpenColdPassCredentialModal,
     handleEditColdPassCredential,
@@ -462,9 +441,9 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     handleImportColdPassVault,
     handleSubmitColdPassCredential,
     handleCloseColdPassDeletePrompt,
-    handleSubmitColdPassDeletePasskey,
+    handleSubmitColdPassDeletePassword,
     handleCloseColdPassImportPrompt,
-    handleSubmitColdPassImportPasskey,
+    handleSubmitColdPassImportPassword,
     resetColdPassSession,
   }
 }

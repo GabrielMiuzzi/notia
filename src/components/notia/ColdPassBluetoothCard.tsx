@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Bluetooth, Shield, Unplug } from 'lucide-react'
-import { NotiaButton } from '../common/NotiaButton'
+import { Bluetooth, Copy } from 'lucide-react'
 import {
   COLDPASS_BLUETOOTH_DEVICE_NAME,
   COLDPASS_BLUETOOTH_SERVICE_UUID,
@@ -15,16 +14,17 @@ import {
 import { ColdPassBluetoothAuthModal } from './ColdPassBluetoothAuthModal'
 import { ColdPassBluetoothMessageModal } from './ColdPassBluetoothMessageModal'
 import { ColdPassBluetoothPinModal } from './ColdPassBluetoothPinModal'
+import { shortUuid } from './views/coldpass/coldPassFormat'
 
 type ColdPassBluetoothViewStatus = 'idle' | 'searching' | 'connected' | 'error' | 'unsupported'
 
 function getStatusLabel(status: ColdPassBluetoothViewStatus): string {
   if (status === 'searching') {
-    return 'Buscando'
+    return 'Buscando…'
   }
 
   if (status === 'connected') {
-    return 'Conectado'
+    return 'Vinculado'
   }
 
   if (status === 'error') {
@@ -76,14 +76,18 @@ function resolveStatusMessage(status: ColdPassBluetoothStatus | null): string {
   }
 
   if (!status.supported) {
-    return 'Este runtime no expone backend Bluetooth compatible para buscar el dispositivo ColdPass.'
+    return 'Este dispositivo no tiene un Bluetooth compatible para buscar ColdPass.'
   }
 
   if (status.connected) {
-    return 'ColdPass conectado correctamente.'
+    return 'ColdPass conectado. El pairing por PIN se verificó correctamente.'
   }
 
-  return 'Buscá el dispositivo BLE "ColdPass" y completá el enlace seguro por PIN cuando el sistema lo solicite.'
+  if (status.phase === 'searching' || status.phase === 'pairing' || status.phase === 'awaiting-pin') {
+    return 'Buscando ColdPass por Bluetooth. Mantenelo encendido y cerca de la computadora.'
+  }
+
+  return 'Tocá Vincular y confirmá el PIN en el dispositivo para iniciar el pairing seguro.'
 }
 
 function resolveUnknownErrorMessage(error: unknown, fallbackMessage: string): string {
@@ -105,7 +109,13 @@ function resolveUnknownErrorMessage(error: unknown, fallbackMessage: string): st
   return fallbackMessage
 }
 
-export function ColdPassBluetoothCard() {
+interface ColdPassBluetoothCardProps {
+  /** Shows the view's confirmation after copying the service UUID. */
+  onCopied?: (message: string) => void
+}
+
+/** The ColdPass Bluetooth device: pairing by PIN and its secure channel. */
+export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps = {}) {
   const [connectionStatus, setConnectionStatus] = useState<ColdPassBluetoothStatus | null>(null)
   const [viewStatus, setViewStatus] = useState<ColdPassBluetoothViewStatus>('idle')
   const [message, setMessage] = useState('Consultando estado Bluetooth de ColdPass...')
@@ -164,7 +174,7 @@ export function ColdPassBluetoothCard() {
 
   const handleSearchDevice = async () => {
     setViewStatus('searching')
-    setMessage('Buscando el dispositivo "ColdPass" y esperando el pedido de PIN...')
+    setMessage('Buscando ColdPass por Bluetooth. Mantenelo encendido y cerca de la computadora.')
     setPinErrorMessage(null)
 
     try {
@@ -252,58 +262,68 @@ export function ColdPassBluetoothCard() {
     }
   }
 
+  const serviceUuid = connectionStatus?.serviceUuid ?? COLDPASS_BLUETOOTH_SERVICE_UUID
+  const busyMessage = isSubmittingPin
+    ? 'Esperando la confirmación del PIN Bluetooth…'
+    : isSubmittingAuth
+      ? 'Validando la PassKey y el Challenge con ColdPass…'
+      : isSendingMessage
+        ? 'Esperando la confirmación del mensaje cifrado…'
+        : null
+  const showsSpinner = viewStatus === 'searching' || isBusy
+
+  const handleCopyUuid = async () => {
+    try {
+      await navigator.clipboard.writeText(serviceUuid)
+      onCopied?.('UUID del servicio copiado.')
+    } catch {
+      onCopied?.('No se pudo copiar al portapapeles.')
+    }
+  }
+
   return (
-    <section className="notia-coldpass-bluetooth-card" aria-label="Controlador Bluetooth ColdPass">
-      <div className="notia-coldpass-bluetooth-card-main">
-        <div className="notia-coldpass-bluetooth-card-icon">
-          <Bluetooth size={18} />
-        </div>
-        <div className="notia-coldpass-bluetooth-card-copy">
-          <div className="notia-coldpass-bluetooth-card-header">
-            <h3>ColdPass Bluetooth</h3>
-            <span className={`notia-coldpass-bluetooth-status notia-coldpass-bluetooth-status--${viewStatus}`}>
-              {getStatusLabel(viewStatus)}
-            </span>
-          </div>
-          <p>{message}</p>
-          <div className="notia-coldpass-bluetooth-meta">
-            <span>
-              <strong>Dispositivo:</strong> {connectionStatus?.deviceName ?? COLDPASS_BLUETOOTH_DEVICE_NAME}
-            </span>
-            <span>
-              <strong>Servicio:</strong> {connectionStatus?.serviceUuid ?? COLDPASS_BLUETOOTH_SERVICE_UUID}
-            </span>
-            {connectionStatus?.deviceId ? (
-              <span>
-                <strong>Sesion:</strong> {connectionStatus.deviceId}
-              </span>
-            ) : null}
-          </div>
-        </div>
+    <section className="cp-device" data-status={viewStatus} aria-label="Dispositivo ColdPass">
+      <div className="cp-device__stripe" aria-hidden="true" />
+      <div className="cp-device__icon" aria-hidden="true">
+        <Bluetooth size={22} strokeWidth={1.75} />
       </div>
-      <div className="notia-coldpass-bluetooth-card-actions">
-        <NotiaButton
-          variant="primary"
-          onClick={() => {
-            void handleSearchDevice()
-          }}
-          disabled={viewStatus === 'searching' || viewStatus === 'unsupported' || isBusy}
-        >
-          {viewStatus === 'searching' ? 'Buscando...' : 'Buscar dispositivo'}
-        </NotiaButton>
-        <NotiaButton
-          variant="secondary"
-          onClick={() => {
-            void handleDisconnect()
-          }}
-          disabled={!connectionStatus || (!connectionStatus.connected && connectionStatus.phase === 'idle') || isBusy}
-        >
-          <Unplug size={16} />
-          Desconectar
-        </NotiaButton>
-        {connectionStatus?.connected && connectionStatus.applicationAuthenticated ? (
-          <NotiaButton
-            variant="secondary"
+      <div className="cp-device__copy">
+        <div className="cp-device__title">
+          <h2>{connectionStatus?.deviceName ?? COLDPASS_BLUETOOTH_DEVICE_NAME}</h2>
+          <span className="cp-device__status" role="status">
+            {showsSpinner
+              ? <span className="cp-spin" aria-hidden="true" />
+              : <span className="cp-device__dot" aria-hidden="true" />}
+            {getStatusLabel(viewStatus)}
+          </span>
+        </div>
+        <p>{busyMessage ?? message}</p>
+      </div>
+      <div className="cp-device__meta">
+        <div className="cp-device__service">
+          <span className="cp-muted">Servicio</span>
+          <span className="cp-device__uuid" title={serviceUuid}>{shortUuid(serviceUuid)}</span>
+          <button type="button" className="cp-icon cp-icon--small" aria-label="Copiar UUID del servicio" onClick={() => void handleCopyUuid()}>
+            <Copy size={16} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
+        <span className="cp-device__firmware">Firmware BLE con PIN y servicio cifrado</span>
+      </div>
+      <div className="cp-device__actions">
+        {viewStatus === 'idle' || viewStatus === 'error' ? (
+          <button type="button" className="cp-btn cp-btn--primary" onClick={() => void handleSearchDevice()} disabled={isBusy}>
+            Vincular dispositivo
+          </button>
+        ) : null}
+        {viewStatus === 'searching' ? (
+          <button type="button" className="cp-btn cp-btn--ghost" onClick={() => void handleDisconnect()} disabled={isBusy}>
+            Cancelar
+          </button>
+        ) : null}
+        {viewStatus === 'connected' && connectionStatus?.applicationAuthenticated ? (
+          <button
+            type="button"
+            className="cp-btn cp-btn--ghost"
             onClick={() => {
               setMessageErrorMessage(null)
               setIsMessageModalOpen(true)
@@ -311,30 +331,13 @@ export function ColdPassBluetoothCard() {
             disabled={isBusy}
           >
             Mandar mensaje
-          </NotiaButton>
+          </button>
         ) : null}
-      </div>
-      {isSubmittingAuth ? (
-        <div className="notia-coldpass-operation-status notia-coldpass-operation-status--card" role="status" aria-live="polite">
-          <div className="notia-coldpass-operation-spinner" aria-hidden="true" />
-          <span>Validando PassKey y Challenge con ColdPass...</span>
-        </div>
-      ) : null}
-      {isSubmittingPin ? (
-        <div className="notia-coldpass-operation-status notia-coldpass-operation-status--card" role="status" aria-live="polite">
-          <div className="notia-coldpass-operation-spinner" aria-hidden="true" />
-          <span>Esperando confirmacion del PIN Bluetooth...</span>
-        </div>
-      ) : null}
-      {isSendingMessage ? (
-        <div className="notia-coldpass-operation-status notia-coldpass-operation-status--card" role="status" aria-live="polite">
-          <div className="notia-coldpass-operation-spinner" aria-hidden="true" />
-          <span>Esperando confirmacion del mensaje cifrado...</span>
-        </div>
-      ) : null}
-      <div className="notia-coldpass-bluetooth-card-footer">
-        <Shield size={14} />
-        <span>Firmware esperado: dispositivo BLE `ColdPass` con autenticacion segura por PIN y servicio cifrado.</span>
+        {viewStatus === 'connected' ? (
+          <button type="button" className="cp-btn cp-btn--ghost" onClick={() => void handleDisconnect()} disabled={isBusy}>
+            Desconectar
+          </button>
+        ) : null}
       </div>
       <ColdPassBluetoothPinModal
         open={isPinModalOpen}

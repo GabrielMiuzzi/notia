@@ -15,6 +15,8 @@ interface ColdPassCredentialModalProps {
   open: boolean
   mode?: 'create' | 'edit'
   initialEntry?: ColdPassEntry | null
+  /** Opens the password generator at once («Generar nueva»). */
+  openGenerator?: boolean
   isSubmitting?: boolean
   errorMessage?: string | null
   onSubmit: (entry: ColdPassEntry) => void
@@ -102,6 +104,7 @@ export function ColdPassCredentialModal({
   open,
   mode = 'create',
   initialEntry = null,
+  openGenerator = false,
   isSubmitting = false,
   errorMessage,
   onSubmit,
@@ -144,8 +147,8 @@ export function ColdPassCredentialModal({
     setDraft(initialEntry ?? EMPTY_ENTRY)
     setIsPasswordVisible(false)
     setCopiedField(null)
-    setIsPasswordGeneratorOpen(false)
-  }, [initialEntry, open])
+    setIsPasswordGeneratorOpen(openGenerator)
+  }, [initialEntry, open, openGenerator])
 
   useEffect(() => {
     if (open) regeneratePassword(passwordOptions)

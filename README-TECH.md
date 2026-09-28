@@ -2676,7 +2676,7 @@ No se ejecutaron Vitest, la suite Rust, el empaquetado release ni un ciclo compl
 ### 1.5 Decisiones Arquitectónicas Clave
 
 1. **Local-first / Filesystem como fuente de verdad**: todos los documentos (Markdown, Mermaid, ColdPass, Task Manager) se almacenan como archivos en el filesystem. SQLite se reserva para índices y datos estructurados de la aplicación; no hay servidor. El estado en Redux modela solo UI, selección y datos derivados.
-2. **Cifrado de ColdPass en Rust**: el vault se cifra con AES-256-GCM y PBKDF2-HMAC-SHA256 (250k iteraciones) en `notia-app` (`coldpass.rs`). La passkey queda en la sesión del backend y el WebView recibe solo las entradas que muestra.
+2. **Cifrado de ColdPass en Rust**: el vault se cifra con AES-256-GCM en `notia-app` (`coldpass.rs`), con una clave derivada por HKDF-SHA256 de la clave de datos de la configuración, que abre la contraseña del Owner (ver «ColdPass con la contraseña del Owner»). La clave queda en la sesión del backend y el WebView recibe solo las entradas que muestra.
 3. **Renderizado 2D de Graph View con `react-force-graph-2d`**: Rust construye el modelo del grafo de wikilinks (`backend_library_graph`, que pide `useLibraryGraphData.ts`) y `GraphView.tsx` lo transforma a `graphData` para `ForceGraph2D`, que calcula el layout de fuerzas y pinta nodos/aristas en un canvas 2D. El renderer 2D se consume desde su entrypoint dedicado y Mermaid continúa aislado para el editor de diagramas.
 
 4. **Contextos documentales**: `src/services/contexts/libraryContexts.ts` define el contrato `#tag` + color y sus valores por defecto (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` en rojo `#DC2626`). La colección se persiste en `.notia/notiaConfig.json`; las configuraciones existentes incorporan los defaults que falten al normalizarse. `SettingsModal` presenta el alta en un formulario superior y los contextos existentes en una tabla con edición del tag, selector de color y eliminación; conserva al menos un contexto y bloquea la eliminación de los usados por un tablero. `GraphView` construye su leyenda desde el catálogo completo y `libraryGraphEngine.ts` usa el contexto aplicado al tablero como fuente de verdad para sus tickets; el mapa se recalcula al cambiar de vista para tomar la configuración actual. `ensureMarkdownDefaults()` garantiza `contexto: "#Personal"` en Markdown nuevo o legado que todavía no tenga la propiedad; los tags se serializan entre comillas porque `#` inicia comentarios YAML.
@@ -9332,4 +9332,134 @@ Cuando dos ventanas del mismo host abren la misma nota (el host y sus clientes, 
   - repetir el pedido por Telegram con el modelo real: reordenar, renombrar tres grupos y ubicar «Atrasado»;
   - probar en el chat principal;
   - probar con un usuario sin `#Confidencial`;
+  - build Linux (WSL).
+
+## ColdPass con la contraseña del Owner y nuevo diseño (2026-09-28)
+
+ColdPass deja de tener una passkey propia: se abre y se cifra con la contraseña del Owner. La vista sigue el canvas «ColdPass — Gestor de contraseñas» (https://claude.ai/artifact/LggqHF7n8vBWPqR44UXoyU). Decisión del usuario: la contraseña se pide **cada vez que se abre ColdPass**, también con «Recordar sesión».
+
+### Clave del vault (`app/src/coldpass.rs`, `app/src/app_auth.rs`)
+
+- **Derivación.** `app_auth::owner_data_key(app, library_id, password)` abre, con la contraseña del Owner, la clave de datos de `.notia/notiaConfig.json`: el `WrappedKey` del sobre guardado en disco, PBKDF2-SHA256 de 600 000 rondas. Comparte el enfriamiento de los intentos fallidos del inicio de sesión (5 intentos, 30 s). `VaultKey::from_data_key` deriva la clave del vault con HKDF-SHA256:
+  - sal `notia-coldpass`;
+  - info `notia-coldpass-vault-key-v1`.
+
+  Así nunca es la misma clave que cifra la configuración.
+- **Formato nuevo.** `ColdPass/ColdPass.md` queda así:
+
+  ```text
+  <!-- NOTIA_COLDPASS_OWNER_V1 -->
+  nonce: <base64 de 12 bytes>
+  ciphertext: <base64, con la etiqueta de GCM>
+  ```
+
+  Es AES-256-GCM con AAD `notia-coldpass-v1`.
+- **Cambio de contraseña.** Cambiar la contraseña del Owner solo vuelve a sellar la clave de datos (`app_auth_change_password`, `owner_password_set_in_settings`). El vault no se vuelve a cifrar y se abre con la contraseña nueva.
+- **Sin recuperación.** Como la configuración, un vault sin la contraseña del Owner no se puede abrir.
+- **Migración.** Un vault con la cabecera anterior (`NOTIA_COLDPASS_AES256_PBKDF2_V1`: PBKDF2 de 250 000 rondas sobre su passkey) se detecta así:
+  - `coldpass_status` devuelve `needsLegacyPasskey: true`;
+  - `coldpass_unlock` exige `legacyPasskey`, descifra con ella y guarda **el mismo texto** sellado con la clave del Owner antes de abrir la sesión. La passkey no se guarda.
+
+  Si falta la passkey, responde «Este vault todavía usa su passkey anterior…»; si es incorrecta, `forbidden`.
+- **Sesión.** `UnlockedVault { key: VaultKey, entries, pending_import }`. La clave se borra de memoria al soltarse. La sesión se cierra:
+  - al salir de la vista (`coldpass_lock`);
+  - al cerrar sesión el Owner (`app_auth_logout` llama a `ColdPassState::lock_library`);
+  - al quitar la biblioteca.
+- **Eliminar e importar.** Piden de nuevo la contraseña del Owner. La clave se deriva fuera del lock de la sesión, porque PBKDF2 tarda, y se compara en tiempo constante con la de la sesión (`ensure_same_key`).
+
+**Contratos.**
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `coldpass_status` | `{ libraryId }` | `{ exists, needsLegacyPasskey }` |
+| `coldpass_unlock` | `{ libraryId, password, legacyPasskey? }` | `{ entries: ColdPassEntryView[] }` |
+| `coldpass_save_entry` | `{ libraryId, entry, entryId? }` | `{ entries }` |
+| `coldpass_delete_entry` | `{ libraryId, entryId, password }` | `{ entries }` |
+| `coldpass_confirm_import` | `{ libraryId, password }` | `{ entries }` |
+| `coldpass_copy_secret` | `{ text }` | `{ clearsAfterSeconds: 30 }` |
+
+El campo `passkey` de las entradas se reemplazó por `password`.
+
+### Credenciales, fechas y salud (`backend-core/src/coldpass.rs`)
+
+- **Historial.** `ColdPassEntryDto.passwordHistory` es `ColdPassPasswordRecord { password, replacedAt? }`, lo más nuevo primero. Se lee también el formato anterior (una lista de strings, sin fecha) con `#[serde(from = …)]`.
+- **Fecha de cambio.** `passwordChangedAt` (Unix ms) se guarda en el bloque `NOTIA_COLDPASS_METADATA`.
+- **Guardado.** `upsert_coldpass_entry(…, now_ms)` toma el historial y la fecha del vault, nunca del formulario:
+  - crear: historial vacío y fecha de ahora;
+  - editar sin cambiar la contraseña: conserva la fecha;
+  - editar cambiándola: la anterior pasa al historial fechada.
+
+  Las filas importadas de un CSV y las de vaults viejos no tienen fecha.
+- **Salud.** `password_health(entry, now_ms)` decide `strong | weak | old`, y `weak` gana sobre `old`:
+  - `weak`: menos de 10 caracteres, menos de 5 caracteres distintos, menos de 50 bits (largo × log2 del alfabeto usado: minúsculas 26, mayúsculas 26, dígitos 10, otros 33) o una palabra de 4 letras o más del nombre, el sitio o el usuario;
+  - `old`: la contraseña tiene más de 365 días sin cambiar;
+  - sin fecha nunca es `old`.
+- **Vista.** Las respuestas devuelven `ColdPassEntryView { …entry, health }` (`coldpass_entry_views`).
+
+### Portapapeles (`app/src/secret_clipboard.rs`)
+
+`coldpass_copy_secret` copia en el dispositivo que se está usando. Está en `LOCAL_ONLY_COMMANDS` y en `CLIENT_LOCAL_COMMANDS`, así que un cliente del modo Host/Cliente no copia en el portapapeles del host.
+
+- **Windows.** Copia con Win32 (`OpenClipboard`, `CF_UNICODETEXT`). Agrega `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory = 0` y `CanUploadToCloudClipboard = 0`, para que no quede en Win + V ni en el portapapeles en la nube. Anota `GetClipboardSequenceNumber`: a los 30 s vacía el portapapeles solo si el número no cambió, así nunca lee lo copiado. Suma las features `Win32_System_DataExchange` y `Win32_System_Memory` del crate `windows`.
+- **Android.** `ContinuityPlugin.copySecret`, en `resources/continuity/android/` (`build.rs` la copia a `gen/`, que no está en git):
+  - marca el clip como sensible (`EXTRA_IS_SENSITIVE`);
+  - a los 30 s lo borra si sigue siendo el mismo.
+
+  Android solo deja leer el portapapeles a la app en primer plano: si Notia está en segundo plano, el secreto queda, como cualquier cosa copiada por otra app.
+- **Otras plataformas y el navegador del servidor.** La interfaz copia con `navigator.clipboard` y el aviso no promete el borrado.
+- **Usuarios y sitios.** Se copian con `navigator.clipboard`, como en el canvas.
+
+### Interfaz
+
+- **`ColdPassView`.** `views/ColdPassView.tsx`, `views/coldpass/coldpass.css` y `views/coldpass/coldPassFormat.ts`. Tiene:
+  - encabezado con el resumen del vault, buscador (nombre, sitio, usuario, usuario secundario y notas), **Importar vault** y **Nueva credencial**;
+  - tarjeta del dispositivo;
+  - lista con filtros **Todas / Débiles / Antiguas**;
+  - detalle con contraseña (mostrar, copiar, aviso y **Generar nueva** para las débiles o antiguas), acceso, historial (3 visibles y el resto a pedido) y notas.
+
+  Las fechas relativas («Cambiada hace 14 meses») y absolutas («Reemplazada el 25 sep 2026») se escriben en la interfaz desde las marcas de Rust. Es un size container (`coldpass`) con estos cortes:
+  - hasta 1180 px la lista mide 340 px;
+  - hasta 820 px la página se desplaza y la lista y el detalle se alternan, con **Credenciales** para volver;
+  - hasta 520 px el encabezado del detalle y los campos se apilan.
+
+  El detalle es otro container (`coldpass-detail`) que apila sus tarjetas por debajo de 720 px. Con puntero táctil los objetivos miden 44 px.
+- **`ColdPassBluetoothCard`.** Se rediseñó como la tarjeta del canvas:
+  - franja y chip por estado: Sin vincular, Buscando…, Vinculado, Error;
+  - UUID abreviado con copiar;
+  - **Vincular dispositivo**, **Cancelar** o **Desconectar**.
+
+  Conserva el pairing por PIN, la autenticación y el envío de mensajes.
+- **`ColdPassOwnerPasswordModal`.** Reemplaza a `ColdPassPasskeyModal`: pide la contraseña del Owner y, si el vault es anterior, la passkey vieja con la explicación de que se pide una sola vez.
+- **`ColdPassCredentialModal`.** Recibe `openGenerator` para **Generar nueva**.
+- **Hook.** `useColdPassSession` expone `handleSubmitColdPassUnlock({ password, legacyPasskey })`, `handleSubmitColdPassDeletePassword` y `handleSubmitColdPassImportPassword`.
+- **CSS.** Se quitaron del `notia.css` las reglas de la tabla, el historial flotante y la tarjeta Bluetooth anteriores (352 líneas).
+
+**Desvíos del canvas.**
+
+- Fuentes: Space Grotesk y Public Sans no se empaquetan, como en Task Manager y Rutina, así que se ven con Segoe UI.
+- El chip «Sin vincular» usa el gris muted de la paleta en lugar de `#AEB8CA`, que no está en la paleta.
+- Se agregaron el estado Error, el botón **Mandar mensaje** (cuando el canal está autenticado) y los estados vacío y bloqueado, que el canvas no dibuja.
+- Íconos de Lucide.
+
+**Sin cambios.** La passkey del **dispositivo** Bluetooth (canal AUTH/MSG, AES-256-CBC con PBKDF2 de 120 000 rondas) no cambió: la verifica el firmware con su propia passkey.
+
+### Validaciones
+
+- `cargo test --offline -p notia-backend-core` → 414 (antes 412). Pruebas nuevas y actualizadas:
+  - historial fechado, que el formulario no puede falsear;
+  - lectura de vaults sin fechas;
+  - salud (débil gana sobre antigua, sin fecha nunca antigua) y su JSON.
+- `cargo test --offline -p notia-app --features bluetooth` → 434 aprobados + 3 ignorados (antes 430 + 2). Pruebas nuevas:
+  - el vault abre solo con la clave de su Owner y rechaza texto alterado;
+  - la clave deriva de la clave de datos sin ser igual;
+  - migración de un vault con la passkey anterior.
+- **Portapapeles de Windows real.** La prueba ignorada `secret_clipboard::…::probe_copies_and_clears_only_its_own_secret` se corre con `-- --ignored`. Copia (con `ñ`), relee el texto por Win32, borra solo si nadie copió después y conserva una copia posterior. Aprobada en este equipo. Encontró un error que ya está corregido: el número de secuencia se leía con el portapapeles abierto, y al cerrarlo cambiaba, así que nunca se borraba.
+- `cargo check --offline --workspace`: sin errores. Android (`aarch64-linux-android`): sin errores, 59 warnings. Escritorio con tests: 37 warnings. Ninguno en los archivos tocados.
+- `npx tsc -p tsconfig.app.json`: sin errores. `eslint` de lo tocado: sin errores.
+- `npx vitest run` → 377 (88 archivos). Suma `ColdPassView.test.tsx` (9): resumen, filtros, búsqueda, detalle, **Generar nueva**, copiado por el backend, historial y formatos.
+- **Visual.** Harness temporal con Vite y Chrome headless contra el tablero del canvas, rearmado estático y con las mismas fuentes. Las 35 cajas medidas (encabezado, dispositivo, lista, filas, detalle y tarjetas) coinciden a 1 px o menos a 1440 × 900. También se revisaron el tema claro, 760 px y 390 px (lista y detalle).
+- **Pendiente:**
+  - abrir el vault real de la biblioteca (`gaia`), que todavía usa la passkey anterior: la migración se probó solo con un vault sintético;
+  - copiar y borrar el portapapeles en Android real y comprobar que el secreto no aparece en el historial de Windows (Win + V);
+  - el cliente Host/Cliente;
   - build Linux (WSL).

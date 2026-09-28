@@ -35,7 +35,7 @@ export interface NotiaActions {
   windowAction: (action: NotiaWindowAction) => void
   coldPassOpenCredentialModal: () => void
   coldPassImportVault: () => void
-  coldPassEditCredential: (index: number) => void
+  coldPassEditCredential: (index: number, options?: { generate?: boolean }) => void
   coldPassDeleteCredential: (index: number) => Promise<void>
 }
 

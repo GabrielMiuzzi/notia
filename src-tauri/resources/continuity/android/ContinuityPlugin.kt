@@ -5,12 +5,18 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PersistableBundle
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -72,6 +78,55 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(JSObject().put("ok", true))
         } catch (error: Exception) {
             invoke.resolve(JSObject().put("ok", false).put("error", "No se pudo abrir el navegador."))
+        }
+    }
+
+    /**
+     * Copies a ColdPass secret marked as sensitive, so the system preview
+     * hides it, and clears it after `clearAfterMs` if the clipboard still
+     * holds it. Android only lets the app in the foreground read the
+     * clipboard: when Notia is in the background the check cannot be made
+     * and the secret stays, as anything copied by another app would.
+     */
+    @Command
+    fun copySecret(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(SecretArgs::class.java)
+            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText(SECRET_LABEL, args.text)
+            val sensitiveKey = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ClipDescription.EXTRA_IS_SENSITIVE
+            } else {
+                "android.content.extra.IS_SENSITIVE"
+            }
+            clip.description.extras = PersistableBundle().apply { putBoolean(sensitiveKey, true) }
+            val main = Handler(Looper.getMainLooper())
+            main.post {
+                try {
+                    clipboard.setPrimaryClip(clip)
+                } catch (_: Exception) {
+                }
+            }
+            main.postDelayed({
+                try {
+                    val current = clipboard.primaryClip
+                    val stillOurs = current != null &&
+                        current.description.label?.toString() == SECRET_LABEL &&
+                        current.itemCount > 0 &&
+                        current.getItemAt(0).text?.toString() == args.text
+                    if (stillOurs) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            clipboard.clearPrimaryClip()
+                        } else {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }, args.clearAfterMs.coerceIn(1_000L, 600_000L))
+            invoke.resolve(JSObject().put("ok", true))
+        } catch (error: Exception) {
+            invoke.resolve(JSObject().put("ok", false).put("error", "No se pudo copiar al portapapeles."))
         }
     }
 
@@ -164,9 +219,12 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
         const val EXTRA_WORK_KIND = "workKind"
         const val CHANNEL_ID = "notia-continuity"
+        const val SECRET_LABEL = "Notia ColdPass"
     }
 }
 
 private data class WorkArgs(val workKind: String)
 
 private data class UrlArgs(val url: String)
+
+private data class SecretArgs(val text: String, val clearAfterMs: Long)

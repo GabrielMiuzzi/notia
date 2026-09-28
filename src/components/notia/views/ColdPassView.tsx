@@ -1,30 +1,54 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, Copy, Eye, EyeOff, History, Pencil, Search, Trash2, X } from 'lucide-react'
-import { NotiaButton } from '../../common/NotiaButton'
-import type { ColdPassEntry } from '../../../types/coldpass'
-import { useSubmenuEngine } from '../../../hooks/useSubmenuEngine'
-import { NotiaSubmenuPanel } from '../NotiaSubmenuPanel'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, Check, ChevronDown, Copy, Download, ExternalLink, Eye, EyeOff, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import type { ColdPassEntryView, ColdPassHealth } from '../../../types/coldpass'
 import { ColdPassBluetoothCard } from '../ColdPassBluetoothCard'
 import { backendSupports } from '../../../services/transport'
+import { copyColdPassSecret } from '../../../services/coldpass/coldpassStorage'
+import {
+  HEALTH_LABELS,
+  displaySite,
+  formatChanged,
+  formatReplaced,
+  matchesSearch,
+  siteHref,
+  vaultSummary,
+} from './coldpass/coldPassFormat'
+import './coldpass/coldpass.css'
 
-const COLDPASS_COLUMNS = [
-  { id: 'name', label: 'name', width: '14%' },
-  { id: 'website', label: 'website', width: '18%' },
-  { id: 'username', label: 'username', width: '16%' },
-  { id: 'secondary_username', label: 'secondary_username', width: '16%' },
-  { id: 'password', label: 'password', width: '16%' },
-  { id: 'notes', label: 'notes', width: '14%' },
-  { id: 'actions', label: 'acciones', width: '6%' },
-] as const
+const MASK = '••••••••••••'
+const HISTORY_PREVIEW = 3
+const TOAST_MS = 2600
+const ICON = { size: 16, strokeWidth: 1.75 } as const
+
+type HealthFilter = 'all' | 'weak' | 'old'
+
+const FILTERS: { id: HealthFilter; label: string }[] = [
+  { id: 'all', label: 'Todas' },
+  { id: 'weak', label: 'Débiles' },
+  { id: 'old', label: 'Antiguas' },
+]
 
 interface ColdPassViewProps {
-  entries: ColdPassEntry[]
+  entries: ColdPassEntryView[]
   isUnlocked: boolean
   isImportingVault?: boolean
   onCreateCredential: () => void
   onImportVault: () => void
-  onEditCredential: (index: number) => void
+  onEditCredential: (index: number, options?: { generate?: boolean }) => void
   onDeleteCredential: (index: number) => void
+}
+
+function HealthChip({ health }: { health: ColdPassHealth }) {
+  return (
+    <span className="cp-health" data-health={health}>
+      <span className="cp-health__dot" aria-hidden="true" />
+      {HEALTH_LABELS[health]}
+    </span>
+  )
+}
+
+function initialOf(entry: ColdPassEntryView): string {
+  return (entry.name.trim() || entry.website.trim() || '?').charAt(0).toUpperCase()
 }
 
 function ColdPassViewComponent({
@@ -36,325 +60,335 @@ function ColdPassViewComponent({
   onEditCredential,
   onDeleteCredential,
 }: ColdPassViewProps) {
-  const [searchQuery, setSearchQuery] = useState('')
-  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({})
-  const [copiedPasswordKey, setCopiedPasswordKey] = useState<string | null>(null)
-  const [historyMenuState, setHistoryMenuState] = useState<{
-    entryKey: string
-    top: number
-    left: number
-  } | null>(null)
-  const [copiedHistoryKey, setCopiedHistoryKey] = useState<string | null>(null)
-  const [visibleHistoryPasswords, setVisibleHistoryPasswords] = useState<Record<string, boolean>>({})
-  const { triggerRef: historyTriggerRef, panelRef: historyPanelRef } = useSubmenuEngine<
-    HTMLButtonElement,
-    HTMLDivElement
-  >({
-    open: Boolean(historyMenuState),
-    onClose: () => {
-      setHistoryMenuState(null)
-    },
-  })
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<HealthFilter>('all')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // On a narrow view the list and the detail take turns.
+  const [isDetailOpen, setIsDetailOpen] = useState(false)
+  const [isRevealed, setIsRevealed] = useState(false)
+  const [revealedHistory, setRevealedHistory] = useState<Record<string, boolean>>({})
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [toast, setToast] = useState('')
+  const toastTimer = useRef<number | undefined>(undefined)
+  // «Cambiada hace…» is relative to when the view opened.
+  const [now] = useState(() => Date.now())
 
-  const buildEntryKey = useCallback(
-    (entry: ColdPassEntry, index: number): string => entry.id || `${entry.name}-${entry.username}-${index}`,
-    [],
-  )
-  const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const filteredEntries = useMemo(
-    () => entries
-      .map((entry, index) => ({
-        entry,
-        originalIndex: index,
-        entryKey: buildEntryKey(entry, index),
-      }))
-      .filter(({ entry }) => (
-        !normalizedSearchQuery
-        || [
-          entry.name,
-          entry.website,
-          entry.username,
-          entry.secondaryUsername,
-          entry.password,
-          entry.notes,
-        ].some((value) => value.toLowerCase().includes(normalizedSearchQuery))
-      )),
-    [buildEntryKey, entries, normalizedSearchQuery],
-  )
-  const activeHistoryEntry = useMemo(
-    () => (
-      historyMenuState
-        ? entries.find((entry, index) => buildEntryKey(entry, index) === historyMenuState.entryKey) ?? null
-        : null
-    ),
-    [buildEntryKey, entries, historyMenuState],
-  )
+  useEffect(() => () => window.clearTimeout(toastTimer.current), [])
 
-  const handleCopyPassword = async (entryKey: string, password: string) => {
-    await navigator.clipboard.writeText(password)
-    setCopiedPasswordKey(entryKey)
-    window.setTimeout(() => {
-      setCopiedPasswordKey((current) => (current === entryKey ? null : current))
-    }, 1200)
+  const showToast = useCallback((message: string) => {
+    window.clearTimeout(toastTimer.current)
+    setToast(message)
+    toastTimer.current = window.setTimeout(() => setToast(''), TOAST_MS)
+  }, [])
+
+  const copySecret = useCallback(async (text: string, copied: string) => {
+    try {
+      const result = await copyColdPassSecret(text)
+      showToast(result ? `${copied} Se borra del portapapeles en ${result.clearsAfterSeconds} s.` : copied)
+    } catch {
+      showToast('No se pudo copiar al portapapeles.')
+    }
+  }, [showToast])
+
+  const copyText = useCallback(async (text: string, copied: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(copied)
+    } catch {
+      showToast('No se pudo copiar al portapapeles.')
+    }
+  }, [showToast])
+
+  const indexed = useMemo(() => entries.map((entry, index) => ({ entry, index })), [entries])
+  const visible = useMemo(
+    () => indexed.filter(({ entry }) => (filter === 'all' || entry.health === filter) && matchesSearch(entry, query)),
+    [filter, indexed, query],
+  )
+  const selected = indexed.find(({ entry }) => entry.id === selectedId) ?? visible[0] ?? indexed[0] ?? null
+  const counts = useMemo(() => ({
+    all: entries.length,
+    weak: entries.filter((entry) => entry.health === 'weak').length,
+    old: entries.filter((entry) => entry.health === 'old').length,
+  }), [entries])
+
+  const select = (id: string) => {
+    setSelectedId(id)
+    setIsRevealed(false)
+    setIsHistoryOpen(false)
+    setIsDetailOpen(true)
   }
 
-  const handleCopyHistoryPassword = async (historyKey: string, password: string) => {
-    await navigator.clipboard.writeText(password)
-    setCopiedHistoryKey(historyKey)
-    window.setTimeout(() => {
-      setCopiedHistoryKey((current) => (current === historyKey ? null : current))
-    }, 1200)
+  const clearSearch = () => {
+    setQuery('')
+    setFilter('all')
   }
 
-  useEffect(() => {
-    if (!historyMenuState) {
-      return
-    }
-
-    const handleViewportChange = () => {
-      setHistoryMenuState(null)
-    }
-
-    window.addEventListener('resize', handleViewportChange)
-    window.addEventListener('scroll', handleViewportChange, true)
-    return () => {
-      window.removeEventListener('resize', handleViewportChange)
-      window.removeEventListener('scroll', handleViewportChange, true)
-    }
-  }, [historyMenuState])
+  const entry = selected?.entry ?? null
+  const history = entry?.passwordHistory ?? []
+  const shownHistory = isHistoryOpen ? history : history.slice(0, HISTORY_PREVIEW)
+  const href = entry ? siteHref(entry.website) : null
+  const site = entry ? displaySite(entry.website) : ''
 
   return (
-    <main className="notia-main notia-coldpass-view" data-notia-prevent-menu-close>
-      <section className="notia-coldpass-hero" data-notia-prevent-menu-close>
-        {backendSupports('coldpass_bluetooth_status') ? <ColdPassBluetoothCard /> : null}
-        <div className="notia-coldpass-actions" data-notia-prevent-menu-close>
-          <NotiaButton variant="primary" onClick={onCreateCredential} disabled={!isUnlocked}>Nueva credencial</NotiaButton>
-          {backendSupports('coldpass_pick_csv_import') ? (
-            <NotiaButton variant="secondary" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
-              {isImportingVault ? 'Importando...' : 'Importar vault'}
-            </NotiaButton>
-          ) : null}
-        </div>
-        <label className="notia-coldpass-search-bar" aria-label="Buscar credenciales" data-notia-prevent-menu-close>
-          <Search size={16} />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(event) => {
-              setSearchQuery(event.target.value)
-            }}
-            placeholder="Buscar por nombre, sitio, usuario, password o notas..."
-            spellCheck={false}
-          />
-          {searchQuery ? (
-            <NotiaButton
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="notia-coldpass-search-clear"
-              title="Limpiar busqueda"
-              onClick={() => {
-                setSearchQuery('')
-              }}
-            >
-              <X size={16} />
-            </NotiaButton>
-          ) : null}
-        </label>
-        <div className="notia-coldpass-table-shell">
-          <div className="notia-coldpass-table-scroll">
-            <table className="notia-coldpass-table">
-              <colgroup>
-                {COLDPASS_COLUMNS.map((column) => (
-                  <col key={column.id} style={{ width: column.width }} />
-                ))}
-              </colgroup>
-              <thead>
-                <tr>
-                  {COLDPASS_COLUMNS.map((column) => (
-                    <th key={column.id} scope="col">
-                      {column.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEntries.length > 0 ? filteredEntries.map(({ entry, originalIndex, entryKey }) => (
-                  <tr key={entryKey}>
-                    <td>{entry.name}</td>
-                    <td>{entry.website}</td>
-                    <td>{entry.username}</td>
-                    <td>{entry.secondaryUsername}</td>
-                    <td>
-                      <div className="notia-coldpass-password-cell">
-                        <span className="notia-coldpass-password-value">
-                          {visiblePasswords[buildEntryKey(entry, originalIndex)]
-                            ? entry.password
-                            : '•'.repeat(Math.max(entry.password.length, 8))}
-                        </span>
-                          <div className="notia-coldpass-password-actions">
-                          <NotiaButton
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="notia-coldpass-password-action"
-                            title={visiblePasswords[entryKey] ? 'Ocultar password' : 'Mostrar password'}
-                            onClick={() => {
-                              setVisiblePasswords((current) => ({
-                                ...current,
-                                [entryKey]: !current[entryKey],
-                              }))
-                            }}
-                          >
-                            {visiblePasswords[entryKey] ? <EyeOff size={16} /> : <Eye size={16} />}
-                          </NotiaButton>
-                          <NotiaButton
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="notia-coldpass-password-action"
-                            ref={historyMenuState?.entryKey === entryKey ? historyTriggerRef : undefined}
-                            title="Historial de passwords"
-                            onClick={(event) => {
-                              if (historyMenuState?.entryKey === entryKey) {
-                                setHistoryMenuState(null)
-                                return
-                              }
-
-                              const triggerRect = event.currentTarget.getBoundingClientRect()
-                              const preferredWidth = Math.min(320, Math.max(260, window.innerWidth * 0.4))
-                              const nextLeft = Math.min(
-                                Math.max(12, triggerRect.right - preferredWidth),
-                                window.innerWidth - preferredWidth - 12,
-                              )
-
-                              setHistoryMenuState({
-                                entryKey,
-                                top: triggerRect.bottom + 8,
-                                left: nextLeft,
-                              })
-                            }}
-                          >
-                            <History size={16} />
-                          </NotiaButton>
-                          <NotiaButton
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="notia-coldpass-password-action"
-                            title="Copiar password"
-                            onClick={() => {
-                              void handleCopyPassword(entryKey, entry.password)
-                            }}
-                          >
-                            {copiedPasswordKey === entryKey ? <Check size={16} /> : <Copy size={16} />}
-                          </NotiaButton>
-                        </div>
-                      </div>
-                    </td>
-                    <td>{entry.notes}</td>
-                    <td>
-                      <div className="notia-coldpass-row-actions">
-                        <NotiaButton
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="notia-coldpass-password-action"
-                          title="Editar credencial"
-                          onClick={() => {
-                            onEditCredential(originalIndex)
-                          }}
-                        >
-                          <Pencil size={16} />
-                        </NotiaButton>
-                        <NotiaButton
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="notia-coldpass-password-action"
-                          title="Eliminar credencial"
-                          onClick={() => {
-                            onDeleteCredential(originalIndex)
-                          }}
-                        >
-                          <Trash2 size={16} />
-                        </NotiaButton>
-                      </div>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="notia-coldpass-table-empty" colSpan={COLDPASS_COLUMNS.length}>
-                      {isUnlocked
-                        ? normalizedSearchQuery
-                          ? 'No se encontraron credenciales para esa busqueda.'
-                          : 'No hay credenciales todavia.'
-                        : 'ColdPass esta bloqueado.'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+    <main className="notia-main cp-view" data-notia-prevent-menu-close>
+      <div className="cp-wrap">
+        <header className="cp-header">
+          <div className="cp-header__intro">
+            <h1>Contraseñas</h1>
+            <p>{isUnlocked ? vaultSummary(entries) : 'ColdPass está bloqueado'}</p>
           </div>
-        </div>
-      </section>
-      {historyMenuState ? (
-        <NotiaSubmenuPanel
-          ref={historyPanelRef}
-          className="notia-coldpass-password-history-panel"
-          style={{ top: `${historyMenuState.top}px`, left: `${historyMenuState.left}px` }}
-        >
-          <div className="notia-coldpass-password-history-title">Historial</div>
-          {activeHistoryEntry?.passwordHistory.length ? (
-            <div className="notia-coldpass-password-history-list">
-              {activeHistoryEntry.passwordHistory.map((password, historyIndex) => {
-                  const historyKey = `${historyMenuState.entryKey}-${historyIndex}`
-                  return (
-                    <div key={historyKey} className="notia-coldpass-password-history-item">
-                      <span className="notia-coldpass-password-history-value">
-                        {visibleHistoryPasswords[historyKey]
-                          ? password
-                          : '•'.repeat(Math.max(password.length, 8))}
-                      </span>
-                      <div className="notia-coldpass-password-history-actions">
-                        <NotiaButton
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="notia-coldpass-password-action"
-                          title={visibleHistoryPasswords[historyKey] ? 'Ocultar password historica' : 'Mostrar password historica'}
-                          onClick={() => {
-                            setVisibleHistoryPasswords((current) => ({
-                              ...current,
-                              [historyKey]: !current[historyKey],
-                            }))
-                          }}
-                        >
-                          {visibleHistoryPasswords[historyKey] ? <EyeOff size={16} /> : <Eye size={16} />}
-                        </NotiaButton>
-                        <NotiaButton
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="notia-coldpass-password-action"
-                          title="Copiar password historica"
-                          onClick={() => {
-                            void handleCopyHistoryPassword(historyKey, password)
-                          }}
-                        >
-                          {copiedHistoryKey === historyKey ? <Check size={16} /> : <Copy size={16} />}
-                        </NotiaButton>
+          <div className="cp-search">
+            <Search {...ICON} size={18} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Buscar credenciales"
+              placeholder="Buscar por nombre, sitio, usuario o notas"
+              value={query}
+              spellCheck={false}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <div className="cp-header__actions">
+            {backendSupports('coldpass_pick_csv_import') ? (
+              <button type="button" className="cp-btn cp-btn--ghost" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
+                <Download {...ICON} size={18} aria-hidden="true" />
+                {isImportingVault ? 'Importando…' : 'Importar vault'}
+              </button>
+            ) : null}
+            <button type="button" className="cp-btn cp-btn--primary" onClick={onCreateCredential} disabled={!isUnlocked}>
+              <Plus size={18} strokeWidth={2} aria-hidden="true" />
+              Nueva credencial
+            </button>
+          </div>
+        </header>
+
+        {backendSupports('coldpass_bluetooth_status') ? <ColdPassBluetoothCard onCopied={showToast} /> : null}
+
+        <div className="cp-split" data-detail-open={isDetailOpen && Boolean(entry)}>
+          <nav className="cp-list" aria-label="Credenciales">
+            <div className="cp-filters">
+              {FILTERS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="cp-chip"
+                  aria-pressed={filter === item.id}
+                  onClick={() => setFilter(item.id)}
+                >
+                  {item.label}
+                  <span className="cp-chip__count">{counts[item.id]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="cp-rows">
+              {visible.map(({ entry: item }) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="cp-row"
+                  aria-pressed={item.id === entry?.id}
+                  onClick={() => select(item.id)}
+                >
+                  <span className="cp-row__tile" aria-hidden="true">{initialOf(item)}</span>
+                  <span className="cp-row__text">
+                    <span className="cp-row__name">{item.name || 'Sin nombre'}</span>
+                    <span className="cp-row__sub">{displaySite(item.website) || item.username || 'Sin sitio'}</span>
+                  </span>
+                  <HealthChip health={item.health} />
+                </button>
+              ))}
+              {isUnlocked && entries.length === 0 ? (
+                <div className="cp-empty">
+                  <p>Todavía no hay credenciales. Guardá la primera o importá un vault en CSV.</p>
+                  <button type="button" className="cp-btn cp-btn--ghost cp-btn--small" onClick={onCreateCredential}>Nueva credencial</button>
+                </div>
+              ) : null}
+              {isUnlocked && entries.length > 0 && visible.length === 0 ? (
+                <div className="cp-empty">
+                  <p>Ninguna credencial coincide con la búsqueda o el filtro.</p>
+                  <button type="button" className="cp-btn cp-btn--ghost cp-btn--small" onClick={clearSearch}>Limpiar búsqueda</button>
+                </div>
+              ) : null}
+              {!isUnlocked ? (
+                <div className="cp-empty"><p>ColdPass está bloqueado. Desbloquealo con la contraseña del Owner.</p></div>
+              ) : null}
+            </div>
+          </nav>
+
+          <section className="cp-detail" aria-label="Detalle de la credencial">
+            {entry && selected ? (
+              <>
+                <button type="button" className="cp-back" onClick={() => setIsDetailOpen(false)}>
+                  <ArrowLeft {...ICON} aria-hidden="true" />
+                  Credenciales
+                </button>
+                <div className="cp-detail__head">
+                  <span className="cp-detail__tile" aria-hidden="true">{initialOf(entry)}</span>
+                  <div className="cp-detail__title">
+                    <h2>{entry.name || 'Sin nombre'}</h2>
+                    {href ? (
+                      <a className="cp-site" href={href} target="_blank" rel="noopener noreferrer">
+                        {site}
+                        <ExternalLink size={14} strokeWidth={1.75} aria-hidden="true" />
+                      </a>
+                    ) : site ? <span className="cp-site">{site}</span> : null}
+                  </div>
+                  <button type="button" className="cp-btn cp-btn--ghost" onClick={() => onEditCredential(selected.index)}>
+                    <Pencil {...ICON} aria-hidden="true" />
+                    Editar
+                  </button>
+                  <button type="button" className="cp-icon cp-icon--danger" aria-label="Eliminar credencial" onClick={() => onDeleteCredential(selected.index)}>
+                    <Trash2 {...ICON} size={18} aria-hidden="true" />
+                  </button>
+                </div>
+
+                <div className="cp-detail__grid">
+                  <div className="cp-detail__col">
+                    <section className="cp-card cp-card--password" aria-label="Contraseña">
+                      <div className="cp-card__row">
+                        <h3 className="cp-card__label">Contraseña</h3>
+                        <HealthChip health={entry.health} />
+                        <span className="cp-muted">{formatChanged(entry.passwordChangedAt, now)}</span>
                       </div>
-                    </div>
-                  )
-                })}
-            </div>
-          ) : (
-            <div className="notia-coldpass-password-history-empty">
-              No hay passwords anteriores.
-            </div>
-          )}
-        </NotiaSubmenuPanel>
+                      <div className="cp-password">
+                        <span className="cp-password__value cp-mono">{isRevealed ? entry.password || 'Sin contraseña' : MASK}</span>
+                        <button
+                          type="button"
+                          className="cp-icon"
+                          aria-label={isRevealed ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                          onClick={() => setIsRevealed((current) => !current)}
+                        >
+                          {isRevealed ? <EyeOff {...ICON} size={18} aria-hidden="true" /> : <Eye {...ICON} size={18} aria-hidden="true" />}
+                        </button>
+                        <button
+                          type="button"
+                          className="cp-btn cp-btn--primary"
+                          disabled={!entry.password}
+                          onClick={() => void copySecret(entry.password, 'Contraseña copiada.')}
+                        >
+                          <Copy size={16} strokeWidth={2} aria-hidden="true" />
+                          Copiar
+                        </button>
+                      </div>
+                      {entry.health === 'weak' ? (
+                        <div className="cp-alert" data-tone="weak">
+                          <p>Es corta y fácil de adivinar. Reemplazala por una generada.</p>
+                          <button type="button" className="cp-btn cp-btn--ghost cp-btn--small" onClick={() => onEditCredential(selected.index, { generate: true })}>Generar nueva</button>
+                        </div>
+                      ) : null}
+                      {entry.health === 'old' ? (
+                        <div className="cp-alert" data-tone="old">
+                          <p>Tiene más de un año sin cambios. Conviene rotarla.</p>
+                          <button type="button" className="cp-btn cp-btn--ghost cp-btn--small" onClick={() => onEditCredential(selected.index, { generate: true })}>Generar nueva</button>
+                        </div>
+                      ) : null}
+                    </section>
+
+                    <section className="cp-card cp-card--access" aria-label="Acceso">
+                      <div className="cp-field">
+                        <span className="cp-field__label">Usuario</span>
+                        <span className={entry.username ? 'cp-field__value' : 'cp-field__value cp-muted'}>{entry.username || 'Sin usuario'}</span>
+                        {entry.username ? (
+                          <button type="button" className="cp-icon" aria-label="Copiar usuario" onClick={() => void copyText(entry.username, 'Usuario copiado.')}>
+                            <Copy {...ICON} aria-hidden="true" />
+                          </button>
+                        ) : <span />}
+                      </div>
+                      <div className="cp-field">
+                        <span className="cp-field__label">Usuario secundario</span>
+                        <span className={entry.secondaryUsername ? 'cp-field__value' : 'cp-field__value cp-muted'}>{entry.secondaryUsername || 'Sin usuario secundario'}</span>
+                        {entry.secondaryUsername ? (
+                          <button type="button" className="cp-icon" aria-label="Copiar usuario secundario" onClick={() => void copyText(entry.secondaryUsername, 'Usuario secundario copiado.')}>
+                            <Copy {...ICON} aria-hidden="true" />
+                          </button>
+                        ) : <span />}
+                      </div>
+                      <div className="cp-field">
+                        <span className="cp-field__label">Sitio web</span>
+                        <span className={site ? 'cp-field__value' : 'cp-field__value cp-muted'}>{site || 'Sin sitio web'}</span>
+                        {site ? (
+                          <button type="button" className="cp-icon" aria-label="Copiar sitio web" onClick={() => void copyText(entry.website.trim(), 'Sitio web copiado.')}>
+                            <Copy {...ICON} aria-hidden="true" />
+                          </button>
+                        ) : <span />}
+                      </div>
+                    </section>
+                  </div>
+
+                  <div className="cp-detail__col">
+                    <section className="cp-card" aria-label="Historial de contraseñas">
+                      <div className="cp-card__heading">
+                        <h3>Historial</h3>
+                        <span className="cp-muted">{history.length === 1 ? '1 anterior' : `${history.length} anteriores`}</span>
+                      </div>
+                      {history.length > 0 ? (
+                        <div className="cp-history" data-open={isHistoryOpen && history.length > 5}>
+                          {shownHistory.map((record, historyIndex) => {
+                            const key = `${entry.id}-${historyIndex}`
+                            const revealed = Boolean(revealedHistory[key])
+                            return (
+                              <div key={key} className="cp-history__item">
+                                <div className="cp-history__text">
+                                  <span className="cp-history__value cp-mono">{revealed ? record.password : MASK}</span>
+                                  <span className="cp-history__date">{formatReplaced(record.replacedAt)}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="cp-icon"
+                                  aria-label={revealed ? 'Ocultar contraseña anterior' : 'Mostrar contraseña anterior'}
+                                  onClick={() => setRevealedHistory((current) => ({ ...current, [key]: !revealed }))}
+                                >
+                                  {revealed ? <EyeOff {...ICON} aria-hidden="true" /> : <Eye {...ICON} aria-hidden="true" />}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="cp-icon"
+                                  aria-label="Copiar contraseña anterior"
+                                  onClick={() => void copySecret(record.password, 'Contraseña anterior copiada.')}
+                                >
+                                  <Copy {...ICON} aria-hidden="true" />
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <p className="cp-note cp-muted">Sin contraseñas anteriores. Cuando cambies esta, la anterior queda guardada acá.</p>
+                      )}
+                      {history.length > HISTORY_PREVIEW ? (
+                        <button
+                          type="button"
+                          className="cp-btn cp-btn--ghost cp-btn--block"
+                          aria-expanded={isHistoryOpen}
+                          onClick={() => setIsHistoryOpen((current) => !current)}
+                        >
+                          {isHistoryOpen ? `Mostrar solo las ${HISTORY_PREVIEW} más recientes` : `Ver las ${history.length - HISTORY_PREVIEW} anteriores`}
+                          <ChevronDown size={14} strokeWidth={2} aria-hidden="true" className="cp-chevron" data-open={isHistoryOpen} />
+                        </button>
+                      ) : null}
+                    </section>
+
+                    <section className="cp-card cp-card--notes" aria-label="Notas">
+                      <h3 className="cp-card__title">Notas</h3>
+                      <p className={entry.notes ? 'cp-note cp-notes' : 'cp-note cp-muted'}>{entry.notes || 'Sin notas.'}</p>
+                    </section>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="cp-detail__empty">
+                <p className="cp-muted">{isUnlocked ? 'Elegí o creá una credencial para ver su detalle.' : 'El detalle aparece al desbloquear ColdPass.'}</p>
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+
+      {toast ? (
+        <div className="cp-toast" role="status">
+          <Check size={18} strokeWidth={2} aria-hidden="true" />
+          {toast}
+        </div>
       ) : null}
     </main>
   )

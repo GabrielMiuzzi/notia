@@ -104,6 +104,7 @@ fn route(command: &str) -> Option<Route> {
         "coldpass_delete_entry" => coldpass_delete_entry,
         "coldpass_pick_csv_import" => coldpass_pick_csv_import,
         "coldpass_confirm_import" => coldpass_confirm_import,
+        "coldpass_copy_secret" => coldpass_copy_secret,
         "stop_library_tree_watch" => stop_library_tree_watch,
         "list_library_roles" => list_library_roles,
         "create_library_role" => create_library_role,
@@ -328,6 +329,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "coldpass_delete_entry",
     "coldpass_pick_csv_import",
     "coldpass_confirm_import",
+    "coldpass_copy_secret",
     "stop_library_tree_watch",
     "list_library_roles",
     "create_library_role",
@@ -505,6 +507,8 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "library_pick_directory",
     "backend_pick_backup_directory",
     "coldpass_pick_csv_import",
+    // The clipboard of this device.
+    "coldpass_copy_secret",
     // Opens the browser and listens on the loopback address of this computer.
     "backend_connect_mail_account",
     "backend_cancel_mail_account_connection",
@@ -924,6 +928,10 @@ fn coldpass_confirm_import(app: &AppHandle, _window_label: &str, command: &str, 
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_confirm_import(arg0, arg1).await) })))
+}
+
+fn coldpass_copy_secret(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::coldpass::coldpass_copy_secret(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn stop_library_tree_watch(app: &AppHandle, window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

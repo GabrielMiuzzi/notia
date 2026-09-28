@@ -373,7 +373,10 @@ El acceso **Rutina** aparece debajo de **Agenda** en la barra izquierda y abre u
 Gestor de credenciales cifradas integrado en Notia.
 
 - Tus credenciales se almacenan en un archivo `ColdPass.md` dentro de cada librería, **cifrado con AES-256-GCM**.
-- La **passkey** (contraseña maestra) nunca sale del dispositivo: el cifrado y descifrado ocurren localmente en la app.
+- Se abre con la **contraseña del Owner**, la misma con la que iniciás sesión en Notia; no hay una contraseña aparte. Aunque tengas «Recordar sesión», ColdPass la pide cada vez que lo abrís y se bloquea al salir. Eliminar una credencial o importar un vault también la piden. Si cambiás la contraseña del Owner, ColdPass sigue abriéndose con la nueva.
+- La pantalla tiene la lista de credenciales con buscador y filtros (**Todas**, **Débiles**, **Antiguas**) y, al lado, el detalle: contraseña (mostrar y copiar), usuario, usuario secundario, sitio web, historial de contraseñas anteriores con su fecha y notas. En el teléfono, la lista y el detalle se ven de a uno.
+- Cada contraseña muestra si es **Fuerte**, **Débil** (corta, fácil de adivinar o con el nombre, el sitio o el usuario adentro) o **Antigua** (más de un año sin cambiar), y ofrece **Generar nueva**.
+- Al copiar una contraseña, Notia la borra del portapapeles a los 30 segundos si no copiaste otra cosa (Windows y Android). En Windows tampoco queda en el historial del portapapeles.
 - Generador de contraseñas seguras integrado.
 - **Sincronización Bluetooth**: podés sincronizar tu bóveda de credenciales entre dispositivos de forma segura mediante Bluetooth Low Energy (BLE). El proceso incluye emparejamiento con PIN y autenticación de aplicación.
 
@@ -533,10 +536,10 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Almacena credenciales (usuarios, contraseñas, URLs, notas) en un archivo cifrado dentro de la librería activa. El cifrado ocurre localmente en el dispositivo. |
 | **Cuándo usarlo** | Cuando necesitás guardar contraseñas, claves API, datos bancarios o cualquier información sensible de forma segura dentro de tu espacio de conocimiento. |
-| **Pasos para consumir** | 1. En el Icon Rail, seleccionar **"ColdPass"**. 2. Si es la primera vez, se creará automáticamente la carpeta `ColdPass/` y el archivo `ColdPass.md` cifrado. 3. Ingresar una **passkey** (contraseña maestra) para descifrar. 4. Agregar nuevas credenciales mediante el formulario (nombre, usuario, contraseña, URL, notas). 5. Guardar. Los cambios se cifran automáticamente. |
-| **Entradas esperadas** | Passkey (string, mínimo recomendado 12 caracteres). Credenciales: nombre (string, obligatorio), usuario, contraseña, URL, notas (todos strings opcionales). |
-| **Salidas / Resultado** | Archivo `ColdPass/ColdPass.md` cifrado en el filesystem. Lista de credenciales descifradas visualizable solo con la passkey correcta. |
-| **Errores comunes** | **"Passkey incorrecta"**: la contraseña maestra no descifra el archivo. Solución: verificar mayúsculas/minúsculas. Si se olvida, no hay recuperación posible (diseño privacy-first). |
+| **Pasos para consumir** | 1. En el Icon Rail, seleccionar **"ColdPass"**. 2. Ingresar la **contraseña del Owner**. La primera vez se crean la carpeta `ColdPass/` y el archivo `ColdPass.md` cifrado. 3. Agregar credenciales con **Nueva credencial** (nombre, sitio web, usuario, usuario secundario, contraseña, notas). 4. Elegir una credencial de la lista para ver su detalle, copiar la contraseña o editarla. Los cambios se cifran al guardar. |
+| **Entradas esperadas** | Contraseña del Owner. Credenciales: nombre (obligatorio), sitio web, usuario, usuario secundario, contraseña y notas (opcionales). |
+| **Salidas / Resultado** | Archivo `ColdPass/ColdPass.md` cifrado en el filesystem. Lista de credenciales con el estado de cada contraseña (Fuerte, Débil, Antigua) y su historial. |
+| **Errores comunes** | **«La contraseña del Owner no es correcta»**: revisá mayúsculas y minúsculas. Después de varios intentos fallidos hay que esperar 30 segundos. Si se olvida la contraseña del Owner no hay recuperación: se pierden ColdPass y la configuración cifrada. **Vault anterior**: un vault creado con la passkey de antes pide esa passkey una sola vez, junto con la contraseña del Owner; después se abre solo con la del Owner. |
 
 ### Sincronización ColdPass por Bluetooth
 
@@ -702,9 +705,9 @@ En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --
 ### Usar ColdPass
 
 1. En el **Icon Rail**, seleccioná **ColdPass**.
-2. La primera vez, se creará automáticamente una carpeta `ColdPass/` y un archivo `ColdPass.md` cifrado en tu librería activa.
-3. Ingresá una **passkey** (contraseña maestra) para descifrar la bóveda.
-4. Agregá, editá o eliminá credenciales. Cada cambio se cifra automáticamente al guardar.
+2. Ingresá la **contraseña del Owner**. La primera vez se crean una carpeta `ColdPass/` y un archivo `ColdPass.md` cifrado en tu librería activa. Si tu vault es de antes, también te pide su passkey anterior, una sola vez.
+3. Agregá, editá o eliminá credenciales. Cada cambio se cifra automáticamente al guardar. Para eliminar te vuelve a pedir la contraseña del Owner.
+4. Usá los filtros **Débiles** y **Antiguas** para encontrar las contraseñas que conviene cambiar, y **Generar nueva** para reemplazarlas.
 5. Para sincronizar con otro dispositivo:
    - Asegurate de que ambos dispositivos tengan Bluetooth activado.
    - En el dispositivo origen, iniciá la conexión Bluetooth desde ColdPass.
