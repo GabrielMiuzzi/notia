@@ -363,6 +363,57 @@ pub(crate) fn owner_password_set_in_settings(
     Ok(())
 }
 
+// ---------- The Host mode: the library this installation serves (desktop) ----------
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn host_library(app: &AppHandle) -> Result<CatalogLibrary, BackendError> {
+    crate::library_catalog::selected_library(app)
+        .ok_or_else(|| BackendError::new(BackendErrorCode::NotFound, "El host no tiene una biblioteca abierta.", true))
+}
+
+/// Status of the served library for a client's sign-in window. What this
+/// device remembers stays here.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn host_status(app: &AppHandle) -> Result<serde_json::Value, BackendError> {
+    let mut status = app_auth_status(app, AuthLibraryPayload { library_id: None })?;
+    status.remembered = None;
+    status.session_remembered = false;
+    serde_json::to_value(status).map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo leer el estado.", false))
+}
+
+/// A client signs in with the library's Owner: the same checks as the app,
+/// which also unlock the library on this host.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn host_sign_in(app: &AppHandle, username: &str, password: &str) -> Result<(), BackendError> {
+    let library = host_library(app)?;
+    check_cooldown(&library.id)?;
+    let result = sign_in(app, &library, username, password).map(|_| ());
+    record_attempt(&library.id, result.is_ok());
+    result
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn host_first_login(app: &AppHandle, username: &str) -> Result<(), BackendError> {
+    app_auth_first_login(app, FirstLoginPayload { library_id: host_library(app)?.id, username: username.to_string() })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn host_create_password(app: &AppHandle, username: &str, password: &str) -> Result<(), BackendError> {
+    let payload = CreatePasswordPayload { library_id: host_library(app)?.id, username: username.to_string(), password: password.to_string() };
+    app_auth_create_password(app, payload).map(|_| ())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn host_change_password(app: &AppHandle, username: &str, current: &str, new: &str) -> Result<(), BackendError> {
+    let payload = ChangePasswordPayload {
+        library_id: host_library(app)?.id,
+        username: username.to_string(),
+        current: current.to_string(),
+        new: new.to_string(),
+    };
+    app_auth_change_password(app, payload).map(|_| ())
+}
+
 // ---------- Async commands (key derivation takes a moment) ----------
 
 async fn blocking<T: Send + 'static>(run: impl FnOnce() -> Result<T, BackendError> + Send + 'static) -> Result<T, BackendError> {
@@ -371,28 +422,61 @@ async fn blocking<T: Send + 'static>(run: impl FnOnce() -> Result<T, BackendErro
         .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo completar el inicio de sesión.", true))?
 }
 
-pub(crate) async fn backend_app_auth_status(app: AppHandle, payload: AuthLibraryPayload) -> Result<AuthStatus, BackendError> {
-    blocking(move || app_auth_status(&app, payload)).await
+fn to_value(status: AuthStatus) -> Result<serde_json::Value, BackendError> {
+    serde_json::to_value(status).map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo leer el estado.", false))
 }
 
-pub(crate) async fn backend_app_auth_login(app: AppHandle, payload: LoginPayload) -> Result<AuthStatus, BackendError> {
-    blocking(move || app_auth_login(&app, payload)).await
+// A client signs in with its host instead (`host_client`): the library
+// and its configuration are the host's.
+
+pub(crate) async fn backend_app_auth_status(app: AppHandle, payload: AuthLibraryPayload) -> Result<serde_json::Value, BackendError> {
+    let status = if crate::host_client::uses_host(&app) {
+        crate::host_client::auth_status(&app).await
+    } else {
+        blocking(move || app_auth_status(&app, payload).and_then(to_value)).await
+    };
+    // Without it the window cannot open the library: the reason goes to the log.
+    if let Err(error) = &status {
+        log::error!("[notia:auth] the sign-in status failed: {}", error.message);
+    }
+    status
+}
+
+pub(crate) async fn backend_app_auth_login(app: AppHandle, payload: LoginPayload) -> Result<serde_json::Value, BackendError> {
+    if crate::host_client::uses_host(&app) {
+        let LoginPayload { library_id, username, password, remember_session, remember_data } = payload;
+        return crate::host_client::auth_login(&app, &library_id, &username, &password, remember_session, remember_data).await;
+    }
+    blocking(move || app_auth_login(&app, payload).and_then(to_value)).await
 }
 
 pub(crate) async fn backend_app_auth_first_login(app: AppHandle, payload: FirstLoginPayload) -> Result<(), BackendError> {
+    if crate::host_client::uses_host(&app) {
+        return crate::host_client::auth_first_login(&app, &payload.username).await;
+    }
     blocking(move || app_auth_first_login(&app, payload)).await
 }
 
-pub(crate) async fn backend_app_auth_create_password(app: AppHandle, payload: CreatePasswordPayload) -> Result<AuthStatus, BackendError> {
-    blocking(move || app_auth_create_password(&app, payload)).await
+pub(crate) async fn backend_app_auth_create_password(app: AppHandle, payload: CreatePasswordPayload) -> Result<serde_json::Value, BackendError> {
+    if crate::host_client::uses_host(&app) {
+        return crate::host_client::auth_create_password(&app, &payload.username, &payload.password).await;
+    }
+    blocking(move || app_auth_create_password(&app, payload).and_then(to_value)).await
 }
 
-pub(crate) async fn backend_app_auth_change_password(app: AppHandle, payload: ChangePasswordPayload) -> Result<AuthStatus, BackendError> {
-    blocking(move || app_auth_change_password(&app, payload)).await
+pub(crate) async fn backend_app_auth_change_password(app: AppHandle, payload: ChangePasswordPayload) -> Result<serde_json::Value, BackendError> {
+    if crate::host_client::uses_host(&app) {
+        let ChangePasswordPayload { library_id, username, current, new } = payload;
+        return crate::host_client::auth_change_password(&app, &library_id, &username, &current, &new).await;
+    }
+    blocking(move || app_auth_change_password(&app, payload).and_then(to_value)).await
 }
 
-pub(crate) async fn backend_app_auth_logout(app: AppHandle, payload: AuthLibraryPayload) -> Result<AuthStatus, BackendError> {
-    blocking(move || app_auth_logout(&app, payload)).await
+pub(crate) async fn backend_app_auth_logout(app: AppHandle, payload: AuthLibraryPayload) -> Result<serde_json::Value, BackendError> {
+    if crate::host_client::uses_host(&app) {
+        return crate::host_client::auth_logout(&app, payload.library_id.as_deref()).await;
+    }
+    blocking(move || app_auth_logout(&app, payload).and_then(to_value)).await
 }
 
 #[cfg(test)]

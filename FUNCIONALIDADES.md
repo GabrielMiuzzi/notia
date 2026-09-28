@@ -54,12 +54,17 @@
 - ColdPass para credenciales cifradas.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
+- Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
 - Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
 - Temporizador Pomodoro integrado en Task Manager, guardado en el backend para cada biblioteca y usuario.
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
 - Modo servidor sin ventana (`notia --headless`, Windows y Linux): API HTTPS con contraseña del dueño, eventos por WebSocket, registro de bibliotecas por consola y bloqueo exclusivo de la carpeta de datos compartida con la aplicación.
 - Uso de Notia desde el navegador contra un servidor headless: ingreso con la contraseña del dueño, la misma interfaz con eventos en vivo, imágenes de las bibliotecas y dictado grabado en el navegador; recupera los eventos perdidos al reconectar o avisa que hay que recargar; las funciones que dependen del equipo servidor se ocultan.
+- Modo Host y Cliente (Configuraciones → General): el host comparte su biblioteca por un puerto (52480) con verificación de estado; los clientes entran con el Owner y todo (IA, voz, Telegram) pasa por el host; un cliente nunca activa Telegram.
+- Cliente remoto (Windows y Android): trabaja directo sobre el host sin guardar la biblioteca en el dispositivo.
+- Cliente con copia (Windows, Linux y Android, en una carpeta elegida): copia sincronizada de la biblioteca para trabajar sin conexión con IA y voz locales y base de solo lectura; al volver, concilia los archivos y gana el último modificado.
+- Edición en conjunto de notas entre el host y sus clientes, con el bloque que edita cada uno marcado con su color y su nombre.
 - Finanzas personales de seguimiento informal, cargadas y corregidas por el asistente en el chat o Telegram: gastos del mes, tickets, sueldos, resúmenes de tarjeta pagados, cuotas pendientes, ahorro con compra y venta de moneda, servicios mensuales y facturas/boletas.
 - Pantalla de Finanzas con pestañas Resumen, Movimientos, Sueldo y ahorro, y Productos y tickets, adaptada a teléfono, con acciones que llevan preguntas y pedidos al chat.
 - Vínculos automáticos entre tickets, gastos con tarjeta, líneas del resumen, cuotas y servicios, que el asistente informa y puede deshacer; los casos dudosos quedan en «Para revisar» y se responden en la conversación.

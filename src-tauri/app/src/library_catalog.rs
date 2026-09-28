@@ -258,6 +258,47 @@ pub(crate) fn add_desktop_library(app: &AppHandle, folder: &std::path::Path) -> 
     Ok(library)
 }
 
+/// Adds the SAF folder `tree_uri` as a library of this device (the offline
+/// copy of a client). A folder already in the catalog keeps its id.
+#[cfg(target_os = "android")]
+pub(crate) fn add_android_library(app: &AppHandle, tree_uri: &str) -> Result<CatalogLibrary, BackendError> {
+    crate::backend::AndroidTreeUriDto::new(tree_uri)?;
+    let state = app.state::<LibraryCatalogState>();
+    let _guard = state.lock.lock().map_err(|_| storage())?;
+    let mut catalog = read_catalog(app)?;
+    let library = match catalog.libraries.iter().find(|library| library.android_tree_uri.as_deref() == Some(tree_uri)) {
+        Some(library) => library.clone(),
+        None => {
+            let library = CatalogLibrary {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: crate::backend::library_tree::library_display_name(tree_uri),
+                path: tree_uri.to_string(),
+                android_tree_uri: Some(tree_uri.to_string()),
+            };
+            catalog.libraries.push(library.clone());
+            library
+        }
+    };
+    app.state::<crate::library_registry::LibraryBindingRegistry>().register_android_tree(&library.id, tree_uri)?;
+    let catalog = normalize_catalog(catalog)?;
+    write_catalog(app, &catalog)?;
+    Ok(library)
+}
+
+/// Selects `library_id` (when it is in the catalog, or none) and returns
+/// the library selected before.
+pub(crate) fn select_library(app: &AppHandle, library_id: Option<&str>) -> Result<Option<String>, BackendError> {
+    let state = app.state::<LibraryCatalogState>();
+    let _guard = state.lock.lock().map_err(|_| storage())?;
+    let mut catalog = read_catalog(app)?;
+    let previous = catalog.selected_library_id.clone();
+    let selected = library_id.filter(|id| catalog.libraries.iter().any(|library| library.id == *id));
+    catalog.selected_library_id = selected.map(str::to_owned).or_else(|| catalog.libraries.first().map(|library| library.id.clone()));
+    let catalog = normalize_catalog(catalog)?;
+    write_catalog(app, &catalog)?;
+    Ok(previous)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

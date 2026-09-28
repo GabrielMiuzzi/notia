@@ -16,7 +16,7 @@ use crate::error::{BackendError, BackendErrorCode};
 use crate::pomodoro_log::{PomodoroEntryDto, PomodoroEntryInput};
 use crate::task_manager_tools::{
     TaskBoardDto, TaskManagerLibrarySnapshotDto, TaskManagerSnapshotReadDto, TaskMutationDto,
-    TaskPriority, TaskState, TaskTicketDto, TaskUpdateFieldsDto,
+    TaskPriority, TaskState, TaskTicketDto, TaskUpdateFieldsDto, MAX_TASK_ORDER,
 };
 
 pub const DEFAULT_BOARD_NAME: &str = "default";
@@ -943,7 +943,12 @@ fn place_task(
     let next = orders.get(moved_index + 1).copied();
     let single_order = match (previous, next) {
         (None, None) => Some(ORDER_STEP),
-        (None, Some(next)) if next.is_finite() => Some(next - ORDER_STEP),
+        // Before the first: a step below it, or halfway to 0 when a step
+        // would go below 0 (orders are never negative).
+        (None, Some(next)) if next.is_finite() => {
+            let order = if next >= ORDER_STEP { next - ORDER_STEP } else { next / 2.0 };
+            (order < next).then_some(order)
+        }
         (Some(previous), None) if previous.is_finite() => Some(previous + ORDER_STEP),
         (Some(previous), Some(next))
             if previous.is_finite() && next.is_finite() && previous < next =>
@@ -952,7 +957,9 @@ fn place_task(
             (middle != previous && middle != next).then_some(middle)
         }
         _ => None,
-    };
+    }
+    // Out of the valid range: the whole list is numbered again.
+    .filter(|order| (0.0..=MAX_TASK_ORDER).contains(order));
     let arrangement = |path: &str, order: f64| TaskArrangementDto {
         task_path: path.to_string(),
         order,
@@ -1392,9 +1399,13 @@ mod tests {
     }
 
     fn resolve(intent: TaskBoardIntent) -> Result<Vec<TaskMutationDto>, BackendError> {
+        resolve_in(&read(), intent)
+    }
+
+    fn resolve_in(read: &TaskManagerSnapshotReadDto, intent: TaskBoardIntent) -> Result<Vec<TaskMutationDto>, BackendError> {
         let mut counter = 0;
         resolve_board_intent(
-            &read(),
+            read,
             &intent,
             &mut || {
                 counter += 1;
@@ -1540,6 +1551,38 @@ mod tests {
             name: "default".into()
         })
         .is_err());
+    }
+
+    /// Orders written by placing `Hija` before `Madre` stored with `first_order`.
+    fn orders_placing_before(first_order: f64) -> Vec<(String, f64)> {
+        let mut snapshot = read();
+        snapshot.snapshot.tickets[0].order = first_order;
+        let mutations = resolve_in(&snapshot, TaskBoardIntent::PlaceTask {
+            task_path: "task-mannager/work/subTasks/Hija.md".into(),
+            ordered_paths: vec![
+                "task-mannager/work/subTasks/Hija.md".into(),
+                "task-mannager/work/Madre.md".into(),
+            ],
+            group: "Backend".into(),
+            parent_task_name: String::new(),
+        })
+        .expect("placed");
+        mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                TaskMutationDto::UpdateTicket { ticket_id, fields } => fields.order.map(|order| (ticket_id.clone(), order)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn placing_before_a_low_first_task_never_goes_below_zero() {
+        // A step would be negative: halfway to 0 instead.
+        assert_eq!(orders_placing_before(5.0), vec![("t2".to_string(), 2.5)]);
+        // The first task is already at 0: the list is numbered again.
+        assert_eq!(orders_placing_before(0.0), vec![("t2".to_string(), 10.0), ("t1".to_string(), 20.0)]);
+        assert_eq!(orders_placing_before(25.0), vec![("t2".to_string(), 15.0)]);
     }
 
     #[test]

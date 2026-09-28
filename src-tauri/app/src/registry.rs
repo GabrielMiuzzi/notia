@@ -240,6 +240,21 @@ fn route(command: &str) -> Option<Route> {
         "task_manager_delete_pomodoro" => task_manager_delete_pomodoro,
         "task_manager_read_ticket_source" => task_manager_read_ticket_source,
         "task_manager_write_ticket_source" => task_manager_write_ticket_source,
+        "connection_settings" => connection_settings,
+        "save_connection_settings" => save_connection_settings,
+        "test_host_connection" => test_host_connection,
+        "enter_offline_copy" => enter_offline_copy,
+        "leave_offline_copy" => leave_offline_copy,
+        "sync_copy_now" => sync_copy_now,
+        "pick_copy_folder" => pick_copy_folder,
+        "host_sync_manifest" => host_sync_manifest,
+        "host_sync_database" => host_sync_database,
+        "host_sync_write" => host_sync_write,
+        "host_sync_delete" => host_sync_delete,
+        "collab_join" => collab_join,
+        "collab_update" => collab_update,
+        "collab_awareness" => collab_awareness,
+        "collab_leave" => collab_leave,
         _ => return None,
     };
     Some(route)
@@ -428,6 +443,21 @@ pub const COMMAND_NAMES: &[&str] = &[
     "task_manager_delete_pomodoro",
     "task_manager_read_ticket_source",
     "task_manager_write_ticket_source",
+    "connection_settings",
+    "save_connection_settings",
+    "test_host_connection",
+    "enter_offline_copy",
+    "leave_offline_copy",
+    "sync_copy_now",
+    "pick_copy_folder",
+    "host_sync_manifest",
+    "host_sync_database",
+    "host_sync_write",
+    "host_sync_delete",
+    "collab_join",
+    "collab_update",
+    "collab_awareness",
+    "collab_leave",
 ];
 
 /// Commands that act on devices of the computer running Notia (microphone,
@@ -479,6 +509,14 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "backend_connect_mail_account",
     "backend_cancel_mail_account_connection",
     "backend_import_google_cloud_json",
+    // The mode of this device: a client must not change its host's.
+    "connection_settings",
+    "save_connection_settings",
+    "test_host_connection",
+    "enter_offline_copy",
+    "leave_offline_copy",
+    "sync_copy_now",
+    "pick_copy_folder",
 ];
 
 /// Whether a remote client (headless server) may call `command`.
@@ -540,6 +578,10 @@ pub fn dispatch_published(
 /// Single command a host exposes to its clients.
 pub const APP_INVOKE: &str = "app_invoke";
 
+/// Label of the calls a Host-mode server receives from its clients: they
+/// cannot change what only the host decides, such as Telegram.
+pub const CLIENT_WINDOW_LABEL: &str = "client";
+
 /// Body of [`APP_INVOKE`]: a command of the registry and its arguments.
 #[derive(Debug, Deserialize)]
 struct AppInvoke {
@@ -556,9 +598,32 @@ pub fn dispatch_app_invoke(app: &AppHandle, window_label: &str, body: &Value) ->
         Err(error) => return Dispatch::Ready(Err(Value::String(format!("invalid {APP_INVOKE} body: {error}")))),
     };
     let args = if request.args.is_null() { Value::Object(Default::default()) } else { request.args };
+    if let Some(dispatch) = client_dispatch(app, &request.command, &args) {
+        return dispatch;
+    }
     dispatch(app, window_label, &request.command, &args).unwrap_or_else(|| {
         Dispatch::Ready(Err(Value::String(format!("command {} not found", request.command))))
     })
+}
+
+/// A client (Settings → General → «Modo de ejecución») runs on its host
+/// every command except its sign-in, its connection and the preferences of
+/// the device. What only works on the device that runs Notia (recording,
+/// pickers, the mail sign-in in the browser) is not offered to a client.
+fn client_dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Dispatch> {
+    if !crate::host_client::uses_host(app) || crate::backend::connection::is_client_local_command(command) {
+        return None;
+    }
+    if is_remote_command(command) {
+        return Some(crate::host_client::forward(app, command, args.clone()));
+    }
+    route(command)?;
+    let error = crate::backend::BackendError::new(
+        crate::backend::BackendErrorCode::Unsupported,
+        "En modo cliente esta función la ofrece el host: usala desde el equipo host.",
+        false,
+    );
+    Some(Dispatch::Ready(reply_result::<(), _>(Err(error))))
 }
 
 fn arg<T: DeserializeOwned>(command: &str, args: &Value, key: &str) -> Result<T, Value> {
@@ -590,8 +655,11 @@ fn backend_read_library_config(app: &AppHandle, _window_label: &str, command: &s
     Ok(Dispatch::Ready(reply_value(crate::library_config::backend_read_library_config(arg(command, args, "payload")?, app))))
 }
 
-fn backend_write_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_write_library_config(arg(command, args, "payload")?, app))))
+fn backend_write_library_config(app: &AppHandle, window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    // A client never turns Telegram on: neither on its host (its calls come
+    // with the client label) nor on its own device (its offline copy).
+    let from_client = window_label == CLIENT_WINDOW_LABEL || crate::connection::is_client(app);
+    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_write_library_config(arg(command, args, "payload")?, app, from_client))))
 }
 
 fn backend_ensure_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1507,6 +1575,73 @@ fn task_manager_read_ticket_source(app: &AppHandle, _window_label: &str, command
 
 fn task_manager_write_ticket_source(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::task_manager_commands::task_manager_write_ticket_source(app.clone(), arg(command, args, "payload")?, app.state(), app.state()))))
+}
+
+fn connection_settings(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_value(crate::connection::connection_settings(app))))
+}
+
+fn save_connection_settings(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::connection::save_connection_settings(app, arg(command, args, "payload")?))))
+}
+
+fn test_host_connection(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg::<Option<crate::connection::TestHostPayload>>(command, args, "payload")?.unwrap_or_default();
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::connection::test_host_connection(arg0, arg1).await) })))
+}
+
+fn enter_offline_copy(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_mirror::enter_offline_copy(app))))
+}
+
+fn leave_offline_copy(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_mirror::leave_offline_copy(app))))
+}
+
+fn sync_copy_now(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::host_mirror::sync(&app).await) })))
+}
+
+fn pick_copy_folder(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        let picked = crate::host_mirror::pick_copy_folder(app.clone()).await;
+        reply_result(picked.map(|()| crate::connection::connection_settings(&app)))
+    })))
+}
+
+fn host_sync_manifest(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_manifest(app, arg(command, args, "payload")?))))
+}
+
+fn host_sync_database(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_database(app, arg(command, args, "payload")?))))
+}
+
+fn host_sync_write(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_write(app, arg(command, args, "payload")?))))
+}
+
+fn host_sync_delete(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_delete(app, arg(command, args, "payload")?))))
+}
+
+fn collab_join(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::collab::collab_join(app, arg(command, args, "payload")?))))
+}
+
+fn collab_update(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::collab::collab_update(app, arg(command, args, "payload")?))))
+}
+
+fn collab_awareness(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::collab::collab_awareness(app, arg(command, args, "payload")?))))
+}
+
+fn collab_leave(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::collab::collab_leave(app, arg(command, args, "payload")?))))
 }
 
 #[cfg(test)]

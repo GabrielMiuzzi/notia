@@ -43,7 +43,11 @@ const STATUS_ACTIONS = [
 ] as const
 const TOUCH_DRAG_DELAY_MS = 350
 const TOUCH_DRAG_CANCEL_DISTANCE_PX = 10
+/** A finger this close to the top or bottom edge scrolls the board. */
+const TOUCH_AUTOSCROLL_EDGE_PX = 72
+const TOUCH_AUTOSCROLL_MAX_STEP_PX = 18
 const EMPTY_TASKS: TaskItem[] = []
+const EMPTY_NAMES: string[] = []
 const UNGROUPED_NAME = 'Sin grupo'
 const UNGROUPED_COLOR = '#64748b'
 
@@ -67,8 +71,14 @@ interface BoardColumn {
   managed: boolean
 }
 
-/** What a long press picked up: a top-level task or a group header. */
-type TouchDragItem = { kind: 'task'; taskPath: string } | { kind: 'group'; groupName: string }
+/** What a long press picked up: a top-level task, a subtask or a group header. */
+type TouchDragItem =
+  | { kind: 'task'; taskPath: string }
+  | { kind: 'subtask'; taskPath: string; parentTaskPath: string }
+  | { kind: 'group'; groupName: string }
+
+/** Moves of the card's «Mover» menu, the touch alternative to dragging. */
+export type TaskMove = { kind: 'up' } | { kind: 'down' } | { kind: 'group'; groupName: string }
 
 interface TouchDragState {
   pointerId: number
@@ -131,6 +141,19 @@ export function TaskBoardView({
   const [subtaskDropTarget, setSubtaskDropTarget] = useState<{ parentTaskPath: string; index: number } | null>(null)
   const [isTouchDragging, setIsTouchDragging] = useState(false)
   const touchDragRef = useRef<TouchDragState | null>(null)
+  // A finger or a pen drags with a long press; the native drag of the
+  // browser (Android starts it on a long press over a draggable element)
+  // would take the gesture away, so it is only offered to the mouse.
+  const [coarseInput, setCoarseInput] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+  ))
+  const subtaskDropTargetRef = useRef<{ parentTaskPath: string; index: number } | null>(null)
+  const autoScrollRef = useRef<{ frame: number | null; x: number; y: number }>({ frame: null, x: 0, y: 0 })
+  const retargetRef = useRef<(clientX: number, clientY: number) => void>(() => {})
+  // What the finger carries, drawn next to it while it drags.
+  const [touchGhostLabel, setTouchGhostLabel] = useState<string | null>(null)
+  const touchGhostRef = useRef<HTMLDivElement | null>(null)
+  const touchGhostPositionRef = useRef({ x: 0, y: 0 })
   const draggedTaskPathRef = useRef<string | null>(null)
   const boardRef = useRef<HTMLDivElement | null>(null)
 
@@ -308,27 +331,25 @@ export function TaskBoardView({
   }, [])
 
   const handleSubtaskDragOverTarget = useCallback((parentTaskPath: string, targetIndex: number) => {
-    setSubtaskDropTarget((previous) => {
-      if (previous?.parentTaskPath === parentTaskPath && previous.index === targetIndex) {
-        return previous
-      }
-
-      return { parentTaskPath, index: targetIndex }
-    })
+    const current = subtaskDropTargetRef.current
+    if (current?.parentTaskPath === parentTaskPath && current.index === targetIndex) {
+      return
+    }
+    subtaskDropTargetRef.current = { parentTaskPath, index: targetIndex }
+    setSubtaskDropTarget(subtaskDropTargetRef.current)
   }, [])
 
   const handleSubtaskDragLeaveTarget = useCallback((parentTaskPath: string, targetIndex: number) => {
-    setSubtaskDropTarget((previous) => {
-      if (previous?.parentTaskPath === parentTaskPath && previous.index === targetIndex) {
-        return null
-      }
-
-      return previous
-    })
+    const current = subtaskDropTargetRef.current
+    if (current?.parentTaskPath === parentTaskPath && current.index === targetIndex) {
+      subtaskDropTargetRef.current = null
+      setSubtaskDropTarget(null)
+    }
   }, [])
 
   const handleSubtaskDragEnd = useCallback(() => {
     setDraggedSubtaskPath(null)
+    subtaskDropTargetRef.current = null
     setSubtaskDropTarget(null)
   }, [])
 
@@ -394,6 +415,7 @@ export function TaskBoardView({
   const handleSubtaskDrop = useCallback(async (targetParentTask: TaskItem, targetIndex: number) => {
     const draggedSubtask = draggedSubtaskPath ? boardTasks.find((task) => task.filePath === draggedSubtaskPath) : undefined
     setDraggedSubtaskPath(null)
+    subtaskDropTargetRef.current = null
     setSubtaskDropTarget(null)
     if (!draggedSubtask || !parentTaskBySubtaskPath.has(draggedSubtask.filePath)) {
       return
@@ -416,6 +438,36 @@ export function TaskBoardView({
       parentTaskPath: targetParentTask.filePath,
     }, targetParentTask.fileName, targetParentTask.group)
   }, [boardTasks, draggedSubtaskPath, parentTaskBySubtaskPath, placeTask, subtasksByParentPath])
+
+  /** The card's «Mover» menu: one place up or down, or to the end of another group. */
+  const handleMoveTask = useCallback((task: TaskItem, move: TaskMove) => {
+    const groupName = task.group || UNGROUPED_NAME
+    const groupTasks = groupedTopLevelTasks[groupName] ?? EMPTY_TASKS
+    const index = groupTasks.findIndex((item) => item.filePath === task.filePath)
+    if (index < 0) {
+      return
+    }
+    if (move.kind === 'group') {
+      const targetCount = (groupedTopLevelTasks[move.groupName] ?? EMPTY_TASKS).length
+      void handleTopLevelTaskDrop(move.groupName, targetCount, task.filePath)
+      return
+    }
+    const nextIndex = move.kind === 'up' ? index - 1 : index + 1
+    if (nextIndex < 0 || nextIndex >= groupTasks.length) {
+      return
+    }
+    void handleTopLevelTaskDrop(groupName, nextIndex, task.filePath)
+  }, [groupedTopLevelTasks, handleTopLevelTaskDrop])
+
+  /** Groups each card can be moved to: the configured ones but its own. */
+  const moveTargetsByGroup = useMemo(() => {
+    const names = groups.map((group) => group.name)
+    const targets = new Map<string, string[]>()
+    for (const column of columns) {
+      targets.set(column.group.name, names.filter((name) => name !== column.group.name))
+    }
+    return targets
+  }, [columns, groups])
 
   /** Index among the other tasks of the group, from the vertical centre of each card. */
   const resolveTaskDropTarget = useCallback((groupNode: HTMLElement, clientY: number): TaskDropTarget | null => {
@@ -484,21 +536,38 @@ export function TaskBoardView({
     }
   }
 
+  const stopAutoScroll = useCallback(() => {
+    const scroll = autoScrollRef.current
+    if (scroll.frame !== null) {
+      window.cancelAnimationFrame(scroll.frame)
+      scroll.frame = null
+    }
+  }, [])
+
   const clearTouchDrag = useCallback(() => {
     const touchDrag = touchDragRef.current
     if (touchDrag && touchDrag.timerId !== null) {
       window.clearTimeout(touchDrag.timerId)
     }
     touchDragRef.current = null
+    stopAutoScroll()
     setIsTouchDragging(false)
+    setTouchGhostLabel(null)
     clearTopLevelTaskDrag()
     clearGroupDrag()
-  }, [clearGroupDrag, clearTopLevelTaskDrag])
+    if (touchDrag?.item.kind === 'subtask') {
+      handleSubtaskDragEnd()
+    }
+  }, [clearGroupDrag, clearTopLevelTaskDrag, handleSubtaskDragEnd, stopAutoScroll])
 
   useEffect(() => () => {
     const touchDrag = touchDragRef.current
     if (touchDrag && touchDrag.timerId !== null) {
       window.clearTimeout(touchDrag.timerId)
+    }
+    const scroll = autoScrollRef.current
+    if (scroll.frame !== null) {
+      window.cancelAnimationFrame(scroll.frame)
     }
   }, [])
 
@@ -511,23 +580,127 @@ export function TaskBoardView({
     document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.tareas-group[data-group]')?.dataset.group ?? null
   ), [])
 
+  /** The row a dragged subtask would take, counting the dragged one, within its own task. */
+  const resolveTouchSubtaskTarget = useCallback((clientX: number, clientY: number, parentTaskPath: string) => {
+    const list = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.tareas-card-subtask-list[data-parent-task]')
+    if (!list || list.dataset.parentTask !== parentTaskPath) {
+      return null
+    }
+    const rows = Array.from(list.querySelectorAll<HTMLElement>(':scope > .tareas-card-subtask-row'))
+    const index = rows.findIndex((row) => {
+      const bounds = row.getBoundingClientRect()
+      return clientY < bounds.top + bounds.height / 2
+    })
+    return index < 0 ? rows.length : index
+  }, [])
+
+  /** Where the dragged item would land under the finger, shown on the board. */
+  const retargetTouchDrag = useCallback((clientX: number, clientY: number) => {
+    const touchDrag = touchDragRef.current
+    if (!touchDrag?.active) {
+      return
+    }
+    const { item } = touchDrag
+    if (item.kind === 'group') {
+      const groupName = resolveTouchGroupTarget(clientX, clientY)
+      setGroupDropTargetName((previous) => (previous === groupName ? previous : groupName))
+      return
+    }
+    if (item.kind === 'subtask') {
+      const index = resolveTouchSubtaskTarget(clientX, clientY, item.parentTaskPath)
+      if (index !== null) {
+        handleSubtaskDragOverTarget(item.parentTaskPath, index)
+      }
+      return
+    }
+    const target = resolveTouchDropTarget(clientX, clientY)
+    if (target) {
+      setTaskDropTarget(target)
+    }
+  }, [handleSubtaskDragOverTarget, resolveTouchDropTarget, resolveTouchGroupTarget, resolveTouchSubtaskTarget, setTaskDropTarget])
+
+  useEffect(() => {
+    retargetRef.current = retargetTouchDrag
+  }, [retargetTouchDrag])
+
+  /**
+   * Near the top or bottom edge of what scrolls the board, the board
+   * scrolls under the finger, so a task reaches groups out of sight.
+   */
+  const autoScrollStep = useCallback(() => {
+    const scroll = autoScrollRef.current
+    scroll.frame = null
+    if (!touchDragRef.current?.active) {
+      return
+    }
+    const container = scrollParent(boardRef.current)
+    const bounds = container === document.scrollingElement
+      ? { top: 0, bottom: window.innerHeight }
+      : container.getBoundingClientRect()
+    const top = Math.max(bounds.top, 0)
+    const bottom = Math.min(bounds.bottom, window.innerHeight)
+    const towardTop = scroll.y - top
+    const towardBottom = bottom - scroll.y
+    let step = 0
+    if (towardTop < TOUCH_AUTOSCROLL_EDGE_PX) {
+      step = -Math.ceil(((TOUCH_AUTOSCROLL_EDGE_PX - Math.max(towardTop, 0)) / TOUCH_AUTOSCROLL_EDGE_PX) * TOUCH_AUTOSCROLL_MAX_STEP_PX)
+    } else if (towardBottom < TOUCH_AUTOSCROLL_EDGE_PX) {
+      step = Math.ceil(((TOUCH_AUTOSCROLL_EDGE_PX - Math.max(towardBottom, 0)) / TOUCH_AUTOSCROLL_EDGE_PX) * TOUCH_AUTOSCROLL_MAX_STEP_PX)
+    }
+    if (step === 0) {
+      return
+    }
+    const before = container.scrollTop
+    container.scrollTop = before + step
+    if (container.scrollTop === before) {
+      return
+    }
+    retargetRef.current(scroll.x, scroll.y)
+    scroll.frame = window.requestAnimationFrame(autoScrollStep)
+  }, [])
+
+  /** Places the dragged item's label just above the finger. */
+  const moveTouchGhost = useCallback((clientX: number, clientY: number) => {
+    const ghost = touchGhostRef.current
+    if (ghost) {
+      ghost.style.transform = `translate(${Math.round(clientX)}px, ${Math.round(clientY)}px)`
+    }
+    touchGhostPositionRef.current = { x: clientX, y: clientY }
+  }, [])
+
   const handleTouchPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== 'touch') {
+    const coarse = event.pointerType !== 'mouse'
+    setCoarseInput(coarse)
+    if (!coarse) {
       return
     }
     const target = event.target
-    if (!(target instanceof HTMLElement) || target.closest('button, input, textarea, select, a, [contenteditable="true"]')) {
+    // Controls keep their tap; a link can still be long-pressed to drag.
+    if (!(target instanceof HTMLElement) || target.closest('button, input, textarea, select, [contenteditable="true"]')) {
       return
     }
+    const subtaskRow = target.closest<HTMLElement>('.tareas-card-subtask-row[data-subtask-path]')
+    const subtaskParent = subtaskRow?.closest<HTMLElement>('.tareas-card-subtask-list[data-parent-task]')?.dataset.parentTask
     const taskPath = target.closest<HTMLElement>('.tareas-task-drag-wrap[data-task-path]')?.dataset.taskPath
     const groupName = target.closest<HTMLElement>('.tareas-group-header[data-drag-group]')?.dataset.dragGroup
-    const item: TouchDragItem | null = taskPath
-      ? { kind: 'task', taskPath }
-      : groupName ? { kind: 'group', groupName } : null
+    const item: TouchDragItem | null = subtaskRow?.dataset.subtaskPath && subtaskParent
+      ? { kind: 'subtask', taskPath: subtaskRow.dataset.subtaskPath, parentTaskPath: subtaskParent }
+      : taskPath
+        ? { kind: 'task', taskPath }
+        : groupName ? { kind: 'group', groupName } : null
     if (!item) {
       return
     }
-    event.currentTarget.setPointerCapture(event.pointerId)
+    const board = event.currentTarget
+    const pointerId = event.pointerId
+    const ghostLabel = (
+      item.kind === 'subtask'
+        ? subtaskRow?.querySelector('.tareas-card-subtask-title')?.textContent
+        : item.kind === 'task'
+          ? target.closest('.tareas-task-drag-wrap')?.querySelector('.tareas-task-card-title')?.textContent
+          : item.groupName
+    )?.trim() || 'Tarea'
+    const origin = { x: event.clientX, y: event.clientY }
     const touchDrag: TouchDragState = {
       pointerId: event.pointerId,
       item,
@@ -539,16 +712,29 @@ export function TaskBoardView({
     touchDrag.timerId = window.setTimeout(() => {
       touchDrag.active = true
       touchDrag.timerId = null
+      // Captured only once the long press becomes a drag: a short tap
+      // keeps reaching what it touched (group headers, «+ Subtarea»…).
+      try {
+        board.setPointerCapture(pointerId)
+      } catch {
+        // The finger already left: the drag ends with it.
+      }
       setIsTouchDragging(true)
+      setTouchGhostLabel(ghostLabel)
+      moveTouchGhost(origin.x, origin.y)
       if (item.kind === 'group') {
         setDraggedGroupName(item.groupName)
+        return
+      }
+      if (item.kind === 'subtask') {
+        setDraggedSubtaskPath(item.taskPath)
         return
       }
       startTopLevelTaskDrag(item.taskPath)
       setDraggedTaskHeight(0)
     }, TOUCH_DRAG_DELAY_MS)
     touchDragRef.current = touchDrag
-  }, [startTopLevelTaskDrag])
+  }, [moveTouchGhost, startTopLevelTaskDrag])
 
   const handleTouchPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const touchDrag = touchDragRef.current
@@ -562,16 +748,15 @@ export function TaskBoardView({
       return
     }
     event.preventDefault()
-    if (touchDrag.item.kind === 'group') {
-      const groupName = resolveTouchGroupTarget(event.clientX, event.clientY)
-      setGroupDropTargetName((previous) => (previous === groupName ? previous : groupName))
-      return
+    moveTouchGhost(event.clientX, event.clientY)
+    retargetTouchDrag(event.clientX, event.clientY)
+    const scroll = autoScrollRef.current
+    scroll.x = event.clientX
+    scroll.y = event.clientY
+    if (scroll.frame === null) {
+      scroll.frame = window.requestAnimationFrame(autoScrollStep)
     }
-    const target = resolveTouchDropTarget(event.clientX, event.clientY)
-    if (target) {
-      setTaskDropTarget(target)
-    }
-  }, [clearTouchDrag, resolveTouchDropTarget, resolveTouchGroupTarget, setTaskDropTarget])
+  }, [autoScrollStep, clearTouchDrag, moveTouchGhost, retargetTouchDrag])
 
   const handleTouchPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const touchDrag = touchDragRef.current
@@ -583,8 +768,16 @@ export function TaskBoardView({
     const target = active && item.kind === 'task'
       ? taskDropTargetRef.current ?? resolveTouchDropTarget(event.clientX, event.clientY)
       : null
+    const subtaskTarget = active && item.kind === 'subtask' ? subtaskDropTargetRef.current : null
     clearTouchDrag()
     if (!active) {
+      return
+    }
+    if (item.kind === 'subtask') {
+      const parentTask = topLevelTasks.find((task) => task.filePath === item.parentTaskPath)
+      if (parentTask && subtaskTarget?.parentTaskPath === item.parentTaskPath) {
+        void handleSubtaskDrop(parentTask, subtaskTarget.index)
+      }
       return
     }
     if (item.kind === 'group') {
@@ -597,11 +790,11 @@ export function TaskBoardView({
     if (target) {
       void handleTopLevelTaskDrop(target.groupName, target.index, item.taskPath)
     }
-  }, [clearTouchDrag, handleGroupDrop, handleTopLevelTaskDrop, resolveTouchDropTarget, resolveTouchGroupTarget])
+  }, [clearTouchDrag, handleGroupDrop, handleSubtaskDrop, handleTopLevelTaskDrop, resolveTouchDropTarget, resolveTouchGroupTarget, topLevelTasks])
 
   const handleTouchPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const touchDrag = touchDragRef.current
-    if (!touchDrag || event.pointerType !== 'touch' || touchDrag.pointerId !== event.pointerId) {
+    if (!touchDrag || touchDrag.pointerId !== event.pointerId) {
       return
     }
     clearTouchDrag()
@@ -609,6 +802,21 @@ export function TaskBoardView({
 
   return (
     <>
+      {touchGhostLabel ? (
+        <div
+          ref={(node) => {
+            touchGhostRef.current = node
+            if (node) {
+              const { x, y } = touchGhostPositionRef.current
+              node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
+            }
+          }}
+          className="tareas-touch-ghost"
+          aria-hidden="true"
+        >
+          <span>{touchGhostLabel}</span>
+        </div>
+      ) : null}
       <div className="tareas-board-shell">
         <div
           ref={boardRef}
@@ -702,7 +910,7 @@ export function TaskBoardView({
                   data-group-color={group.color.toLowerCase()}
                   style={{ '--tareas-group-color-base': group.color } as CSSProperties}
                   onClick={() => toggleGroup(group)}
-                  draggable={managed}
+                  draggable={managed && !coarseInput}
                   onDragStart={managed ? (event) => {
                     if (event.dataTransfer) {
                       event.dataTransfer.effectAllowed = 'move'
@@ -747,7 +955,7 @@ export function TaskBoardView({
                           <div
                             className={`tareas-task-drag-wrap${isDragged ? ' is-dragging' : ''}`}
                             data-task-path={task.filePath}
-                            draggable
+                            draggable={!coarseInput}
                             onDragStart={(event) => {
                               if (event.dataTransfer) {
                                 event.dataTransfer.effectAllowed = 'move'
@@ -781,6 +989,11 @@ export function TaskBoardView({
                               onSubtaskDragOverTarget={handleSubtaskDragOverTarget}
                               onSubtaskDragLeaveTarget={handleSubtaskDragLeaveTarget}
                               onSubtaskDrop={handleSubtaskDrop}
+                              nativeDrag={!coarseInput}
+                              canMoveUp={groupTasks[0]?.filePath !== task.filePath}
+                              canMoveDown={groupTasks[groupTasks.length - 1]?.filePath !== task.filePath}
+                              moveGroups={moveTargetsByGroup.get(group.name) ?? EMPTY_NAMES}
+                              onMoveTask={handleMoveTask}
                             />
                           </div>
                         </Fragment>
@@ -871,6 +1084,13 @@ interface TaskCardProps {
   onSubtaskDragOverTarget: (parentTaskPath: string, targetIndex: number) => void
   onSubtaskDragLeaveTarget: (parentTaskPath: string, targetIndex: number) => void
   onSubtaskDrop: (task: TaskItem, targetIndex: number) => Promise<void>
+  /** The mouse drags with the browser's drag and drop; fingers use a long press. */
+  nativeDrag: boolean
+  canMoveUp: boolean
+  canMoveDown: boolean
+  /** Groups the task can be moved to. */
+  moveGroups: string[]
+  onMoveTask: (task: TaskItem, move: TaskMove) => void
 }
 
 function TaskCardComponent({
@@ -894,6 +1114,11 @@ function TaskCardComponent({
   onSubtaskDragOverTarget,
   onSubtaskDragLeaveTarget,
   onSubtaskDrop,
+  nativeDrag,
+  canMoveUp,
+  canMoveDown,
+  moveGroups,
+  onMoveTask,
 }: TaskCardProps) {
   const progressPercent = task.estimatedHours > 0 ? (task.dedicatedHours / task.estimatedHours) * 100 : 0
   const isOverflow = progressPercent > 100
@@ -904,9 +1129,10 @@ function TaskCardComponent({
   const [isDedicatedHoursEditing, setIsDedicatedHoursEditing] = useState(false)
   const [dedicatedHoursDraft, setDedicatedHoursDraft] = useState(() => formatHours(task.dedicatedHours))
   const [isSavingDedicatedHours, setIsSavingDedicatedHours] = useState(false)
-  const [activeMetaMenu, setActiveMetaMenu] = useState<'state' | 'priority' | null>(null)
+  const [activeMetaMenu, setActiveMetaMenu] = useState<'state' | 'priority' | 'move' | null>(null)
   const isStateMenuOpen = activeMetaMenu === 'state'
   const isPriorityMenuOpen = activeMetaMenu === 'priority'
+  const isMoveMenuOpen = activeMetaMenu === 'move'
   const resolvedPriority: TaskPriority = task.priority || 'Media'
   const { triggerRef: stateTagTriggerRef, panelRef: stateTagPanelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
     open: isStateMenuOpen,
@@ -920,6 +1146,18 @@ function TaskCardComponent({
       setActiveMetaMenu((current) => (current === 'priority' ? null : current))
     },
   })
+  const { triggerRef: moveTagTriggerRef, panelRef: moveTagPanelRef } = useSubmenuEngine<HTMLButtonElement, HTMLDivElement>({
+    open: isMoveMenuOpen,
+    onClose: () => {
+      setActiveMetaMenu((current) => (current === 'move' ? null : current))
+    },
+  })
+  const hoursPointerRef = useRef<string>('mouse')
+
+  const handleMove = (move: TaskMove) => {
+    setActiveMetaMenu(null)
+    onMoveTask(task, move)
+  }
 
   const handleStateSelection = (nextState: TaskState) => {
     setActiveMetaMenu(null)
@@ -1090,6 +1328,47 @@ function TaskCardComponent({
           ) : null}
         </div>
 
+        <div className="tareas-card-meta-tag-wrap">
+          <NotiaButton
+            ref={moveTagTriggerRef}
+            variant="ghost"
+            size="sm"
+            className={`tareas-card-meta-tag-trigger tareas-mover${isMoveMenuOpen ? ' is-open' : ''}`}
+            title="Mover la tarea"
+            aria-haspopup="menu"
+            aria-expanded={isMoveMenuOpen}
+            onClick={() => {
+              setActiveMetaMenu((current) => (current === 'move' ? null : 'move'))
+            }}
+          >
+            <span>Mover</span>
+            <TaskManagerIcon name={TASK_ICON_NAME.chevronDown} size={11} />
+          </NotiaButton>
+          {isMoveMenuOpen ? (
+            <div className="tareas-card-meta-menu" ref={moveTagPanelRef} role="menu" aria-label="Mover la tarea">
+              <NotiaButton variant="ghost" size="sm" className="tareas-card-meta-menu-option" role="menuitem" disabled={!canMoveUp} onClick={() => handleMove({ kind: 'up' })}>
+                Subir
+              </NotiaButton>
+              <NotiaButton variant="ghost" size="sm" className="tareas-card-meta-menu-option" role="menuitem" disabled={!canMoveDown} onClick={() => handleMove({ kind: 'down' })}>
+                Bajar
+              </NotiaButton>
+              {moveGroups.length > 0 ? <div className="tareas-card-meta-menu-label">A otro grupo</div> : null}
+              {moveGroups.map((groupName) => (
+                <NotiaButton
+                  key={`${task.filePath}-move-${groupName}`}
+                  variant="ghost"
+                  size="sm"
+                  className="tareas-card-meta-menu-option"
+                  role="menuitem"
+                  onClick={() => handleMove({ kind: 'group', groupName })}
+                >
+                  {groupName}
+                </NotiaButton>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
       </div>
 
       <div className="tareas-card-detail-row">
@@ -1131,6 +1410,7 @@ function TaskCardComponent({
       {subtasks.length > 0 && isSubtasksExpanded ? (
         <div
           className="tareas-card-subtask-list"
+          data-parent-task={task.filePath}
           onDragOver={(event) => {
             event.preventDefault()
             event.stopPropagation()
@@ -1148,7 +1428,8 @@ function TaskCardComponent({
               <div
                 className={`tareas-card-subtask-row${activeSubtaskDropIndex === index ? ' is-drop-target' : ''}`}
                 key={subtask.filePath}
-                draggable
+                data-subtask-path={subtask.filePath}
+                draggable={nativeDrag}
                 onDragStart={(event) => {
                   event.stopPropagation()
                   onSubtaskDragStart(subtask.filePath)
@@ -1250,10 +1531,19 @@ function TaskCardComponent({
                 <span className="tareas-card-progress-band-text-deviation" aria-label={`desvío ${formatHours(task.deviationHours)}`}>→ {formatHours(task.deviationHours)}</span>
               </span>
             ) : (
-              <span onDoubleClick={(event) => {
-                event.stopPropagation()
-                startDedicatedHoursEdit()
-              }}
+              <span
+                onPointerDown={(event) => { hoursPointerRef.current = event.pointerType }}
+                onClick={(event) => {
+                  // A finger has no double click: one tap edits the hours.
+                  if (hoursPointerRef.current !== 'mouse') {
+                    event.stopPropagation()
+                    startDedicatedHoursEdit()
+                  }
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation()
+                  startDedicatedHoursEdit()
+                }}
               >
                 {formatHours(task.dedicatedHours)}/{formatHours(task.estimatedHours)}
                 <span className="tareas-card-progress-band-text-deviation" aria-label={`desvío ${formatHours(task.deviationHours)}`}>→ {formatHours(task.deviationHours)}</span>
@@ -1307,6 +1597,19 @@ function TaskCardComponent({
 }
 
 const TaskCard = memo(TaskCardComponent)
+
+/** The nearest ancestor that scrolls vertically, or the page. */
+function scrollParent(element: HTMLElement | null): HTMLElement {
+  let current = element?.parentElement ?? null
+  while (current) {
+    const overflow = window.getComputedStyle(current).overflowY
+    if ((overflow === 'auto' || overflow === 'scroll') && current.scrollHeight > current.clientHeight) {
+      return current
+    }
+    current = current.parentElement
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? document.documentElement
+}
 TaskCard.displayName = 'TaskCard'
 
 /**

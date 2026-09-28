@@ -13,6 +13,7 @@ import { cursor } from '@milkdown/plugin-cursor'
 import { indent } from '@milkdown/plugin-indent'
 import { trailing } from '@milkdown/plugin-trailing'
 import { clipboard } from '@milkdown/plugin-clipboard'
+import { collab } from '@milkdown/plugin-collab'
 import { codeBlockConfig } from '@milkdown/kit/component/code-block'
 import { commandsCtx } from '@milkdown/kit/core'
 import { blockConfig } from '@milkdown/kit/plugin/block'
@@ -41,6 +42,9 @@ import {
 } from './markdown/WikiLinkSuggestionMenu'
 import { configureWikiLinkSerializer, createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
 import { useMarkdownZoom } from './markdown/useMarkdownZoom'
+import { createCollabBlocksPlugin } from './markdown/collab/collabBlocksPlugin'
+import { startMarkdownCollab, type MarkdownCollabSession } from './markdown/collab/markdownCollab'
+import { collaborationSettings } from '../../../services/collab/collabRuntime'
 import { createXGraphPlaceholder, isXGraphLanguage } from '../../../engines/markdown/xgraphEngine'
 import { observeXGraphPreviews } from '../../../services/markdown/xgraphPreviewRuntime'
 import './markdown/xgraph.css'
@@ -112,6 +116,12 @@ interface MarkdownViewProps {
   lockedContextTag?: string
   libraryId?: string
   onSourceChange: (nextSource: string) => void
+  /**
+   * The note is shared with other windows of the host and another editor
+   * saves it: the source changes without leaving anything to save. Without
+   * it the note is never edited together.
+   */
+  onSharedSourceChange?: (nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
   onSelectionChange: (selection: MarkdownSelectionContext | null) => void
@@ -399,6 +409,7 @@ function MarkdownViewInner({
   lockedContextTag,
   libraryId,
   onSourceChange,
+  onSharedSourceChange,
   wikiLinkTargets,
   onOpenLinkedFile,
   onSelectionChange,
@@ -441,6 +452,11 @@ function MarkdownViewInner({
   const hasFrontmatterRef = useRef(parsedDocument.hasFrontmatter)
   const documentPathRef = useRef(documentPath)
   const onSourceChangeRef = useRef(onSourceChange)
+  const onSharedSourceChangeRef = useRef(onSharedSourceChange)
+  // Shared editing: the session, its cursors and whether another editor saves.
+  const collabSessionRef = useRef<MarkdownCollabSession | null>(null)
+  const collabAwarenessRef = useRef<MarkdownCollabSession['awareness'] | null>(null)
+  const isCollabFollowerRef = useRef(false)
   const wikiLinkSuggestionRequestRef = useRef(0)
   const libraryIdRef = useRef(libraryId)
   const wikiLinkLookupRef = useRef<MarkdownWikiLinkLookup>(wikiLinkLookup)
@@ -514,6 +530,10 @@ function MarkdownViewInner({
   useEffect(() => {
     onSourceChangeRef.current = onSourceChange
   }, [onSourceChange])
+
+  useEffect(() => {
+    onSharedSourceChangeRef.current = onSharedSourceChange
+  }, [onSharedSourceChange])
 
   useEffect(() => {
     libraryIdRef.current = libraryId
@@ -941,6 +961,9 @@ function MarkdownViewInner({
     crepe.editor.use($prose(() => createBlockGapPlugin()))
     crepe.editor.use(clipboard)
 
+    crepe.editor.use(collab)
+    crepe.editor.use($prose(() => createCollabBlocksPlugin(() => collabAwarenessRef.current)))
+
     crepeRef.current = crepe
 
     crepe.on((listener) => {
@@ -966,9 +989,49 @@ function MarkdownViewInner({
         }
 
         latestComposedSourceRef.current = nextSource
-        onSourceChangeRef.current(nextSource)
+        const onShared = onSharedSourceChangeRef.current
+        if (isCollabFollowerRef.current && onShared) {
+          onShared(nextSource)
+        } else {
+          onSourceChangeRef.current(nextSource)
+        }
       })
     })
+
+    const endCollaboration = () => {
+      collabSessionRef.current?.destroy()
+      collabSessionRef.current = null
+      collabAwarenessRef.current = null
+      isCollabFollowerRef.current = false
+    }
+
+    // With other windows of the host on the same note, everyone edits it at
+    // once; the backend keeps the room and picks who saves.
+    const startCollaboration = async () => {
+      const currentLibraryId = libraryIdRef.current
+      if (!currentLibraryId || !onSharedSourceChangeRef.current) return
+      const settings = await collaborationSettings()
+      if (!settings.enabled || !isMounted) return
+      try {
+        const session = await startMarkdownCollab({
+          crepe,
+          libraryId: currentLibraryId,
+          path: documentPathRef.current,
+          deviceName: settings.deviceName,
+          onSaverChange: (saver) => { isCollabFollowerRef.current = !saver },
+          onLost: endCollaboration,
+        })
+        if (!isMounted) {
+          session.destroy()
+          return
+        }
+        collabSessionRef.current = session
+        collabAwarenessRef.current = session.awareness
+      } catch {
+        // The note keeps working on its own.
+        endCollaboration()
+      }
+    }
 
     void crepe.create().then(() => {
       if (!isMounted) {
@@ -977,6 +1040,7 @@ function MarkdownViewInner({
 
       isReadyRef.current = true
       setIsEditorReady(true)
+      void startCollaboration()
       addMathOcrButtons()
       addInlineLatexInkMathButtons()
       const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
@@ -1042,6 +1106,7 @@ function MarkdownViewInner({
       clearDocumentRefs()
       selectionCleanupRef.current?.()
       selectionCleanupRef.current = null
+      endCollaboration()
       void crepe.destroy()
     }
   }, [])

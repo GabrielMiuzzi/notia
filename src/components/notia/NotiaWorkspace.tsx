@@ -94,6 +94,7 @@ function NotiaWorkspaceComponent({
   const handleColdPassEditCredential = useNotiaAction('coldPassEditCredential')
   const handleColdPassDeleteCredential = useNotiaAction('coldPassDeleteCredential')
   const handleTextDocumentChange = useNotiaAction('textDocumentChange')
+  const handleSharedTextDocumentChange = useNotiaAction('sharedTextDocumentChange')
 
   const chatCallbacks = useMemo(() => ({
     onChatCreated: handleChatWorkspaceTreeChanged,
@@ -250,6 +251,7 @@ function NotiaWorkspaceComponent({
       activeDocument={activeDocument}
       saveStatus={saveStatus}
       onTextDocumentChange={handleTextDocumentChange}
+      onSharedTextDocumentChange={handleSharedTextDocumentChange}
       onSelectionChange={onMarkdownSelectionChange}
       externalSourceUpdate={markdownExternalUpdate}
       markdownWikiLinkTargets={markdownWikiLinkTargets}

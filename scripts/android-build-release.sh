@@ -146,16 +146,24 @@ ensure_local_signing_config() {
   echo "[notia] Generated local Android signing config at ${signing_file}" >&2
 }
 
+# Release APKs of the outputs; Gradle keeps debug and other builds next to
+# them, which must never be copied as the release.
+release_apks() {
+  local outputs="${project_root}/src-tauri/gen/android/app/build/outputs/apk"
+  [[ -d "${outputs}" ]] || return 0
+  find "${outputs}" -type f -path '*/release/*' "$@"
+}
+
 copy_ready_apk() {
   local signed_apk
-  signed_apk="$(find "${project_root}/src-tauri/gen/android/app/build/outputs/apk" -type f -name '*.apk' ! -name '*-unsigned.apk' | sort | tail -n 1)"
+  signed_apk="$(release_apks -name '*.apk' ! -name '*-unsigned.apk' | head -n 1)"
 
   if [[ -z "${signed_apk}" ]]; then
     signed_apk="$(sign_unsigned_apk)"
   fi
 
   if [[ -z "${signed_apk}" ]]; then
-    echo "[notia] Signed APK not found after build." >&2
+    echo "[notia] This build made no release APK; an older one is never copied." >&2
     exit 1
   fi
 
@@ -168,7 +176,7 @@ copy_ready_apk() {
 
 sign_unsigned_apk() {
   local unsigned_apk
-  unsigned_apk="$(find "${project_root}/src-tauri/gen/android/app/build/outputs/apk" -type f -name '*-unsigned.apk' | sort | tail -n 1)"
+  unsigned_apk="$(release_apks -name '*-unsigned.apk' | head -n 1)"
 
   if [[ -z "${unsigned_apk}" ]]; then
     return
@@ -221,5 +229,8 @@ if [[ ! -f "${store_file}" ]]; then
   exit 1
 fi
 
+# Only the APK of this build may be copied: earlier release APKs go first,
+# and Gradle packages the new one again.
+release_apks -name '*.apk' -delete
 "${project_root}/scripts/tauri-cli.sh" android build --apk --target aarch64 "$@"
 copy_ready_apk

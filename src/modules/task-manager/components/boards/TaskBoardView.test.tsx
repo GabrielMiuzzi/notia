@@ -272,4 +272,90 @@ describe('TaskBoardView task moves', () => {
       parentTaskName: 'Madre',
     })
   })
+
+  it('moves a subtask with a long press and a finger drag', () => {
+    vi.useFakeTimers()
+    const tasks = [
+      task('Madre', 1),
+      task('S1', 1, { parentTaskName: 'Madre' }),
+      task('S2', 2, { parentTaskName: 'Madre' }),
+      task('S3', 3, { parentTaskName: 'Madre' }),
+    ]
+    const { onPlaceTask, card, board } = renderBoard(tasks)
+    board.setPointerCapture = vi.fn()
+    fireEvent.click(card('Madre').querySelector('.tareas-card-subtasks-toggle')!)
+    const list = card('Madre').querySelector<HTMLElement>('.tareas-card-subtask-list')!
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.tareas-card-subtask-row'))
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const top = Math.max(0, rows.indexOf(this)) * 40
+      return { top, bottom: top + 40, height: 40, left: 0, right: 200, width: 200, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    })
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(list)
+
+    fireEvent.pointerDown(rows[0].querySelector('.tareas-card-subtask-title-wrap')!, { pointerId: 2, pointerType: 'touch', clientX: 10, clientY: 10 })
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    fireEvent.pointerMove(board, { pointerId: 2, pointerType: 'touch', clientX: 10, clientY: 100 })
+    fireEvent.pointerUp(board, { pointerId: 2, pointerType: 'touch', clientX: 10, clientY: 100 })
+
+    expect(onPlaceTask).toHaveBeenCalledWith({
+      taskPath: paths('S1')[0],
+      orderedPaths: paths('S2', 'S3', 'S1'),
+      group: 'Backlog',
+      parentTaskName: 'Madre',
+    })
+  })
+})
+
+describe('TaskBoardView with fingers', () => {
+  const backlog = () => [task('A', 1), task('B', 2), task('C', 3)]
+  const paths = (...names: string[]) => names.map((name) => `task-mannager/Trabajo/${name}.md`)
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('leaves the browser drag to the mouse, so a long press is not taken away', () => {
+    const { card, header, board } = renderBoard(backlog())
+    fireEvent.pointerDown(card('A'), { pointerId: 1, pointerType: 'touch', clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(board, { pointerId: 1, pointerType: 'touch', clientX: 10, clientY: 10 })
+    expect(card('A').getAttribute('draggable')).toBe('false')
+    expect(header('Backlog').getAttribute('draggable')).toBe('false')
+
+    fireEvent.pointerDown(card('A'), { pointerId: 2, pointerType: 'mouse', clientX: 10, clientY: 10 })
+    expect(card('A').getAttribute('draggable')).toBe('true')
+  })
+
+  it('keeps short taps: a tap on a group header folds the group', () => {
+    vi.useFakeTimers()
+    const { group, header, board } = renderBoard(backlog())
+    board.setPointerCapture = vi.fn()
+
+    fireEvent.pointerDown(header('Backlog'), { pointerId: 1, pointerType: 'touch', clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(header('Backlog'), { pointerId: 1, pointerType: 'touch', clientX: 10, clientY: 10 })
+    fireEvent.click(header('Backlog'))
+
+    expect(board.setPointerCapture).not.toHaveBeenCalled()
+    expect(group('Backlog').querySelector('.tareas-card-list')).toBeNull()
+  })
+
+  it('moves a task up, down or to another group from its «Mover» menu', () => {
+    const { onPlaceTask, card } = renderBoard(backlog())
+    const openMove = (name: string) => fireEvent.click(card(name).querySelector('.tareas-mover')!)
+    const option = (name: string, label: string) => Array
+      .from(card(name).querySelectorAll<HTMLButtonElement>('.tareas-card-meta-menu-option'))
+      .find((button) => button.textContent?.trim() === label)!
+
+    openMove('A')
+    expect(option('A', 'Subir').disabled).toBe(true)
+    fireEvent.click(option('A', 'Bajar'))
+    expect(onPlaceTask).toHaveBeenLastCalledWith(expect.objectContaining({ orderedPaths: paths('B', 'A', 'C'), group: 'Backlog' }))
+
+    openMove('C')
+    fireEvent.click(option('C', 'Sprint'))
+    expect(onPlaceTask).toHaveBeenLastCalledWith({ taskPath: paths('C')[0], orderedPaths: paths('C'), group: 'Sprint', parentTaskName: '' })
+  })
 })

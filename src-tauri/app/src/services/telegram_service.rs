@@ -3,6 +3,23 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
+
+/// Set while this device runs as a client (`connection`): its host answers
+/// Telegram, so no call leaves this device, whatever asks for it.
+static CLIENT_DEVICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Blocks (or allows again) every call to Telegram from this device.
+pub(crate) fn set_client_device(client: bool) {
+    CLIENT_DEVICE.store(client, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The Telegram API, unless this device is a client.
+fn api_base() -> Result<&'static str, String> {
+    if CLIENT_DEVICE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("En modo cliente Telegram no se usa en este equipo: lo maneja el host.".to_string());
+    }
+    Ok(TELEGRAM_API_BASE)
+}
 const MAX_MESSAGE_CHARS: usize = 4_000;
 const MAX_AUDIO_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS: u32 = 15 * 60;
@@ -169,7 +186,7 @@ fn endpoint(token: &str, method: &str) -> Result<String, String> {
     {
         return Err("El token de Telegram tiene un formato invalido.".to_string());
     }
-    Ok(format!("{TELEGRAM_API_BASE}/bot{token}/{method}"))
+    Ok(format!("{}/bot{token}/{method}", api_base()?))
 }
 
 fn identity(user: TelegramUser) -> TelegramIdentity {
@@ -408,7 +425,7 @@ pub async fn download_audio(token: &str, audio: &TelegramAudio) -> Result<Vec<u8
                 && !path.split('/').any(|component| component == "..")
         })
         .ok_or_else(|| "Telegram devolvio una ruta de audio no valida.".to_string())?;
-    let download_url = format!("{TELEGRAM_API_BASE}/file/bot{}/{file_path}", token.trim());
+    let download_url = format!("{}/file/bot{}/{file_path}", api_base()?, token.trim());
     let response = client
         .get(download_url)
         .send()
@@ -474,7 +491,7 @@ pub async fn download_photo(token: &str, photo: &TelegramPhoto) -> Result<Vec<u8
                 && !path.split('/').any(|component| component == "..")
         })
         .ok_or_else(|| "Telegram devolvio una ruta de imagen no valida.".to_string())?;
-    let download_url = format!("{TELEGRAM_API_BASE}/file/bot{}/{file_path}", token.trim());
+    let download_url = format!("{}/file/bot{}/{file_path}", api_base()?, token.trim());
     let response = client
         .get(download_url)
         .send()
@@ -545,7 +562,8 @@ pub async fn download_document(
         .ok_or_else(|| "Telegram devolvio una ruta de documento no valida.".to_string())?;
     let response = client
         .get(format!(
-            "{TELEGRAM_API_BASE}/file/bot{}/{file_path}",
+            "{}/file/bot{}/{file_path}",
+            api_base()?,
             token.trim()
         ))
         .send()

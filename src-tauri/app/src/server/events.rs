@@ -113,6 +113,21 @@ impl EventSink for EventHub {
     }
 }
 
+/// Delivers every event of the application to the host's sink (the app
+/// window) and to the hub of remote clients.
+pub(crate) struct TeeEvents {
+    pub(crate) first: Option<std::sync::Arc<dyn EventSink>>,
+    pub(crate) hub: std::sync::Arc<EventHub>,
+}
+
+impl EventSink for TeeEvents {
+    fn emit(&self, event: &str, payload: Value) -> Result<(), String> {
+        let first = self.first.as_ref().map(|sink| sink.emit(event, payload.clone()));
+        let _ = self.hub.emit(event, payload);
+        first.unwrap_or(Ok(()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

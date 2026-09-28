@@ -132,6 +132,10 @@ pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
 }
 
 fn desired_worker(app: &AppHandle) -> Option<(WorkerKey, CatalogLibrary)> {
+    // A client never answers Telegram: its host does.
+    if crate::connection::is_client(app) {
+        return None;
+    }
     let library = crate::library_catalog::selected_library(app)?;
     app.state::<crate::library_registry::LibraryBindingRegistry>().lookup(&library.id).ok()?;
     let config = crate::library_config::read_library_config(app, &library.id).ok()??;

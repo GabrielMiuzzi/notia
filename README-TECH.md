@@ -180,16 +180,20 @@ interface BackendTransport {
 
 ### Protocolo del servidor headless
 
+El mismo protocolo sirve al modo Host de la ventana (ver «Modo Host y Cliente (2026-09-28)»).
+
 Todas las respuestas llevan `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` y `Connection: close`. Las páginas HTML de la interfaz llevan además `Content-Security-Policy`. Todo `POST` exige `Origin: https://<host>`.
 
 | Ruta | Sesión | Respuesta |
 |---|---|---|
-| `GET /api/health` | No | `{ "ok": true, "protocolVersion": 1 }` |
-| `POST /api/auth/login` | No | `200 { ok }` con cookie · `401` contraseña incorrecta · `429` más de 30 intentos por minuto e IP |
+| `GET /api/health` | No | `{ "ok": true, "app": "notia", "protocolVersion": 1, "mode", "platform", "libraryId", "library" }` |
+| `GET /api/auth/status` | No | Estado de inicio de sesión de la biblioteca servida (modo Host) |
+| `POST /api/auth/login` | No | `{ password }` del servidor headless o `{ username, password }` del Owner de la biblioteca: `200 { ok }` con cookie · `401` credenciales incorrectas · `429` más de 30 intentos por minuto e IP |
+| `POST /api/auth/first-login`, `/create-password`, `/change-password` | No | Primer inicio y cambio de contraseña del Owner (10 por minuto e IP); el cambio cierra todas las sesiones |
 | `POST /api/auth/logout` | Opcional | `200 { ok }` y cookie vencida |
 | `GET /api/session` | Opcional | `{ "authenticated": bool }` |
 | `GET /api/capabilities` | Sí | `{ protocolVersion, platform, commands, localOnlyCommands }` |
-| `POST /api/invoke` | Sí | `200 { result }` · `400 { error }` (error del backend) · `403` comando local · `429` más de 600 por minuto y sesión |
+| `POST /api/invoke` | Sí | `200 { result }` · `400 { error }` (error del backend) · `403` comando local · `429` más de 3000 por minuto y sesión |
 | `GET /api/file?path=…` | Sí | Archivo de una biblioteca registrada (máx. 64 MB, `Content-Security-Policy: sandbox`) · `403` fuera de bibliotecas · `404` · `413` |
 | `GET /api/events?since=N` (WebSocket) | Sí | `{ seq, event, payload }` por cada evento. Con `since`, primero los eventos posteriores que el servidor conserva (los últimos 512); si ya no están o `N` es de otra ejecución, `notia:events-lost`. Ping cada 30 s; se cierra al vencer la sesión |
 | Otro `GET` | No | Archivos de `--static-dir`, con `index.html` como respaldo de la SPA; sin carpeta, un texto informativo |
@@ -282,7 +286,9 @@ Llegan por `subscribeBackend`: en la ventana por el `emit` de Tauri y en el nave
 | `notia:routine-data-changed` | `routine_tools.rs` | `routineService` |
 | `notia://telegram-library-changed` | `telegram_worker.rs` | `useTelegramLibraryChanges` |
 | `speech://state`, `speech://partial`, `speech://segments` | `services/speech_service.rs` | `speechService` |
-| `notia:events-lost` | `server/events.rs` (solo servidor headless, al reconectar) | `RemoteApp` (aviso con «Recargar») |
+| `notia:events-lost` | `server/events.rs` (servidor headless o Host, al reconectar) | `RemoteApp` (aviso con «Recargar») |
+| `notia:host-link`, `notia:copy-sync` | `host_client.rs`, `host_mirror.rs` (cliente) | `ClientApp` |
+| `notia:collab-update`, `notia:collab-awareness`, `notia:collab-peers` | `collab.rs` | `markdownCollab.ts` |
 | `notia:request-app-exit` | Bandeja de Windows (host Tauri, no el backend) | `services/window` |
 
 ### Seguridad del servidor y de la carpeta de datos
@@ -2630,6 +2636,12 @@ cargo build --release --no-default-features
 | `npm run install:android:release` | Instala APK release por adb |
 | `npm run build:tauri` | Build release empaquetado Tauri |
 
+Los scripts de Android copian a `builds/android/` solo el artefacto que genera ese mismo build:
+
+- Antes de compilar borran los APK o AAB del mismo tipo que quedaron en `src-tauri/gen/android/app/build/outputs` (release en `build:android:release`, `build:android:aab` e `install:android:release`; debug en `build:android:debug`). Así Gradle vuelve a empaquetar.
+- Después toman solo el de la carpeta `release` o `debug` correspondiente. Si no hay ninguno, fallan en lugar de copiar otro.
+- Antes elegían el último APK por nombre de todas las carpetas y preferían los ya firmados. Como el release sale sin firmar, `notia-release.apk` terminaba siendo un APK debug viejo de `outputs/apk/universal/debug`.
+
 ### 1.4 Variables de Entorno Relevantes
 
 El launcher `scripts/tauri-dev-windows.ps1` reintenta una vez el build multipágina sin minificar cuando `npm run build -- --minify=false` devuelve un código distinto de cero. Esto cubre la detención transitoria del servicio hijo de esbuild; un segundo fallo se propaga y detiene el inicio de Tauri.
@@ -3607,6 +3619,18 @@ La autenticación y autorización vigentes de ese flujo son las descritas en el 
 1. **Carga inicial**: al abrir Task Manager, `vaultRuntime.ts` resuelve el directorio raíz (`task-mannager/` o `task-manager/`) y escanea vía `filesystemEngine.readMarkdownDocuments()` para obtener todos los archivos `.md` del workspace.
 2. **Parseo**: cada archivo `.md` se lee con `read_library_file`. El `frontmatterEngine.ts` extrae metadatos YAML. Las relaciones padre-hijo se resuelven por los campos `parent` / `childs` (strings o arrays de wikilinks). El `taskEngine.ts` convierte los documentos en `TaskItem[]`.
 3. **Vistas**: `TaskBoardView.tsx` renderiza la vista Kanban; `TaskTableView.tsx` renderiza la vista de tabla. Ambas consumen el mismo snapshot de tareas. El contenedor `.tareas-board` es una grilla CSS `repeat(auto-fill, minmax(min(272px, 100%), 1fr))`: cada grupo mide al menos 272 px (o el ancho completo en pantallas más angostas) y los que no entran pasan a la fila siguiente, sin scroll horizontal. Los grupos llegan ordenados por su campo `order`: `library_snapshot` los ordena al proyectar el estado (internamente se indexan por id), así que `reorder-groups` se refleja en la vista. Todo el `.tareas-group` es zona de soltado para grupos y el grupo arrastrado ocupa la posición del destino. El arrastre táctil (`pointerType === 'touch'`, pulsación larga de `TOUCH_DRAG_DELAY_MS`) toma una tarea o un encabezado de grupo (`data-drag-group`); mientras está activo, un listener `touchmove` no pasivo sobre `.tareas-board` bloquea el scroll para que el navegador no cancele el puntero, y antes de la pulsación larga los toques desplazan la página normalmente. Mover tickets: cada columna (`.tareas-group`) tiene un único manejador de dragover/drop para tareas, compartido por mouse y toque (`resolveTaskDropTarget`). La posición es el índice entre las demás tareas visibles del grupo, sin contar la arrastrada, y se calcula comparando el puntero con el centro vertical de cada tarjeta; el hueco se inserta en ese índice, por lo que la disposición no oscila. Soltar usa la posición mostrada (`taskDropTargetRef`), no la recalcula; soltar donde la tarea ya está no envía nada. La lista enviada en `place-task` sale de las tareas visibles, sin las finalizadas o canceladas ocultas. Las subtareas corrigen el índice cuando bajan dentro del mismo padre. Mientras `place-task` está en curso, `applyPendingPlacement` muestra la tarea en su destino; es solo presentación y el snapshot recargado del backend la reemplaza, también si la operación falla. Cubierto por `TaskBoardView.test.tsx`. El arrastre táctil resuelve el destino con `elementFromPoint`, por lo que no depende de la disposición.
+
+   **Uso con los dedos (2026-09-28, corregido en Android).** Antes, en el WebView de Android no se podían mover tickets con el dedo. Había tres causas: la pulsación larga sobre un elemento `draggable` arrancaba el arrastre nativo del sistema y cancelaba el puntero; el tablero capturaba el dedo apenas se apoyaba, así que un toque corto perdía su clic (plegar grupos, «+ Subtarea», «+ Nueva tarea»); y la pulsación larga podía seleccionar texto. Ahora:
+   - **Arrastre nativo solo con mouse:** `coarseInput` sigue el tipo del último puntero (`pointerdown`, sembrado con `(pointer: coarse)`). Con dedo o lápiz, tarjetas, encabezados de grupo y subtareas se renderizan con `draggable="false"`.
+   - **Pulsación larga:** vale para `touch` y `pen`. El tablero captura el puntero recién cuando la pulsación larga se vuelve arrastre (`setPointerCapture` en el temporizador), así los toques cortos llegan a lo que tocaron. Un enlace (el título) puede iniciar el arrastre; los botones y campos, no.
+   - **Subtareas:** se reordenan con pulsación larga dentro de su tarea (`data-subtask-path`, `data-parent-task`, `resolveTouchSubtaskTarget`), con las mismas reglas que con el mouse.
+   - **Desplazamiento automático:** cerca del borde superior o inferior (72 px) del contenedor que desplaza el tablero (`scrollParent`), el tablero se desplaza hasta 18 px por cuadro con `requestAnimationFrame` y el destino se recalcula.
+   - **Etiqueta del dedo:** `.tareas-touch-ghost`, con el nombre de lo arrastrado, sigue al dedo mediante `transform` sin volver a renderizar el tablero.
+   - **Alternativa visible al arrastre:** la etiqueta **Mover** de cada tarjeta abre un menú con Subir, Bajar y «A otro grupo» (los grupos configurados menos el propio). Usa `place-task` igual que soltar (`handleMoveTask`: al final del grupo destino, o un lugar arriba o abajo).
+   - **Horas dedicadas:** con el dedo se editan con un toque (con mouse sigue siendo doble clic).
+   - **Menús que ya no se recortan:** los de la tarjeta (estado, prioridad, Mover) ya no quedan cortados por `content-visibility`, `contain: paint` ni `overflow: hidden`. Esas propiedades se liberan con `:has(.tareas-card-meta-menu)` mientras hay un menú abierto.
+   - **CSS táctil:** con puntero grueso, tarjetas, subtareas y encabezados no seleccionan texto, las opciones de los menús miden 44 px y «Mover» 36 px.
+   - **Validación:** `TaskBoardView.test.tsx` suma que el arrastre nativo queda solo para el mouse, que un toque corto pliega el grupo sin capturar el puntero, el menú Mover (subir, bajar y cambiar de grupo) y la subtarea arrastrada con el dedo. Además se manejó el tablero en Chromium con toques emulados por DevTools: la pulsación larga y el arrastre movieron una tarea a otro grupo, el toque plegó un grupo, «Mover → Bloqueado» movió la tarea y el tablero se desplazó solo (584 px) con el dedo en el borde. Falta probarlo en la tablet.
 4. **Edición**: el usuario modifica tareas (estado, prioridad, subtareas, comentarios, fecha de fin). Cada cambio re-serializa el frontmatter YAML + Markdown del `.md` afectado y se escribe vía `vaultRuntime.writeFileContent()`.
 5. **Archivado**: al completar o cancelar una tarea, `taskManagerService.moveTaskByState()` la mueve a la carpeta `finished/` o `cancelled/` respectivamente, actualizando su frontmatter.
 6. **Sincronización de índices**: `syncTaskIndexesAndMetadata()` reconstruye los archivos `TaskIndex.md` de cada tablero, sincroniza tags y recalcula fechas de fin según horas de actividad del tablero.
@@ -8978,4 +9002,251 @@ Todos son asíncronos; la derivación de la clave tarda un momento.
   - Android (almacenamiento privado, SAF);
   - el Task Manager publicado desde otro equipo;
   - el navegador de un servidor headless;
+  - build Linux (WSL).
+
+## Modo Host y Cliente (2026-09-28)
+
+Configuraciones → General → «Modo de ejecución» sigue el lienzo de Configuraciones (claude.ai/artifact/Ka4XCBqVc1wdudkcoW7y1C), tableros «General · Host», «General · Cliente conectado» y «General · Cliente sin conexión».
+
+| Modo | Qué hace |
+|---|---|
+| **Host** | La instalación guarda la biblioteca y la sirve a los clientes por un puerto. |
+| **Cliente con copia** | Usa la biblioteca de un host y guarda una copia sincronizada para trabajar sin conexión. |
+| **Cliente remoto** | Usa la biblioteca del host sin guardar nada en el equipo. |
+
+**Decisiones de la persona:**
+- El cliente se autentica con el usuario **Owner** de la biblioteca del host, en la misma ventana de login.
+- **Con copia y sin conexión** se usan la IA y la voz locales mientras tanto. Telegram nunca corre en un cliente.
+- Sin conexión, la base SQLite es **de solo lectura**. Las notas y los archivos se pueden editar y se concilian al volver: gana el último modificado, sin importar el dispositivo.
+
+Con conexión, un cliente no llama a Ollama, no usa Telegram y no reconoce voz. Todo pasa por el host.
+
+### Configuración del equipo (`backend-core/src/connection.rs`, `app/src/connection.rs`)
+
+Se guarda en el equipo, no en la biblioteca, en `app_data/connection.json`:
+
+```json
+{ "mode": "client", "clientKind": "copy", "hostAddress": "192.168.0.10:52480", "port": 52480, "hostCertificate": "<sha-256 hex>" }
+```
+
+- **Dirección del host:** acepta `equipo`, `equipo:puerto` y `[ipv6]:puerto`. Quita `https://` y la barra final, exige un puerto de 1024 o más y usa 52480 por defecto. Se guarda normalizada, en minúsculas.
+- **Normalización:**
+  - Un puerto inválido vuelve a 52480.
+  - El certificado recordado se descarta si no es un SHA-256 hex o si no hay host.
+  - Un archivo en modo cliente sin host arranca como Host.
+- **Android:** no tiene servidor. Su «Host» es su propia biblioteca, sin escuchar. «Con copia» guarda la copia en una carpeta que elige la persona (`copyFolder { uri, name }`, validada como tree SAF). Sin esa carpeta, guardar el cliente con copia falla con «Elegí la carpeta donde guardar la copia…».
+
+Comandos. Los tres están en `LOCAL_ONLY_COMMANDS`, así un cliente nunca cambia el modo de su host por `/api/invoke`:
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `connection_settings` | — | `ConnectionView`: `mode`, `clientKind`, `hostAddress`, `canHost`, `server { listening, port, error }`, `link { state: unknown\|online\|offline, library, platform, signedIn, message }`, `hostOnlyCommands`, `canKeepCopy`, `copyNeedsFolder` (Android), `copyFolder` (nombre de la carpeta elegida), `offlineCopy`, `copy` (última sincronización), `collaboration`, `deviceName` |
+| `save_connection_settings` | `payload { mode, clientKind, hostAddress, trustNewCertificate? }` | `{ connection, reload }` |
+| `test_host_connection` | `payload { hostAddress? }` (sin él, el host guardado) | `{ ok, library, latencyMs, message }` |
+
+- **`save_connection_settings`:**
+  - Cliente exige una dirección válida; si no, error `invalidInput` con un ejemplo.
+  - Host conserva la dirección anterior para volver a Cliente.
+  - Otra dirección, o `trustNewCertificate`, descarta el certificado recordado.
+  - Aplica el modo al instante: arranca o detiene el servidor y el enlace.
+- **Recarga:** `reload` es `true` cuando cambia el modo, o cuando un cliente cambia de tipo o de host. La interfaz recarga la ventana, porque el arranque decide de nuevo cómo llega al backend.
+
+### Host (`app/src/host_server.rs`, `app/src/server/api.rs`)
+
+- **Servidor compartido:** las rutas del servidor headless pasaron a `server/api.rs` (`ApiServer`, `ServerKind::{Headless, Host}`). `server/headless.rs` quedó con la línea de comandos. El headless funciona igual que antes.
+- **Arranque:** `notia_app::start_device_services` lo llama la ventana, nunca el headless. En modo Host escucha en `0.0.0.0:<puerto>` (52480) con el certificado autofirmado de `app_data/host-server/tls`. Se detiene al pasar a Cliente. Un puerto ocupado queda como error, «El puerto 52480 está en uso por otro programa», y Configuraciones lo muestra en la fila Puerto («Sin escuchar»).
+- **Eventos:** `create_app` envuelve el emisor en `TeeEvents`, así cada evento llega a la ventana y al `EventHub` (`SharedEventHub`) que lee el WebSocket de los clientes.
+- **Firewall:** la primera vez que escucha, Windows puede pedir permiso de red.
+- **Rutas nuevas o cambiadas** (también en el headless):
+
+  | Ruta | Sesión | Qué hace |
+  |---|---|---|
+  | `GET /api/health` | No | `{ ok, app: "notia", protocolVersion: 1, mode: "host"\|"headless", platform, libraryId, library }` |
+  | `GET /api/auth/status` | No | Estado de la biblioteca seleccionada, igual que `app_auth_status` pero sin lo que recuerda el host |
+  | `POST /api/auth/login` | No | `{ username, password }`: el Owner de la biblioteca, con las mismas comprobaciones que la app (también la desbloquea en el host). `{ password }`: la contraseña del headless, como antes. Sin nada válido, 401 con el mensaje |
+  | `POST /api/auth/first-login`, `/create-password`, `/change-password` | No | «Primer inicio» y cambio de contraseña del Owner. Hasta 10 por minuto por IP. El cambio cierra todas las sesiones |
+  | `POST /api/invoke` | Sí | El límite pasó de 600 a 3000 pedidos por minuto y sesión, porque la edición en conjunto manda un mensaje cada pocas teclas |
+
+### Cliente (`app/src/host_client.rs`)
+
+- **HTTPS con certificado fijado:**
+  - El cliente confía en el certificado que ve la primera vez que el host guardado responde, y guarda su SHA-256 en `hostCertificate` (`pin_host_certificate`).
+  - Después rechaza cualquier otro con «El certificado del host cambió…».
+  - Editar y guardar la dirección (`trustNewCertificate`) vuelve a confiar.
+  - Usa `rustls` con un verificador propio (`PinnedCertificate`) y `reqwest` con TLS preconfigurado y sin proxy.
+  - `Origin` va con la URL del host, como exige el servidor.
+- **Sesión:**
+  - Los comandos `app_auth_*` de un cliente van al host.
+  - La cookie `notia_session` vive en memoria, junto con usuario y contraseña de esa ejecución, para abrir otra sesión si el host se reinició.
+  - «Recordar sesión» guarda la contraseña protegida por el sistema (`config_vault`, clave `host-session-<biblioteca>`). «Recordar datos» usa la clave `host-<biblioteca>`.
+  - Un 401 que no se recupera avisa `notia:host-link` con `signedIn: false`, y la ventana vuelve al login.
+- **Comandos** (`registry::client_dispatch`, antes de `dispatch`). Mientras el enlace usa el host (`uses_host`: cliente y no trabajando con la copia):
+  - `CLIENT_LOCAL_COMMANDS` corre en el equipo: login, conexión, copia y preferencias del dispositivo.
+  - Todo comando remoto va a `/api/invoke`, con el error del backend del host tal cual.
+  - Lo que solo funciona en el equipo que ejecuta Notia (grabación, Meeting, selectores, alta de correo en el navegador) responde `unsupported`: «En modo cliente esta función la ofrece el host…».
+- **Archivos:** el esquema `notiahost` de la ventana (`tauri_host.rs::host_file`) pide `GET /api/file` al host con la sesión. La interfaz lo usa con `convertFileSrc(path, 'notiahost')`. La CSP suma `notiahost:` y `http://notiahost.localhost` en `img-src`, `media-src` y `connect-src`.
+- **Eventos:** un hilo abre `wss://host/api/events` (tungstenite sobre rustls, con la cookie y `Origin`) y emite en la ventana cada evento del host. Al reconectar pide `?since=<último seq>`.
+- **Monitor:** consulta `/api/health` cada 10 s con conexión y cada 4 s sin ella, emite `notia:host-link` cuando cambia el estado y sincroniza la copia.
+- **Servicios apagados en un cliente:** Telegram (`desired_worker`), el agente autónomo, la sincronización de Agenda, los backups, la publicación automática y la precarga del modelo de voz.
+- **`rustls` y `tungstenite`** pasaron a dependencias de todas las plataformas, porque el cliente de Android los usa.
+
+### Interfaz del cliente
+
+- **`src/main.tsx`:** la ventana carga `WindowApp` (`src/components/client/`), que lee `connection_settings`. Host abre la app como siempre. Cliente abre `ClientApp`:
+  1. `test_host_connection`. Si el host no responde:
+     - con copia → `enter_offline_copy` y la app sobre la copia;
+     - si no → pantalla «Sin conexión con el host», con Reintentar, «Guardar esta dirección» y «Usar este equipo como host» (en Android, «Usar la biblioteca de este dispositivo»).
+  2. Instala `createHostTransport` (`src/services/transport/hostTransport.ts`): Tauri IPC, `kind: 'remote'`, la plataforma del host, `supports` que oculta `hostOnlyCommands`, y `fileUrl` con `notiahost`.
+  3. `app_auth_status` del host. Si falta sesión, `LoginScreen` con Recordar sesión y datos.
+  4. Con copia, `sync_copy_now` («Sincronizando la copia local con el host…»). Después, la app.
+- **Estilos:** `ClientApp` (y `RemoteApp`) importan `src/styles/notia.css`, porque el login, «Sin conexión con el host» y «Conectando…» se muestran antes de cargar la app, que es la que traía esa hoja. Sin eso, esas pantallas salían sin diseño (visto en Android).
+- **Avisos:**
+  - Sin conexión durante el uso, un aviso arriba: «Reintentando…», más «Usar la copia local» si hay copia.
+  - Trabajando con la copia, el aviso dice que la base es de solo lectura.
+  - Cuando el host vuelve, cuenta 5 s («Volver ahora») para que el editor guarde; luego `leave_offline_copy` y recarga.
+- **Dictado:** con `kind: 'remote'` la ventana graba y manda el audio a `speech_remote_audio`, y el host lo reconoce. Meeting se oculta porque `start_speech_session` no se ofrece.
+- **`RunModeSection`** (`src/components/notia/settings/`):
+  - Tarjetas de radio Host y Cliente.
+  - Fila Puerto con «Escuchando» o «Sin escuchar» y el puerto.
+  - Tipo de cliente Con copia o Remoto. En Android, Con copia muestra «Carpeta de la copia» con «Elegir carpeta»; elegir Con copia no se guarda hasta tener la carpeta.
+  - Fila del host con estado «Conectado», «No responde» o «Probando…», Editar, Probar conexión, el mensaje del error y la última sincronización de la copia.
+  - Elegir Cliente no aplica nada hasta guardar la dirección.
+  - Usa los tokens de la paleta en los dos temas, apila en una columna por debajo de 560 px de contenedor y da toques de 44 px.
+
+### Copia local («Con copia»)
+
+Archivos: `backend-core/src/mirror_sync.rs`, `app/src/host_sync.rs`, `app/src/host_mirror.rs`.
+
+- **Qué viaja** (`is_synced_path`): los archivos visibles, `.agent/` sin ocultos y `.notia/notiaConfig.json` y `.notia/linkCache.md`. La base `.notia/notia.db` viaja aparte, como copia de solo lectura. Otros ocultos (`.git`, `.obsidian`) no viajan, y las carpetas vacías tampoco.
+- **Dónde:** en Windows y Linux, `app_data/mirror/<biblioteca>/<nombre>/`; en Android, la carpeta SAF elegida (ver abajo). En los dos, el registro de la última sincronización en `app_data/mirror/<biblioteca>.json` (base por archivo con tamaño y fecha de cada lado) y `app_data/mirror/current.json` (host y biblioteca copiados, para arrancar sin conexión).
+- **Comandos del host** (remotos, con sesión del Owner):
+
+  | Comando | Entrada | Salida |
+  |---|---|---|
+  | `host_sync_manifest` | `payload { libraryId }` | `{ root, files: [{ path, size, modifiedMs }], database: { size, modifiedMs } \| null }`. `root` sin el prefijo `\\?\` de Windows, que no acepta `/` |
+  | `host_sync_database` | `payload { libraryId }` | `{ contentBase64, modifiedMs } \| null`: una copia consistente con `VACUUM INTO` aunque el host esté escribiendo |
+  | `host_sync_write` | `payload { libraryId, path, contentBase64, modifiedMs }` | `{ path, size, modifiedMs }`: escribe con archivo temporal y renombrado, y pone la fecha del cliente. Hasta 24 MB |
+  | `host_sync_delete` | `payload { libraryId, path }` | Borra el archivo y las carpetas que quedan vacías |
+
+  Las rutas pasan por `LogicalPathDto` y `is_synced_path`. Una carpeta existente del camino no puede ser un enlace fuera de la biblioteca. Los archivos se bajan por `/api/file`.
+- **Reglas de cada archivo** (`plan`: base, copia y host):
+
+  | Cambió | Acción |
+  |---|---|
+  | Nada | Nada |
+  | Solo el host | Baja el archivo, o lo borra en la copia |
+  | Solo la copia | Sube el archivo, o lo borra en el host |
+  | Los dos | El de fecha de modificación más nueva gana; un empate queda con el del host; una edición gana a un borrado; iguales en los dos lados solo se registran |
+
+- **Cuándo:** con conexión y sesión, en cada vuelta del monitor (10 s) y antes de abrir la app después del login (`sync_copy_now`). Un archivo que no viajó (más de 24 MB, o el host no lo dio) queda en `skipped` y se reintenta. Un corte guarda lo ya hecho. El evento `notia:copy-sync` y `connection_settings.copy` informan el resultado.
+- **Sin conexión:**
+  - `enter_offline_copy` agrega la carpeta como biblioteca de este equipo (`add_desktop_library`) y la selecciona, recordando la selección anterior.
+  - `database_is_read_only` hace que `open_library_connection`, `open_existing_library_connection_rw` y la inicialización abran la base en solo lectura y sin migrar.
+  - La IA y la voz son las locales. La configuración cifrada se abre con el login del Owner sobre la copia.
+  - `leave_offline_copy` vuelve al host y restaura la selección. La siguiente sincronización concilia lo cambiado.
+- **Errores:** sin copia previa, «Todavía no hay una copia de la biblioteca en este equipo: conectate al host al menos una vez.».
+- **Orden y fallas (2026-09-28):**
+  - La base se baja antes que los archivos: la copia se abre sin conexión solo si la tiene (`database_ms`); si no, «La copia de este equipo todavía no tiene la base de datos…».
+  - Un archivo que no se puede escribir o leer queda en `skipped` y la sincronización sigue. Solo se corta si el host deja de responder (`ProviderUnavailable`, `Unauthorized` o `Forbidden`).
+  - Antes, un archivo con error cortaba todo antes de la base. Sin conexión, el plugin Android creaba una base vacía y el inicio de sesión fallaba con «No se pudo revisar el inicio de sesión…».
+  - Al abrir la base de la copia en solo lectura, `check_copy_snapshot` exige la tabla `library_users`.
+  - La ventana de inicio de sesión muestra el motivo real del backend con «Reintentar», y `backend_app_auth_status` lo registra en el log.
+- **Marca:** la copia guarda `.notia/notia-copy.json` con la biblioteca del host (`{ "hostLibraryId" }`). Una carpeta con la marca de otra biblioteca no se sincroniza: «La carpeta de la copia tiene la copia de otra biblioteca…».
+- **Android** (`CopyStore::Saf`):
+  - `pick_copy_folder` (local, en `CLIENT_LOCAL_COMMANDS` y `LOCAL_ONLY_COMMANDS`) abre el selector SAF, que conserva el permiso de lectura y escritura. Solo acepta una carpeta vacía o con la marca de una copia; si no, «Elegí una carpeta vacía para la copia…», porque lo que tuviera subiría al host como archivos nuevos.
+  - La carpeta se guarda en `connection.json`. Otra carpeta empieza el registro de cero.
+  - Los archivos se escriben con `createPathEntry` (crea las carpetas desde el grant raíz) y `writeFile` sobre la URI de documento. Se leen y borran resolviendo esa URI. La URI tree nunca se usa para leer o escribir ni se normaliza.
+  - `readFlatFileList` de `DirectoryPickerPlugin.kt` devuelve también `size` y `lastModified` de cada archivo (columnas SAF opcionales; `build.rs` copia la fuente de `resources/` a `gen/`). SAF no deja fijar la fecha, así que la base guarda la fecha propia de la copia después de escribir (se vuelve a listar tras las bajadas).
+  - Listar una carpeta SAF es lento: la copia se lista al arrancar, al elegir carpeta y al volver de trabajar sin conexión. Mientras hay conexión solo la escribe la sincronización, y las demás vueltas confían en el registro.
+  - Al recibir una base nueva, `cleanupDatabases` descarta las copias temporales de SQLite del plugin, para que la próxima apertura copie la nueva.
+  - Sin conexión, `add_android_library` suma la carpeta al catálogo como biblioteca SAF. `open_mobile_library_connection` abre su copia temporal en solo lectura y sin migrar, y `sync_mobile_library_connection` no la vuelve a escribir en la carpeta.
+
+### Telegram nunca desde un cliente
+
+Un equipo en modo cliente no puede activar Telegram, ni en su equipo ni en el host:
+
+- **Red:** `telegram_service::set_client_device`, que llama `connection::start`, bloquea en el equipo toda llamada a la API de Telegram (`api_base`). Esto incluye mensajes, actualizaciones, descargas y «Probar conexión» sin conexión. Además el worker no arranca (`desired_worker`) y el agente autónomo no corre.
+- **Ajustes reenviados al host:** el servidor en modo Host despacha los pedidos de sus clientes con la etiqueta `client` (`registry::CLIENT_WINDOW_LABEL`); el headless sigue con `remote`. Con esa etiqueta, `backend_write_library_config` conserva la sección `telegram` guardada, junto con las secciones que ya eran del backend (correo, Google Cloud y clima). El resto de los ajustes se guarda igual.
+- **Copia sin conexión:** en el equipo cliente la misma escritura conserva la sección `telegram` de la copia. Cuando la copia sube `.notia/notiaConfig.json`, `host_sync_write` no escribe el archivo tal cual: `library_config::merge_client_config` abre la copia con la clave de la biblioteca desbloqueada en el host y guarda sus ajustes. Telegram, el cliente de Google Cloud y las cuentas de correo quedan como estaban en el host. Si el host está bloqueado, la subida falla y se reintenta.
+- **Interfaz:** en Configuraciones → Telegram de un cliente, el interruptor del bot, el token, el agente autónomo y «Probar conexión» quedan deshabilitados, con el aviso «Este equipo es un cliente: Telegram lo maneja el host…». Vincular y desvincular usuarios sigue disponible.
+- **Pruebas:**
+  - de punta a punta contra un host real: un cliente que manda `telegram.enabled: true` no lo prende en el host y sí cambia otro ajuste;
+  - una copia que prende Telegram sin conexión no lo prende en el host al sincronizar;
+  - el bloqueo de red (`check_bot` responde «En modo cliente Telegram no se usa en este equipo…»).
+
+### Edición en conjunto (`app/src/collab.rs`, `src/components/notia/views/markdown/collab/`)
+
+Cuando dos ventanas del mismo host abren la misma nota (el host y sus clientes, o varios clientes), cada una ve los cambios de las otras mientras se escriben y el bloque que edita cada persona, marcado con su color y su nombre.
+
+- **Rust** (sala por biblioteca y ruta, en memoria del host):
+
+  | Comando | Entrada | Salida |
+  |---|---|---|
+  | `collab_join` | `payload { libraryId, path, name }` | `{ room, peerId, color, initializer, saver, updates, peers }` |
+  | `collab_update` | `payload { room, peerId, update }` (update Yjs en base64, hasta 4 MB) | Guarda el cambio y emite `notia:collab-update { room, from, update }` |
+  | `collab_awareness` | `payload { room, peerId, update }` | Emite `notia:collab-awareness` (cursor, selección, nombre y color). También cuenta como «sigue acá» |
+  | `collab_leave` | `payload { room, peerId }` | Sale de la sala. El último la termina: la próxima vez se parte del archivo |
+
+  - **Relleno:** el primero de una sala nueva la llena con la nota (`initializer`).
+  - **Colores:** salen de la paleta en orden de llegada (teal, periwinkle, ámbar, violeta, salvia, coral, oro).
+  - **Nombre:** el del dispositivo (`deviceName`: `COMPUTERNAME`/`HOSTNAME`, «Android»).
+  - **Guardado:** solo uno guarda (`saver`, el primero presente). Si se va, guarda el siguiente, y `notia:collab-peers { room, peers, saver }` lo avisa.
+  - **Ausencias:** quien no da señales en 60 s sale de la sala.
+- **Interfaz:**
+  - Paquetes: `yjs`, `y-protocols`, `y-prosemirror` y `@milkdown/plugin-collab@7.19.0`, la versión del editor.
+  - `markdownCollab.ts`:
+    - aplica los cambios guardados;
+    - junta los propios cada 120 ms y la posición cada 200 ms;
+    - avisa cada 20 s que sigue;
+    - con `collabServiceCtx`, `applyTemplate` solo si es la primera y luego `connect`.
+  - `collabBlocksPlugin` marca el bloque de primer nivel donde está el cursor de cada otra persona (contorno de su color y etiqueta con el nombre). `yCursorPlugin` dibuja su cursor.
+  - Quien no guarda llama a `sharedTextDocumentChange` (acción nueva de `NotiaActions`), que deja la pestaña al día y sin cambios pendientes (`handleExternalTextDocumentChange`, sin revisión). Así el que pasa a guardar escribe sin chocar con la revisión.
+  - Si la sala se pierde (el host se reinició), la nota sigue sola.
+- **Cuándo se activa:** `connection_settings.collaboration` es `true` en un cliente conectado o en un host que escucha. Aplica al editor de notas de las pestañas; el diálogo de fuente del Task Manager y las notas grandes no participan.
+
+### Eventos nuevos
+
+| Evento | Emisor | Consumidor |
+|---|---|---|
+| `notia:host-link` | `host_client.rs` | `ClientApp` (avisos, vuelta al login, regreso desde la copia) |
+| `notia:copy-sync` | `host_mirror.rs` | Informativo (`connection_settings.copy`) |
+| `notia:collab-update`, `notia:collab-awareness`, `notia:collab-peers` | `collab.rs` | `markdownCollab.ts` |
+
+### Límites
+
+- **Android:**
+  - La copia vive en una carpeta visible. Si otra app la cambia mientras hay conexión, el cambio se detecta recién en la próxima lectura completa (al reiniciar Notia o volver de trabajar sin conexión).
+  - Un proveedor que no informe tamaño o fecha deja la copia sin detectar cambios propios.
+  - Las carpetas que quedan vacías al borrar no se eliminan.
+  - El dictado del cliente usa el micrófono del WebView; falta probar sus permisos.
+- **Copia:**
+  - La primera sincronización baja toda la biblioteca, y durante una sincronización larga el monitor espera.
+  - Las fechas dependen del reloj de cada equipo.
+  - Los cambios de la base hechos sin conexión no existen (solo lectura).
+- **Edición en conjunto:**
+  - La sala guarda todos los cambios hasta que se va el último (en memoria del host).
+  - Quien entra a una sala existente reemplaza lo que había escrito antes de unirse.
+  - Deshacer usa el historial del editor.
+- **Selección de biblioteca:** un cliente usa el catálogo del host, así que elegir otra biblioteca también la cambia en el host.
+
+### Validaciones
+
+- **Rust core:** `cargo test --offline -p notia-backend-core` → 402, antes 397. Cubre direcciones, normalización, comandos locales del cliente y reglas de la copia.
+- **Rust app:** `cargo test --offline -p notia-app --features bluetooth` → 427 aprobados + 2 ignorados, antes 412. Suma:
+  - de punta a punta con un host real en 127.0.0.1: TLS, certificado fijado, login del Owner, comando reenviado, comando local rechazado y evento del host recibido por el cliente;
+  - la copia: primera bajada con la base, cambios sin conexión en los dos lados, conflicto resuelto por fecha en ambos sentidos, borrado, y la marca de otra biblioteca rechazada;
+  - salas de edición, `host_sync` (rutas, enlaces y carpetas vacías), cookies, certificado y configuración.
+- **Otras compilaciones:**
+  - `cargo check --offline -p notia --features app`: sin errores.
+  - Android (`aarch64-linux-android`): sin errores, 60 warnings (antes 61).
+  - Escritorio: 37 warnings.
+- **Frontend:** `npx tsc -p tsconfig.app.json` sin errores, `eslint` de lo tocado sin errores y `npx vitest run` → 364 (87 archivos), con el flujo de Android que pide la carpeta antes de guardar Con copia. Suma `hostTransport`, `RunModeSection`, `markdownCollab` con Yjs real y base64.
+- **Visual:** capturas de la tarjeta en Host, Cliente conectado y Cliente sin conexión, en tema oscuro y claro y a ancho de teléfono.
+- **Pendiente:**
+  - dos equipos reales (Windows host y cliente) con firewall;
+  - un cliente Android;
+  - la copia sin conexión en la app (login local, IA local, base de solo lectura) y la vuelta;
+  - la edición en conjunto en el editor real con dos ventanas;
+  - el reinicio del host;
+  - un certificado cambiado;
   - build Linux (WSL).

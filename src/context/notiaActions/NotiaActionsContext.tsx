@@ -29,6 +29,8 @@ export interface NotiaActions {
   libraryAdded: (library: NotiaLibrary) => Promise<void>
   libraryRemoved: (library: NotiaLibrary) => Promise<void>
   textDocumentChange: (nextSource: string) => void
+  /** A shared note changed and another editor saves it (nothing left to save here). */
+  sharedTextDocumentChange: (path: string, nextSource: string) => void
   chatWorkspaceTreeChanged: (pathHint?: string) => void
   windowAction: (action: NotiaWindowAction) => void
   coldPassOpenCredentialModal: () => void

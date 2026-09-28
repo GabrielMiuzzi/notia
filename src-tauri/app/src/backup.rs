@@ -423,7 +423,10 @@ pub(crate) mod service {
                     let app = app.clone();
                     std::thread::spawn(move || loop {
                         std::thread::sleep(SCHEDULER_TICK);
-                        run_due_backup(&app);
+                        // The host backs up a client's library.
+                        if !crate::connection::is_client(&app) {
+                            run_due_backup(&app);
+                        }
                     });
                 }
                 #[cfg(not(target_os = "windows"))]

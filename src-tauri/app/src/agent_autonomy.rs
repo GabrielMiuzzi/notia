@@ -71,6 +71,10 @@ struct AutonomyState {
 }
 
 fn tick(app: &AppHandle, clock: &mut Clock) {
+    // The host keeps the agent of a client's library.
+    if crate::connection::is_client(app) {
+        return;
+    }
     let Some(library) = crate::library_catalog::selected_library(app) else {
         return;
     };

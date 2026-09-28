@@ -6,6 +6,7 @@ import { useLibraryCatalogPersistence } from '../hooks/useLibraryCatalogPersiste
 import { hasHostWindow } from '../../../services/window/windowRuntime'
 import {
   APP_AUTH_CHANGED_EVENT,
+  authErrorMessage,
   fetchAppAuthStatus,
   type AppAuthStatus,
 } from '../../../services/auth/appAuthRuntime'
@@ -29,8 +30,9 @@ export function AppAuthGate({ children }: { children: ReactNode }) {
     try {
       setStatus(await fetchAppAuthStatus(libraryId))
       setCheckError(null)
-    } catch {
-      setCheckError('No se pudo revisar el inicio de sesión de la biblioteca.')
+    } catch (error) {
+      // The backend's reason, so the person (and support) can act on it.
+      setCheckError(authErrorMessage(error, 'No se pudo revisar el inicio de sesión de la biblioteca.'))
     }
   }, [])
 
@@ -68,7 +70,21 @@ export function AppAuthGate({ children }: { children: ReactNode }) {
   return (
     <div className={shellClass}>
       <div className="notia-login-screen">
-        <p className="notia-login-text" role={checkError ? 'alert' : 'status'}>{checkError ?? 'Abriendo Notia…'}</p>
+        {checkError ? (
+          <main className="notia-login-card">
+            <div className="notia-login-body">
+              <div className="notia-login-heading">
+                <h1>No se pudo abrir la biblioteca</h1>
+                <p role="alert">{checkError}</p>
+              </div>
+              <div className="notia-login-actions">
+                <button type="button" className="notia-login-primary" onClick={() => { void check(selectedLibraryId) }}>Reintentar</button>
+              </div>
+            </div>
+          </main>
+        ) : (
+          <p className="notia-login-text" role="status">Abriendo Notia…</p>
+        )}
       </div>
     </div>
   )

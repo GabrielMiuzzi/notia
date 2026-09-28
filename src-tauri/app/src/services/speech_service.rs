@@ -176,6 +176,10 @@ pub(crate) fn init_preload() -> crate::host::plugin::TauriPlugin<crate::host::Wr
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
 fn preload_at_startup(app: AppHandle) {
+    // A client's speech is recognized by its host.
+    if crate::connection::is_client(&app) {
+        return;
+    }
     let selection = SavedAsrSelection::read(&app);
     if !selection.enabled {
         log::info!("[notia:speech] startup preload skipped: speech recognition disabled");

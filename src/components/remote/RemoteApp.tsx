@@ -1,4 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
+// The screens before the app (sign-in, connection) use the app's styles and
+// theme tokens, which otherwise load only with the app.
+import '../../styles/notia.css'
 import { installBackendTransport, subscribeBackend } from '../../services/transport'
 import { createRemoteTransport, EVENTS_LOST_EVENT } from '../../services/transport/remoteTransport'
 import {

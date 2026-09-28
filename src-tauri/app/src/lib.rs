@@ -32,7 +32,14 @@ mod routine_dashboard;
 mod routine_tools;
 mod agenda_tools;
 mod coldpass;
+mod collab;
 mod config_crypto;
+mod connection;
+mod host_client;
+mod host_mirror;
+mod host_sync;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod host_server;
 mod config_vault;
 mod device_secret;
 mod agent_autonomy;
@@ -124,7 +131,18 @@ use host::{AppContext, AppPaths, HostPorts, Manager};
 
 /// Builds the application with the state of every service registered.
 pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
+    // On desktop every event also reaches the hub the Host mode and the
+    // headless server deliver to their clients.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let hub = std::sync::Arc::new(server::events::EventHub::default());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let ports = HostPorts {
+        events: Some(std::sync::Arc::new(server::events::TeeEvents { first: ports.events, hub: hub.clone() })),
+        ..ports
+    };
     let app = AppContext::new(paths, ports);
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    app.manage(server::SharedEventHub(hub));
     app.manage(state::bluetooth_state::ColdPassBluetoothState::default());
     app.manage(services::speech_service::SpeechRuntimeState::default());
     app.manage(services::qwen3_tts_service::Qwen3TtsRuntimeState::default());
@@ -149,7 +167,27 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(library_graph::LibraryGraphState::default());
     app.manage(backup::service::BackupState::default());
     app.manage(commands::remote_speech::RemoteSpeechState::default());
+    app.manage(connection::ConnectionState::default());
+    app.manage(host_client::HostClientState::default());
+    app.manage(host_mirror::MirrorState::default());
+    app.manage(collab::CollabState::default());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    app.manage(host_server::HostServerState::default());
     app
+}
+
+/// Starts what the mode of this device needs (Settings → General → «Modo
+/// de ejecución»): the server of a host or the link of a client. Only the
+/// app window calls it; the headless server serves on its own.
+pub fn start_device_services(app: &AppContext) {
+    connection::start(app);
+}
+
+/// A file of the host's library for the window of a client (the
+/// `notiahost` scheme): its type and bytes, or `None` when the host does
+/// not give it.
+pub async fn fetch_host_file(app: &AppContext, path: &str) -> Option<(String, Vec<u8>)> {
+    host_client::fetch_file(app, path).await
 }
 
 /// Startup hooks, in the order they must run. Each hook keeps the name of

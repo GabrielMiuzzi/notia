@@ -555,7 +555,7 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 |---|---|
 | **Qué hace** | Gestiona tareas organizadas en tableros con dos vistas disponibles: Kanban (columnas drag-and-drop) y tabla (listado ordenable). Cada tarea incluye estado, prioridad, subtareas, comentarios y fecha de fin. |
 | **Cuándo usarlo** | Cuando necesitás organizar proyectos, seguimiento de actividades o gestión personal de tareas de forma visual o tabular. |
-| **Pasos para consumir** | 1. En el Icon Rail, seleccionar **"Task Manager"**. 2. Hacer clic en **"Nuevo tablero"** e ingresar un nombre y su contexto. 3. Para cambiarlo después, usar **"Editar tablero"**. 4. Agregar tareas al tablero. 5. Para cada tarea, definir estado, prioridad, subtareas y comentarios. 6. Cambiar entre vista Kanban y vista Tabla según prefieras. 7. Al completar o cancelar una tarea, ésta se archiva automáticamente en la carpeta correspondiente. |
+| **Pasos para consumir** | 1. En el Icon Rail, seleccionar **"Task Manager"**. 2. Hacer clic en **"Nuevo tablero"** e ingresar un nombre y su contexto. 3. Para cambiarlo después, usar **"Editar tablero"**. 4. Agregar tareas al tablero. 5. Para cada tarea, definir estado, prioridad, subtareas y comentarios. 6. Cambiar entre vista Kanban y vista Tabla según prefieras. 7. Para mover una tarea, arrastrarla con el mouse o, en táctil, mantenerla presionada y deslizarla (el tablero se desplaza solo al llegar al borde); también se puede usar **Mover** en la tarjeta para subirla, bajarla o pasarla a otro grupo. Las subtareas se reordenan igual dentro de su tarea. 8. Al completar o cancelar una tarea, ésta se archiva automáticamente en la carpeta correspondiente. |
 | **Entradas esperadas** | Nombre y contexto del tablero. Tarea: título visible (string, obligatorio; puede incluir `/` y `\\`), descripción, prioridad (alta/media/baja), estado (pendiente/en progreso/completada/cancelada), subtareas (lista de wikilinks), comentarios (lista). Los nombres de tableros y grupos siguen rechazando separadores de rutas. |
 | **Salidas / Resultado** | Cada tarea se guarda como un archivo `.md` individual con metadatos YAML (frontmatter), incluido `contexto`, dentro de la carpeta `task-mannager/<tablero>/` en tu librería. Al crear o editar el contexto del tablero, todos los `.md` de esa carpeta se actualizan para usarlo. Los metadatos compartidos del tablero (nombres, colores, horas de actividad y contexto) se guardan en `.notia-task-manager.json`; `localStorage` conserva solo preferencias de presentación. |
 | **Errores comunes** | **"No se pudo guardar la tarea"**: error de escritura en el filesystem. Solución: verificar permisos de la carpeta de la librería. **"No se encuentra el tablero"**: la carpeta del tablero fue renombrada o eliminada fuera de Notia. Solución: refrescar el Explorador. |
@@ -600,6 +600,22 @@ Para integraciones o diagnóstico, el flujo HTTP usa `POST /task-manager/login` 
 El servidor responde con un `ack` y distribuye un evento `changed` con `publicationEpoch`, `sequence`, `revision` y `messageId`. Las rutas locales, credenciales, contenido no autorizado y preferencias privadas no forman parte del protocolo.
 
 `GET /task-manager/status` requiere la misma cookie autenticada y devuelve solo métricas agregadas del host para diagnóstico; nunca expone rutas locales, credenciales ni contenido de tareas.
+
+### Host y Cliente: usar la misma biblioteca desde otro equipo
+
+En **Configuraciones → General → Modo de ejecución** elegís cómo corre Notia en cada equipo:
+
+- **Host**: el equipo guarda la biblioteca y la comparte. Debajo se ve el puerto (52480) con **Escuchando**. La primera vez, Windows puede pedir permiso de red para Notia: aceptalo para que los otros equipos lleguen.
+- **Cliente**: usa la biblioteca de un host. Escribí su dirección (por ejemplo `192.168.0.10:52480`), tocá **Guardar** y la ventana se recarga. **Probar conexión** muestra **Conectado** o **No responde**.
+
+Hay dos tipos de cliente:
+
+- **Remoto**: trabaja directo sobre el host y no guarda la biblioteca en el dispositivo.
+- **Con copia**: guarda una copia sincronizada. En Android primero elegís una carpeta vacía con **Elegir carpeta** (ahí queda la copia); en Windows y Linux se guarda sola en los datos de Notia. Si el host deja de responder, podés seguir trabajando con la copia: notas y archivos se editan, la IA y el dictado usan este equipo y los datos de la base (Finanzas, Agenda, Rutina, usuarios) quedan de solo lectura. Cuando el host vuelve, Notia espera unos segundos, concilia los archivos (queda el último modificado, de cualquier equipo) y vuelve al host.
+
+Para entrar desde un cliente se usa el usuario **Owner** de la biblioteca del host, en la misma ventana de inicio de sesión. Mientras hay conexión, todo corre en el host: el chat con IA, el dictado (el cliente graba y el host transcribe), Telegram y el agente autónomo. Un cliente nunca activa Telegram: en su **Configuraciones → Telegram** los controles quedan deshabilitados y el bot se configura desde el equipo host. En el cliente no se ofrecen Meeting ni lo que depende del equipo host (selectores de carpetas, conectar cuentas de correo).
+
+Si el host y sus clientes abren la misma nota, la editan juntos: los cambios de cada uno aparecen en los demás mientras escriben, y el bloque que está editando cada persona se marca con su color y el nombre de su equipo.
 
 ### Servidor Notia sin ventana (headless)
 
@@ -834,6 +850,8 @@ npm run build:android:aab
 npm run install:android:release
 ```
 
+Cada build copia a `builds/android/` solo el APK que acaba de generar. Si Gradle no produce uno, el comando falla en vez de instalar una versión anterior.
+
 ---
 
 ## ⚙️ Configuración de Entorno y Preferencias
@@ -883,6 +901,14 @@ Las ediciones documentales se proponen con diff por hunks, revisión exacta, con
 - Instalá las dependencias desde el lockfile con `npm ci` y comprobá la versión efectiva: `node -e "require('esbuild').version"` debe devolver `0.27.7`.
 - Ejecutá `npm run build -- --minify=false` para validar el build multipágina de desarrollo. `npm run dev:tauri:windows` ya lo ejecuta sin minificación y reintenta una vez si el proceso nativo de esbuild termina con error.
 - Si el segundo intento también falla, cerrá instancias duplicadas de Node/Vite y revisá el antivirus. El fallo observado correspondía a `STATUS_ACCESS_VIOLATION` de esbuild `0.27.3`, no a la minificación de la aplicación.
+
+### El cliente no se conecta al host
+- Revisá que el host esté en modo **Host** y muestre **Escuchando** en Configuraciones → General. Si dice **Sin escuchar**, otro programa usa el puerto.
+- Comprobá que los dos equipos estén en la misma red y que el firewall del host permita a Notia.
+- En la pantalla «Sin conexión con el host» podés reintentar, cambiar la dirección o volver a usar el equipo como host.
+
+### El cliente dice «El certificado del host cambió»
+- El cliente recuerda el certificado del host desde la primera conexión. Si reinstalaste Notia en el host, editá su dirección en **Configuraciones → General** y tocá **Guardar** para confiar en el nuevo.
 
 ### «Notia ya está en uso» al abrir la app o el servidor
 - La app y el servidor sin ventana (`notia --headless`) comparten la misma carpeta de datos, y solo uno puede usarla a la vez. Cerrá el otro proceso (o la otra ventana de Notia) y volvé a abrir.

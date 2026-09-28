@@ -193,6 +193,10 @@ pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
                 let app = app.clone();
                 let _ = std::thread::Builder::new().name("notia-publication-autostart".into()).spawn(move || {
                     std::thread::sleep(AUTOSTART_DELAY);
+                    // A client does not publish the host's library.
+                    if crate::connection::is_client(&app) {
+                        return;
+                    }
                     let Some(library_id) = crate::library_catalog::selected_library_id(&app) else {
                         return;
                     };

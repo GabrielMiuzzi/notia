@@ -777,6 +777,77 @@
   height: 7px;
 }
 
+/* «Mover»: the visible alternative to dragging a task with a finger. */
+.tareas-card-meta-tags .tareas-mover {
+  min-height: 20px;
+  padding: 0 7px;
+  border-color: var(--background-modifier-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.tareas-card-meta-menu-label {
+  padding: 6px 8px 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* An open menu of a card (state, priority, «Mover») may reach past the
+   card, its list and its group: they stop clipping while it is open. */
+.tareas-group:has(.tareas-card-meta-menu) {
+  overflow: visible;
+  content-visibility: visible;
+}
+
+.tareas-card-list:has(.tareas-card-meta-menu) {
+  contain: none;
+}
+
+.tareas-task-card:has(.tareas-card-meta-menu) {
+  content-visibility: visible;
+}
+
+/* The label of what a finger drags, just above it. */
+.tareas-touch-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.tareas-touch-ghost > span {
+  display: block;
+  max-width: 240px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+  border-radius: var(--tareas-radius-md);
+  background: var(--background-primary);
+  box-shadow: 0 12px 28px var(--color-menu-shadow);
+  color: var(--text-normal);
+  font-family: var(--tareas-font-text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 28px));
+}
+
+/* A long press must drag, not select the text under the finger. */
+.tareas-board.is-touch-dragging,
+.tareas-board.is-touch-dragging * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .tareas-card-meta-tag-trigger {
   min-height: 22px;
   border: 1px solid transparent;
@@ -1200,6 +1271,23 @@
   .tareas-card-pomodoro-btn {
     min-height: 36px;
     min-width: 36px;
+  }
+
+  .tareas-card-meta-tags .tareas-mover {
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .tareas-card-meta-menu-option {
+    min-height: 44px;
+  }
+
+  /* A long press picks a card up instead of selecting its text. */
+  .tareas-task-drag-wrap,
+  .tareas-card-subtask-row,
+  .tareas-group-header {
+    -webkit-user-select: none;
+    user-select: none;
   }
 }
 

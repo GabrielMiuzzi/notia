@@ -369,6 +369,11 @@ function NotiaMenuComponent() {
     handleExternalTextDocumentChange,
   } = tabManager
 
+  // Another editor of a shared note saves it: this one only follows.
+  const handleSharedTextDocumentChange = useCallback((documentPath: string, source: string) => {
+    handleExternalTextDocumentChange(documentPath, source)
+  }, [handleExternalTextDocumentChange])
+
   const handleActiveMarkdownDocumentChanged = useCallback((documentPath: string, source: string, revision?: string) => {
     handleExternalTextDocumentChange(documentPath, source, revision)
     markdownExternalUpdateRevisionRef.current += 1
@@ -464,6 +469,7 @@ function NotiaMenuComponent() {
     libraryAdded: handleLibraryAdded,
     libraryRemoved: handleLibraryRemoved,
     textDocumentChange: handleTextDocumentChange,
+    sharedTextDocumentChange: handleSharedTextDocumentChange,
     chatWorkspaceTreeChanged: handleChatWorkspaceTreeChanged,
     windowAction: handleWindowAction,
     coldPassOpenCredentialModal: handleOpenColdPassCredentialModal,
@@ -497,6 +503,7 @@ function NotiaMenuComponent() {
     handleLibraryAdded,
     handleLibraryRemoved,
     handleTextDocumentChange,
+    handleSharedTextDocumentChange,
     handleChatWorkspaceTreeChanged,
     handleWindowAction,
     handleOpenColdPassCredentialModal,

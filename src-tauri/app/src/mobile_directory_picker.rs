@@ -515,6 +515,12 @@ pub struct AndroidFlatFileEntry {
     #[serde(rename = "type")]
     pub node_type: String,
     pub name: String,
+    /// Bytes of a file, when the provider reports it.
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// Modification time of a file (ms since the epoch), when reported.
+    #[serde(default)]
+    pub last_modified: Option<i64>,
 }
 
 #[cfg(target_os = "android")]

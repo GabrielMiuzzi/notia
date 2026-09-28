@@ -7031,6 +7031,32 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   box-sizing: border-box;
 }
 
+/* A client window while its host does not answer. */
+.notia-client-banner { border-color: color-mix(in srgb, var(--color-coral) 45%, var(--color-border-soft)); }
+.notia-client-banner[data-tone='online'] { border-color: color-mix(in srgb, var(--color-sage) 45%, var(--color-border-soft)); }
+
+.notia-client-banner-action {
+  flex-shrink: 0;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notia-client-banner-action:focus-visible { outline: 2px solid var(--color-accent-text); outline-offset: 2px; }
+
+@media (pointer: coarse) {
+  .notia-client-banner-action { min-height: 44px; }
+}
+
+.notia-client-address { font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace; }
+
 /* ── Chat workspace: history · conversation · context ───── */
 .notia-chat-icon-button {
   width: 32px;

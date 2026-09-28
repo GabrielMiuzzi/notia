@@ -24,6 +24,8 @@ import type { TelegramPreferences } from '../../services/preferences/telegramSet
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 import { MailAccountsSection } from './settings/MailAccountsSection'
 import { WeatherSection } from './settings/WeatherSection'
+import { RunModeSection } from './settings/RunModeSection'
+import { fetchConnection } from '../../services/connection/connectionRuntime'
 import { selectQwen3TtsSettings, selectSpeechRecognitionSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
 import { setQwen3TtsSettings, setSpeechRecognitionSettings } from '../../features/preferences/preferencesSlice'
 import { QWEN3_TTS_VOICES } from '../../services/preferences/qwen3TtsSettingsStorage'
@@ -329,6 +331,19 @@ export function SettingsModal({
   useEffect(() => {
     if (open) setTelegramTokenDraft(telegramPreferences.botToken)
   }, [open, telegramPreferences.botToken])
+
+  // A client never turns Telegram on: its host runs the bot (the backend
+  // keeps the host's Telegram settings whatever a client sends).
+  const [isClientDevice, setIsClientDevice] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    fetchConnection()
+      .then((view) => { if (active) setIsClientDevice(view.mode === 'client') })
+      // A browser of a headless server cannot ask: it is not a client.
+      .catch(() => { if (active) setIsClientDevice(false) })
+    return () => { active = false }
+  }, [open])
 
   useEffect(() => {
     if (!open) setIsFinanceDeleteConfirmationOpen(false)
@@ -811,6 +826,8 @@ export function SettingsModal({
           <div className="notia-settings-pane" ref={paneRef}>
             <div className="notia-settings-stack">
               {activeSection === 'General' ? (
+                <>
+                <RunModeSection />
                 <SettingsCard>
                   <SettingsRow label="Versión" description="Versión instalada del proyecto." inline>
                     <span className="notia-settings-value">v{projectVersion}</span>
@@ -822,6 +839,7 @@ export function SettingsModal({
                     <span className="notia-settings-plain notia-settings-plain--strong">{libraryName}</span>
                   </SettingsRow>
                 </SettingsCard>
+                </>
               ) : activeSection === 'Contextos' ? (
                 <>
                   <SettingsCard>
@@ -1432,6 +1450,11 @@ export function SettingsModal({
               ) : activeSection === 'Telegram' ? (
                 <>
                   <SettingsCard>
+                    {isClientDevice ? (
+                      <SettingsNotice tone="idle">
+                        Este equipo es un cliente: Telegram lo maneja el host y se configura desde el equipo host.
+                      </SettingsNotice>
+                    ) : null}
                     <SettingsRow
                       emphasis
                       inline
@@ -1444,7 +1467,7 @@ export function SettingsModal({
                         id="notia-settings-telegram"
                         label="Bot de Telegram"
                         checked={telegramPreferences.enabled}
-                        disabled={!telegramTokenDraft.trim()}
+                        disabled={isClientDevice || !telegramTokenDraft.trim()}
                         onChange={(enabled) => onTelegramPreferencesChange({ ...telegramPreferences, botToken: telegramTokenDraft.trim(), enabled })}
                       />
                     </SettingsRow>
@@ -1456,6 +1479,7 @@ export function SettingsModal({
                         value={telegramTokenDraft}
                         autoComplete="off"
                         placeholder="123456:ABC..."
+                        disabled={isClientDevice}
                         onChange={(event) => setTelegramTokenDraft(event.target.value)}
                         onBlur={commitTelegramToken}
                         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitTelegramToken() } }}
@@ -1471,12 +1495,12 @@ export function SettingsModal({
                         id="notia-settings-telegram-autonomous"
                         label="Agente autónomo"
                         checked={telegramPreferences.autonomousAgent}
-                        disabled={!telegramPreferences.enabled}
+                        disabled={isClientDevice || !telegramPreferences.enabled}
                         onChange={(autonomousAgent) => onTelegramPreferencesChange({ ...telegramPreferences, autonomousAgent })}
                       />
                     </SettingsRow>
                     <SettingsFooter tone={isCheckingTelegram ? 'loading' : telegramStatusTone} message={telegramStatus}>
-                      <NotiaButton disabled={!telegramTokenDraft.trim() || isCheckingTelegram} onClick={() => { void handleCheckTelegram() }}>
+                      <NotiaButton disabled={isClientDevice || !telegramTokenDraft.trim() || isCheckingTelegram} onClick={() => { void handleCheckTelegram() }}>
                         {isCheckingTelegram ? 'Probando…' : 'Probar conexión'}
                       </NotiaButton>
                     </SettingsFooter>

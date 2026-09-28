@@ -287,39 +287,51 @@ function Sign-UnsignedApk([string]$unsignedApkPath) {
   return $signedApk
 }
 
+# Artifacts of the kind this build makes (release APKs or AABs). Gradle
+# keeps the outputs of other builds (debug, other ABIs) next to them.
+function Get-ReleaseArtifacts([string]$outputsRoot, [string]$format) {
+  if (-not (Test-Path $outputsRoot)) {
+    return @()
+  }
+  $filter = if ($format -eq 'aab') { '*.aab' } else { '*.apk' }
+  return @(Get-ChildItem $outputsRoot -Recurse -Filter $filter -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -match 'release' })
+}
+
+# Removes the release artifacts of earlier builds, so the one copied is
+# always the one this build made (and Gradle packages it again).
+function Remove-StaleReleaseArtifacts([string]$format) {
+  $outputsRoot = Join-Path $projectRoot 'src-tauri\gen\android\app\build\outputs'
+  foreach ($artifact in Get-ReleaseArtifacts $outputsRoot $format) {
+    Remove-Item $artifact.FullName -Force
+  }
+}
+
 function Copy-ReadyArtifact([string]$format) {
   if (-not (Test-Path $artifactDir)) {
     New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
   }
 
   $outputsRoot = Join-Path $projectRoot 'src-tauri\gen\android\app\build\outputs'
-  if (-not (Test-Path $outputsRoot)) {
-    throw '[notia] Android artifact not found after build.'
-  }
+  $artifacts = @(Get-ReleaseArtifacts $outputsRoot $format | Sort-Object LastWriteTime -Descending)
 
   if ($format -eq 'aab') {
-    $aab = Get-ChildItem $outputsRoot -Recurse -Filter *.aab | Sort-Object FullName | Select-Object -Last 1
+    $aab = $artifacts | Select-Object -First 1
     if (-not $aab) {
-      throw '[notia] AAB artifact not found after build.'
+      throw "[notia] This build made no release AAB under $outputsRoot; an older one is never copied."
     }
     $target = Join-Path $artifactDir 'notia-release.aab'
     Copy-Item $aab.FullName $target -Force
-    Write-Host "[notia] AAB ready: $target"
+    Write-Host "[notia] AAB ready: $target (from $($aab.FullName))"
     return
   }
 
-  $signedApk = Get-ChildItem $outputsRoot -Recurse -Filter *.apk |
-    Where-Object { $_.Name -notlike '*-unsigned.apk' } |
-    Sort-Object FullName |
-    Select-Object -Last 1
-  $apk = if ($signedApk) {
-    $signedApk
-  } else {
-    Get-ChildItem $outputsRoot -Recurse -Filter *-unsigned.apk | Sort-Object FullName | Select-Object -Last 1
-  }
-
+  $apk = $artifacts | Where-Object { $_.Name -notlike '*-unsigned.apk' } | Select-Object -First 1
   if (-not $apk) {
-    throw '[notia] APK artifact not found after build.'
+    $apk = $artifacts | Where-Object { $_.Name -like '*-unsigned.apk' } | Select-Object -First 1
+  }
+  if (-not $apk) {
+    throw "[notia] This build made no release APK under $outputsRoot; an older one is never copied."
   }
 
   $sourceApk = if ($apk.Name -like '*-unsigned.apk') {
@@ -330,7 +342,7 @@ function Copy-ReadyArtifact([string]$format) {
 
   $target = Join-Path $artifactDir 'notia-release.apk'
   Copy-Item $sourceApk $target -Force
-  Write-Host "[notia] APK ready: $target"
+  Write-Host "[notia] APK ready: $target (from $($apk.FullName))"
 }
 
 $sdkRoot = Get-AndroidSdkRoot
@@ -373,6 +385,8 @@ foreach ($arg in $args) {
   }
   $extraArgs += $arg
 }
+
+Remove-StaleReleaseArtifacts $format
 
 Push-Location $projectRoot
 try {

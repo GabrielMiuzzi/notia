@@ -44,6 +44,10 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 chrono = "0.4"
 # Native speech runtimes (sherpa-onnx, Qwen3-TTS) are loaded at run time.
 libloading = "0.8"
+# TLS and WebSocket of the Host mode server and of the client that reaches
+# a host (the client also runs on Android).
+rustls = "0.23"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"
@@ -58,8 +62,6 @@ env_logger = "0.11"
 futures = "0.3"
 notify = "6.1.1"
 rcgen = "0.13"
-rustls = "0.23"
-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cpal = "0.16"

@@ -238,9 +238,15 @@ pub(crate) fn backend_read_library_config(payload: LibraryConfigPayload, app: &A
     LibraryConfigResult::from_result(LibraryConfigStore::open(app, &payload.library_id).and_then(|store| store.read()))
 }
 
-/// Normalizes and stores the configuration sent by the client and returns
-/// what was persisted.
-pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &AppHandle) -> LibraryConfigResult {
+/// Sections only the host changes: a client's write and its offline copy
+/// keep the host's value (Telegram is never turned on from a client).
+const HOST_ONLY_KEYS: [&str; 3] = [TELEGRAM_KEY, MAIL_ACCOUNTS_KEY, GOOGLE_CLOUD_KEY];
+const TELEGRAM_KEY: &str = "telegram";
+
+/// Normalizes and stores the configuration sent by the window and returns
+/// what was persisted. `from_client`: a client (of this host, or this
+/// device in client mode) sent it, and the Telegram section stays as stored.
+pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &AppHandle, from_client: bool) -> LibraryConfigResult {
     LibraryConfigResult::from_result((|| {
         let config = payload
             .config
@@ -269,7 +275,8 @@ pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &
             // The Google Cloud client, the mail accounts and the weather
             // place are written only by the backend's own commands.
             let backend_owned = [MAIL_ACCOUNTS_KEY, GOOGLE_CLOUD_KEY, crate::backend::weather::WEATHER_KEY];
-            for (key, value) in updates.iter().filter(|(key, _)| !backend_owned.contains(&key.as_str())) {
+            let kept = |key: &str| backend_owned.contains(&key) || (from_client && key == TELEGRAM_KEY);
+            for (key, value) in updates.iter().filter(|(key, _)| !kept(key.as_str())) {
                 target.insert(key.clone(), value.clone());
             }
         }
@@ -277,6 +284,42 @@ pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &
         store.persist(&normalized, exists)?;
         Ok(Some(normalized))
     })())
+}
+
+/// `config` with the host-only sections of `stored` (removed when the
+/// host has none).
+fn with_host_sections(mut config: Value, stored: Option<&Value>) -> Value {
+    if let Some(target) = config.as_object_mut() {
+        for key in HOST_ONLY_KEYS {
+            match stored.and_then(|stored| stored.get(key)) {
+                Some(value) => target.insert(key.to_string(), value.clone()),
+                None => target.remove(key),
+            };
+        }
+    }
+    config
+}
+
+/// Takes the configuration a client changed on its offline copy (the file
+/// as the copy has it, sealed or plain): Telegram, the Google Cloud client
+/// and the mail accounts keep the host's value. The library must be
+/// unlocked on the host to open a sealed copy.
+pub(crate) fn merge_client_config(app: &AppHandle, library_id: &str, text: &str) -> Result<(), BackendError> {
+    let store = LibraryConfigStore::open(app, library_id)?;
+    let uploaded = match classify_stored_config(text)? {
+        StoredConfig::Encrypted(envelope) => {
+            let unlocked = crate::config_vault::unlocked(app, library_id).ok_or_else(locked_error)?;
+            let text = crate::config_crypto::open_config(&unlocked.key, &envelope).ok_or_else(|| {
+                BackendError::new(BackendErrorCode::Forbidden, "El host no pudo abrir la configuración de la copia.", false)
+            })?;
+            parse_library_config(&text)?.config
+        }
+        StoredConfig::Plain(text) => parse_library_config(&text)?.config,
+    };
+    let exists = store.exists()?;
+    let stored = if exists { store.read()? } else { None };
+    let merged = with_host_sections(uploaded, stored.as_ref());
+    store.persist(&normalize_library_config(&merged).config, exists)
 }
 
 /// Creates the default configuration when the library has none.

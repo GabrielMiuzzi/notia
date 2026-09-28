@@ -201,6 +201,56 @@
   box-decoration-break: clone;
 }
 
+/* ---------- Shared note: the others' blocks and cursors ---------- */
+
+/* The block another person is writing, in their color, with their name. */
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-collab-block {
+  position: relative;
+  outline: 2px solid color-mix(in srgb, var(--notia-collab-color) 60%, transparent);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-collab-block::after {
+  content: attr(data-collab-name);
+  position: absolute;
+  top: -14px;
+  right: -4px;
+  z-index: 2;
+  max-width: 50%;
+  padding: 1px 6px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--notia-collab-color);
+  color: #0F1420;
+  font: 600 11px/16px 'Public Sans', system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .ProseMirror-yjs-cursor {
+  position: relative;
+  margin-right: -1px;
+  margin-left: -1px;
+  border-right: 1px solid;
+  border-left: 1px solid;
+  word-break: normal;
+  pointer-events: none;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .ProseMirror-yjs-cursor > div {
+  position: absolute;
+  top: -1.2em;
+  left: -1px;
+  padding: 0 4px;
+  border-radius: 4px 4px 4px 0;
+  color: #0F1420;
+  font: 600 11px/1.4 'Public Sans', system-ui, sans-serif;
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* ---------- Block handle and dragging ---------- */
 
 .notia-markdown-editor-root .milkdown .ProseMirror .notia-block-active {

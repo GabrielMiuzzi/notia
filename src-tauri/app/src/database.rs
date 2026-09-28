@@ -135,10 +135,33 @@ pub fn open_mobile_library_connection(
         .database_path
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "El adaptador Android no devolvió la copia SQLite temporal.".to_string())?;
+    // Offline, a client's copy only reads the snapshot of its host.
+    if crate::host_mirror::database_uri_is_read_only(directory_uri) {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("No se pudo abrir la copia SQLite Android: {error}"))?;
+        return check_copy_snapshot(connection);
+    }
     let connection = Connection::open(path)
         .map_err(|error| format!("No se pudo abrir la copia SQLite Android: {error}"))?;
     migrate(&connection).map_err(|error| format!("No se pudo migrar SQLite Android: {error}"))?;
     Ok(connection)
+}
+
+/// Drops the temporary SQLite copies, so the next use copies the library's
+/// database again (the offline copy of a client got a new snapshot).
+#[cfg(target_os = "android")]
+pub(crate) fn discard_mobile_database_copies(app: &crate::host::AppHandle) {
+    let Some(state) = app.try_state::<LibraryDatabaseState>() else {
+        return;
+    };
+    let Ok(guard) = state.handle.lock() else {
+        return;
+    };
+    if let Some(handle) = guard.as_ref() {
+        if let Err(error) = handle.run_mobile_plugin::<serde_json::Value>("cleanupDatabases", serde_json::json!({})) {
+            log::error!("[notia:database] temporary SQLite copies were not discarded: {error}");
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -146,6 +169,10 @@ pub fn sync_mobile_library_connection(
     app: &crate::host::AppHandle,
     directory_uri: &str,
 ) -> Result<(), String> {
+    // The snapshot of an offline copy is never written back.
+    if crate::host_mirror::database_uri_is_read_only(directory_uri) {
+        return Ok(());
+    }
     let state = app
         .try_state::<LibraryDatabaseState>()
         .ok_or_else(|| "El adaptador SQLite Android no está disponible.".to_string())?;
@@ -168,6 +195,22 @@ pub fn sync_mobile_library_connection(
         Err(result.error.unwrap_or_else(|| {
             "No se pudo sincronizar SQLite. Volvé a autorizar la carpeta de la biblioteca.".into()
         }))
+    }
+}
+
+/// The snapshot of an offline copy must hold the library's tables: a
+/// missing one (the copy never got it) is created empty by the platform.
+#[cfg_attr(any(target_os = "ios"), allow(dead_code))]
+fn check_copy_snapshot(connection: Connection) -> Result<Connection, String> {
+    let has_users = connection
+        .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_users'", [], |_| Ok(()))
+        .optional()
+        .map_err(|error| format!("No se pudo leer la copia de la base de datos: {error}"))?
+        .is_some();
+    if has_users {
+        Ok(connection)
+    } else {
+        Err("La copia de este equipo no tiene la base de datos de la biblioteca: conectate al host para completarla.".to_string())
     }
 }
 
@@ -1068,6 +1111,12 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn open_library_connection(library_path: &str) -> Result<Connection, String> {
     let path = database_path(library_path)?;
+    // Offline, a client's copy only reads the snapshot of its host.
+    if crate::host_mirror::database_is_read_only(library_path) {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("No se pudo abrir SQLite: {error}"))?;
+        return check_copy_snapshot(connection);
+    }
     let connection =
         Connection::open(path).map_err(|error| format!("No se pudo abrir SQLite: {error}"))?;
     migrate(&connection).map_err(|error| format!("No se pudo migrar SQLite: {error}"))?;
@@ -1091,6 +1140,10 @@ pub(crate) fn open_existing_library_connection_rw(
     let path = library_root.join(NOTIA_DIRECTORY).join(DATABASE_FILE_NAME);
     if !path.is_file() {
         return Err("La base de datos de la biblioteca no existe.".to_string());
+    }
+    if crate::host_mirror::database_is_read_only(&library_root.to_string_lossy()) {
+        return Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("No se pudo abrir SQLite: {error}"));
     }
     Connection::open(path).map_err(|error| format!("No se pudo abrir SQLite: {error}"))
 }
@@ -1171,6 +1224,15 @@ pub fn initialize_library_database(
         };
         if let Err(error) = fs::create_dir_all(parent) {
             return failure(format!("No se pudo crear .notia: {error}"));
+        }
+        // The offline copy of a client keeps its host's snapshot as is.
+        if crate::host_mirror::database_is_read_only(&payload.library_path) && path.is_file() {
+            return InitializeLibraryDatabaseResult {
+                ok: true,
+                database_path: Some(path.to_string_lossy().into_owned()),
+                schema_version: None,
+                error: None,
+            };
         }
         let connection = match Connection::open(&path) {
             Ok(connection) => connection,
@@ -1670,5 +1732,15 @@ mod tests {
             .expect("owner count");
         assert_eq!(owner_count, 1);
         assert!(connection.execute("INSERT INTO library_users (id,name,normalized_name,role_id,created_at,updated_at) VALUES ('bad','Bad','bad','missing',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", []).is_err());
+    }
+
+    #[test]
+    fn an_offline_copy_without_its_tables_is_reported() {
+        let empty = Connection::open_in_memory().expect("in-memory SQLite");
+        let error = super::check_copy_snapshot(empty).err().expect("empty copy");
+        assert!(error.contains("no tiene la base de datos"));
+        let copy = Connection::open_in_memory().expect("in-memory SQLite");
+        copy.execute_batch("CREATE TABLE library_users (id TEXT)").expect("table");
+        assert!(super::check_copy_snapshot(copy).is_ok());
     }
 }

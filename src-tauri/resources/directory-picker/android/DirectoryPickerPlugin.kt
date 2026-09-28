@@ -735,7 +735,9 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
             arrayOf(
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                 DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED
             ),
             null,
             null,
@@ -744,6 +746,10 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
             val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            // Size and modification time let the copy of a «Con copia»
+            // client notice what changed; some providers leave them empty.
+            val sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+            val modifiedIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
             while (cursor.moveToNext()) {
                 val documentId = cursor.getString(idIndex) ?: continue
                 val name = cursor.getString(nameIndex) ?: continue
@@ -753,6 +759,12 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
                 entry.put("path", entryPath)
                 entry.put("name", name)
                 entry.put("type", if (isFolder) "folder" else "file")
+                if (!isFolder && sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                    entry.put("size", cursor.getLong(sizeIndex))
+                }
+                if (!isFolder && modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) {
+                    entry.put("lastModified", cursor.getLong(modifiedIndex))
+                }
                 files.put(entry)
                 if (isFolder) {
                     collectFlatEntries(childDocumentUri(treeUri, documentId), entryPath, files, depth + 1)
