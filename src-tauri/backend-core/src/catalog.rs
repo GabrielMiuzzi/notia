@@ -467,6 +467,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "set_task_execution_plan"
         | "create_agent_plan"
         | "update_agent_plan" => ToolPolicy::TaskWrite,
+        name if super::task_manager_tool_input::is_task_mutation_tool(name) => ToolPolicy::TaskWrite,
         "get_routine_dashboard"
         | "get_routine_day"
         | "list_routine_history"
@@ -777,6 +778,27 @@ mod tests {
         assert!(!tools.iter().any(|tool| tool_policy(&tool.name) == ToolPolicy::Mail));
         let graph = project_tool_catalog(&context(BackendScope::Graph), &owner, &canonical_tool_catalog(), ToolCatalogProjection::ReadOnly).expect("catalog");
         assert!(!graph.iter().any(|tool| tool_policy(&tool.name) == ToolPolicy::Mail));
+    }
+
+    #[test]
+    fn the_library_chat_and_telegram_reach_every_task_manager_tool() {
+        let library = project_tool_catalog(&context(BackendScope::Library), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        let task_tools = super::super::task_manager_tools::task_manager_read_tool_contracts()
+            .into_iter()
+            .chain(super::super::task_manager_tools::task_manager_mutation_tool_contracts())
+            .collect::<Vec<_>>();
+        for tool in &task_tools {
+            assert!(library.iter().any(|candidate| candidate.name == tool.name), "{}", tool.name);
+        }
+        assert!(crate::tool_routing::offered_areas(&library).contains(&crate::tool_routing::ToolArea::Tasks));
+        for name in ["update_task_group", "reorder_task_groups"] {
+            assert_eq!(tool_policy(name), ToolPolicy::TaskWrite, "{name}");
+        }
+        // Task tools stay out of the chats that are not about tasks.
+        for scope in [BackendScope::Finance, BackendScope::Document, BackendScope::Graph] {
+            let tools = project_tool_catalog(&context(scope.clone()), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+            assert!(!tools.iter().any(|tool| task_tools.iter().any(|task| task.name == tool.name)), "{scope:?}");
+        }
     }
 
     #[test]

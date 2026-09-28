@@ -909,6 +909,16 @@ pub fn resolve_board_intent(
             if group_ids.is_empty() || current.starts_with(&group_ids) {
                 return Ok(Vec::new());
             }
+            // Groups the view did not name keep their relative order after
+            // the named ones: the store only accepts a complete order.
+            for group_id in &current {
+                if !group_ids.contains(group_id) {
+                    group_ids.push(group_id.clone());
+                }
+            }
+            if group_ids == current {
+                return Ok(Vec::new());
+            }
             vec![TaskMutationDto::ReorderGroups {
                 board_id: board.board_id.clone(),
                 group_ids,
@@ -1429,6 +1439,40 @@ mod tests {
         assert_eq!(child.file_name, "Hija");
         assert_eq!(view.panel_paths[FINISHED_PANEL_ID], vec!["task-mannager/finished/Hecha.md"]);
         assert_eq!(view.panel_paths["work"].len(), 2);
+    }
+
+    #[test]
+    fn a_reorder_keeps_the_groups_the_view_did_not_name_after_the_named_ones() {
+        let mut read = read();
+        for (id, name, order) in [("g2", "QA", 1), ("g3", "Deploy", 2)] {
+            read.snapshot.groups.push(TaskGroupDto {
+                library_id: "lib".into(),
+                group_id: id.into(),
+                board_id: "work".into(),
+                name: name.into(),
+                color: "#654321".into(),
+                revision: 1,
+                order,
+            });
+        }
+        let reorder = |names: &[&str]| {
+            resolve_in(
+                &read,
+                TaskBoardIntent::ReorderGroups {
+                    board: "work".into(),
+                    group_names: names.iter().map(|name| name.to_string()).collect(),
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            reorder(&["Deploy", "Desconocido"]),
+            vec![TaskMutationDto::ReorderGroups {
+                board_id: "work".into(),
+                group_ids: vec!["g3".into(), "g1".into(), "g2".into()],
+            }]
+        );
+        assert!(reorder(&["Backend", "QA"]).is_empty());
     }
 
     #[test]

@@ -9,11 +9,35 @@ use serde_json::Value;
 
 use crate::error::BackendError;
 use crate::task_manager_tools::{
-    TaskMutationDto, TaskPriority, TaskState, TaskUpdateFieldsDto,
+    TaskGroupDto, TaskMutationDto, TaskPriority, TaskState, TaskUpdateFieldsDto,
 };
 
 /// Maximum tickets read by one `read_task_tickets` call.
 pub const MAX_TASK_TOOL_READ_TICKETS: usize = 20;
+
+/// Task Manager tools that change data; each one maps to one store mutation.
+pub const TASK_MUTATION_TOOLS: [&str; 16] = [
+    "create_task_ticket",
+    "replace_task_content",
+    "add_task_comment",
+    "add_task_subtask",
+    "move_task_group",
+    "change_task_state",
+    "change_task_priority",
+    "update_task_fields",
+    "bulk_update_tasks",
+    "duplicate_task",
+    "archive_task",
+    "restore_task",
+    "create_task_group",
+    "update_task_group",
+    "reorder_task_groups",
+    "delete_task_group",
+];
+
+pub fn is_task_mutation_tool(name: &str) -> bool {
+    TASK_MUTATION_TOOLS.contains(&name)
+}
 
 fn text(arguments: &Value, name: &str) -> String {
     arguments
@@ -89,11 +113,30 @@ fn fields(arguments: &Value) -> Result<TaskUpdateFieldsDto, BackendError> {
     Ok(fields)
 }
 
-/// Maps a Task Manager mutation tool to the store DTO. `new_id` produces
-/// backend-owned identifiers; `now_unix_ms` stamps new comments.
+/// Group of the board named by the tool, among the library's current groups.
+fn current_group<'a>(
+    groups: &'a [TaskGroupDto],
+    board_id: &str,
+    group_id: &str,
+) -> Result<&'a TaskGroupDto, BackendError> {
+    groups
+        .iter()
+        .find(|group| group.board_id == board_id && group.group_id == group_id)
+        .ok_or_else(|| {
+            BackendError::invalid_input(
+                "El grupo no existe en ese tablero; consultalo con get_task_manager_options.",
+            )
+        })
+}
+
+/// Maps a Task Manager mutation tool to the store DTO. `groups` are the
+/// library's current groups, which fill what a group update leaves out;
+/// `new_id` produces backend-owned identifiers; `now_unix_ms` stamps new
+/// comments.
 pub fn task_mutation_from_tool(
     name: &str,
     arguments: &Value,
+    groups: &[TaskGroupDto],
     new_id: &mut dyn FnMut() -> String,
     now_unix_ms: i64,
 ) -> Result<TaskMutationDto, BackendError> {
@@ -170,6 +213,34 @@ pub fn task_mutation_from_tool(
             name: required(arguments, "name")?,
             color: required(arguments, "color")?,
         },
+        "update_task_group" => {
+            let board_id = required(arguments, "boardId")?;
+            let group_id = required(arguments, "groupId")?;
+            let name = optional(arguments, "name");
+            let color = optional(arguments, "color");
+            if name.is_none() && color.is_none() {
+                return Err(BackendError::invalid_input(
+                    "update_task_group necesita name, color o ambos.",
+                ));
+            }
+            let current = current_group(groups, &board_id, &group_id)?;
+            TaskMutationDto::UpdateGroup {
+                name: name.unwrap_or_else(|| current.name.clone()),
+                color: color.unwrap_or_else(|| current.color.clone()),
+                board_id,
+                group_id,
+            }
+        }
+        "reorder_task_groups" => {
+            let group_ids = string_list(arguments, "groupIds");
+            if group_ids.is_empty() {
+                return Err(BackendError::invalid_input("Falta groupIds."));
+            }
+            TaskMutationDto::ReorderGroups {
+                board_id: required(arguments, "boardId")?,
+                group_ids,
+            }
+        }
         "delete_task_group" => TaskMutationDto::DeleteGroup {
             board_id: required(arguments, "boardId")?,
             group_id: required(arguments, "groupId")?,
@@ -225,6 +296,7 @@ mod tests {
         let mutation = task_mutation_from_tool(
             "create_task_ticket",
             &json!({"boardId": "board-1", "title": "Nueva", "priority": "Alta"}),
+            &[],
             &mut ids(),
             0,
         )
@@ -248,10 +320,10 @@ mod tests {
 
     #[test]
     fn rejects_missing_ids_and_unknown_enum_values() {
-        assert!(task_mutation_from_tool("change_task_state", &json!({"state": "Pendiente"}), &mut ids(), 0).is_err());
-        assert!(task_mutation_from_tool("change_task_state", &json!({"ticketId": "t", "state": "Hecha"}), &mut ids(), 0).is_err());
-        assert!(task_mutation_from_tool("update_task_fields", &json!({"ticketId": "t", "fields": {}}), &mut ids(), 0).is_err());
-        assert!(task_mutation_from_tool("delete_board", &json!({}), &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("change_task_state", &json!({"state": "Pendiente"}), &[], &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("change_task_state", &json!({"ticketId": "t", "state": "Hecha"}), &[], &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("update_task_fields", &json!({"ticketId": "t", "fields": {}}), &[], &mut ids(), 0).is_err());
+        assert!(task_mutation_from_tool("delete_board", &json!({}), &[], &mut ids(), 0).is_err());
     }
 
     #[test]
@@ -259,6 +331,7 @@ mod tests {
         let mutation = task_mutation_from_tool(
             "add_task_comment",
             &json!({"ticketId": "t-1", "comment": "Hecho"}),
+            &[],
             &mut ids(),
             42,
         )
@@ -272,6 +345,91 @@ mod tests {
                 created_at_unix_ms: 42,
             }
         );
+    }
+
+    fn group(id: &str, name: &str, color: &str) -> TaskGroupDto {
+        TaskGroupDto {
+            library_id: "library-1".into(),
+            group_id: id.into(),
+            board_id: "board-1".into(),
+            name: name.into(),
+            color: color.into(),
+            revision: 1,
+            order: 0,
+        }
+    }
+
+    #[test]
+    fn a_group_update_keeps_the_fields_it_does_not_change() {
+        let groups = [group("g-1", "Backlog Q", "#10b981")];
+        let renamed = task_mutation_from_tool(
+            "update_task_group",
+            &json!({"boardId": "board-1", "groupId": "g-1", "name": "Backlog Q actual"}),
+            &groups,
+            &mut ids(),
+            0,
+        )
+        .expect("rename");
+        assert_eq!(
+            renamed,
+            TaskMutationDto::UpdateGroup {
+                board_id: "board-1".into(),
+                group_id: "g-1".into(),
+                name: "Backlog Q actual".into(),
+                color: "#10b981".into(),
+            }
+        );
+        let recolored = task_mutation_from_tool(
+            "update_task_group",
+            &json!({"boardId": "board-1", "groupId": "g-1", "color": "#4FD1C5"}),
+            &groups,
+            &mut ids(),
+            0,
+        )
+        .expect("recolor");
+        assert!(matches!(recolored, TaskMutationDto::UpdateGroup { ref name, ref color, .. } if name == "Backlog Q" && color == "#4FD1C5"));
+    }
+
+    #[test]
+    fn a_group_update_needs_a_change_and_a_known_group() {
+        let groups = [group("g-1", "Backlog Q", "#10b981")];
+        let update = |arguments: Value| task_mutation_from_tool("update_task_group", &arguments, &groups, &mut ids(), 0);
+        assert!(update(json!({"boardId": "board-1", "groupId": "g-1"})).is_err());
+        assert!(update(json!({"boardId": "board-1", "groupId": "g-2", "name": "Otro"})).is_err());
+        assert!(update(json!({"boardId": "board-2", "groupId": "g-1", "name": "Otro"})).is_err());
+    }
+
+    #[test]
+    fn a_reorder_passes_the_requested_group_order() {
+        let mutation = task_mutation_from_tool(
+            "reorder_task_groups",
+            &json!({"boardId": "board-1", "groupIds": ["g-2", " g-1 ", ""]}),
+            &[],
+            &mut ids(),
+            0,
+        )
+        .expect("reorder");
+        assert_eq!(
+            mutation,
+            TaskMutationDto::ReorderGroups {
+                board_id: "board-1".into(),
+                group_ids: vec!["g-2".into(), "g-1".into()],
+            }
+        );
+        assert!(task_mutation_from_tool("reorder_task_groups", &json!({"boardId": "board-1", "groupIds": []}), &[], &mut ids(), 0).is_err());
+    }
+
+    #[test]
+    fn every_mutation_tool_has_a_mapping_and_a_contract() {
+        let contracts = crate::task_manager_tools::task_manager_mutation_tool_contracts();
+        assert_eq!(contracts.len(), TASK_MUTATION_TOOLS.len());
+        for name in TASK_MUTATION_TOOLS {
+            assert!(contracts.iter().any(|tool| tool.name == name), "{name} sin contrato");
+            let unsupported = task_mutation_from_tool(name, &json!({}), &[], &mut ids(), 0)
+                .err()
+                .is_some_and(|error| error.message.contains("no corresponde"));
+            assert!(!unsupported, "{name} sin mapeo");
+        }
     }
 
     #[test]

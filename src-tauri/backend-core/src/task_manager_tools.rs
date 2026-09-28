@@ -1730,13 +1730,20 @@ impl TaskManagerReadPort for InMemoryTaskManager {
             .filter(|board| context.allows_board(&board.board_id))
             .cloned()
             .collect::<Vec<_>>();
-        let groups = library
+        let mut groups = library
             .groups
             .values()
             .filter(|group| context.allows_board(&group.board_id))
             .filter(|group| selected_board_id.is_none_or(|id| id == group.board_id))
             .cloned()
             .collect::<Vec<_>>();
+        // Board display order, so a reorder can start from the current columns.
+        groups.sort_by(|left, right| {
+            left.board_id
+                .cmp(&right.board_id)
+                .then_with(|| left.order.cmp(&right.order))
+                .then_with(|| left.group_id.cmp(&right.group_id))
+        });
         let board = selected_board_id.and_then(|id| library.boards.get(id).cloned());
         Ok(TaskManagerOptionsDto {
             library_id: context.library_id.clone(),
@@ -2079,6 +2086,17 @@ fn validate_mutation(
                     return Err(forbidden("El grupo no pertenece al tablero."));
                 }
                 revisions.push(entity_revision("group", group_id, group.revision));
+            }
+            // A partial order would leave two columns on the same position.
+            let board_groups = library
+                .groups
+                .values()
+                .filter(|group| group.board_id == *board_id)
+                .count();
+            if group_ids.len() != board_groups {
+                return Err(invalid(format!(
+                    "El orden debe incluir los {board_groups} grupos del tablero, cada uno una vez."
+                )));
             }
             revisions.push(entity_revision("board", &board.board_id, board.revision));
         }
@@ -3597,6 +3615,12 @@ fn forbidden(message: impl Into<String>) -> BackendError {
     BackendError::new(BackendErrorCode::Forbidden, message, false)
 }
 
+/// Task Manager tools serve its side chat and, routed by area
+/// (`tool_routing`), the library chat and Telegram.
+fn task_tool_scopes() -> Vec<BackendScope> {
+    vec![BackendScope::TaskManager, BackendScope::Library]
+}
+
 pub fn task_manager_read_tool_contracts() -> Vec<ToolDefinition> {
     [
         (
@@ -3629,7 +3653,7 @@ pub fn task_manager_read_tool_contracts() -> Vec<ToolDefinition> {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: serde_json::json!({"type": "object"}),
-        scopes: vec![BackendScope::TaskManager],
+        scopes: task_tool_scopes(),
         read_only: true,
         requires_confirmation: false,
     })
@@ -3673,6 +3697,14 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
         ("restore_task", "Prepara la restauración de un ticket."),
         ("create_task_group", "Prepara la creación de un grupo."),
         (
+            "update_task_group",
+            "Prepara el cambio de nombre o color de un grupo.",
+        ),
+        (
+            "reorder_task_groups",
+            "Prepara el nuevo orden de los grupos de un tablero.",
+        ),
+        (
             "delete_task_group",
             "Prepara la eliminación de un grupo vacío.",
         ),
@@ -3682,7 +3714,7 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: serde_json::json!({"type": "object"}),
-        scopes: vec![BackendScope::TaskManager],
+        scopes: task_tool_scopes(),
         read_only: false,
         requires_confirmation: true,
     })
@@ -4092,6 +4124,51 @@ mod tests {
             .map(|group| group.group_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(group_ids, vec!["group-b", "group-a"]);
+    }
+
+    #[test]
+    fn a_group_reorder_names_every_group_of_the_board_and_options_follow_it() {
+        let (manager, context) = setup();
+        for (id, name, order) in [("group-z", "Sprint", 1), ("group-m", "Bloqueado", 2)] {
+            manager
+                .seed_group(TaskGroupDto {
+                    library_id: "library-a".into(),
+                    group_id: id.into(),
+                    board_id: "board-a".into(),
+                    name: name.into(),
+                    color: "#654321".into(),
+                    revision: 1,
+                    order,
+                })
+                .unwrap();
+        }
+        let reorder = |operation: &str, group_ids: &[&str]| {
+            manager.preview_mutation(&TaskMutationRequestDto {
+                context: context.clone(),
+                operation_id: operation.into(),
+                idempotency_key: operation.into(),
+                mutation: TaskMutationDto::ReorderGroups {
+                    board_id: "board-a".into(),
+                    group_ids: group_ids.iter().map(|id| id.to_string()).collect(),
+                },
+            })
+        };
+        let partial = reorder("op-partial", &["group-m", "group-a"]).unwrap_err();
+        assert_eq!(partial.code, BackendErrorCode::InvalidInput);
+        assert!(partial.message.contains("los 3 grupos"), "{}", partial.message);
+
+        reorder("op-full", &["group-m", "group-a", "group-z"]).unwrap();
+        manager
+            .apply_mutation(&TaskMutationApplyRequestDto {
+                context: context.clone(),
+                operation_id: "op-full".into(),
+                idempotency_key: "op-full".into(),
+                confirmed: true,
+            })
+            .unwrap();
+        let options = manager.get_options(&context, Some("board-a")).unwrap();
+        let ids = options.groups.items.iter().map(|group| group.group_id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["group-m", "group-a", "group-z"]);
     }
 
     #[test]

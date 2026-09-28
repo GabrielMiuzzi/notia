@@ -1075,6 +1075,8 @@ impl TauriBackendToolExecutor {
             "archive_task",
             "restore_task",
             "create_task_group",
+            "update_task_group",
+            "reorder_task_groups",
             "delete_task_group",
             "get_finance_dashboard",
             "get_finance_full_snapshot",
@@ -1285,11 +1287,26 @@ impl TauriBackendToolExecutor {
             })
     }
 
+    /// Refuses an agent write to a Task Manager index: the store rebuilds it
+    /// on every change, so boards and groups change only through the Task
+    /// Manager tools. The editor still saves the file as any other note.
+    fn ensure_agent_writable(locator: &DocumentLocatorDto) -> Result<(), BackendError> {
+        if crate::task_manager_store::is_task_manager_index(locator.logical_path.as_str()) {
+            return Err(BackendError::new(
+                BackendErrorCode::Forbidden,
+                "Los índices de Task Manager no se editan como documentos: los grupos, su orden, nombre y color se cambian con las herramientas de Task Manager.",
+                false,
+            ));
+        }
+        Ok(())
+    }
+
     fn markdown_edit_request(
         context: &BackendRequestContext,
         call: &ToolCall,
     ) -> Result<MarkdownEditRequest, BackendError> {
         let locator = Self::locator(context, &call.arguments)?;
+        Self::ensure_agent_writable(&locator)?;
         let operation_value = call
             .arguments
             .get("operation")
@@ -1383,6 +1400,7 @@ impl TauriBackendToolExecutor {
             }
             let path = edit.locator.logical_path.as_str().to_string();
             edit.locator = DocumentLocatorDto::new(&context.library_id, &path, None, None)?;
+            Self::ensure_agent_writable(&edit.locator)?;
         }
         let reader = self.reader(&context.library_id)?;
         serde_json::to_value(preview_multi_document_markdown_edit(&reader, &request)?)
@@ -1410,6 +1428,7 @@ impl TauriBackendToolExecutor {
         }
         let path = preview.locator.logical_path.as_str().to_string();
         preview.locator = DocumentLocatorDto::new(&context.library_id, &path, None, None)?;
+        Self::ensure_agent_writable(&preview.locator)?;
         let selected_hunk_ids = call
             .arguments
             .get("selectedHunkIds")
@@ -1500,6 +1519,7 @@ impl TauriBackendToolExecutor {
             let mut document = document.clone();
             let path = document.locator.logical_path.as_str().to_string();
             document.locator = DocumentLocatorDto::new(&context.library_id, &path, None, None)?;
+            Self::ensure_agent_writable(&document.locator)?;
             let ids = if selected.is_empty() {
                 Vec::new()
             } else {
@@ -2265,6 +2285,7 @@ impl TauriBackendToolExecutor {
         } else {
             self.existing_document_locator(context, &call.arguments)?
         };
+        Self::ensure_agent_writable(&locator)?;
         let current = self.reader(&context.library_id)?.read_document(&locator);
         match call.name.as_str() {
             "create_library_note" => {
@@ -2577,24 +2598,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
-        if matches!(
-            call.name.as_str(),
-            "export_document"
-                | "create_task_ticket"
-                | "replace_task_content"
-                | "add_task_comment"
-                | "add_task_subtask"
-                | "move_task_group"
-                | "change_task_state"
-                | "change_task_priority"
-                | "update_task_fields"
-                | "bulk_update_tasks"
-                | "duplicate_task"
-                | "archive_task"
-                | "restore_task"
-                | "create_task_group"
-                | "delete_task_group"
-        ) {
+        if call.name == "export_document" || notia_backend_core::is_task_mutation_tool(&call.name) {
             return Ok(Some(MutationPreview {
                 operation_id: call.id.clone(),
                 summary: if call.name == "export_document" {
@@ -2604,12 +2608,25 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         Self::text(&call.arguments, "format").to_uppercase()
                     )
                 } else {
-                    task_mutation_summary(&notia_backend_core::task_mutation_from_tool(
-                        &call.name,
-                        &call.arguments,
-                        &mut || "preview".to_string(),
-                        0,
-                    )?)
+                    let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
+                    let registry = self.app.state::<LibraryBindingRegistry>();
+                    let groups = crate::task_manager_commands::backend_tool_groups(
+                        &self.app,
+                        task_state.inner(),
+                        registry.inner(),
+                        &context.library_id,
+                        &context.actor.library_user_id,
+                    )?;
+                    task_mutation_summary(
+                        &notia_backend_core::task_mutation_from_tool(
+                            &call.name,
+                            &call.arguments,
+                            &groups,
+                            &mut || "preview".to_string(),
+                            0,
+                        )?,
+                        &groups,
+                    )
                 },
                 documents: Vec::new(),
                 hunks: vec![PreviewHunk {
@@ -3778,6 +3795,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
             }
             "create_library_note" => {
                 let locator = Self::locator(context, &call.arguments)?;
+                Self::ensure_agent_writable(&locator)?;
                 let content = Self::text(&call.arguments, "content");
                 if content.is_empty() {
                     return Err(BackendError::invalid_input(
@@ -3796,6 +3814,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
             }
             "replace_library_document" => {
                 let locator = self.existing_document_locator(context, &call.arguments)?;
+                Self::ensure_agent_writable(&locator)?;
                 let content = Self::text(&call.arguments, "content");
                 // Tools report backend-core revisions (numbers); the editor
                 // may still send the platform `sha256:` form.
@@ -3823,6 +3842,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
             }
             "delete_library_document" => {
                 let locator = self.existing_document_locator(context, &call.arguments)?;
+                Self::ensure_agent_writable(&locator)?;
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 let picker = self.app.state::<AndroidDirectoryPickerState>();
                 let adapter = crate::filesystem::adapter::TauriFilesystemDocumentAdapter::for_library(
@@ -3851,20 +3871,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &call.arguments,
                 )?
             }
-            "create_task_ticket"
-            | "replace_task_content"
-            | "add_task_comment"
-            | "add_task_subtask"
-            | "move_task_group"
-            | "change_task_state"
-            | "change_task_priority"
-            | "update_task_fields"
-            | "bulk_update_tasks"
-            | "duplicate_task"
-            | "archive_task"
-            | "restore_task"
-            | "create_task_group"
-            | "delete_task_group" => {
+            name if notia_backend_core::is_task_mutation_tool(name) => {
                 let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 crate::task_manager_commands::execute_backend_mutation_tool(
@@ -3958,21 +3965,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "rename_finance_merchant"
                     | "merge_finance_products"
                     | "merge_finance_merchants"
-                    | "create_task_ticket"
-                    | "replace_task_content"
-                    | "add_task_comment"
-                    | "add_task_subtask"
-                    | "move_task_group"
-                    | "change_task_state"
-                    | "change_task_priority"
-                    | "update_task_fields"
-                    | "bulk_update_tasks"
-                    | "duplicate_task"
-                    | "archive_task"
-                    | "restore_task"
-                    | "create_task_group"
-                    | "delete_task_group"
-            )),
+            ) || notia_backend_core::is_task_mutation_tool(&call.name)),
             data: Some(data),
             error: None,
             preview: None,
@@ -4536,8 +4529,19 @@ fn serde_label(value: &impl Serialize) -> String {
 }
 
 /// Human-readable confirmation text for a Task Manager mutation.
-fn task_mutation_summary(mutation: &notia_backend_core::TaskMutationDto) -> String {
+/// Confirmation text of a Task Manager tool. `groups` are the library's
+/// current groups: the text names a group, not its id.
+fn task_mutation_summary(
+    mutation: &notia_backend_core::TaskMutationDto,
+    groups: &[notia_backend_core::TaskGroupDto],
+) -> String {
     use notia_backend_core::TaskMutationDto as Mutation;
+    let group_name = |group_id: &str| {
+        groups
+            .iter()
+            .find(|group| group.group_id == group_id)
+            .map_or_else(|| group_id.to_string(), |group| format!("«{}»", group.name))
+    };
     match mutation {
         Mutation::CreateTicket { title, .. } => format!("Crear el ticket «{title}»."),
         Mutation::ReplaceTicketContent { ticket_id, .. } => {
@@ -4552,7 +4556,7 @@ fn task_mutation_summary(mutation: &notia_backend_core::TaskMutationDto) -> Stri
             ..
         } => format!("Crear la subtarea «{title}» en el ticket {parent_ticket_id}."),
         Mutation::MoveTicket { ticket_id, group_id } => match group_id {
-            Some(group_id) => format!("Mover el ticket {ticket_id} al grupo {group_id}."),
+            Some(group_id) => format!("Mover el ticket {ticket_id} al grupo {}.", group_name(group_id)),
             None => format!("Quitar el grupo del ticket {ticket_id}."),
         },
         Mutation::ChangeState { ticket_id, state } => {
@@ -4572,7 +4576,26 @@ fn task_mutation_summary(mutation: &notia_backend_core::TaskMutationDto) -> Stri
         Mutation::CreateGroup { name, color, .. } => {
             format!("Crear el grupo «{name}» con color {color}.")
         }
-        Mutation::DeleteGroup { group_id, .. } => format!("Eliminar el grupo {group_id}."),
+        Mutation::UpdateGroup { group_id, name, color, .. } => {
+            let current = groups.iter().find(|group| group.group_id == *group_id);
+            let mut changes = Vec::new();
+            if current.is_none_or(|group| group.name != *name) {
+                changes.push(format!("nombre «{name}»"));
+            }
+            if current.is_none_or(|group| group.color != *color) {
+                changes.push(format!("color {color}"));
+            }
+            if changes.is_empty() {
+                format!("Guardar el grupo {} sin cambios.", group_name(group_id))
+            } else {
+                format!("Cambiar el grupo {}: {}.", group_name(group_id), changes.join(" y "))
+            }
+        }
+        Mutation::ReorderGroups { group_ids, .. } => format!(
+            "Ordenar los grupos: {}.",
+            group_ids.iter().map(|group_id| group_name(group_id)).collect::<Vec<_>>().join(" → ")
+        ),
+        Mutation::DeleteGroup { group_id, .. } => format!("Eliminar el grupo {}.", group_name(group_id)),
         other => format!("Aplicar la mutación de Task Manager {other:?}."),
     }
 }
@@ -4678,6 +4701,55 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    #[test]
+    fn task_group_confirmations_name_the_groups() {
+        use notia_backend_core::{TaskGroupDto, TaskMutationDto};
+        let group = |id: &str, name: &str| TaskGroupDto {
+            library_id: "lib".into(),
+            group_id: id.into(),
+            board_id: "default".into(),
+            name: name.into(),
+            color: "#10b981".into(),
+            revision: 1,
+            order: 0,
+        };
+        let groups = [group("legacy-group-1", "Backlog Q"), group("legacy-group-2", "Sprint Actual")];
+        let summary = |mutation: TaskMutationDto| super::task_mutation_summary(&mutation, &groups);
+        assert_eq!(
+            summary(TaskMutationDto::ReorderGroups {
+                board_id: "default".into(),
+                group_ids: vec!["legacy-group-2".into(), "legacy-group-1".into()],
+            }),
+            "Ordenar los grupos: «Sprint Actual» → «Backlog Q»."
+        );
+        assert_eq!(
+            summary(TaskMutationDto::UpdateGroup {
+                board_id: "default".into(),
+                group_id: "legacy-group-1".into(),
+                name: "Backlog Q actual".into(),
+                color: "#10b981".into(),
+            }),
+            "Cambiar el grupo «Backlog Q»: nombre «Backlog Q actual»."
+        );
+        assert_eq!(
+            summary(TaskMutationDto::MoveTicket { ticket_id: "t-1".into(), group_id: Some("legacy-group-2".into()) }),
+            "Mover el ticket t-1 al grupo «Sprint Actual»."
+        );
+    }
+
+    /// Board indexes are rebuilt by the store: an agent document tool must
+    /// never write them, while tickets and other notes stay writable.
+    #[test]
+    fn agent_document_writes_skip_task_manager_indexes() {
+        use notia_backend_core::{BackendErrorCode, DocumentLocatorDto};
+        let locator = |path: &str| DocumentLocatorDto::new("lib", path, None, None).expect("locator");
+        let refused = TauriBackendToolExecutor::ensure_agent_writable(&locator("task-mannager/defaultTaskIndex.md"))
+            .expect_err("index");
+        assert_eq!(refused.code, BackendErrorCode::Forbidden);
+        assert!(TauriBackendToolExecutor::ensure_agent_writable(&locator("task-mannager/default/Cobranzas integradas.md")).is_ok());
+        assert!(TauriBackendToolExecutor::ensure_agent_writable(&locator("Personal/notas.md")).is_ok());
+    }
 
     #[test]
     fn a_failed_request_logs_its_tools_by_name_without_their_data() {

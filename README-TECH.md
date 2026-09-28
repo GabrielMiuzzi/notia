@@ -4139,7 +4139,7 @@ Las solicitudes del agente recibidas por Telegram limitan cada ronda de herramie
 
 ---
 
-- Los grupos del Task Manager también forman parte del contrato del agente: `get_task_manager_options` lee exclusivamente `settings.groups` del tablero activo, la misma fuente que renderiza la UI, y no convierte valores históricos del campo `equipo` en grupos visibles. `create_task_group` exige nombre y color hexadecimal explícitos, y `delete_task_group` consulta el snapshot completo antes de escribir. La eliminación se rechaza si existe cualquier ticket asignado al grupo, incluso finalizado o cancelado, y nunca reasigna, mueve ni cancela tickets. Ambas mutaciones requieren confirmación individual en la tarjeta inline.
+- Los grupos del Task Manager también forman parte del contrato del agente: `get_task_manager_options` lee exclusivamente `settings.groups` del tablero activo, la misma fuente que renderiza la UI, y no convierte valores históricos del campo `equipo` en grupos visibles. `create_task_group` exige nombre y color hexadecimal explícitos, y `delete_task_group` consulta el snapshot completo antes de escribir. La eliminación se rechaza si existe cualquier ticket asignado al grupo, incluso finalizado o cancelado, y nunca reasigna, mueve ni cancela tickets. Ambas mutaciones requieren confirmación individual en la tarjeta inline. Desde 2026-09-28 también existen `update_task_group` y `reorder_task_groups`, y todas las herramientas de Task Manager llegan al chat principal y a Telegram (ver «Herramientas de Task Manager en el chat principal y Telegram»).
 
 - Las solicitudes compuestas de Task Manager usan `set_task_execution_plan` antes de mutar. La tarjeta exige una aprobación explícita o permite **Sugerir cambios** mediante el compositor; la sugerencia vuelve al modelo como resultado de herramienta y obliga a presentar una nueva versión. El runtime asigna IDs estables a los pasos, bloquea toda escritura mientras el plan no esté aprobado, exige `planStepId` mientras exista un plan activo, impide ejecutarlos fuera de orden y publica `pending | in-progress | completed | blocked` hacia la tarjeta inline. Solo una mutación confirmada y aplicada marca su paso como completado; un rechazo o una excepción lo bloquea.
 
@@ -9249,4 +9249,87 @@ Cuando dos ventanas del mismo host abren la misma nota (el host y sus clientes, 
   - la edición en conjunto en el editor real con dos ventanas;
   - el reinicio del host;
   - un certificado cambiado;
+  - build Linux (WSL).
+
+## Herramientas de Task Manager en el chat principal y Telegram (2026-09-28)
+
+**Problema.** Por Telegram, el usuario pidió reordenar y renombrar las columnas del tablero `default` y agregar una columna «Atrasado». El agente:
+
+- respondió que no podía crear grupos porque «el id lo genera la app» y le pidió al usuario que creara la columna desde el tablero;
+- contó tickets por grupo leyendo los archivos: informó 23 sin grupo cuando había 7;
+- intentó reescribir la lista `groups` de `task-mannager/defaultTaskIndex.md` con `preview_markdown_edit`/`apply_markdown_edit`. Tuvo dos conflictos de revisión, una operación inválida y un preview que guardaba la lista entre comillas;
+- terminó el turno con «El modelo no redactó la respuesta final… 3 fallaron», sin decir por qué.
+
+**Causa raíz.**
+
+1. Los contratos de las 22 herramientas de Task Manager tenían `scopes: [TaskManager]`. `authorize_tool_call` rechaza una herramienta cuyo scope no incluye el del pedido, así que el chat principal y Telegram, que usan el scope `library`, nunca las recibieron. Las demás piezas sí suponían que estaban:
+   - la política (`TaskRead`/`TaskWrite` autorizadas en `Library`);
+   - el área «tareas» del router (`tool_routing`), que nunca se ofrecía;
+   - la guía (`add_task_comment` en `library`);
+   - el README («acceso transversal a Task Manager»).
+2. El dominio ya tenía `UpdateGroup` y `ReorderGroups` (los usa el tablero), pero no había herramientas del agente para renombrar ni reordenar grupos.
+3. El índice del tablero (`<tablero>TaskIndex.md`, con `groups: ["nombre|color|revisión|id", …]`) lo reescribe el store en cada commit junto con `.notia-task-manager.json`, que conserva los grupos por nombre. Editarlo a mano no sirve:
+   - un grupo renombrado solo en el índice vuelve a aparecer con su nombre viejo desde el JSON compartido, como columna duplicada;
+   - `setFrontmatter` solo acepta texto, así que una lista se guarda como un único string y el tablero la leería como un solo grupo.
+4. `get_task_manager_options` devolvía los grupos ordenados por id, no por columna.
+
+**Solución.**
+
+- **Catálogo (`task_manager_tools.rs`, `catalog.rs`).**
+  - Las herramientas de lectura y escritura de Task Manager tienen `scopes: [TaskManager, Library]` (`task_tool_scopes`), así que llegan al chat principal y a Telegram por el área «tareas» del router.
+  - Las de escritura tienen política explícita `TaskWrite` (antes caían en `LibraryWrite`), autorizada solo en `TaskManager` y `Library`.
+  - Finanzas, documento y grafo siguen sin herramientas de Task Manager. La publicación de Task Manager no cambia.
+- **Herramientas nuevas (`defaults/tool_schemas.json`, `task_manager_tool_input.rs`).**
+  - `update_task_group {boardId, groupId, name?, color?}`: renombra o cambia el color; exige al menos uno de los dos. Lo omitido se completa con el valor actual del grupo, tomado del snapshot. Conserva id, posición y tickets.
+  - `reorder_task_groups {boardId, groupIds[]}`: fija el orden de izquierda a derecha.
+  - `task_mutation_from_tool` recibe los grupos actuales de la biblioteca. `TASK_MUTATION_TOOLS`/`is_task_mutation_tool` es la única lista de herramientas de escritura; `backend_runtime.rs` la usa para el preview, la ejecución y el cálculo de `changed`, en lugar de repetir 16 nombres en tres lugares.
+  - La descripción de `create_task_group` aclara que el backend genera el id.
+- **Dominio.**
+  - `ReorderGroups` exige exactamente todos los grupos del tablero, sin repetidos: «El orden debe incluir los N grupos del tablero, cada uno una vez». Antes un orden parcial dejaba dos columnas en la misma posición.
+  - La intención `reorder-groups` del tablero (`task_manager_ui.rs`) agrega al final, en su orden actual, los grupos que la vista no nombró.
+  - `get_task_manager_options` devuelve los grupos por tablero y orden de columna.
+- **Confirmación (`task_mutation_summary`).** Nombra los grupos en lugar de mostrar el id. Ejemplos:
+  - «Ordenar los grupos: «Sprint Actual» → «Bloqueado» → …»;
+  - «Cambiar el grupo «Backlog Q»: nombre «Backlog Q actual»»;
+  - «Mover el ticket … al grupo «Sprint Actual»».
+
+  Los grupos salen de `task_manager_commands::backend_tool_groups`, con la misma autorización del usuario.
+- **Índices protegidos (`task_manager_store::is_task_manager_index`, `TauriBackendToolExecutor::ensure_agent_writable`).**
+  - Las herramientas de documentos del agente rechazan con `forbidden` escribir un índice de Task Manager: `create_library_note`, `replace_library_document`, `delete_library_document`, `preview_markdown_edit`, `apply_markdown_edit` y las multi-documento.
+  - Cuenta como índice un `.md` bajo `task-mannager/` o `task-manager/` que el store trata como reservado (`taskIndex`, `taskIndexFinished`, `taskIndexCancelled`, `<tablero>TaskIndex`). `pomodoro.md` y los tickets se siguen pudiendo escribir.
+  - El error se da en el preview, antes de pedir confirmación. El editor guarda esos archivos como cualquier nota.
+- **Guía (`prompt_guidance.rs`).** Las reglas de herramientas de Task Manager pasaron a `task_tools`, que usan el chat del tablero y también `library` (chat principal y Telegram). Reglas nuevas:
+  - contar con `get_task_board_summary`;
+  - `get_task_manager_options` devuelve las columnas en orden;
+  - `create_task_group` genera el id: nunca pedirle al usuario que cree el grupo;
+  - `update_task_group` y `reorder_task_groups` con todos los grupos;
+  - nunca editar `*TaskIndex.md` ni el frontmatter de un ticket con herramientas de documentos;
+  - en `library`, usar las herramientas de Task Manager y no la búsqueda de documentos para tickets.
+
+  Las reglas propias del chat del tablero («tablero activo») siguen solo en `task_manager`.
+- **Turno sin respuesta (`agent.rs`, `work_summary`).** Cuando el modelo termina sin redactar, el resumen cita hasta tres errores distintos de las herramientas que fallaron, de 200 caracteres como máximo cada uno. Ejemplo: «3 fallaron: «El documento Markdown cambió desde el preview»; «La operación Markdown no es válida».».
+
+**Contratos y compatibilidad.**
+
+- No cambian el DTO `TaskMutationDto` ni el formato persistido.
+- Un rename confirmado reescribe el índice, `.notia-task-manager.json` y el campo `equipo` de los tickets del grupo en el mismo commit, como ya hacía el tablero.
+- Límite de herramientas: el scope `library` suma 22 herramientas antes del ruteo. `every_scope_fits_the_tool_limit_for_the_owner` y la prueba de áreas siguen pasando.
+
+**Validaciones.**
+
+- `cargo test --offline -p notia-backend-core` → 412 (antes 402). Pruebas nuevas:
+  - mapeo de `update_task_group` (conserva lo omitido, exige un cambio y un grupo del tablero) y de `reorder_task_groups`;
+  - cada herramienta de escritura tiene contrato y mapeo;
+  - el chat principal y Telegram reciben las 22 herramientas y el área «tareas», y los demás scopes no;
+  - la guía de Telegram incluye las reglas de grupos;
+  - el reorden parcial se rechaza y las opciones siguen el orden;
+  - la intención del tablero completa el orden;
+  - el resumen del turno cita los errores.
+- `cargo test --offline -p notia-app --features bluetooth` → 430 aprobados + 2 ignorados (antes 427). Pruebas nuevas: confirmaciones con nombres de grupo, índices protegidos y detección de índices.
+- `cargo check --offline --workspace`: sin errores. Android (`aarch64-linux-android`): sin errores, 59 warnings (antes 60). Ningún warning nuevo en los archivos tocados.
+- Frontend: sin cambios.
+- **Pendiente:**
+  - repetir el pedido por Telegram con el modelo real: reordenar, renombrar tres grupos y ubicar «Atrasado»;
+  - probar en el chat principal;
+  - probar con un usuario sin `#Confidencial`;
   - build Linux (WSL).

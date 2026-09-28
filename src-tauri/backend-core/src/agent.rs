@@ -1611,10 +1611,41 @@ fn work_summary(results: &[ToolResult]) -> String {
     }
     summary.push('.');
     if failed > 0 {
-        summary.push_str(&format!(" {}.", plural(failed, "falló", "fallaron")));
+        summary.push_str(&format!(" {}", plural(failed, "falló", "fallaron")));
+        // The backend errors are written for the user; up to three distinct
+        // ones say why without another turn.
+        let mut reasons = Vec::new();
+        for result in results.iter().filter(|result| !result.ok) {
+            let Some(message) = result.error.as_ref().map(|error| error.message.trim()) else {
+                continue;
+            };
+            let message = bounded_reason(message);
+            if !message.is_empty() && !reasons.contains(&message) && reasons.len() < MAX_SUMMARY_REASONS {
+                reasons.push(message);
+            }
+        }
+        if !reasons.is_empty() {
+            summary.push_str(&format!(": {}", reasons.iter().map(|reason| format!("«{reason}»")).collect::<Vec<_>>().join("; ")));
+        }
+        summary.push('.');
     }
     summary.push_str(" Pedime que revise cómo quedó si querés el detalle.");
     summary
+}
+
+/// Distinct tool errors quoted in a turn summary.
+const MAX_SUMMARY_REASONS: usize = 3;
+/// Characters kept of each quoted tool error.
+const MAX_SUMMARY_REASON_CHARS: usize = 200;
+
+fn bounded_reason(message: &str) -> String {
+    let mut characters = message.trim_end_matches('.').chars();
+    let kept = characters.by_ref().take(MAX_SUMMARY_REASON_CHARS).collect::<String>();
+    if characters.next().is_some() {
+        format!("{}…", kept.trim_end())
+    } else {
+        kept
+    }
 }
 
 pub fn tool_call_key(name: &str, arguments: &serde_json::Value) -> String {
@@ -2539,6 +2570,31 @@ mod tests {
             "{}",
             response.response.markdown
         );
+    }
+
+    #[test]
+    fn the_summary_of_a_silent_turn_says_why_actions_failed() {
+        let failed = |message: &str| ToolResult {
+            call_id: String::new(),
+            ok: false,
+            changed: false,
+            data: None,
+            error: Some(BackendError::invalid_input(message)),
+            preview: None,
+        };
+        let done = ToolResult { ok: true, changed: true, error: None, ..failed("") };
+        let summary = work_summary(&[
+            done,
+            failed("El documento Markdown cambió desde el preview."),
+            failed("El documento Markdown cambió desde el preview."),
+            failed("La operación Markdown no es válida."),
+        ]);
+        assert_eq!(
+            summary,
+            "El modelo no redactó la respuesta final, pero trabajé en el pedido: 1 acción con herramientas (1 cambió datos). 3 fallaron: «El documento Markdown cambió desde el preview»; «La operación Markdown no es válida». Pedime que revise cómo quedó si querés el detalle."
+        );
+        let long = work_summary(&[failed(&"x".repeat(500))]);
+        assert!(long.contains(&format!("«{}…»", "x".repeat(MAX_SUMMARY_REASON_CHARS))), "{long}");
     }
 
     fn read_executor() -> Executor {

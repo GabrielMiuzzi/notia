@@ -129,13 +129,27 @@ fn telegram(guidance: &mut Guidance) {
 fn task_manager(guidance: &mut Guidance) {
     guidance.push("Estás en Task Manager. No recibiste todos los tickets como contexto.");
     guidance.push("Por defecto respondé sobre el tablero activo. No mezcles tableros ni cambies de tablero por una coincidencia de texto; usá otro solo si el usuario lo pide explícitamente.");
+    task_tools(guidance);
+}
+
+/// Task Manager tools, in its side chat and in the library chat or Telegram.
+fn task_tools(guidance: &mut Guidance) {
+    if !guidance.has_any(&["search_task_tickets", "get_task_manager_options", "create_task_ticket"]) {
+        return;
+    }
     guidance.push("Por defecto excluí tickets finalizados o cancelados. Incluilos solo si el usuario los pide y pasá includeArchived:true.");
     guidance.push_if(&["search_task_context"], "Para preguntas temáticas generales usá primero search_task_context. Devuelve fragmentos agrupados por ticketId: presentá cada ticket por separado y nunca mezcles fragmentos de tickets distintos.");
     guidance.push_if(&["read_all_task_tickets"], "Si el usuario pide todos los tickets, un inventario, un conteo o un resumen completo, llamá read_all_task_tickets y recorré las páginas mientras hasMore sea true. Una búsqueda devuelve coincidencias parciales y nunca sirve para afirmar que encontraste todos.");
+    guidance.push_if(&["get_task_board_summary"], "Para cuántos tickets hay por grupo, estado o prioridad usá get_task_board_summary; no cuentes leyendo los archivos del tablero.");
     guidance.push("Para resúmenes por persona, revisá cada ticket de forma independiente y relevá todos los nombres asociados a trabajo en metadatos, título y cuerpo. Una tarea puede aparecer bajo más de una persona; si no se puede saber si alguien tiene trabajo asignado, indicalo como ambiguo.");
     guidance.push_if(&["read_task_tickets"], "Si piden el detalle de tickets encontrados, llamá read_task_tickets una sola vez con todos sus ticketIds antes de responder y usá una sección por ticket. Las subtareas enlazadas se incluyen en la lectura: explicá la relación padre-subtarea.");
-    guidance.push_if(&["get_task_manager_options"], "Obtené boardId y groupId con get_task_manager_options; estados válidos: Pendiente, En progreso, Bloqueada, Finalizada y Cancelada; prioridades: Baja, Media, Alta y Urgente.");
-    guidance.push_if(&["create_task_group", "delete_task_group"], "Para crear un grupo, el nombre y el color hexadecimal deben estar definidos por el usuario. Solo se puede eliminar un grupo sin tickets asignados; nunca reasignes ni muevas tickets para lograrlo.");
+    guidance.push_if(&["get_task_manager_options"], "Obtené boardId y groupId con get_task_manager_options, que devuelve los grupos (columnas) de cada tablero en el orden en que se ven; estados válidos: Pendiente, En progreso, Bloqueada, Finalizada y Cancelada; prioridades: Baja, Media, Alta y Urgente.");
+    guidance.push_if(&["add_task_comment"], "Si el usuario pide comentar un ticket de Task Manager, usá add_task_comment; nunca reemplaces el documento para simular un comentario.");
+    guidance.push_if(&["create_task_group", "delete_task_group"], "Para crear un grupo, el nombre y el color hexadecimal deben estar definidos por el usuario. create_task_group lo agrega al final del tablero y el backend genera su id: nunca le pidas al usuario que lo cree desde el tablero. Solo se puede eliminar un grupo sin tickets asignados; nunca reasignes ni muevas tickets para lograrlo.");
+    guidance.push_if(&["update_task_group", "reorder_task_groups"], "Para renombrar un grupo o cambiar su color usá update_task_group, que conserva su id, su posición y sus tickets. Para cambiar el orden de las columnas usá reorder_task_groups con los groupId de todos los grupos del tablero, de izquierda a derecha.");
+    if guidance.has_any(&["create_task_ticket", "update_task_group"]) {
+        guidance.push("Los tableros, grupos y tickets se modifican solo con las herramientas de Task Manager: nunca edites con herramientas de documentos los índices del tablero (archivos *TaskIndex.md), que Notia reescribe en cada cambio, ni el frontmatter de un ticket.");
+    }
     if guidance.has("create_task_ticket") {
         guidance.push("Política de no invención: si hay dudas sobre el ticket exacto, el alcance, el título, el contenido, el grupo, el estado o la prioridad, no elijas valores por tu cuenta. Buscá primero y, si la evidencia no determina un único valor, pedí una aclaración.");
         guidance.push("Ejecutá una herramienta de mutación por cambio y nunca agrupes escrituras en una misma ronda. Antes de mutar un ticket existente identificalo con search_task_tickets; si hay más de una coincidencia razonable, preguntá cuál es.");
@@ -183,7 +197,8 @@ fn library(guidance: &mut Guidance, context: &BackendRequestContext, today: &str
     guidance.push_if(&["search_library_context"], "Para consultas sobre personas, tareas o temas usá search_library_context y leé con read_library_documents solo los documentos encontrados cuando los fragmentos no alcancen.");
     guidance.push("Reutilizá los resultados obtenidos: no repitas una búsqueda ni una lectura con los mismos argumentos. Cuando tengas evidencia suficiente, respondé.");
     guidance.push_if(&["replace_library_document"], "Podés crear, reemplazar o eliminar documentos, pero cada escritura requiere una confirmación individual. Identificá el documento de forma unívoca (documentId de una búsqueda) antes de modificarlo o eliminarlo.");
-    guidance.push_if(&["add_task_comment"], "Si el usuario pide comentar un ticket de Task Manager, usá add_task_comment; nunca reemplaces el documento para simular un comentario.");
+    guidance.push_if(&["search_task_tickets"], "Para tickets, grupos y tableros de Task Manager usá sus herramientas, no la búsqueda ni la lectura de documentos.");
+    task_tools(guidance);
     routine_tools(guidance);
     let transversal = guidance.has("create_finance_transaction") || guidance.has("list_finance_records");
     if transversal {
@@ -292,6 +307,37 @@ mod tests {
         assert!(!text.contains("read_all_task_tickets"));
         assert!(!text.contains("set_task_execution_plan"));
         assert!(!text.contains("search_web"));
+    }
+
+    #[test]
+    fn telegram_gets_the_task_manager_rules_when_its_tools_are_routed_in() {
+        let with_tasks = scope_guidance(
+            &context(BackendScope::Library, BackendChannel::Telegram),
+            &tools(&[
+                "search_task_tickets",
+                "get_task_manager_options",
+                "get_task_board_summary",
+                "create_task_ticket",
+                "create_task_group",
+                "update_task_group",
+                "reorder_task_groups",
+                "delete_task_group",
+            ]),
+            None,
+            "2026-09-28",
+        );
+        assert!(with_tasks.contains("reorder_task_groups con los groupId de todos los grupos"));
+        assert!(with_tasks.contains("el backend genera su id"));
+        assert!(with_tasks.contains("*TaskIndex.md"));
+        assert!(with_tasks.contains("get_task_board_summary"));
+        assert!(!with_tasks.contains("Estás en Task Manager"));
+        let without = scope_guidance(
+            &context(BackendScope::Library, BackendChannel::Telegram),
+            &tools(&["search_library_context"]),
+            None,
+            "2026-09-28",
+        );
+        assert!(!without.contains("Task Manager"));
     }
 
     #[test]

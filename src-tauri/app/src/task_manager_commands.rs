@@ -127,6 +127,7 @@ pub(crate) fn execute_backend_mutation_tool(
 ) -> Result<Value, BackendError> {
     let manager = manager(app, state, registry, library_id, library_user_id)?;
     let context = TaskManagerContextDto::new(library_id, library_user_id)?;
+    let groups = manager.read_snapshot(&context)?.groups;
     let preview_request = TaskMutationRequestDto {
         context: context.clone(),
         operation_id: operation_id.to_string(),
@@ -134,6 +135,7 @@ pub(crate) fn execute_backend_mutation_tool(
         mutation: notia_backend_core::task_mutation_from_tool(
             name,
             arguments,
+            &groups,
             &mut || uuid::Uuid::new_v4().to_string(),
             unix_now_ms(),
         )?,
@@ -146,6 +148,20 @@ pub(crate) fn execute_backend_mutation_tool(
         confirmed: true,
     })?;
     Ok(json!({ "tool": name, "preview": preview, "receipt": receipt }))
+}
+
+/// Current groups of the library, for the confirmation of a Task Manager
+/// tool: a group update fills what it leaves out and summaries name groups.
+pub(crate) fn backend_tool_groups(
+    app: &AppHandle,
+    state: &TaskManagerBackendState,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+    library_user_id: &str,
+) -> Result<Vec<notia_backend_core::TaskGroupDto>, BackendError> {
+    let manager = manager(app, state, registry, library_id, library_user_id)?;
+    let context = TaskManagerContextDto::new(library_id, library_user_id)?;
+    Ok(manager.read_snapshot(&context)?.groups)
 }
 
 fn unix_now_ms() -> i64 {

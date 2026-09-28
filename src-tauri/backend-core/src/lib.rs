@@ -167,7 +167,8 @@ pub use protocol::{
 };
 pub use runtime::InteractionRuntime;
 pub use task_manager_tool_input::{
-    task_mutation_from_tool, ticket_ids_to_read, MAX_TASK_TOOL_READ_TICKETS,
+    is_task_mutation_tool, task_mutation_from_tool, ticket_ids_to_read, MAX_TASK_TOOL_READ_TICKETS,
+    TASK_MUTATION_TOOLS,
 };
 pub use task_manager_ui::{
     plan_pomodoro_record, pomodoro_hours_update, pomodoro_ticket, project_board_view, show_board_paths,

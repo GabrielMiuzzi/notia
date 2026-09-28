@@ -1092,7 +1092,7 @@
     }
   },
   "create_task_group": {
-    "description": "Crea un grupo en un tablero con nombre y color hexadecimal definidos por el usuario. Requiere confirmación visible.",
+    "description": "Crea un grupo (columna) al final de un tablero con nombre y color hexadecimal definidos por el usuario. El backend genera su id: no hace falta crearlo desde el tablero. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -3334,6 +3334,35 @@
       ]
     }
   },
+  "update_task_group": {
+    "description": "Renombra un grupo (columna) de un tablero o cambia su color; conserva su id, su posición y sus tickets. Enviá name, color o ambos: lo que se omite queda igual. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "groupId": {
+          "type": "string",
+          "description": "groupId devuelto por get_task_manager_options."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre nuevo del grupo."
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "Color hexadecimal nuevo."
+        }
+      },
+      "required": [
+        "boardId",
+        "groupId"
+      ]
+    }
+  },
   "apply_multi_document_markdown_edit": {
     "description": "Aplica un preview devuelto por preview_multi_document_markdown_edit después de verificar la revisión de todos los documentos antes de escribir. Si un documento falla, revierte los ya escritos. Requiere confirmación visible.",
     "parameters": {
@@ -3586,6 +3615,30 @@
           "description": "Ids o nombres de todas las tareas de la rutina, en el orden nuevo."
         }
       }
+    }
+  },
+  "reorder_task_groups": {
+    "description": "Define el orden de los grupos (columnas) de un tablero, de izquierda a derecha. groupIds debe incluir exactamente todos los grupos del tablero, cada uno una vez; get_task_manager_options los devuelve en el orden actual. Conserva ids, nombres, colores y tickets. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "groupIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "groupId de todos los grupos del tablero, en el orden nuevo."
+        }
+      },
+      "required": [
+        "boardId",
+        "groupIds"
+      ]
     }
   },
   "set_routine_completions": {

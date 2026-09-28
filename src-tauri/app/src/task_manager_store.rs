@@ -657,6 +657,19 @@ fn collect_markdown_paths(directory: &Path, output: &mut Vec<PathBuf>) -> Result
     Ok(())
 }
 
+/// Whether a library logical path is an index the store rebuilds on every
+/// commit (`<board>TaskIndex.md`, `taskIndex.md`, `taskIndexFinished.md`…):
+/// its groups and links are written from the snapshot and the shared
+/// metadata, so an edit to the file itself is lost or breaks the board.
+pub(crate) fn is_task_manager_index(logical_path: &str) -> bool {
+    let root = logical_path.split('/').next().unwrap_or_default();
+    let name = logical_path.rsplit('/').next().unwrap_or_default();
+    (root.eq_ignore_ascii_case(PRIMARY_ROOT) || root.eq_ignore_ascii_case(MODERN_ROOT))
+        && name.to_ascii_lowercase().ends_with(".md")
+        && !name.eq_ignore_ascii_case(POMODORO_LOG_FILE)
+        && is_reserved_document(Path::new(name))
+}
+
 fn is_reserved_document(path: &Path) -> bool {
     let name = path
         .file_stem()
@@ -2742,6 +2755,27 @@ mod tests {
             resolve_group_reference(&metadata, "default", Some("Del Q")),
             None
         );
+    }
+
+    #[test]
+    fn only_the_indexes_the_store_rebuilds_are_task_manager_indexes() {
+        for path in [
+            "task-mannager/defaultTaskIndex.md",
+            "task-mannager/taskIndex.md",
+            "task-mannager/taskIndexFinished.md",
+            "Task-Manager/tasks/proyectosTaskIndex.MD",
+        ] {
+            assert!(is_task_manager_index(path), "{path}");
+        }
+        for path in [
+            "task-mannager/default/Cobranzas integradas.md",
+            "task-mannager/pomodoro.md",
+            "task-mannager/.notia-task-manager.json",
+            "Personal/defaultTaskIndex.md",
+            "defaultTaskIndex.md",
+        ] {
+            assert!(!is_task_manager_index(path), "{path}");
+        }
     }
 
     #[test]
