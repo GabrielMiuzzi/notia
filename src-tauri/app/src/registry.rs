@@ -50,6 +50,12 @@ fn route(command: &str) -> Option<Route> {
         "backend_library_graph_search" => backend_library_graph_search,
         "backend_library_search" => backend_library_search,
         "backend_library_catalog" => backend_library_catalog,
+        "app_auth_status" => app_auth_status,
+        "app_auth_login" => app_auth_login,
+        "app_auth_first_login" => app_auth_first_login,
+        "app_auth_create_password" => app_auth_create_password,
+        "app_auth_change_password" => app_auth_change_password,
+        "app_auth_logout" => app_auth_logout,
         "backend_agent_history" => backend_agent_history,
         "backend_save_pending_clarification" => backend_save_pending_clarification,
         "backend_pending_clarification" => backend_pending_clarification,
@@ -253,6 +259,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "backend_library_graph_search",
     "backend_library_search",
     "backend_library_catalog",
+    "app_auth_status",
+    "app_auth_login",
+    "app_auth_first_login",
+    "app_auth_create_password",
+    "app_auth_change_password",
+    "app_auth_logout",
     "backend_agent_history",
     "backend_save_pending_clarification",
     "backend_pending_clarification",
@@ -575,15 +587,15 @@ fn backend_export_markdown_document(app: &AppHandle, _window_label: &str, comman
 }
 
 fn backend_read_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_read_library_config(arg(command, args, "payload")?, app.state(), app.state()))))
+    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_read_library_config(arg(command, args, "payload")?, app))))
 }
 
 fn backend_write_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_write_library_config(arg(command, args, "payload")?, app.state(), app.state()))))
+    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_write_library_config(arg(command, args, "payload")?, app))))
 }
 
 fn backend_ensure_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_ensure_library_config(arg(command, args, "payload")?, app.state(), app.state()))))
+    Ok(Dispatch::Ready(reply_value(crate::library_config::backend_ensure_library_config(arg(command, args, "payload")?, app))))
 }
 
 fn backend_library_graph(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -618,6 +630,42 @@ fn backend_library_search(app: &AppHandle, _window_label: &str, command: &str, a
 
 fn backend_library_catalog(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::library_catalog::backend_library_catalog(app.clone(), app.state()))))
+}
+
+fn app_auth_status(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_status(arg0, arg1).await) })))
+}
+
+fn app_auth_login(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_login(arg0, arg1).await) })))
+}
+
+fn app_auth_first_login(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_first_login(arg0, arg1).await) })))
+}
+
+fn app_auth_create_password(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_create_password(arg0, arg1).await) })))
+}
+
+fn app_auth_change_password(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_change_password(arg0, arg1).await) })))
+}
+
+fn app_auth_logout(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::app_auth::backend_app_auth_logout(arg0, arg1).await) })))
 }
 
 fn backend_agent_history(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

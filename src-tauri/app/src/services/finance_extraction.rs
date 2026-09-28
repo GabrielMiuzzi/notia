@@ -152,9 +152,8 @@ impl FinanceExtractionAdapter for LlamaCloudAdapter {
     }
 }
 
-fn parse_library_credential(config: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(config).ok()?;
-    value
+fn library_credential(config: &serde_json::Value) -> Option<String> {
+    config
         .get("llamacloud")?
         .get("apiKey")?
         .as_str()
@@ -163,48 +162,23 @@ fn parse_library_credential(config: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The LlamaCloud key of the library's configuration, read through the
+/// configuration store (the file is encrypted once the Owner has a
+/// password).
 fn read_library_llamacloud_credential(
     app: &crate::host::AppHandle,
     context: &FinanceContext,
 ) -> Result<Option<String>, String> {
-    #[cfg(target_os = "android")]
-    {
-        let directory_uri = context
-            .android_directory_uri
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "La biblioteca Android no tiene un permiso SAF válido.".to_string())?;
-        let config_path = format!(
-            "{}/.notia/notiaConfig.json",
-            context.library_path.trim_end_matches(['/', '\\'])
-        );
-        let picker_state =
-            app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>();
-        let result = crate::filesystem::android_saf::read_library_file(
-            picker_state.inner(),
-            &config_path,
-            Some(directory_uri),
-        )
-        .ok_or_else(|| "No se pudo leer la configuración de la biblioteca Android.".to_string())?;
-        return if result.ok {
-            Ok(parse_library_credential(&result.content))
-        } else {
-            Err("No se pudo leer la configuración de la biblioteca Android.".to_string())
-        };
-    }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = app;
-        let config_path = Path::new(context.library_path.trim())
-            .join(".notia")
-            .join("notiaConfig.json");
-        match std::fs::read_to_string(config_path) {
-            Ok(config) => Ok(parse_library_credential(&config)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err("No se pudo leer la configuración de la biblioteca.".to_string()),
-        }
-    }
+    let library = crate::library_catalog::catalog_libraries(app).into_iter().find(|library| {
+        library.path == context.library_path
+            || library.android_tree_uri.is_some() && library.android_tree_uri == context.android_directory_uri
+    });
+    let Some(library) = library else {
+        return Ok(None);
+    };
+    crate::library_config::read_library_config(app, &library.id)
+        .map(|config| config.as_ref().and_then(library_credential))
+        .map_err(|error| error.message)
 }
 
 /// Android-only SAF reader for finance extraction. The logical path is

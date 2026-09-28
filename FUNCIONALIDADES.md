@@ -16,6 +16,8 @@
 - Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con chips por etiqueta y coloración de nodos en Graph View.
 - Motor común de IA para chat principal, chats desplegables, Meeting, Telegram y publicación, con actor estable por biblioteca y autorización exacta por contexto.
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
+- Inicio de sesión del Owner al abrir la app (primer inicio, recordar sesión y datos, cambiar contraseña, cerrar sesión) y `.notia/notiaConfig.json` cifrado con su contraseña, sin recuperación.
+- Inicio de sesión del Task Manager publicado con el mismo diseño: primer inicio para usuarios sin contraseña, recordar sesión y datos, y cambio de contraseña.
 - Exportación de notas a PDF (solo de notas en modo página) y DOCX con formato y sin las propiedades: fórmulas compuestas como texto en el PDF y como ecuaciones editables en Word, con el tamaño de página, los márgenes y la numeración configurados.
 - Modo página por nota (propiedad `pageMode`, apagado por defecto) en notas Markdown: hojas de tamaño fijo (A3, A4, A5, B5, Carta u Oficio), orientación, márgenes y numeración, con títulos que pasan a la hoja siguiente junto con lo que introducen.
 - Configuración del lápiz (herramienta, color, grosor, suavizado, presión, rechazo de palma y botón lateral), guardada para la escritura a mano que llegará más adelante.

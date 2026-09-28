@@ -2,11 +2,17 @@
 //! normalizes, migrates and persists `.notia/notiaConfig.json` through the
 //! registered library binding; the WebView only sends library identity and
 //! the configuration it wants to store.
+//!
+//! Once the Owner has a password the file is encrypted with it (see
+//! `backend_core::config_envelope`): it is read and written only while the
+//! library is unlocked (`config_vault`). A file from before the password is
+//! plain text and is sealed the first time the Owner signs in.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::host::State;
+use crate::host::{AppHandle, Manager};
 
+use crate::backend::config_envelope::{classify_stored_config, locked_error, serialize_envelope, ConfigEnvelope, StoredConfig};
 use crate::backend::library_config::{
     default_library_config, normalize_library_config, parse_library_config,
     serialize_library_config, LIBRARY_CONFIG_DIRECTORY, LIBRARY_CONFIG_LOGICAL_PATH,
@@ -54,6 +60,7 @@ impl LibraryConfigResult {
 }
 
 struct LibraryConfigStore<'a> {
+    app: &'a AppHandle,
     library_id: String,
     binding: LibraryBinding,
     adapter: TauriFilesystemDocumentAdapter<'a>,
@@ -61,12 +68,11 @@ struct LibraryConfigStore<'a> {
 }
 
 impl<'a> LibraryConfigStore<'a> {
-    fn open(
-        registry: &LibraryBindingRegistry,
-        library_id: &str,
-        picker: &'a AndroidDirectoryPickerState,
-    ) -> Result<Self, BackendError> {
+    fn open(app: &'a AppHandle, library_id: &str) -> Result<Self, BackendError> {
+        let registry = app.state::<LibraryBindingRegistry>().inner();
+        let picker = app.state::<AndroidDirectoryPickerState>().inner();
         Ok(Self {
+            app,
             library_id: library_id.to_string(),
             binding: registry.lookup(library_id)?,
             adapter: TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?,
@@ -105,25 +111,72 @@ impl<'a> LibraryConfigStore<'a> {
         }
     }
 
-    fn read(&self) -> Result<Option<Value>, BackendError> {
+    /// What the file holds, without opening it.
+    fn stored(&self) -> Result<Option<StoredConfig>, BackendError> {
         if !self.exists()? {
             return Ok(None);
         }
-        let normalized = parse_library_config(&self.adapter.read_locator(&self.locator()?)?)?;
-        if normalized.needs_migration {
+        classify_stored_config(&self.adapter.read_locator(&self.locator()?)?).map(Some)
+    }
+
+    /// The configuration text of an encrypted file, with the unlocked key.
+    /// A key that no longer opens it (the file was sealed again elsewhere)
+    /// locks the library.
+    fn open_envelope(&self, envelope: &ConfigEnvelope) -> Result<String, BackendError> {
+        let unlocked = crate::config_vault::unlocked(self.app, &self.library_id).ok_or_else(locked_error)?;
+        crate::config_crypto::open_config(&unlocked.key, envelope).ok_or_else(|| {
+            crate::config_vault::lock(self.app, &self.library_id);
+            locked_error()
+        })
+    }
+
+    fn read(&self) -> Result<Option<Value>, BackendError> {
+        let (normalized, plain) = match self.stored()? {
+            None => return Ok(None),
+            Some(StoredConfig::Encrypted(envelope)) => (parse_library_config(&self.open_envelope(&envelope)?)?, false),
+            Some(StoredConfig::Plain(text)) => (parse_library_config(&text)?, true),
+        };
+        // A plain file of an unlocked library is sealed now.
+        if normalized.needs_migration || plain && crate::config_vault::is_unlocked(self.app, &self.library_id) {
             self.persist(&normalized.config, true)?;
         }
         Ok(Some(normalized.config))
+    }
+
+    /// The text to store: sealed while the library is unlocked. The wrapped
+    /// key already on disk is kept (the password may have changed on
+    /// another device). An encrypted file cannot be written while locked;
+    /// a library without an Owner password stays plain.
+    fn sealed_text(&self, text: String) -> Result<String, BackendError> {
+        let stored = match self.stored()? {
+            Some(StoredConfig::Encrypted(envelope)) => Some(envelope),
+            _ => None,
+        };
+        let Some(unlocked) = crate::config_vault::unlocked(self.app, &self.library_id) else {
+            return if stored.is_some() { Err(locked_error()) } else { Ok(text) };
+        };
+        let wrapped = match stored {
+            Some(envelope) => {
+                self.open_envelope(&envelope)?;
+                envelope.key
+            }
+            None => unlocked.wrapped.clone(),
+        };
+        serialize_envelope(&crate::config_crypto::seal_config(&unlocked.key, &wrapped, &text)?)
     }
 
     /// Writes the configuration atomically, creating `.notia/` when needed.
     /// SAF creates the whole relative path in one native call; desktop
     /// creates the directory under the canonical root first.
     fn persist(&self, config: &Value, exists: bool) -> Result<(), BackendError> {
-        let text = serialize_library_config(config)?;
+        let text = self.sealed_text(serialize_library_config(config)?)?;
+        self.write_text(&text, exists)
+    }
+
+    fn write_text(&self, text: &str, exists: bool) -> Result<(), BackendError> {
         let locator = self.locator()?;
         if exists {
-            return self.adapter.write_locator(&locator, &text, None);
+            return self.adapter.write_locator(&locator, text, None);
         }
         if let Some(LibraryBindingRoot::Desktop { canonical_root }) = &self.binding.root {
             std::fs::create_dir_all(canonical_root.join(LIBRARY_CONFIG_DIRECTORY)).map_err(|_| {
@@ -134,30 +187,37 @@ impl<'a> LibraryConfigStore<'a> {
                 )
             })?;
         }
-        self.adapter.create_text_locator(&locator, &text)
+        self.adapter.create_text_locator(&locator, text)
     }
 }
 
 /// Normalized configuration of a library for other backend modules (context
 /// catalog, provider settings). `None` when the library has none.
-pub(crate) fn read_library_config(app: &crate::host::AppHandle, library_id: &str) -> Result<Option<Value>, BackendError> {
-    use crate::host::Manager;
-    let registry = app.state::<LibraryBindingRegistry>();
-    let picker = app.state::<AndroidDirectoryPickerState>();
-    LibraryConfigStore::open(registry.inner(), library_id, picker.inner())?.read()
+pub(crate) fn read_library_config(app: &AppHandle, library_id: &str) -> Result<Option<Value>, BackendError> {
+    LibraryConfigStore::open(app, library_id)?.read()
+}
+
+/// What the library's configuration file holds, without opening it.
+pub(crate) fn stored_library_config(app: &AppHandle, library_id: &str) -> Result<Option<StoredConfig>, BackendError> {
+    LibraryConfigStore::open(app, library_id)?.stored()
+}
+
+/// Stores `envelope` as the library's configuration: the same sealed
+/// configuration with a new wrapped key (a new Owner password).
+pub(crate) fn replace_config_envelope(app: &AppHandle, library_id: &str, envelope: &ConfigEnvelope) -> Result<(), BackendError> {
+    let store = LibraryConfigStore::open(app, library_id)?;
+    let exists = store.exists()?;
+    store.write_text(&serialize_envelope(envelope)?, exists)
 }
 
 /// Changes the stored configuration from the backend (for example the mail
 /// accounts, which clients cannot write) and returns what was persisted.
 pub(crate) fn update_library_config(
-    app: &crate::host::AppHandle,
+    app: &AppHandle,
     library_id: &str,
     change: impl FnOnce(Value) -> Value,
 ) -> Result<Value, BackendError> {
-    use crate::host::Manager;
-    let registry = app.state::<LibraryBindingRegistry>();
-    let picker = app.state::<AndroidDirectoryPickerState>();
-    let store = LibraryConfigStore::open(registry.inner(), library_id, picker.inner())?;
+    let store = LibraryConfigStore::open(app, library_id)?;
     let exists = store.exists()?;
     let stored = if exists { store.read()? } else { None };
     let normalized = normalize_library_config(&change(stored.unwrap_or_else(default_library_config))).config;
@@ -174,24 +234,13 @@ fn unavailable() -> BackendError {
 }
 
 /// Reads the normalized configuration, migrating legacy files in place.
-pub(crate) fn backend_read_library_config(
-    payload: LibraryConfigPayload,
-    registry: State<'_, LibraryBindingRegistry>,
-    picker: State<'_, AndroidDirectoryPickerState>,
-) -> LibraryConfigResult {
-    LibraryConfigResult::from_result(
-        LibraryConfigStore::open(registry.inner(), &payload.library_id, picker.inner())
-            .and_then(|store| store.read()),
-    )
+pub(crate) fn backend_read_library_config(payload: LibraryConfigPayload, app: &AppHandle) -> LibraryConfigResult {
+    LibraryConfigResult::from_result(LibraryConfigStore::open(app, &payload.library_id).and_then(|store| store.read()))
 }
 
 /// Normalizes and stores the configuration sent by the client and returns
 /// what was persisted.
-pub(crate) fn backend_write_library_config(
-    payload: LibraryConfigPayload,
-    registry: State<'_, LibraryBindingRegistry>,
-    picker: State<'_, AndroidDirectoryPickerState>,
-) -> LibraryConfigResult {
+pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &AppHandle) -> LibraryConfigResult {
     LibraryConfigResult::from_result((|| {
         let config = payload
             .config
@@ -200,12 +249,21 @@ pub(crate) fn backend_write_library_config(
         if !config.is_object() {
             return Err(BackendError::invalid_input("La configuración debe ser un objeto."));
         }
-        let store = LibraryConfigStore::open(registry.inner(), &payload.library_id, picker.inner())?;
+        let store = LibraryConfigStore::open(app, &payload.library_id)?;
         // Sections the client does not edit (for example the LlamaCloud
         // credential) keep their stored value instead of being erased.
-        // A corrupt stored file is replaced; access errors resurface on write.
+        // A corrupt plain file is replaced; a locked or damaged encrypted
+        // one is never overwritten.
         let exists = store.exists()?;
-        let stored = if exists { store.read().ok().flatten() } else { None };
+        let stored = if exists {
+            match store.read() {
+                Ok(config) => config,
+                Err(error) if !matches!(store.stored(), Ok(Some(StoredConfig::Plain(_)))) => return Err(error),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         let mut merged = stored.unwrap_or_else(|| Value::Object(Default::default()));
         if let (Some(target), Some(updates)) = (merged.as_object_mut(), config.as_object()) {
             // The Google Cloud client, the mail accounts and the weather
@@ -222,13 +280,9 @@ pub(crate) fn backend_write_library_config(
 }
 
 /// Creates the default configuration when the library has none.
-pub(crate) fn backend_ensure_library_config(
-    payload: LibraryConfigPayload,
-    registry: State<'_, LibraryBindingRegistry>,
-    picker: State<'_, AndroidDirectoryPickerState>,
-) -> LibraryConfigResult {
+pub(crate) fn backend_ensure_library_config(payload: LibraryConfigPayload, app: &AppHandle) -> LibraryConfigResult {
     LibraryConfigResult::from_result((|| {
-        let store = LibraryConfigStore::open(registry.inner(), &payload.library_id, picker.inner())?;
+        let store = LibraryConfigStore::open(app, &payload.library_id)?;
         if let Some(config) = store.read()? {
             return Ok(Some(config));
         }

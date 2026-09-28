@@ -237,6 +237,115 @@ fn read_existing_password_hash(
         .map_err(map_sql_error)
 }
 
+/// The Owner's name and stored password hash (`None` before the first one).
+pub(crate) fn owner_account(app: &AppHandle, context: &LibraryDatabaseContext) -> CommandResult<(String, Option<String>)> {
+    let connection = open_context(app, context)?;
+    connection
+        .query_row(
+            "SELECT name, password_hash FROM library_users WHERE id=?1",
+            params![OWNER_USER_ID],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(map_sql_error)?
+        .ok_or_else(|| error("not_found", "La biblioteca no tiene usuario Owner."))
+}
+
+/// Stores a new password of the Owner. The encrypted configuration must be
+/// sealed with it by the caller (`app_auth`).
+pub(crate) fn set_owner_password(app: &AppHandle, context: &LibraryDatabaseContext, password: &str) -> CommandResult<()> {
+    let hash = hash_password(password).map_err(|message| error("invalid_password", message))?;
+    let connection = open_context(app, context)?;
+    connection
+        .execute(
+            "UPDATE library_users SET password_hash=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+            params![hash, OWNER_USER_ID],
+        )
+        .map_err(map_sql_error)?;
+    sync_context(app, context)
+}
+
+/// What a person may do with a user name in the first-time flow of the
+/// published Task Manager.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FirstPasswordCheck {
+    /// The user exists and has no password yet.
+    Allowed(String),
+    Unknown,
+    AlreadySet,
+    /// The Owner's password protects the configuration: it is created in the app.
+    Owner,
+}
+
+/// Whether `username` can create its first password in the published Task
+/// Manager.
+#[cfg(target_os = "windows")]
+pub(crate) fn first_password_check(library_path: &str, username: &str) -> FirstPasswordCheck {
+    let username = username.trim();
+    if username.is_empty() || username.chars().count() > 64 {
+        return FirstPasswordCheck::Unknown;
+    }
+    let Ok(connection) = open_library_connection(library_path) else {
+        return FirstPasswordCheck::Unknown;
+    };
+    let row: Option<(String, Option<String>)> = connection
+        .query_row(
+            "SELECT id, password_hash FROM library_users WHERE normalized_name=?1",
+            params![username.to_lowercase()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    match row {
+        None => FirstPasswordCheck::Unknown,
+        Some((id, _)) if id == OWNER_USER_ID => FirstPasswordCheck::Owner,
+        Some((_, Some(_))) => FirstPasswordCheck::AlreadySet,
+        Some((id, None)) => FirstPasswordCheck::Allowed(id),
+    }
+}
+
+/// Stores the first password of a published Task Manager user that had
+/// none. Returns the user id.
+#[cfg(target_os = "windows")]
+pub(crate) fn create_first_password(library_path: &str, username: &str, password: &str) -> Result<String, String> {
+    let FirstPasswordCheck::Allowed(user_id) = first_password_check(library_path, username) else {
+        return Err("Ese usuario no puede crear una contraseña acá.".to_string());
+    };
+    let hash = hash_password(password)?;
+    let connection = open_library_connection(library_path).map_err(|_| "No se pudo abrir la biblioteca.".to_string())?;
+    let updated = connection
+        .execute(
+            "UPDATE library_users SET password_hash=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2 AND password_hash IS NULL",
+            params![hash, user_id],
+        )
+        .map_err(|_| "No se pudo guardar la contraseña.".to_string())?;
+    if updated == 0 {
+        return Err("Ese usuario ya tiene contraseña.".to_string());
+    }
+    Ok(user_id)
+}
+
+/// Changes the password of a published Task Manager user after checking
+/// the current one. The Owner's is changed in the app. Returns the user id.
+#[cfg(target_os = "windows")]
+pub(crate) fn change_password(library_path: &str, username: &str, current: &str, new: &str) -> Result<String, String> {
+    let user_id = authenticate_library_user(library_path, username, current).ok_or_else(|| "Usuario o contraseña incorrectos.".to_string())?;
+    if user_id == OWNER_USER_ID {
+        return Err("La contraseña del Owner se cambia desde la app de Notia.".to_string());
+    }
+    let hash = hash_password(new)?;
+    let connection = open_library_connection(library_path).map_err(|_| "No se pudo abrir la biblioteca.".to_string())?;
+    connection
+        .execute(
+            "UPDATE library_users SET password_hash=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",
+            params![hash, user_id],
+        )
+        .map_err(|_| "No se pudo guardar la contraseña.".to_string())?;
+    Ok(user_id)
+}
+
 /// Authenticates against the library database without exposing the stored hash.
 /// The publication runtime uses the returned stable user id as its session identity.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -680,6 +789,12 @@ pub fn update_library_user_password(
 ) -> CommandResult<Vec<LibraryUserDto>> {
     let hash =
         hash_password(&payload.password).map_err(|message| error("invalid_password", message))?;
+    // The Owner's password seals the encrypted configuration: it is sealed
+    // again first, so a failure leaves the old password working.
+    if payload.user_id.trim() == OWNER_USER_ID {
+        crate::app_auth::owner_password_set_in_settings(&app, &payload.context, &payload.password)
+            .map_err(|failure| error("locked", failure.message))?;
+    }
     let connection = open_context(&app, &payload.context)?;
     let updated = connection
         .execute(

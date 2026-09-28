@@ -55,6 +55,9 @@ const PUBLISHED_AI_HOST_REQUEST_EVENT: &str = "notia-task-manager-publication-ai
 const DEFAULT_PUBLICATION_CLIENT_LIMIT: usize = 64;
 #[cfg(target_os = "windows")]
 const PUBLICATION_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+/// «Recordar sesión» of the published Task Manager's sign-in.
+#[cfg(target_os = "windows")]
+const PUBLICATION_REMEMBERED_SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 #[cfg(target_os = "windows")]
 const PUBLICATION_HOST_MUTATION_WAIT: Duration = Duration::from_secs(30);
@@ -304,9 +307,9 @@ pub struct TaskManagerPublicationState {
 }
 
 #[cfg(target_os = "windows")]
-fn encode_authenticated_session(user_id: &str) -> String {
+fn encode_authenticated_session(user_id: &str, ttl: Duration) -> String {
     let expires_at = SystemTime::now()
-        .checked_add(PUBLICATION_SESSION_TTL)
+        .checked_add(ttl)
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .map(|value| value.as_secs())
         .unwrap_or(u64::MAX);
@@ -1312,6 +1315,13 @@ fn serve_request<S: Read + Write + Send + 'static>(
     }
     let ip_rate_limit = match (method, path.as_str()) {
         ("POST", path) if path == format!("{base}/login") => Some((30, "login")),
+        ("POST", path)
+            if path == format!("{base}/first-login")
+                || path == format!("{base}/create-password")
+                || path == format!("{base}/change-password") =>
+        {
+            Some((30, "password"))
+        }
         ("POST", path) if path == format!("{base}/ai/stream") => Some((60, "ai")),
         ("POST", path) if path == format!("{base}/invoke") => Some((240, "invoke")),
         ("GET", path) if path == format!("{base}/status") => Some((120, "status")),
@@ -1410,6 +1420,12 @@ fn serve_request<S: Read + Write + Send + 'static>(
         serve_library_user_login_page()
     } else if method == "POST" && path == format!("{base}/login") {
         serve_library_user_login(http_body(&request), &runtime, &publication.vault_path, base)
+    } else if method == "POST" && path == format!("{base}/first-login") {
+        serve_first_password_check(http_body(&request), &runtime, &publication.vault_path)
+    } else if method == "POST" && path == format!("{base}/create-password") {
+        serve_create_first_password(http_body(&request), &runtime, &publication.vault_path)
+    } else if method == "POST" && path == format!("{base}/change-password") {
+        serve_change_password(http_body(&request), &runtime, &publication.vault_path)
     } else if !authenticated {
         json_response(
             "401 Unauthorized",
@@ -1614,11 +1630,12 @@ fn safe_publication_actor_id(device_id: &str) -> String {
     format!("device-{}", encode_hex(&digest[..6]))
 }
 
+/// Sign-in page of the published Task Manager, with the design and flows
+/// of the app's sign-in: sign in, first time (users without a password;
+/// the Owner's is created in the app) and change the password.
 #[cfg(target_os = "windows")]
 fn serve_library_user_login_page() -> Vec<u8> {
-    const LOGIN_HTML: &str = r#"<!doctype html>
-<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Notia · Task Manager</title><style>:root{font-family:Manrope,"Segoe UI",sans-serif;color:#f8f8f2;background:#282a36;color-scheme:dark}*{box-sizing:border-box}body{min-height:100dvh;margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#3a3452,#21222c 62%)}main{width:min(420px,100%);padding:30px;border:1px solid #44475a;border-radius:16px;background:#282a36;box-shadow:0 22px 60px #0008}h1{margin:0 0 8px;font-size:24px}p{margin:0 0 22px;color:#a6accd;line-height:1.5}label{display:grid;gap:8px;margin-top:14px;font-size:13px;font-weight:700}input,button{width:100%;min-height:48px;border-radius:10px;font:inherit}input{padding:0 13px;border:1px solid #6272a4;background:#21222c;color:#f8f8f2;outline:none}input:focus{border-color:#8be9fd;box-shadow:0 0 0 3px #8be9fd33}button{margin-top:16px;border:0;background:#bd93f9;color:#181927;font-weight:800;cursor:pointer}button:disabled{opacity:.65;cursor:wait}#error{min-height:20px;margin:12px 0 0;color:#ff6b7c;font-size:13px}</style></head><body><main><h1>Task Manager</h1><p>Ingresá el usuario y la contraseña configurados en Notia.</p><form id="login" aria-describedby="error"><label for="username">Usuario<input id="username" type="text" maxlength="64" autocomplete="username" required autofocus></label><label for="password">Contraseña<input id="password" type="password" minlength="8" maxlength="256" autocomplete="current-password" required></label><button id="submit" type="submit" aria-busy="false">Acceder</button><div id="error" role="alert" aria-live="polite"></div></form></main><script>const form=document.getElementById('login'),button=document.getElementById('submit'),error=document.getElementById('error'),password=document.getElementById('password');const base=location.pathname.replace(/\/+$/,'');form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='Ingresando…';error.textContent='';try{const response=await fetch(base+'/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value.trim(),password:password.value})});const body=await response.json();if(!response.ok)throw new Error(response.status===401?'Credenciales incorrectas.':body.error||'No se pudo iniciar sesión.');location.assign(base+'/app')}catch(reason){error.textContent=reason instanceof Error?reason.message:'No se pudo iniciar sesión. Verificá que Notia esté abierta y reintentá.';password.select();button.disabled=false;button.setAttribute('aria-busy','false');button.textContent='Acceder'}},true)</script></body></html>"#;
+    const LOGIN_HTML: &str = include_str!("task_manager_login.html");
     response("200 OK", "text/html; charset=utf-8", LOGIN_HTML.as_bytes())
 }
 
@@ -1649,6 +1666,7 @@ fn serve_library_user_login(
     let Some(password) = input.get("password").and_then(Value::as_str) else {
         return json_error("Credenciales incorrectas.");
     };
+    let remember = input.get("remember").and_then(Value::as_bool) == Some(true);
     if validate_publication_username(username).is_err()
         || validate_publication_password(password).is_err()
     {
@@ -1680,18 +1698,115 @@ fn serve_library_user_login(
         }
         guard
             .authenticated_sessions
-            .insert(session.clone(), encode_authenticated_session(&user_id));
+            .insert(
+                session.clone(),
+                encode_authenticated_session(
+                    &user_id,
+                    if remember { PUBLICATION_REMEMBERED_SESSION_TTL } else { PUBLICATION_SESSION_TTL },
+                ),
+            );
         true
     });
     if !inserted {
         return json_error("La publicación cambió. Volvé a intentarlo.");
     }
-    let cookie = format!("Set-Cookie: notia_task_session={session}; Secure; HttpOnly; SameSite=Strict; Path={publication_path}; Max-Age=43200");
+    // Remembered, the browser keeps the session for 30 days; otherwise it
+    // ends with the browser (and after 12 hours on this side).
+    let max_age = if remember { format!("; Max-Age={}", PUBLICATION_REMEMBERED_SESSION_TTL.as_secs()) } else { String::new() };
+    let cookie = format!("Set-Cookie: notia_task_session={session}; Secure; HttpOnly; SameSite=Strict; Path={publication_path}{max_age}");
     json_response_with_headers(
         "200 OK",
         serde_json::json!({ "ok": true }),
         &[cookie.as_str()],
     )
+}
+
+/// Reads `{ username, … }` of a password request, after its rate limit.
+#[cfg(target_os = "windows")]
+fn password_request(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>, bucket: &str) -> Result<Value, Vec<u8>> {
+    if !allow_publication_rate(runtime, bucket.to_string(), 10, Duration::from_secs(60)) {
+        return Err(publication_rate_limited_response("Demasiados intentos. Esperá antes de volver a intentar."));
+    }
+    let input = serde_json::from_slice::<Value>(body).map_err(|_| json_error("Solicitud inválida."))?;
+    let username = input.get("username").and_then(Value::as_str).unwrap_or_default();
+    if validate_publication_username(username).is_err() {
+        return Err(json_error("El usuario no es válido."));
+    }
+    Ok(input)
+}
+
+#[cfg(target_os = "windows")]
+fn first_password_error(check: &crate::library_users::FirstPasswordCheck) -> Option<&'static str> {
+    use crate::library_users::FirstPasswordCheck as Check;
+    match check {
+        Check::Allowed(_) => None,
+        Check::Unknown => Some("No existe un usuario con ese nombre."),
+        Check::AlreadySet => Some("Ese usuario ya tiene contraseña: iniciá sesión."),
+        Check::Owner => Some("La contraseña del Owner se crea desde la app de Notia."),
+    }
+}
+
+/// First step of «Primer inicio»: the user exists and has no password yet.
+#[cfg(target_os = "windows")]
+fn serve_first_password_check(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>, library_path: &str) -> Vec<u8> {
+    let input = match password_request(body, runtime, "library-user-first-login") {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let username = input.get("username").and_then(Value::as_str).unwrap_or_default();
+    match first_password_error(&crate::library_users::first_password_check(library_path, username)) {
+        None => json_response("200 OK", serde_json::json!({ "ok": true })),
+        Some(message) => json_error(message),
+    }
+}
+
+/// «Creá tu contraseña» of a user without password.
+#[cfg(target_os = "windows")]
+fn serve_create_first_password(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>, library_path: &str) -> Vec<u8> {
+    let input = match password_request(body, runtime, "library-user-create-password") {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let username = input.get("username").and_then(Value::as_str).unwrap_or_default();
+    let password = input.get("password").and_then(Value::as_str).unwrap_or_default();
+    if let Err(message) = validate_publication_password(password) {
+        return json_error(&message);
+    }
+    if let Some(message) = first_password_error(&crate::library_users::first_password_check(library_path, username)) {
+        return json_error(message);
+    }
+    match crate::library_users::create_first_password(library_path, username, password) {
+        Ok(_) => json_response("200 OK", serde_json::json!({ "ok": true })),
+        Err(message) => json_error(&message),
+    }
+}
+
+/// «Cambiar contraseña»: checks the current password; the user's open
+/// sessions end.
+#[cfg(target_os = "windows")]
+fn serve_change_password(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>, library_path: &str) -> Vec<u8> {
+    let input = match password_request(body, runtime, "library-user-change-password") {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let username = input.get("username").and_then(Value::as_str).unwrap_or_default();
+    let current = input.get("current").and_then(Value::as_str).unwrap_or_default();
+    let new = input.get("new").and_then(Value::as_str).unwrap_or_default();
+    if let Err(message) = validate_publication_password(new) {
+        return json_error(&message);
+    }
+    if new == current {
+        return json_error("La nueva contraseña tiene que ser distinta de la actual.");
+    }
+    match crate::library_users::change_password(library_path, username, current, new) {
+        Ok(user_id) => {
+            if let Ok(mut guard) = runtime.lock() {
+                guard.authenticated_sessions.retain(|_, value| authenticated_session_user(value) != user_id);
+            }
+            json_response("200 OK", serde_json::json!({ "ok": true }))
+        }
+        Err(message) => json_error(&message),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -5334,7 +5449,7 @@ mod tests {
 
     #[test]
     fn library_user_sessions_have_server_side_expiration_and_stable_identity() {
-        let encoded = encode_authenticated_session("user-1");
+        let encoded = encode_authenticated_session("user-1", PUBLICATION_SESSION_TTL);
         assert_eq!(authenticated_session_user(&encoded), "user-1");
         assert!(!authenticated_session_expired(&encoded));
 

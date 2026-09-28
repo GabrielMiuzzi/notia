@@ -39,7 +39,6 @@ import { selectTreeNodes, selectActiveDocument, selectActiveWorkspaceView, selec
 import { notiaTimer } from '../../services/runtime/notiaLogger'
 import { saveAiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { useBackupSettingsMigration } from './hooks/useBackupSettingsMigration'
-import { useLibraryCatalogPersistence } from './hooks/useLibraryCatalogPersistence'
 import { useDevicePreferencesPersistence } from './hooks/useDevicePreferencesPersistence'
 import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manager/hooks/useTaskManagerPublicationAiHostBridge'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
@@ -62,7 +61,7 @@ function NotiaMenuComponent() {
   const flatFileList = useAppSelector(selectFlatFileList)
   const activeDocument = useAppSelector(selectActiveDocument)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
-  useLibraryCatalogPersistence()
+  // The catalog is loaded and saved by `AppAuthGate`, around the menu.
   useDevicePreferencesPersistence()
   useBackupSettingsMigration()
 

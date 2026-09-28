@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notia · Task Manager</title>
+<style>
+:root{--bg:#0F1420;--panel:#161D2E;--raised:#1B2438;--line:#29334A;--text:#EDF0F5;--muted:#8892A6;--accent:#4FD1C5;--accent-bg:rgba(79,209,197,.13);--on-accent:#0F1420;--amber:#FFB86B;--coral:#FF6B6B;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#EEF1F6;--panel:#F7F9FC;--raised:#FFFFFF;--line:#DCE1EA;--text:#16202E;--muted:#6B7686;--accent:#0D9488;--accent-bg:rgba(13,148,136,.1);--on-accent:#FFFFFF;--amber:#D97706;--coral:#DC2626;color-scheme:light}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px 16px;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:min(440px,100%);min-height:min(760px,calc(100dvh - 48px));display:flex;flex-direction:column;gap:28px;padding:40px;background:var(--bg);border:1px solid var(--line);border-radius:14px}
+svg{fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
+.brand{display:flex;align-items:center;gap:10px}.brand svg{stroke:var(--accent);stroke-width:1.75}.brand b{font-size:22px;letter-spacing:-.02em}.brand span{font-size:13px;color:var(--muted)}
+form{display:flex;flex-direction:column;gap:20px;flex-grow:1}form[hidden]{display:none}
+.head{display:flex;flex-direction:column;gap:6px}h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.02em}
+.head p,.text{margin:0;font-size:14px;line-height:1.5;color:var(--muted)}
+.back{align-self:flex-start;min-height:44px;margin:0 0 6px -10px;padding:0 12px 0 6px;display:flex;align-items:center;gap:4px;background:none;border:0;border-radius:8px;font:inherit;font-size:14px;color:var(--text);cursor:pointer}.back svg{stroke-width:2}
+.notice{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;font-size:14px}.notice svg{stroke:var(--accent);stroke-width:2;flex-shrink:0}.notice[hidden]{display:none}
+.row{display:flex;align-items:center;gap:12px}.first{padding:10px 6px 10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:10px}.first.on{background:var(--accent-bg);border-color:var(--accent)}
+.opt{min-height:48px}.opts{display:flex;flex-direction:column;gap:4px}.opts[hidden]{display:none}
+.st{display:flex;flex-direction:column;gap:2px;flex-grow:1;min-width:0}.st b{font-size:15px;font-weight:500}.st span{font-size:13px;color:var(--muted)}
+.sw{width:52px;height:44px;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0;background:none;border:0;border-radius:8px;cursor:pointer}
+.sw i{position:relative;width:40px;height:24px;border-radius:12px;background:var(--line);transition:background .15s}.sw i::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:9px;background:var(--muted);transition:left .15s,background .15s}
+.sw[aria-checked=true] i{background:var(--accent)}.sw[aria-checked=true] i::after{left:19px;background:var(--on-accent)}
+.fields{display:flex;flex-direction:column;gap:16px}.field{display:flex;flex-direction:column;gap:6px}.field[hidden]{display:none}.field label{font-size:13px;font-weight:500}
+input{width:100%;height:44px;padding:0 14px;background:var(--raised);border:1px solid var(--line);border-radius:8px;color:var(--text);font:inherit;font-size:15px}
+.pw{position:relative}.pw input{padding-right:48px}.eye{position:absolute;top:2px;right:2px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;padding:0;background:none;border:0;border-radius:6px;color:var(--muted);cursor:pointer}.eye svg{stroke-width:1.75}
+.hint{margin:0;min-height:20px;font-size:13px;line-height:1.5;color:var(--muted)}.hint.warning{color:var(--amber)}.hint.danger{color:var(--coral)}.hint.ok{color:var(--accent)}
+.error{margin:0;font-size:14px;line-height:1.5;color:var(--coral)}.error:empty{display:none}
+.actions{margin-top:auto;display:flex;flex-direction:column;gap:8px}
+.primary{min-height:48px;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-size:15px;font-weight:600;cursor:pointer}.primary:disabled{background:var(--line);color:var(--muted);cursor:not-allowed}
+.link{min-height:44px;border:0;border-radius:10px;background:none;color:var(--accent);font:inherit;font-size:14px;font-weight:500;cursor:pointer}
+[hidden]{display:none!important}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:480px){body{place-items:stretch;padding:0}main{min-height:100dvh;padding:24px 16px;border:0;border-radius:0}}
+</style>
+</head>
+<body>
+<main>
+<div class="brand">
+<svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><path d="M8 4h9l5 5v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M17 4v5h5"/><path d="M10 15h8M10 19h5"/></svg>
+<b>Notia</b><span>Task Manager</span>
+</div>
+
+<form id="login" novalidate>
+<div class="head"><h1>Iniciar sesión</h1><p>Ingresá con tu usuario de Notia.</p></div>
+<div class="notice" id="notice" role="status" hidden><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span id="notice-text"></span></div>
+<div class="row first" id="first-row">
+<div class="st"><b>Primer inicio</b><span>Todavía no tengo contraseña</span></div>
+<button type="button" class="sw" role="switch" aria-checked="false" aria-label="Primer inicio" id="first"><i></i></button>
+</div>
+<div class="fields">
+<div class="field"><label for="login-usuario">Usuario</label><input id="login-usuario" type="text" maxlength="64" autocomplete="username"></div>
+<div class="field" id="password-field"><label for="login-clave">Contraseña</label>
+<div class="pw"><input id="login-clave" type="password" maxlength="256" autocomplete="current-password">
+<button type="button" class="eye" id="eye" aria-label="Mostrar contraseña"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path id="eye-slash" d="M4 4l16 16" hidden/></svg></button></div>
+</div>
+</div>
+<div class="opts" id="options">
+<div class="row opt"><div class="st"><b>Recordar sesión</b><span>Mantener la sesión abierta en este equipo</span></div><button type="button" class="sw" role="switch" aria-checked="false" aria-label="Recordar sesión" id="remember-session"><i></i></button></div>
+<div class="row opt"><div class="st"><b>Recordar datos</b><span>Guardar usuario y contraseña en este equipo</span></div><button type="button" class="sw" role="switch" aria-checked="false" aria-label="Recordar datos" id="remember-data"><i></i></button></div>
+</div>
+<p class="text" id="first-text" hidden>En el siguiente paso vas a crear la contraseña de este usuario.</p>
+<div class="actions">
+<p class="error" id="login-error" role="alert"></p>
+<button type="submit" class="primary" id="login-submit" disabled>Login</button>
+<button type="button" class="link" id="to-change">Cambiar contraseña</button>
+</div>
+</form>
+
+<form id="create" novalidate hidden>
+<div class="head"><button type="button" class="back" data-back="first"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Volver</button>
+<h1>Creá tu contraseña</h1><p>Va a ser la contraseña de <span id="create-user">tu usuario</span>.</p></div>
+<div class="fields">
+<div class="field"><label for="crear-nueva">Contraseña</label><input id="crear-nueva" type="password" maxlength="256" autocomplete="new-password"></div>
+<div class="field"><label for="crear-repetir">Repetir contraseña</label><input id="crear-repetir" type="password" maxlength="256" autocomplete="new-password"></div>
+<p class="hint" id="create-hint" aria-live="polite">Usá al menos 8 caracteres.</p>
+</div>
+<div class="actions"><p class="error" id="create-error" role="alert"></p><button type="submit" class="primary" id="create-submit" disabled>Guardar contraseña</button></div>
+</form>
+
+<form id="change" novalidate hidden>
+<div class="head"><button type="button" class="back" data-back="login"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Volver</button>
+<h1>Cambiar contraseña</h1><p>Confirmá la actual y elegí una nueva.</p></div>
+<div class="fields">
+<div class="field"><label for="cambiar-usuario">Usuario</label><input id="cambiar-usuario" type="text" maxlength="64" autocomplete="username"></div>
+<div class="field"><label for="cambiar-actual">Contraseña actual</label><input id="cambiar-actual" type="password" maxlength="256" autocomplete="current-password"></div>
+<div class="field"><label for="cambiar-nueva">Nueva contraseña</label><input id="cambiar-nueva" type="password" maxlength="256" autocomplete="new-password"></div>
+<div class="field"><label for="cambiar-repetir">Repetir nueva contraseña</label><input id="cambiar-repetir" type="password" maxlength="256" autocomplete="new-password"></div>
+<p class="hint" id="change-hint" aria-live="polite">Usá al menos 8 caracteres.</p>
+</div>
+<div class="actions"><p class="error" id="change-error" role="alert"></p><button type="submit" class="primary" id="change-submit" disabled>Guardar nueva contraseña</button></div>
+</form>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id)
+  const base = location.pathname.replace(/\/+$/, '')
+  const STORED_USER = 'notia-task-manager-user'
+  const forms = { login: $('login'), create: $('create'), change: $('change') }
+  let first = false
+  let busy = false
+
+  const readStored = () => { try { return localStorage.getItem(STORED_USER) || '' } catch { return '' } }
+  const writeStored = (value) => { try { value ? localStorage.setItem(STORED_USER, value) : localStorage.removeItem(STORED_USER) } catch {} }
+  const toggle = (button, on) => button.setAttribute('aria-checked', String(on))
+  const isOn = (button) => button.getAttribute('aria-checked') === 'true'
+  const show = (name) => {
+    Object.entries(forms).forEach(([key, form]) => { form.hidden = key !== name })
+    ;['login-error', 'create-error', 'change-error'].forEach((id) => { $(id).textContent = '' })
+    refresh()
+  }
+  const notice = (text) => { $('notice').hidden = !text; $('notice-text').textContent = text || '' }
+
+  const hint = (nueva, repetir, actual) => {
+    if (!nueva && !repetir) return ['Usá al menos 8 caracteres.', '']
+    if (nueva.length < 8) return ['Usá al menos 8 caracteres.', 'warning']
+    if (actual && nueva === actual) return ['La nueva contraseña tiene que ser distinta de la actual.', 'warning']
+    if (!repetir) return ['Repetí la contraseña para confirmarla.', '']
+    if (nueva !== repetir) return ['Las contraseñas no coinciden.', 'danger']
+    return ['Las contraseñas coinciden.', 'ok']
+  }
+  const setHint = (id, [text, tone]) => { const element = $(id); element.textContent = text; element.className = 'hint ' + tone }
+
+  function refresh() {
+    const user = $('login-usuario').value.trim()
+    $('first-row').classList.toggle('on', first)
+    $('password-field').hidden = first
+    $('options').hidden = first
+    $('first-text').hidden = !first
+    $('to-change').hidden = first
+    $('login-submit').textContent = busy ? (first ? 'Revisando…' : 'Ingresando…') : (first ? 'Continuar' : 'Login')
+    $('login-submit').disabled = busy || !user || (!first && !$('login-clave').value)
+    const nueva = $('crear-nueva').value, repetir = $('crear-repetir').value
+    setHint('create-hint', hint(nueva, repetir))
+    $('create-submit').disabled = busy || nueva.length < 8 || nueva !== repetir
+    const cambiarNueva = $('cambiar-nueva').value, cambiarRepetir = $('cambiar-repetir').value, actual = $('cambiar-actual').value
+    setHint('change-hint', hint(cambiarNueva, cambiarRepetir, actual))
+    $('change-submit').disabled = busy || !$('cambiar-usuario').value.trim() || !actual || cambiarNueva.length < 8 || cambiarNueva !== cambiarRepetir || cambiarNueva === actual
+  }
+
+  async function post(path, body) {
+    const response = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data.error || (response.status === 401 ? 'Usuario o contraseña incorrectos.' : 'No se pudo completar la operación. Verificá que Notia esté abierta y reintentá.'))
+    return data
+  }
+
+  async function run(errorId, task) {
+    if (busy) return
+    busy = true
+    $(errorId).textContent = ''
+    refresh()
+    try { await task() } catch (reason) { $(errorId).textContent = reason instanceof Error ? reason.message : 'No se pudo completar la operación.' }
+    busy = false
+    refresh()
+  }
+
+  forms.login.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const username = $('login-usuario').value.trim()
+    if (first) {
+      void run('login-error', async () => {
+        await post('/first-login', { username })
+        $('create-user').textContent = username
+        $('crear-nueva').value = ''; $('crear-repetir').value = ''
+        show('create')
+      })
+      return
+    }
+    const password = $('login-clave').value
+    void run('login-error', async () => {
+      await post('/login', { username, password, remember: isOn($('remember-session')) })
+      if (isOn($('remember-data'))) {
+        writeStored(username)
+        // The browser keeps the password in its own password manager.
+        if (window.PasswordCredential && navigator.credentials) {
+          try { await navigator.credentials.store(new window.PasswordCredential({ id: username, password })) } catch {}
+        }
+      } else {
+        writeStored('')
+      }
+      location.assign(base + '/app')
+    })
+  })
+
+  forms.create.addEventListener('submit', (event) => {
+    event.preventDefault()
+    void run('create-error', async () => {
+      await post('/create-password', { username: $('login-usuario').value.trim(), password: $('crear-nueva').value })
+      first = false; toggle($('first'), false)
+      $('login-clave').value = ''
+      notice('Contraseña creada. Ya podés ingresar.')
+      show('login')
+    })
+  })
+
+  forms.change.addEventListener('submit', (event) => {
+    event.preventDefault()
+    void run('change-error', async () => {
+      await post('/change-password', { username: $('cambiar-usuario').value.trim(), current: $('cambiar-actual').value, new: $('cambiar-nueva').value })
+      $('login-usuario').value = $('cambiar-usuario').value.trim()
+      $('login-clave').value = ''
+      notice('Contraseña actualizada. Ingresá con la nueva.')
+      show('login')
+    })
+  })
+
+  $('first').addEventListener('click', () => { first = !first; toggle($('first'), first); notice(''); $('login-error').textContent = ''; refresh() })
+  $('remember-session').addEventListener('click', (event) => toggle(event.currentTarget, !isOn(event.currentTarget)))
+  $('remember-data').addEventListener('click', (event) => toggle(event.currentTarget, !isOn(event.currentTarget)))
+  $('eye').addEventListener('click', () => {
+    const input = $('login-clave'), visible = input.type === 'password'
+    input.type = visible ? 'text' : 'password'
+    $('eye-slash').toggleAttribute('hidden', !visible)
+    $('eye').setAttribute('aria-label', visible ? 'Ocultar contraseña' : 'Mostrar contraseña')
+  })
+  $('to-change').addEventListener('click', () => {
+    ;['cambiar-actual', 'cambiar-nueva', 'cambiar-repetir'].forEach((id) => { $(id).value = '' })
+    $('cambiar-usuario').value = $('login-usuario').value.trim()
+    notice('')
+    show('change')
+  })
+  document.querySelectorAll('[data-back]').forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.back === 'first') { first = true; toggle($('first'), true) }
+    show('login')
+  }))
+  document.querySelectorAll('input').forEach((input) => input.addEventListener('input', refresh))
+
+  const stored = readStored()
+  if (stored) { $('login-usuario').value = stored; toggle($('remember-data'), true) }
+  refresh()
+  ;(stored ? $('login-clave') : $('login-usuario')).focus()
+})()
+</script>
+</body>
+</html>

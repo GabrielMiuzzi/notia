@@ -3,13 +3,16 @@ import { store } from './store/index'
 import { NotiaMenu } from './components/notia/NotiaMenu'
 import { ConfirmationEngineProvider } from './context/confirmation/ConfirmationEngine'
 import { useLazyPreloadOnIdle } from './components/notia/hooks/useLazyPreloadOnIdle'
+import { AppAuthGate } from './components/notia/auth/AppAuthGate'
 import './styles/notia.css'
 
 function NotiaApp() {
   useLazyPreloadOnIdle()
 
   return (
-    <NotiaMenu />
+    <AppAuthGate>
+      <NotiaMenu />
+    </AppAuthGate>
   )
 }
 

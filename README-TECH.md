@@ -8857,3 +8857,125 @@ Los modelos configurados (Ollama cloud) tienen 256k a 1M tokens de contexto.
   - que el progreso aparezca abajo después de cada respuesta;
   - que tras un turno largo o cancelado aparezcan memorias y pensamientos nuevos;
   - que los mensajes con negritas se vean bien.
+
+## Inicio de sesión del Owner y configuración cifrada (2026-09-27)
+
+Al abrir la app solo el Owner entra a la biblioteca. Su contraseña cifra `.notia/notiaConfig.json`, que guarda los tokens del bot, las API keys, las cuentas de Gmail y los contextos. La ventana sigue el lienzo «Ventana de login» (claude.ai/artifact/Bv76mLvATS6PTwneSPyX7M), y el Task Manager publicado usa el mismo diseño y los mismos flujos.
+
+Decisiones de la persona:
+
+- no hay recuperación;
+- solo el Owner inicia sesión en la app;
+- lo recordado queda protegido por el sistema.
+
+### Formato cifrado (`backend-core/src/config_envelope.rs`, `app/src/config_crypto.rs`)
+
+- **Sobre JSON:**
+
+  ```json
+  { "notiaEncrypted": 1, "cipher": "aes-256-gcm",
+    "key": { "kdf": "pbkdf2-sha256", "iterations": 600000, "salt": "…", "sealed": { "nonce": "…", "data": "…" } },
+    "payload": { "nonce": "…", "data": "…" } }
+  ```
+
+- **Claves:**
+  - La configuración va sellada con una clave de datos aleatoria de 32 bytes (AES-256-GCM, con `ring`).
+  - Esa clave va sellada con otra derivada de la contraseña (PBKDF2-HMAC-SHA256, 600.000 rondas, sal de 16 bytes).
+  - Datos asociados distintos (`notia-config-key-v1`, `notia-config-v1`) impiden hacer pasar una parte por la otra.
+  - Cambiar la contraseña solo vuelve a sellar la clave de datos; la configuración no cambia.
+- **Qué hay en el archivo:** `classify_stored_config` distingue un archivo plano (de antes de la contraseña) de uno cifrado. Si el archivo dice estar cifrado pero está dañado, es un error y nunca se sobrescribe como texto plano.
+- **Recuperación:** no hay. Sin la contraseña, la configuración no se lee.
+
+### Bloqueo y desbloqueo (`app/src/config_vault.rs`, `app/src/library_config.rs`)
+
+- **En memoria:** `ConfigVaultState` guarda en memoria la clave de datos de cada biblioteca desbloqueada.
+- **Lectura** (`LibraryConfigStore`):
+  - Un archivo cifrado se lee solo con la biblioteca desbloqueada; si no, error `Unauthorized` «La biblioteca está bloqueada…».
+  - Un archivo plano de una biblioteca desbloqueada se sella al leerlo.
+- **Escritura:**
+  - Se sella conservando la clave envuelta que ya está en disco: la contraseña puede haber cambiado en otro dispositivo. Antes se verifica que la clave abre ese archivo.
+  - Una clave que ya no lo abre bloquea la biblioteca.
+  - Sin contraseña del Owner, el archivo sigue plano.
+- **Quién lee:** todo pasa por `read_library_config`/`update_library_config`. `finance_extraction` ya no lee el archivo directo.
+- **Mientras está bloqueada**, lo que depende de la configuración no corre, sin cambios en esos módulos:
+  - el bot de Telegram (`desired_worker`);
+  - la sincronización de Agenda;
+  - el agente autónomo;
+  - las cuentas de correo;
+  - el clima configurado;
+  - los contextos del Task Manager publicado.
+
+### Comandos (`app/src/app_auth.rs`)
+
+Todos son asíncronos; la derivación de la clave tarda un momento.
+
+| Comando | Qué hace |
+|---|---|
+| `app_auth_status` | Estado de la biblioteca (`none`, `unlocked`, `locked`, `setup`) con lo que recuerda el equipo. Sin `libraryId` usa la seleccionada. |
+| `app_auth_login` | Solo acepta el nombre del Owner (sin distinguir mayúsculas). Si el archivo está cifrado, lo abre con la contraseña y alinea el hash guardado si hacía falta. Si es plano, verifica el hash, crea la clave de datos y sella el archivo. Guarda o borra la sesión y los datos recordados según los interruptores. |
+| `app_auth_first_login` y `app_auth_create_password` | «Primer inicio»: solo si el Owner no tiene contraseña. Guarda el hash y sella la configuración existente. Después se inicia sesión como siempre. |
+| `app_auth_change_password` | Verifica la actual, vuelve a sellar la clave con la nueva, actualiza el hash y la contraseña recordada, y cierra las sesiones del Owner en el Task Manager publicado. |
+| `app_auth_logout` | Saca la clave de memoria y borra la sesión recordada. Los datos recordados se conservan. |
+
+- **Intentos fallidos:** después de 5 seguidos, 30 segundos de espera.
+- **Cambio desde Configuraciones → Usuarios:** `update_library_user_password` para el Owner llama primero a `owner_password_set_in_settings`, que vuelve a sellar la clave. Si la biblioteca está bloqueada, falla antes de tocar el hash.
+
+### Lo que recuerda el equipo (`app/src/device_secret.rs`)
+
+- **Dónde:** `app_data/app-auth/<biblioteca>.json`.
+- **Qué guarda:**
+  - la sesión: la clave de datos protegida y la clave envuelta;
+  - los datos: el usuario y la contraseña protegida.
+- **Cómo se protege:**
+  - En Windows, con DPAPI (`CryptProtectData` con entropía propia, atada a la cuenta de Windows; el crate `windows` suma las features `Win32_Security` y `Win32_Security_Cryptography`).
+  - En Android y Linux queda en la carpeta privada de la app.
+- **Al arrancar:** una sesión recordada desbloquea la biblioteca sola la primera vez que algo la necesita, así los servicios en segundo plano corren sin la ventana.
+
+### Interfaz
+
+- **`AppAuthGate`** (`src/components/notia/auth`) envuelve el menú principal:
+  - Consulta el estado de la biblioteca seleccionada y muestra `LoginScreen` mientras está bloqueada o sin contraseña.
+  - Carga y guarda el catálogo, que antes cargaba `NotiaMenu`, así cambiar a una biblioteca bloqueada conserva la selección.
+  - Al cambiar a una biblioteca abierta no desmonta la app.
+- **`LoginScreen`**:
+  - Las tres pantallas del lienzo, con los mismos textos y las mismas pistas de contraseña.
+  - Muestra el nombre de la biblioteca junto al logo.
+  - En Crear contraseña agrega el aviso de que no hay recuperación.
+  - Usa los tokens de la paleta en los dos temas, con toques de 44 px o más y pantalla completa en teléfonos.
+  - El navegador de un servidor headless no ofrece Recordar sesión ni Recordar datos.
+- **Cerrar sesión:** «Sesión del Owner → Cerrar sesión» en Configuraciones → Usuarios. `logoutApp` avisa a la puerta con `notia:app-auth-changed`.
+
+### Task Manager publicado (`app/src/task_manager_publication.rs`, `task_manager_login.html`)
+
+- **Página:** HTML propio con el diseño del login, en tema oscuro y claro según el navegador.
+- **Endpoints:**
+
+  | Endpoint | Qué hace |
+  |---|---|
+  | `/login` | Suma `remember`: sesión de 30 días en el servidor y cookie con `Max-Age`; sin ella, 12 horas y cookie de sesión. |
+  | `/first-login` | Primer paso de «Primer inicio»: el usuario existe y no tiene contraseña. |
+  | `/create-password` | Crea la contraseña de ese usuario. |
+  | `/change-password` | Verifica la actual, guarda la nueva y cierra las sesiones de ese usuario. |
+
+- **Límites:** 30 intentos por minuto por IP y 10 por minuto por flujo.
+- **Owner:** «Primer inicio» es para usuarios sin contraseña salvo el Owner. Su contraseña protege la configuración y solo se crea o cambia desde la app.
+- **Recordar datos:** guarda el usuario en el navegador y deja la contraseña al gestor de contraseñas del navegador (`PasswordCredential` cuando existe).
+
+### Validaciones
+
+- `cargo test --offline -p notia-backend-core`: 397 (sobre cifrado).
+- `cargo test --offline -p notia-app --features bluetooth`: 412. Incluyen:
+  - cifrado y apertura;
+  - alteraciones;
+  - DPAPI;
+  - archivo recordado;
+  - espera tras intentos fallidos;
+  - un flujo completo con una biblioteca temporal: configuración plana, «Primer inicio» que la sella, lectura y escritura bloqueadas, login, escritura sellada, cierre de sesión y cambio de contraseña.
+- `cargo check` Android: sin errores, 60 warnings. Escritorio: 41 warnings, como antes.
+- `npx tsc -p tsconfig.app.json`, `eslint` de los archivos tocados y `npx vitest run`: 353, con `LoginScreen.test.tsx`.
+- **Pendiente:**
+  - probar en la app real el primer inicio, el login, recordar sesión al reiniciar, cerrar sesión, cambiar de biblioteca y la contraseña del Owner desde Configuraciones;
+  - Android (almacenamiento privado, SAF);
+  - el Task Manager publicado desde otro equipo;
+  - el navegador de un servidor headless;
+  - build Linux (WSL).

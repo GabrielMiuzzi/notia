@@ -61,6 +61,7 @@ import {
 } from '../../services/libraries/libraryUsers'
 import { SETTINGS_SECTION_META, SETTINGS_SECTIONS, settingsGroupOf, type SettingsSection } from './settings/settingsSections'
 import { SettingsNav } from './settings/SettingsNav'
+import { logoutApp } from '../../services/auth/appAuthRuntime'
 import {
   SettingsAvatar,
   SettingsBadge,
@@ -909,6 +910,17 @@ export function SettingsModal({
                   {libraryDataStatus.tone !== 'loading' && libraryRoles.length === 0 ? <div className="notia-settings-empty">No hay roles para mostrar.</div> : null}
                 </SettingsCard>
               ) : activeSection === 'Usuarios' ? (
+                <>
+                <SettingsCard>
+                  <SettingsRow
+                    emphasis
+                    inline
+                    label="Sesión del Owner"
+                    description="Cierra la sesión en este equipo: Notia vuelve a pedir la contraseña del Owner y deja de recordar la sesión."
+                  >
+                    <NotiaButton onClick={() => { void logoutApp(activeLibrary?.id ?? null) }}>Cerrar sesión</NotiaButton>
+                  </SettingsRow>
+                </SettingsCard>
                 <SettingsCard>
                   <form className="notia-settings-toolbar" onSubmit={(event) => { event.preventDefault(); void handleAddLibraryUser() }}>
                     <input
@@ -1078,6 +1090,7 @@ export function SettingsModal({
                   })}
                   {libraryUsers.length === 0 && libraryDataStatus.tone !== 'loading' ? <div className="notia-settings-empty">No hay usuarios para mostrar.</div> : null}
                 </SettingsCard>
+                </>
               ) : activeSection === 'Panel desplegable' ? (
                 <SettingsCard>
                   <SettingsRow label="Chequeo automático de cambios" description={refreshIntervalDescription} htmlFor="notia-settings-refresh">

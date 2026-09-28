@@ -19,6 +19,7 @@ pub mod chat_history;
 pub mod chat_list;
 pub mod chat_turn;
 pub mod coldpass;
+pub mod config_envelope;
 pub mod context;
 pub mod continuation;
 pub mod device_preferences;
