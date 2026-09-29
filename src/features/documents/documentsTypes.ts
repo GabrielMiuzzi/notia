@@ -21,6 +21,8 @@ export interface OpenWorkspaceSpecialTabs {
   agenda: boolean
   routine: boolean
   aiActions: boolean
+  recipes: boolean
+  health: boolean
   home: boolean
 }
 

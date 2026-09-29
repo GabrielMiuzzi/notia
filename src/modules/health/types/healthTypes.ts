@@ -1,0 +1,237 @@
+/** Contrato de Salud: los DTO que arma Rust (`health`). */
+
+export type Tone = 'ok' | 'warn' | 'alto' | 'bajo'
+export type WeightRange = '30' | '90' | '365' | 'all'
+
+export interface HealthContext {
+  libraryId: string
+  actorLibraryUserId: string
+}
+
+export interface DashboardQuery {
+  foodDate: string | null
+  weightRange: WeightRange
+  measurementDate: string | null
+}
+
+export interface StateChip {
+  label: string
+  tone: Tone
+}
+
+export interface Choice {
+  value: string
+  label: string
+  selected: boolean
+}
+
+export interface RangeBar {
+  segments: Array<{ label: string; tone: Tone; flex: number; active: boolean }>
+  markers: Array<{ position: number; kind: 'value' | 'goal' }>
+  ticks: Array<{ position: number; label: string }>
+}
+
+export interface BmiPanel {
+  valueLabel: string
+  state: StateChip
+  message: string
+  bar: RangeBar
+  todayLabel: string
+  goal: { label: string; state: StateChip | null } | null
+  healthyRangeLabel: string
+}
+
+export interface ChartTick {
+  at: number
+  label: string
+}
+
+export interface WeightChart {
+  points: Array<{ x: number; y: number; label: string; valueLabel: string }>
+  yTicks: ChartTick[]
+  xTicks: ChartTick[]
+  goal: ChartTick | null
+}
+
+export interface WeightPanel {
+  currentLabel: string
+  summary: string
+  ranges: Choice[]
+  chart: WeightChart | null
+  emptyText: string
+  entries: Array<{ date: string; dateLabel: string; kgLabel: string }>
+}
+
+export interface PlanView {
+  kcalLabel: string
+  sourceLabel: string
+  weeksLabel: string | null
+  summary: string
+  notes: string[]
+  recommendations: string[]
+}
+
+export interface ObjectivePanel {
+  targetKg: number | null
+  pace: number
+  paces: Choice[]
+  differenceLabel: string | null
+  targetBmiLabel: string | null
+  targetState: StateChip | null
+  lowBmiWarning: boolean
+  canPlan: boolean
+  plan: PlanView | null
+}
+
+export interface MacroPill {
+  key: string
+  short: string
+  label: string
+  valueLabel: string
+}
+
+export interface FoodPanel {
+  date: string
+  dayLabel: string
+  previousDate: string
+  nextDate: string | null
+  totalLabel: string
+  targetLabel: string
+  progress: number
+  over: boolean
+  remainingLabel: string
+  stats: Array<{ label: string; value: string }>
+  footnote: string
+  macros: Array<{ key: string; label: string; valueLabel: string; targetLabel: string; percentLabel: string; progress: number; status: string }>
+  groups: Array<{
+    id: string
+    label: string
+    kcalLabel: string | null
+    meals: Array<{ id: string; name: string; kcalLabel: string; pills: MacroPill[]; values: RecentMeal }>
+  }>
+}
+
+export interface WaterPanel {
+  ml: number
+  ratio: number
+  percentLabel: string
+  litersLabel: string
+  goalLabel: string
+  basisLabel: string
+  ariaLabel: string
+  week: Array<{ date: string; dayLabel: string; fill: number; met: boolean; title: string }>
+}
+
+export interface CompositionPanel {
+  date: string
+  subtitle: string
+  dates: Choice[]
+  stripTitle: string
+  parts: Array<{ key: string; label: string; detail: string; share: number }>
+  groups: Array<{
+    id: string
+    title: string
+    metrics: Array<{
+      key: string
+      label: string
+      valueLabel: string
+      unit: string | null
+      deltaLabel: string | null
+      bar: RangeBar | null
+      state: StateChip | null
+    }>
+  }>
+}
+
+export interface ProfileForm {
+  birthDate: string
+  sex: string
+  heightCm: number | null
+  activity: number
+  weightKg: number | null
+  activities: Choice[]
+}
+
+export interface RecentMeal {
+  category: string
+  name: string
+  kcal: number
+  proteinG: number
+  carbsG: number
+  fatG: number
+  fiberG: number
+}
+
+export interface HealthDashboard {
+  today: string
+  hasProfile: boolean
+  header: { chips: string[]; bmi: StateChip | null }
+  bmi: BmiPanel | null
+  weight: WeightPanel
+  objective: ObjectivePanel
+  food: FoodPanel | null
+  water: WaterPanel | null
+  composition: CompositionPanel | null
+  profileForm: ProfileForm
+  mealForm: { suggestedCategory: string; categories: Choice[]; recent: RecentMeal[] }
+  measurementFields: Array<{ id: string; title: string; fields: Array<{ key: string; label: string; unit: string }> }>
+}
+
+export interface ProfileInput {
+  birthDate: string
+  sex: string
+  heightCm: number | null
+  activity: number | null
+  weightKg: number | null
+}
+
+export interface MeasurementInput {
+  date: string
+  weight: number | null
+  values: Record<string, number>
+}
+
+export interface MealInput {
+  date: string
+  category: string
+  name: string
+  kcal: number | null
+  proteinG: number | null
+  carbsG: number | null
+  fatG: number | null
+  fiberG: number | null
+}
+
+/** Los cambios que la pantalla le pide a Rust (`HealthMutation`). */
+export type HealthMutation =
+  | { kind: 'saveProfile'; input: ProfileInput }
+  | { kind: 'addWeight'; date: string; kg: number | null }
+  | { kind: 'deleteWeight'; date: string }
+  | { kind: 'saveMeasurement'; input: MeasurementInput }
+  | { kind: 'deleteMeasurement'; date: string }
+  | { kind: 'setObjective'; targetKg: number | null; pace: number | null }
+  | { kind: 'calculatePlan' }
+  | { kind: 'clearPlan' }
+  | { kind: 'addWater'; date: string; deltaMl: number }
+  | { kind: 'setWater'; date: string; ml: number }
+  | { kind: 'saveMeal'; id: string | null; input: MealInput }
+  | { kind: 'deleteMeal'; id: string }
+
+export interface MealEstimate {
+  kcal: number
+  proteinG: number
+  carbsG: number
+  fatG: number
+  fiberG: number
+}
+
+export interface FieldError {
+  field: string
+  message: string
+}
+
+export interface HealthError {
+  code: 'validation' | 'not-found' | 'ai' | 'storage'
+  message: string
+  fields: FieldError[]
+}

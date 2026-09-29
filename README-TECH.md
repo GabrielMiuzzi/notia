@@ -7304,6 +7304,8 @@ Reemplaza el ruteo por palabras de Telegram (sección anterior), que ahora queda
 
 **Solución (`backend-core/src/tool_routing.rs`, `route_turn_tools` en `app/src/backend_runtime.rs`).**
 
+> Estado actual: desde el 2026-09-28 se rutean todos los chats y el agente puede cambiar de área a mitad del turno. Los puntos 2, 4 y 7 quedaron reemplazados por la sección «Áreas de herramientas en todos los chats y cambio de área a mitad del turno».
+
 1. **Áreas.** Las herramientas se agrupan por área (`tool_area`): biblioteca, tareas, finanzas, rutina y correo (Gmail y Calendar). Las públicas, la memoria y los planes quedan en todos los turnos.
 2. **Cuándo se rutea.** En un turno nuevo del scope biblioteca, después de proyectar el catálogo para el actor y aplicar los interruptores del chat, si quedan más de 64 herramientas (`ROUTING_THRESHOLD`) de más de un área (`needs_routing`).
 3. **Consulta al modelo.** `router_prompt` le da al mismo modelo del agente la lista de áreas ofrecidas, cada una con una línea que la describe, y los últimos 6 mensajes, de 600 caracteres como máximo cada uno. Así un «sí, borralos» hereda el área del pedido anterior. El modelo responde `{"areas": [...]}` por relevancia y puede elegir varias áreas. La llamada va sin herramientas ni razonamiento (`complete_with`), por el transporte de la plataforma (en Android, el puente Kotlin), con 45 s como máximo.
@@ -9775,3 +9777,407 @@ Sigue el canvas de diseño «Acciones IA» (tableros «Acciones IA — Dashboard
 - `cargo test --offline -p notia-app --features bluetooth` → 442 aprobados + 3 ignorados (antes 441): `an_edit_starts_a_new_schedule_and_a_reactivation_now`.
 - `cargo check` de escritorio y Android sin errores ni warnings nuevos (36 y 59). `tsc` sin errores; `vitest` → 381.
 - **Pendiente:** pedirle a la IA, con el modelo real, que cree, cambie, pause, borre, ejecute y reintente acciones desde el chat de la app y desde Telegram.
+
+## Recetas: recetario con revisión de IA (2026-09-28)
+
+Sigue el canvas de diseño «Recetas» (claude.ai/artifact/MhAHrCDs4Hwy9MkkNnPhPB): grilla de tarjetas, detalle en panel lateral y formulario «Nueva comida». El acceso está en el rail, debajo de Rutina, con el ícono `Soup` de lucide.
+
+### Reglas del usuario
+
+- Cada receta es un archivo `.md` dentro de la carpeta `recipes/` de la biblioteca. Los datos van en tablas y la foto va embebida en el mismo archivo.
+- Toda comida nueva pasa por la IA, que la revisa y completa lo que falta, sobre todo vitaminas y minerales.
+- Se puede cargar desde Telegram mandando la foto del plato con una descripción. La IA tiene herramientas para todo el módulo.
+- Antes de guardar una comida nueva se comprueba que no esté repetida.
+
+### Formato del archivo (`backend-core/src/recipes/markdown.rs`)
+
+```markdown
+---
+tipo: receta
+id: recipe-…
+creado: 1790633313000
+actualizado: 1790633313000
+revisadaPorIa: true
+---
+
+# Bowl de quinoa, salmón y palta
+
+Quinoa tibia con salmón a la plancha, palta, pepino y tomates cherry.
+
+![Foto de Bowl de quinoa, salmón y palta](data:image/jpeg;base64,…)
+
+## Datos
+
+| Campo | Valor |
+|---|---|
+| Momento | Almuerzo |
+| Tiempo | 25 min |
+| Porciones | 2 |
+| Calorías por porción | 610 kcal |
+
+## Nutrición por porción
+
+| Nutriente | Cantidad | Unidad |
+|---|---|---|
+| Calorías | 610 | kcal |
+| Proteína | 36 | g |
+…
+
+## Vitaminas
+(misma tabla: A, C, D, E, K, B6, B12 y folato)
+
+## Minerales
+(misma tabla: calcio, hierro, magnesio, potasio, zinc y sodio)
+
+## Ingredientes
+
+- 1 taza de quinoa
+
+## Preparación
+
+1. Lavar la quinoa…
+```
+
+- `render_recipe` escribe los números con punto decimal. `parse_recipe` es tolerante con archivos editados a mano:
+  - sin frontmatter, el id se deriva de la ruta;
+  - acepta `1.150`, `4,5` y `0.3 mg`, nombres de nutriente sin acentos y listas con `*` o pasos con `2)`;
+  - ignora filas desconocidas. Un archivo sin título no se considera receta.
+- El nombre de archivo es el de la receta sin caracteres inválidos en Windows ni en Android (`file_stem`, hasta 80 caracteres). Si choca con otro, se agrega « (n)» (`available_path`). Renombrar una receta mueve el archivo.
+- La foto se reduce en Rust a 1024 px de lado máximo y se guarda como JPEG de calidad 82 (crate `image` 0.25 con jpeg, png y webp; entrada de hasta 15 MB). React solo manda el data URL del archivo elegido.
+
+### Núcleo (`backend-core/src/recipes/`)
+
+- **`mod.rs`**:
+  - `MealTime` (Desayuno, Almuerzo, Cena, Snack) y la tabla `NUTRIENTS`: 20 nutrientes con clave, etiqueta, unidad, grupo y valor diario de referencia (2000 kcal; el sodio es un límite de 2300 mg).
+  - `Recipe`, `RecipeInput` y `RecipePhoto`.
+  - `validate_input`, que devuelve todos los errores por campo:
+    - nombre de 1 a 120 caracteres, sin `/`, `\` ni `|`, y descripción de hasta 400;
+    - tiempo de hasta 1440 min y porciones de 1 a 100;
+    - hasta 60 ingredientes y 40 pasos, con líneas de hasta 300 caracteres;
+    - nutrientes entre 0 y 100000. Los ceros se descartan.
+  - `find_duplicate`: dos nombres son la misma comida si comparten al menos el 80 % de sus palabras, sin distinguir mayúsculas, acentos, plurales ni conectores.
+- **`review.rs`**: la revisión de IA.
+  - `review_prompt` pide un JSON con descripción, momento, tiempo, porciones, ingredientes, pasos, todas las claves de nutrición por porción y `duplicateOf`. La IA recibe los nombres del recetario y, si hay, la foto.
+  - `apply_review` conserva lo que escribió la persona y solo completa lo vacío. Las calorías, si faltan, salen de los macros.
+  - `reviewed_duplicate` convierte el `duplicateOf` de la IA en la receta existente.
+- **`dashboard.rs`**: DTO listos para mostrar.
+  - `build_grid`: filtros por momento, búsqueda por nombre o ingrediente, orden (recientes, menos calorías, más proteína, nombre), tarjetas con reparto de macros y estados vacíos.
+  - `build_detail`: kcal y su porcentaje de una dieta de 2000 kcal, macros con porcentaje de calorías, fibra con % VD y filas de vitaminas y minerales.
+    - Cada fila lleva barra (tope 100), texto «x% VD» y tono `over` desde el 100 %.
+    - El sodio muestra «x% del límite diario» y pasa a tono `limit` («…, alto») desde el 25 %.
+  - Todo el texto sale formateado en es-AR.
+- **`tools.rs`**: argumentos, resolución (`recipe` acepta el id o el nombre exacto) y textos de confirmación de las herramientas.
+- **`markdown::without_photos`**: quita las fotos embebidas cuando el agente lee una receta con `read_library_documents`, así el base64 no llena el contexto del modelo.
+
+### App (`app/src/recipes.rs`)
+
+- **Comandos** (registrados en `registry.rs`, todos con `context: { libraryId }`):
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `recipes_grid` | `query?: { meal, query, sort }` | `RecipeGrid` |
+| `recipes_detail` | `id` | `RecipeDetail` (incluye `form` para editar) |
+| `recipes_photo` | `id` | data URI o `null` (se pide aparte y se cachea en React por `photoKey`) |
+| `recipes_create` | `input`, `photo?` (data URL) | `{ id }` |
+| `recipes_update` | `id`, `input`, `photo?: { kind: keep \| remove \| replace, value? }` | `{ id }` |
+| `recipes_delete` | `id` | — |
+
+- **Lectura en vivo.** Las recetas se leen directamente de la carpeta en cada consulta: `read_dir` en escritorio y `read_android_flat_entries` (SAF) en Android. Así no dependen del inventario indexado, que puede estar desactualizado. La escritura y el borrado pasan por `library_documents::with_documents`, como cualquier documento.
+- **Alta** (`prepare_new`):
+  1. validar;
+  2. buscar duplicado por nombre;
+  3. revisión de IA con `backend_runtime::complete_with_images` (texto y foto, timeout de 180 s);
+  4. duplicado según la IA;
+  5. validar de nuevo y armar la receta con `revisadaPorIa: true`.
+
+  Al guardar se vuelve a comprobar el duplicado, por si otra carga entró en el medio.
+- **Edición.** Se guarda tal como se escribe, sin IA. El duplicado se comprueba excluyendo la propia receta.
+- **Errores** (`RecipesError { code, message, fields, duplicateId }`, códigos `validation`, `not-found`, `duplicate`, `ai` y `storage`). Un duplicado trae el id de la receta existente para ofrecer «Ver la receta». Si la IA falla o responde algo ilegible, la receta no se guarda y el error lo dice.
+- **Eventos.** Cada cambio emite `notia://recipes-changed` con el id de la biblioteca. La vista también escucha `notia://telegram-library-changed`.
+
+### Herramientas de la IA
+
+| Herramienta | Argumentos | Qué hace |
+|---|---|---|
+| `list_recipes` | `query?`, `meal?` | Id, nombre, momento, kcal y proteína por porción, tiempo y si tiene foto. |
+| `get_recipe` | `recipe` | La receta entera con nutrientes y % VD, sin la foto. |
+| `create_recipe` | `name` y opcionales `meal`, `minutes`, `servings`, `description`, `ingredients`, `steps`, `nutrition` (objeto clave → número), `photoFromMessage` (1 = primera imagen del mensaje) | Alta con revisión de IA y control de duplicados. |
+| `update_recipe` | `recipe` más cualquier campo, `photoFromMessage`, `removePhoto` | Cambia solo lo indicado. |
+| `delete_recipe` | `recipe` | Borra el archivo. |
+
+- **Confirmación.** Las tres de escritura piden confirmación.
+  - En `create_recipe`, la revisión de IA corre durante la vista previa. Así la confirmación ya muestra los valores completos (kcal, macros y vitaminas principales).
+  - El resultado se guarda por id de llamada durante 30 minutos. Al confirmar se guarda eso mismo, sin una segunda consulta a la IA.
+  - Un duplicado o un error de validación vuelve al modelo antes de preguntarle al usuario.
+- **Fotos desde Telegram.** El executor toma las imágenes del último mensaje del usuario (`request_images`: imágenes y la primera página de los adjuntos de imagen), y `photoFromMessage` elige cuál usar. `DOCUMENT_PROMPT` de Telegram indica cargar como receta la foto de un plato.
+- **Acceso.**
+  - Políticas `RecipeRead` y `RecipeWrite`, en los scopes Library (chat principal, chat lateral y Telegram) y Finanzas, para cualquier usuario de la biblioteca.
+  - Área nueva del router, `recetas`, que también entra en el respaldo cuando llegan adjuntos (detrás de Finanzas).
+  - Etiquetas de progreso «revisando tus recetas» y «preparando la receta».
+- **Guía** (`prompt_guidance::recipe_tools`):
+  - la foto de un plato se carga con `create_recipe` y `photoFromMessage`;
+  - hay que completar la nutrición;
+  - ante un duplicado, preguntar si se actualiza la existente.
+- **Protección.** `ensure_agent_writable` rechaza escribir en `recipes/` con las herramientas de documentos. Las recetas solo cambian por sus herramientas.
+
+### Frontend (`src/modules/recipes/`)
+
+- `RecipesDashboardView` (buscador con debounce de 150 ms, filtros y orden que resuelve Rust), `RecipeCardView`, `RecipeDetailSheet` y `RecipeFormModal`:
+  - `RecipeDetailSheet`: eliminar con confirmación en dos toques y Escape para cerrar;
+  - `RecipeFormModal`: `NotiaModalShell` de 760 px, aviso de revisión de IA, «Revisando con IA…» mientras guarda y aviso de duplicado con «Ver la receta».
+- `PlateIllustration` dibuja un plato determinista por id cuando no hay foto. Sus colores de plato son tokens `--rcp-plate-*` con variante clara.
+- Estilos en `styles/recipes.css`: tokens `--rcp-*` tomados de la paleta, colores por momento y por macro, tema claro y breakpoints por container query (`rcp`). Los controles miden 44 px de alto para uso táctil.
+- La pestaña especial `recipes` (`__workspace_recipes__`) se agrega como las demás vistas de módulo: `documentsSlice`, selectores, `useTabManager`, `useToolbarActions`, chip «Recetas» del chat lateral y `NotiaWorkspace`.
+
+### Validaciones
+
+- `cargo test --offline -p notia-backend-core` → 447 (antes 437). Pruebas nuevas de recetas: ida y vuelta del archivo con tablas y foto, archivo editado a mano, validación, duplicados, mezcla de la revisión, grilla, detalle, herramientas y lectura sin fotos. También scope y área del router, y la guía de la foto de un plato.
+- `cargo test --offline -p notia-app --features bluetooth` → 445 aprobados + 3 ignorados (antes 442): rutas de recetas, reducción de la foto y rechazo de escritura del agente en `recipes/`.
+- `cargo check` de escritorio (40 warnings, ninguno de recetas; son código solo de Android) y de Android `aarch64-linux-android` (59, sin cambios), sin errores. El crate `image` compila en Android.
+- `tsc` y ESLint sin errores. `vitest` → 384 (3 nuevas en `RecipesDashboardView.test.tsx`: filtros, búsqueda y orden enviados a Rust; detalle con % VD y borrado confirmado; alta con aviso de IA y duplicado con «Ver la receta»).
+- Comparación visual con el canvas (harness temporal con Chrome headless, ya borrado): grilla, detalle y formulario en oscuro y claro, estado vacío, duplicado y teléfono de 390 px.
+- **Pendiente:**
+  - cargar comidas reales con el modelo configurado, desde el formulario y desde Telegram con foto y descripción, y revisar la calidad de los valores nutricionales;
+  - probar en un dispositivo Android (SAF) el alta, la edición con cambio de nombre y el borrado.
+
+## Salud: peso, alimentación, agua y composición corporal (2026-09-28)
+
+Sigue el canvas `SaludDashboard.jsx` que pasó el usuario (un componente React con la lógica marcada como «candidata a vivir en Rust»). Toda esa lógica se pasó al backend. El acceso está en el rail, debajo de Recetas, con el ícono `HeartPulse`.
+
+### Decisiones
+
+- Los datos son **por usuario de la biblioteca**, en la base de la biblioteca, como Rutina. En la app, React manda `actorLibraryUserId: 'user-owner'`. En Telegram, el executor usa el usuario vinculado.
+- Del canvas **no se implementaron** los botones «Tema claro/oscuro» y «Datos de prueba», que eran solo de la vista previa:
+  - el tema lo pone el shell de la app;
+  - los escenarios de prueba reemplazaban y borraban todos los datos reales.
+- El plan con IA y «Estimar con IA» pasan por el modelo configurado de la biblioteca (`backend_runtime::complete_with_images`), no por una llamada directa desde el navegador.
+- El piso de calorías (el metabolismo basal, y nunca menos de 1200/1500 kcal) lo aplica Rust también a la respuesta de la IA.
+- Los rangos de referencia son orientativos. La guía del agente dice que no diagnostique y que sugiera consultar a un profesional.
+
+### Núcleo (`backend-core/src/health/`)
+
+- **`mod.rs`: modelo, cálculos y validación.**
+  - Modelo: `Profile`, `WeightEntry`, `Measurement` (peso más 16 métricas por clave: `grasaPct`, `grasaKg`, `grasaVisceral`, `obesidadPct`, `mmePct`, `mmeKg`, `musculoPct`, `musculoKg`, `proteinaPct`, `aguaPct`, `aguaKg`, `huesosKg`, `imc`, `pesoSinGrasa`, `metabolismo`, `edadMetabolica`), `Objective`, `Plan`, `Meal` y `HealthData`.
+  - Cálculos:
+    - edad, IMC y Mifflin-St Jeor (solo si la balanza no informa el metabolismo);
+    - agua objetivo: superficie de Mosteller × 1500 ml/m², de a 50 ml;
+    - kcal desde macros (4/4/9) y piso de calorías;
+    - `calculate_plan`: ritmo limitado al 1 % del peso por semana, superávit hasta 500 kcal, proteína 1,8 g/kg, grasas 27 % y fibra 14 g/1000 kcal;
+    - `complete_measurement`: completa IMC y los kg de grasa, agua y músculo, y el peso sin grasa;
+    - `vitals` y el plan de mantenimiento, que rige sin plan guardado.
+  - Validación por campo:
+    - fechas no futuras; peso de 20 a 400 kg; edad de 14 años o más; altura de 100 a 250 cm; actividad de la lista;
+    - métricas con su rango (un cero cuenta como vacío);
+    - ritmo 0,25/0,5/0,75/1; agua de hasta 20000 ml;
+    - comida con descripción de 1 a 120 caracteres, categoría válida y calorías o macros.
+  - Números y fechas en es-AR: `fmt`, `signed`, `day_label` («Hoy», «Ayer», «lunes 21 sept»).
+  - `HealthMutation` (`kind`): `saveProfile`, `addWeight`, `deleteWeight`, `saveMeasurement`, `deleteMeasurement`, `setObjective`, `calculatePlan`, `clearPlan`, `addWater`, `setWater`, `saveMeal` y `deleteMeal`.
+- **`change.rs`.** `plan_change` valida un cambio sobre los datos guardados y devuelve las escrituras (`StoreOp`) y el resumen que ve la persona:
+  - guardar el perfil registra también el peso de hoy si cambió;
+  - una medición registra también el peso de su día;
+  - el agua nunca queda negativa;
+  - editar una comida conserva su fecha de alta.
+- **`reference.rs`.** Rangos del canvas para IMC, grasa (por sexo), grasa visceral, agua (por sexo), proteína y grado de obesidad. La edad metabólica se compara con la edad.
+- **`dashboard.rs`.** `build_dashboard(data, query, today, hour)` arma todo lo que se muestra:
+  - chips del encabezado;
+  - IMC con barra de tramos, marcas de hoy y del objetivo, cortes y peso normal para la altura;
+  - peso con el cambio en el período y el gráfico: puntos 0–1, marcas de los ejes y línea del objetivo;
+  - objetivo y plan;
+  - alimentación del día: totales, restante, indicadores de macros, comidas por categoría con sus valores para editarlas, y el día anterior y siguiente (nunca futuro);
+  - agua con anillo y los últimos 7 días;
+  - composición: reparto del peso, métricas con delta respecto de la medición anterior, barra y estado;
+  - los datos de los formularios: actividades, categorías, la sugerida por la hora y las 5 comidas recientes por categoría sin repetir.
+- **`ai.rs`.**
+  - `plan_prompt` y `parse_plan`: sube las calorías al piso y agrega la advertencia como nota.
+  - `meal_prompt` y `parse_meal`: estimación, también desde la foto del plato.
+- **`tools.rs`.** Argumentos de las herramientas convertidos en cambios, `summary_view` y `records_view`.
+
+### App (`app/src/health.rs`)
+
+- **Migración 29** (`CURRENT_SCHEMA_VERSION = 29`), todas con `owner_user_id` → `library_users` `ON DELETE CASCADE`:
+  - `health_settings`: perfil, objetivo y plan en JSON;
+  - `health_weights` y `health_water` (por usuario y fecha);
+  - `health_measurements` (por usuario y fecha, con `values_json`);
+  - `health_meals`.
+- **Comandos** (`context: { libraryId, actorLibraryUserId }`):
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `health_dashboard` | `query?: { foodDate, weightRange: '30' \| '90' \| '365' \| 'all', measurementDate }` | `HealthDashboard` |
+| `health_apply` | `mutation: HealthMutation`, `query?` | `HealthDashboard` actualizado |
+| `health_generate_plan` | `query?` | `HealthDashboard` con el plan de la IA guardado |
+| `health_estimate_meal` | `description` | `{ kcal, proteinG, carbsG, fatG, fiberG }` para completar el formulario |
+
+- **Escrituras.** Cada cambio lee los datos, aplica `plan_change` y escribe en una transacción. En Android lo copia de vuelta por SAF y después emite `notia://health-changed`.
+- **Errores.** `HealthCommandError { code: validation | not-found | ai | storage, message, fields }`.
+- **Hora local.** La fecha y la hora locales del equipo deciden «hoy» y la categoría sugerida.
+
+### Herramientas de la IA
+
+| Herramienta | Qué hace |
+|---|---|
+| `get_health_summary` | Perfil, edad, peso y cambio en 30 días, IMC, basal y gasto, objetivo, plan (o mantenimiento), lo comido hoy con lo que queda, agua y la última medición con estados. |
+| `list_health_records` | `kind`: weights, measurements, meals (con id) o water, entre `from` y `to` (30 días si faltan). |
+| `save_health_profile` | Nacimiento, sexo, altura, actividad (factor o nombre) y peso de hoy; lo omitido queda. |
+| `log_weight` | `kg` y `date`. |
+| `save_body_measurement` | `weight`, `date` y `values` por clave (también sueltas). |
+| `set_weight_goal` | `targetKg` (null quita) y `pace`; lo omitido queda. |
+| `set_health_plan` | `mode`: ai, calculated o none. |
+| `log_water` | `ml` y `mode` add (por defecto; negativo resta) o set. |
+| `log_meal` | `name`, `category` (por defecto según la hora), `date`, valores y `photoFromMessage`. |
+| `update_meal` | `meal` (id o descripción exacta) y cualquier campo; `newDate` la mueve. |
+| `delete_health_record` | `kind`: weight o measurement (por `date`), o meal (por `meal`). |
+
+- **Confirmación.** Las nueve de escritura piden confirmación.
+  - Una comida sin valores y el plan con IA se estiman en la vista previa. La confirmación muestra los números y el resultado se guarda 30 minutos por id de llamada, así se guarda lo que vio la persona.
+  - La foto sale de `request_images` del mensaje (`recipes::photo_from_message`, reducida a 1024 px).
+- **Acceso.**
+  - Políticas `HealthRead`/`HealthWrite` en los scopes Library (chat principal, lateral y Telegram) y Finanzas, para cualquier usuario y sus propios datos.
+  - Con el router en todos los chats (sección «Áreas de herramientas en todos los chats…») también llegan al chat de Finanzas. Antes quedaban afuera porque ese chat mandaba todas sus herramientas y superaba `max_tools` (96).
+  - Área nueva del router, `salud`. Entra en el respaldo general y en el de adjuntos (Finanzas, Recetas, Salud).
+  - Etiquetas de progreso en Telegram.
+- **Guía** (`prompt_guidance::health_tools`):
+  - lo que la persona cuenta que comió, o la foto de su plato diciendo que lo comió, es `log_meal`; sin valores conocidos no se inventan, los estima Notia;
+  - la foto de un plato para guardar o sin contexto sigue siendo `create_recipe`, y si pide las dos cosas hace las dos;
+  - «me pesé» es `log_weight`, la balanza es `save_body_measurement` y un vaso de agua son 250 ml;
+  - el objetivo va antes del plan;
+  - no diagnosticar.
+
+### Frontend (`src/modules/health/`)
+
+- `HealthDashboardView` coordina la consulta, los modales y un aviso de error arriba.
+- `HealthPanels`: IMC, peso con `WeightChartView`, objetivo y plan, agua. `FoodAndBodyPanels`: alimentación y composición. `HealthForms`: perfil, medición y comida.
+  - El formulario de comida tiene categoría, «Estimar con IA», «Repetir una anterior» y los valores.
+  - Las etiquetas vienen de Rust. React solo convierte el texto de los campos a número y Rust valida.
+- **Gráfico sin librerías.** SVG con `preserveAspectRatio="none"` y `vector-effect: non-scaling-stroke`, con los textos en HTML para que no se deformen. Tocar o enfocar un punto muestra su valor, y funciona con toque.
+- **Estilos** en `styles/health.css`:
+  - tokens `--hl-*` de la paleta de `CLAUDE.md`, que reemplazan los valores claros del canvas que no estaban en la paleta;
+  - grilla de 3 columnas desde 1024 px de contenedor, IMC y alimentación en dos columnas desde 768 px, composición en 2 o 4 columnas;
+  - controles de 44 px.
+- **Pestaña.** La pestaña especial `health` (`__workspace_health__`) sigue el mismo patrón que Recetas, con el chip «Salud» en el chat lateral.
+- **Fixtures.** `components/__fixtures__/dashboard.json` y `dashboard-empty.json` son tableros serializados por `build_dashboard` con el escenario «Sobrepeso» del canvas y sin perfil. Si cambia el contrato, hay que regenerarlos desde Rust.
+
+### Validaciones
+
+- `cargo test --offline -p notia-backend-core` → 457 (antes 447). Pruebas nuevas de Salud (8):
+  - formato es-AR y fechas;
+  - plan con ritmo, tope y piso usando los escenarios del canvas;
+  - validaciones;
+  - cambios y resúmenes;
+  - el tablero completo y vacío;
+  - rangos por sexo y edad;
+  - respuestas de la IA;
+  - herramientas.
+
+  También hay pruebas nuevas de catálogo, del área `salud` y de la guía.
+- `cargo test --offline -p notia-app --features bluetooth` → 447 + 3 ignoradas (antes 445): ida y vuelta de todos los registros por la base, aislamiento entre usuarios y la estimación pendiente de un solo uso.
+- `cargo check` de escritorio (40 warnings) y Android (59), los mismos de antes y sin errores.
+- `tsc` y ESLint limpios. `vitest` → 387 (3 nuevas en `HealthDashboardView.test.tsx`: paneles y acciones rápidas, comida con estimación, rechazo y edición, y perfil inicial).
+- Revisión visual con un harness temporal (ya borrado): oscuro y claro, escritorio y 390 px, formularios de comida y medición, y estado sin perfil.
+- **Pendiente:**
+  - probar con el modelo real el plan con IA, «Estimar con IA» y `log_meal` por Telegram con foto;
+  - probar en un dispositivo Android la escritura por SAF.
+
+## Áreas de herramientas en todos los chats y cambio de área a mitad del turno (2026-09-28)
+
+**Pedido del usuario.** Cada módulo tiene que tener su propio conjunto de herramientas. La primera llamada al modelo, antes de la real, decide qué área entrega. Si el agente descubre que el pedido es de otra área, cambia de área y sigue, como un agente.
+
+**Antes.**
+- El router solo corría en el chat principal y en Telegram (scope Library) y solo con más de 64 herramientas.
+- Los chats de módulo, como el lateral de Finanzas, mandaban todas sus herramientas en cada turno. Por eso Salud quedaba fuera del chat de Finanzas: no entraba en `max_tools` (96).
+- El área se elegía una vez por turno: si el router se equivocaba, el agente no tenía la herramienta.
+
+**Ahora.**
+1. **Router en todos los chats.** En un turno nuevo, si las herramientas autorizadas abarcan más de un área (`needs_routing`), la llamada del router elige las áreas.
+   - Se salta el tablero publicado, que solo tiene tareas.
+   - El chat de un módulo sugiere su área (`home_area`: Finanzas → finanzas, Task Manager → tareas, nota o grafo → biblioteca). `router_prompt` la menciona y `fallback_areas` la pone primera si el modelo no responde.
+2. **El pedido guarda todo y ofrece por ronda.** `AgentRequest.tool_areas` lleva las áreas elegidas y `tools` pasa a llevar todas las herramientas que el actor puede usar.
+   - El pool tiene un tope de `MAX_TOOL_POOL` = 512; sin `tool_areas` el tope sigue siendo `max_tools`.
+   - En cada ronda, el bucle (`agent::run_agent_inner`) ofrece `turn_tools`: las comunes, las de las áreas actuales que entren en `max_tools - 1` y `change_tool_areas`.
+3. **Cambio de área (`change_tool_areas`).** La descripción de la herramienta lista las áreas autorizadas con su descripción y dice cuáles tiene el turno ahora. El argumento `areas` es el conjunto que necesita, incluidas las actuales que siga usando.
+   - La resuelve el propio bucle, no el executor. Cambia las áreas, rearma las herramientas y devuelve al modelo las áreas y los nombres de las herramientas nuevas. La ronda siguiente sigue con ellas en el mismo turno.
+   - Un área inexistente o no autorizada vuelve como error con las válidas, y las áreas quedan como estaban.
+   - Hay un tope de `MAX_AREA_SWITCHES` = 6 cambios por turno.
+   - No figura en `tool_results` ni en el resumen del trabajo, y no pide confirmación: solo cambia qué herramientas se ofrecen.
+4. **El prompt sigue a las herramientas.** `AuthoritativePromptProvider` compone el prompt del sistema para las herramientas de cada ronda (`compose_request_system_prompt`) y lo guarda por nombres. Al cambiar de área entra la guía de las herramientas nuevas, por ejemplo la de Salud. Una ronda sin herramientas conserva la guía anterior.
+5. **Pausas.** `AgentContinuation.tool_areas` guarda las áreas del momento de la pausa (confirmación, aclaración o plan). Al retomar, el turno sigue en esas áreas y encuentra la herramienta pendiente aunque sea de un área a la que cambió.
+6. **Guía.** Con `change_tool_areas` visible, el agente sabe que sus herramientas son las del área elegida. Si necesita otro módulo, cambia de área antes de decir que no puede. En Telegram, la etiqueta de progreso es «buscando las herramientas que hacen falta».
+7. **Permisos.** El router y el cambio solo eligen dentro de lo que el actor, el contexto y los interruptores del chat ya permiten (el pool proyectado). Cada herramienta se vuelve a autorizar al ejecutarse.
+8. **Catálogo.** Salud y Recetas pasan a los scopes Library y Finanzas: con el router, cada turno recibe solo el área que necesita.
+9. **Pruebas de catálogo.** `assert_every_area_fits` exige, en cada scope, que cada área entre completa en una ronda con las comunes y el cambio de área. Reemplaza la condición de que el scope entero cupiera en 96.
+
+**Contratos.**
+- `AgentRequest.tool_areas: Option<Vec<String>>` (ids de área, `skip_serializing_if` vacío).
+- `AgentContinuation.tool_areas: Option<Vec<String>>` (`serde(default)`, compatible con continuaciones guardadas).
+- `tool_routing`: `SWITCH_AREA_TOOL`, `MAX_AREA_SWITCHES`, `home_area`, `turn_tools`, `switch_area_tool`, `parse_switch_arguments`, `parse_area_ids` y `area_ids`. `router_prompt` y `fallback_areas` reciben el área del módulo.
+- Se quitaron `ROUTING_THRESHOLD` y `route_turn_tools`, que pasa a ser `route_turn_areas` y devuelve las áreas.
+
+**Costo.** Los chats de módulo suman la llamada corta del router por turno, como ya pasaba en el chat principal. A cambio, cada turno manda menos herramientas y el agente puede llegar a cualquier módulo autorizado.
+
+**Validaciones.**
+- `cargo test --offline -p notia-backend-core` → 460 (antes 457). Pruebas nuevas:
+  - `every_module_routes_and_the_agent_can_change_areas`: router por módulo, herramienta de cambio, límite, argumentos y área sugerida;
+  - `a_routed_run_changes_areas_and_goes_on_with_the_new_tools`: un turno empieza en Finanzas, cambia a Salud, rechaza un área no autorizada y registra la comida; sin áreas, las herramientas van como llegan;
+  - `a_routed_run_knows_it_can_change_areas` (guía).
+
+  Además se actualizaron las pruebas de catálogo de Salud, Recetas, Acciones IA y correo.
+- `cargo test --offline -p notia-app --features bluetooth` → 447 + 3 ignoradas. La prueba del catálogo del runtime ahora exige que cada área de cada scope entre en una ronda.
+- `cargo check` de escritorio (40 warnings) y Android (59), los mismos de antes.
+- Sin cambios de frontend.
+- **Pendiente:** probar con el modelo real que el chat de Finanzas elige Salud ante «almorcé…» y que un turno mal ruteado usa `change_tool_areas` y termina bien, en la app y por Telegram.
+
+## Comidas: receta en Recetas y registro en Salud en una sola llamada (2026-09-28)
+
+**Pedido del usuario.**
+- Con la foto de una comida sin explicación, la IA reconstruye más o menos qué es (con sus pesos) y la guarda en Recetas si no existe. Si existe, la usa. Además la carga en Salud.
+- Con un texto que cuenta qué comió, sin foto, se busca la receta y se crea si no existe, aunque no tenga foto. Además se carga en Salud.
+- Si la comida ya existe pero se comió con otros pesos, Salud la carga con las calorías y los macros ajustados.
+
+**Peso por porción en Recetas.**
+- `Recipe.serving_grams` y `RecipeInput.serving_grams` (1 a 5000 g).
+- En el archivo es la fila «Peso por porción | 350 g» de `## Datos`; un archivo sin la fila se lee igual.
+- La revisión de IA lo completa (`servingGrams` o `pesoPorcion`) y pide los ingredientes en gramos o mililitros.
+- El detalle muestra «2 porciones de 350 g». Las herramientas `create_recipe` y `update_recipe` aceptan `servingGrams` y `get_recipe` lo devuelve.
+- El formulario del tablero no lo edita: una edición sin peso conserva el guardado (`edited`).
+- `review_prompt(…, from_plate)`: si la receta sale del plato que comió la persona, sin porciones dichas es 1 porción, sus valores son los del plato y `servingGrams` es el peso del plato.
+
+**`log_meal` hace el circuito completo** (`app/src/health.rs`, `resolve_meal`; decisiones puras en `backend_core::health`):
+1. **Receta.**
+   - Busca la que nombra `recipe` (id o nombre exacto) o la del recetario con el mismo nombre (`find_duplicate`: sin acentos, plurales ni conectores).
+   - Sin nombre y con foto, la IA reconoce el plato (`meal_prompt`).
+2. **Si no existe,** la crea con `recipes::prepare_new(…, from_plate: true)`: nombre, momento (`recipe_meal_time`: la merienda va a snack), `description`, `ingredients` con pesos y la foto del mensaje. Así pasa por la misma revisión de IA y el mismo control de repetidas que cualquier receta.
+   - Si la IA dice que repite una existente, se usa esa.
+   - La receta se guarda recién al confirmar (`recipes::save_new`). Si mientras tanto se guardó el mismo plato, la comida queda con esa receta.
+3. **Cantidad** (`Portion`, que sale de los argumentos):
+   - `servings`: porciones de la receta, de 0,05 a 20.
+   - `grams`: sobre `serving_grams`.
+   - `portionNote`: ingredientes o cantidades distintas («con 200 g de papas en vez de 100»).
+   - Sin ninguna, una porción.
+4. **Valores** (`eaten_factor`, `scale`):
+   - Una porción, varias o un peso con el peso de la porción conocido se escalan en Rust desde una porción (`recipe_serving`).
+   - Una nota, un peso sin el peso de la porción o la foto de una receta que ya existía van a la IA (`portion_prompt`, `parse_portion`). Recibe la receta, sus valores por porción y lo que comió, y devuelve las calorías y macros de esa cantidad; sin macros, se escalan las porciones que dio (0,05 a 20).
+   - Las calorías o macros que haya dicho la persona mandan.
+5. **Salud.** La comida se guarda con el nombre de la receta y la cantidad («Guiso de lentejas · 500 g», «· 1,5 porciones», «(con doble papas)») y con `recipe_id`.
+6. **Confirmación.** Una sola para las dos cosas. La primera línea dice si se guarda una receta nueva (porciones, peso, kcal por porción, foto e ingredientes) o se usa una del recetario; la segunda, la comida con sus valores. Lo estimado se guarda 30 minutos por id de llamada y al confirmar se guarda eso mismo.
+
+**Datos.**
+- Migración 30: `health_meals.recipe_id TEXT`.
+- `Meal.recipe_id` y `MealInput.recipe_id`: una edición sin receta conserva la guardada.
+- `list_health_records` devuelve `recipeId`.
+
+**Guía y Telegram.**
+- `log_meal` es para todo lo que el usuario comió, o la foto de un plato sin explicación. Con una foto sin texto, el agente reconstruye nombre, descripción e ingredientes con pesos.
+- La cantidad va en `servings`, `grams` o `portionNote`, y el agente no inventa calorías.
+- `create_recipe` queda solo para guardar una receta que no dice haber comido.
+- `DOCUMENT_PROMPT` (foto sin texto por Telegram) manda al plato a `log_meal`.
+- Esquema de `log_meal`: `name` ya no es obligatorio; se agregan `recipe`, `servings`, `grams`, `portionNote`, `description` e `ingredients`.
+
+**Validaciones.**
+- `cargo test --offline -p notia-backend-core` → 461. Pruebas nuevas o ampliadas:
+  - archivo con peso por porción y etiqueta del detalle;
+  - `a_meal_is_scaled_from_its_recipe`: escala por gramos y porciones, cuándo va a la IA, nombres, merienda → snack, respuesta de la IA con macros o con porciones y fuera de rango, y edición que conserva la receta;
+  - argumentos de `log_meal`;
+  - guía.
+- `cargo test --offline -p notia-app --features bluetooth` → 447 + 3 ignoradas (la base guarda y lee `recipe_id`).
+- `cargo check` de escritorio (40) y Android (59), sin warnings nuevos. `tsc` limpio.
+- **Pendiente:** con el modelo real, probar una foto sin texto por Telegram (receta nueva con foto y comida en Salud), un texto de una comida que ya existe («comí 500 g del guiso») y uno con otra cantidad de un ingrediente.

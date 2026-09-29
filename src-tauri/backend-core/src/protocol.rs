@@ -8,6 +8,9 @@ pub const MAX_BACKEND_PROTOCOL_VERSION: u16 = 2;
 /// Telegram album of up to 10 photos, rendered PDF pages), so it matches the
 /// 32 MiB the headless server accepts.
 pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+/// Tools a routed request may carry: every tool the actor may use. Each
+/// round offers only those of its areas, within `max_tools`.
+pub const MAX_TOOL_POOL: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -274,6 +277,12 @@ pub struct AgentRequest {
     /// Telegram chat whose request is the action's prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_action: Option<crate::ai_actions::prompts::ScheduledActionPrompt>,
+    /// Tool areas routed for this run (see `tool_routing`). With them,
+    /// `tools` holds every tool the actor may use and each round offers the
+    /// tools of these areas; the agent changes them with `change_tool_areas`.
+    /// Without them, `tools` is offered as is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_areas: Option<Vec<String>>,
 }
 
 fn library_search_default() -> bool {
@@ -684,7 +693,8 @@ impl BackendLimits {
         for message in &request.messages {
             super::chat_attachments::validate_attachments(&message.attachments)?;
         }
-        if request.tools.len() > self.max_tools {
+        let tool_limit = if request.tool_areas.is_some() { MAX_TOOL_POOL } else { self.max_tools };
+        if request.tools.len() > tool_limit {
             return Err(BackendError::invalid_input(
                 "El request supera el límite de tools.",
             ));
@@ -780,6 +790,7 @@ mod tests {
             library_search: true,
             autonomous: false,
             scheduled_action: None,
+            tool_areas: None,
         }
     }
 

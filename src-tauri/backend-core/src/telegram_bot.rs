@@ -282,6 +282,15 @@ pub fn tool_label(tool: &str) -> &'static str {
         name if name.starts_with("get_routine_") || name.starts_with("list_routine_") => "consultando tu rutina",
         "set_routine_completions" => "registrando tus hábitos",
         name if name.contains("routine") => "preparando el cambio en tu rutina",
+        "list_recipes" | "get_recipe" => "revisando tus recetas",
+        name if name.contains("recipe") => "preparando la receta",
+        crate::tool_routing::SWITCH_AREA_TOOL => "buscando las herramientas que hacen falta",
+        "get_health_summary" | "list_health_records" => "revisando tus datos de salud",
+        "log_meal" | "update_meal" => "registrando tu comida",
+        "log_weight" => "registrando tu peso",
+        "log_water" => "registrando el agua",
+        "set_health_plan" => "preparando tu plan",
+        name if crate::health::tools::is_health_write_tool(name) => "preparando el cambio en Salud",
         "list_ai_actions" | "get_ai_action" => "revisando tus acciones programadas",
         name if name.contains("ai_action") => "preparando el cambio en tus acciones programadas",
         "list_agenda" => "leyendo tu agenda",
@@ -504,7 +513,7 @@ pub fn interrupted_message(count: usize) -> String {
 
 /// Request of a photo, image or PDF sent without text: the model decides
 /// what it is, since the router and the agent both see the attachment.
-pub const DOCUMENT_PROMPT: &str = "[Origen: documento de Telegram sin texto. Mirá su contenido y hacé lo que corresponda: si es un comprobante financiero (ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito), extraé todos los campos legibles y registralo con la herramienta financiera del tipo detectado, sin duplicar como gasto una factura de servicio; si es otra cosa (por ejemplo, una agenda o un calendario, una tarea o apuntes), usá las herramientas que correspondan o preguntá qué hacer. Si son varios, procesalos todos.]";
+pub const DOCUMENT_PROMPT: &str = "[Origen: documento de Telegram sin texto. Mirá su contenido y hacé lo que corresponda: si es un comprobante financiero (ticket de compra, factura o boleta de servicio, recibo de sueldo, resumen de tarjeta de crédito), extraé todos los campos legibles y registralo con la herramienta financiera del tipo detectado, sin duplicar como gasto una factura de servicio; si es la foto de un plato o una comida, registrala con log_meal y photoFromMessage reconstruyendo qué es (nombre, descripción e ingredientes con pesos estimados en gramos): Notia la busca o la crea en Recetas y la carga en Salud; si es otra cosa (por ejemplo, una agenda o un calendario, una tarea o apuntes), usá las herramientas que correspondan o preguntá qué hacer. Si son varios, procesalos todos.]";
 
 #[cfg(test)]
 mod tests {

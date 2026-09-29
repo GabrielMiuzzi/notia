@@ -1624,6 +1624,7 @@ impl Worker {
             library_search: true,
             autonomous: job.autonomous.is_some(),
             scheduled_action: job.action.as_ref().map(|action| action.prompt.clone()),
+            tool_areas: None,
         });
         (ActiveRun { context, idempotency_key, cancelled }, request)
     }

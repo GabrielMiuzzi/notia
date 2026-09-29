@@ -1,0 +1,971 @@
+{
+  "today": "2026-09-28",
+  "hasProfile": true,
+  "header": {
+    "chips": [
+      "34 años",
+      "178 cm",
+      "82,4 kg"
+    ],
+    "bmi": {
+      "label": "IMC 26, sobrepeso",
+      "tone": "warn"
+    }
+  },
+  "bmi": {
+    "valueLabel": "26",
+    "state": {
+      "label": "Sobrepeso",
+      "tone": "warn"
+    },
+    "message": "Estás 3,5 kg por encima del rango normal para tu altura.",
+    "bar": {
+      "segments": [
+        {
+          "label": "Bajo peso",
+          "tone": "bajo",
+          "flex": 3.5,
+          "active": false
+        },
+        {
+          "label": "Normal",
+          "tone": "ok",
+          "flex": 6.5,
+          "active": false
+        },
+        {
+          "label": "Sobrepeso",
+          "tone": "warn",
+          "flex": 5.0,
+          "active": true
+        },
+        {
+          "label": "Obesidad grado I",
+          "tone": "alto",
+          "flex": 5.0,
+          "active": false
+        },
+        {
+          "label": "Obesidad grado II",
+          "tone": "alto",
+          "flex": 5.0,
+          "active": false
+        },
+        {
+          "label": "Obesidad grado III",
+          "tone": "alto",
+          "flex": 2.0,
+          "active": false
+        }
+      ],
+      "markers": [
+        {
+          "position": 33.284704980197965,
+          "kind": "goal"
+        },
+        {
+          "position": 40.76599007794564,
+          "kind": "value"
+        }
+      ],
+      "ticks": [
+        {
+          "position": 12.962962962962962,
+          "label": "18,5"
+        },
+        {
+          "position": 37.03703703703704,
+          "label": "25"
+        },
+        {
+          "position": 55.55555555555556,
+          "label": "30"
+        },
+        {
+          "position": 74.07407407407408,
+          "label": "35"
+        },
+        {
+          "position": 92.5925925925926,
+          "label": "40"
+        }
+      ]
+    },
+    "todayLabel": "Hoy 26",
+    "goal": {
+      "label": "Con tu objetivo 24",
+      "state": {
+        "label": "Normal",
+        "tone": "ok"
+      }
+    },
+    "healthyRangeLabel": "Peso normal para tu altura: 58,6 a 78,9 kg"
+  },
+  "weight": {
+    "currentLabel": "82,4",
+    "summary": "-3,6 kg en el período. Te faltan 6,4 kg para tu objetivo.",
+    "ranges": [
+      {
+        "value": "30",
+        "label": "30 días",
+        "selected": false
+      },
+      {
+        "value": "90",
+        "label": "90 días",
+        "selected": true
+      },
+      {
+        "value": "365",
+        "label": "1 año",
+        "selected": false
+      },
+      {
+        "value": "all",
+        "label": "Todo",
+        "selected": false
+      }
+    ],
+    "chart": {
+      "points": [
+        {
+          "x": 0.0,
+          "y": 0.9166666666666666,
+          "label": "1 jul 2026",
+          "valueLabel": "86 kg"
+        },
+        {
+          "x": 0.5,
+          "y": 0.7583333333333329,
+          "label": "15 ago 2026",
+          "valueLabel": "84,1 kg"
+        },
+        {
+          "x": 1.0,
+          "y": 0.6166666666666671,
+          "label": "28 sept 2026",
+          "valueLabel": "82,4 kg"
+        }
+      ],
+      "yTicks": [
+        {
+          "at": 0.08333333333333333,
+          "label": "76"
+        },
+        {
+          "at": 0.25,
+          "label": "78"
+        },
+        {
+          "at": 0.4166666666666667,
+          "label": "80"
+        },
+        {
+          "at": 0.5833333333333334,
+          "label": "82"
+        },
+        {
+          "at": 0.75,
+          "label": "84"
+        },
+        {
+          "at": 0.9166666666666666,
+          "label": "86"
+        }
+      ],
+      "xTicks": [
+        {
+          "at": 0.0,
+          "label": "01/07"
+        },
+        {
+          "at": 0.5,
+          "label": "15/08"
+        },
+        {
+          "at": 1.0,
+          "label": "28/09"
+        }
+      ],
+      "goal": {
+        "at": 0.08333333333333333,
+        "label": "Objetivo 76 kg"
+      }
+    },
+    "emptyText": "Cargá al menos dos pesos para ver tu evolución.",
+    "entries": [
+      {
+        "date": "2026-09-28",
+        "dateLabel": "28 sept 2026",
+        "kgLabel": "82,4 kg"
+      },
+      {
+        "date": "2026-08-15",
+        "dateLabel": "15 ago 2026",
+        "kgLabel": "84,1 kg"
+      },
+      {
+        "date": "2026-07-01",
+        "dateLabel": "1 jul 2026",
+        "kgLabel": "86 kg"
+      }
+    ]
+  },
+  "objective": {
+    "targetKg": 76.0,
+    "pace": 0.5,
+    "paces": [
+      {
+        "value": "0.25",
+        "label": "0,25 kg",
+        "selected": false
+      },
+      {
+        "value": "0.5",
+        "label": "0,5 kg",
+        "selected": true
+      },
+      {
+        "value": "0.75",
+        "label": "0,75 kg",
+        "selected": false
+      },
+      {
+        "value": "1",
+        "label": "1 kg",
+        "selected": false
+      }
+    ],
+    "differenceLabel": "-6,4 kg",
+    "targetBmiLabel": "24",
+    "targetState": {
+      "label": "Normal",
+      "tone": "ok"
+    },
+    "lowBmiWarning": false,
+    "canPlan": true,
+    "plan": {
+      "kcalLabel": "1.886",
+      "sourceLabel": "Plan calculado",
+      "weeksLabel": "Tiempo estimado: 13 semanas.",
+      "summary": "Déficit de 550 kcal por día sobre tu gasto estimado.",
+      "notes": [],
+      "recommendations": []
+    }
+  },
+  "food": {
+    "date": "2026-09-28",
+    "dayLabel": "Hoy",
+    "previousDate": "2026-09-27",
+    "nextDate": null,
+    "totalLabel": "840",
+    "targetLabel": "de 1.886 kcal",
+    "progress": 44.53870625662778,
+    "over": false,
+    "remainingLabel": "Quedan 1.046 kcal",
+    "stats": [
+      {
+        "label": "Gasto diario estimado",
+        "value": "2.436 kcal"
+      },
+      {
+        "label": "Objetivo del día",
+        "value": "1.886 kcal"
+      },
+      {
+        "label": "Metabolismo basal",
+        "value": "1.772 kcal"
+      }
+    ],
+    "footnote": "Metabolismo basal estimado con la fórmula de Mifflin-St Jeor.",
+    "macros": [
+      {
+        "key": "proteinaG",
+        "label": "Proteínas",
+        "valueLabel": "40",
+        "targetLabel": "/ 137 g",
+        "percentLabel": "29 %",
+        "progress": 29.1970802919708,
+        "status": "Faltan 97 g"
+      },
+      {
+        "key": "carbosG",
+        "label": "Carbohidratos",
+        "valueLabel": "60",
+        "targetLabel": "/ 206 g",
+        "percentLabel": "29 %",
+        "progress": 29.126213592233007,
+        "status": "Faltan 146 g"
+      },
+      {
+        "key": "grasasG",
+        "label": "Grasas",
+        "valueLabel": "20",
+        "targetLabel": "/ 57 g",
+        "percentLabel": "35 %",
+        "progress": 35.08771929824561,
+        "status": "Faltan 37 g"
+      },
+      {
+        "key": "fibraG",
+        "label": "Fibra",
+        "valueLabel": "8",
+        "targetLabel": "/ 26 g",
+        "percentLabel": "31 %",
+        "progress": 30.76923076923077,
+        "status": "Faltan 18 g"
+      }
+    ],
+    "groups": [
+      {
+        "id": "desayuno",
+        "label": "Desayuno",
+        "kcalLabel": "320 kcal",
+        "meals": [
+          {
+            "id": "m1",
+            "name": "Café con leche y tostadas",
+            "kcalLabel": "320 kcal",
+            "pills": [
+              {
+                "key": "proteinaG",
+                "short": "Prot",
+                "label": "Proteínas",
+                "valueLabel": "20 g"
+              },
+              {
+                "key": "carbosG",
+                "short": "Carb",
+                "label": "Carbohidratos",
+                "valueLabel": "30 g"
+              },
+              {
+                "key": "grasasG",
+                "short": "Grasa",
+                "label": "Grasas",
+                "valueLabel": "10 g"
+              },
+              {
+                "key": "fibraG",
+                "short": "Fibra",
+                "label": "Fibra",
+                "valueLabel": "4 g"
+              }
+            ],
+            "values": {
+              "category": "desayuno",
+              "name": "Café con leche y tostadas",
+              "kcal": 320.0,
+              "proteinG": 20.0,
+              "carbsG": 30.0,
+              "fatG": 10.0,
+              "fiberG": 4.0
+            }
+          }
+        ]
+      },
+      {
+        "id": "snack",
+        "label": "Snack",
+        "kcalLabel": null,
+        "meals": []
+      },
+      {
+        "id": "almuerzo",
+        "label": "Almuerzo",
+        "kcalLabel": "520 kcal",
+        "meals": [
+          {
+            "id": "m2",
+            "name": "Milanesa de pollo con ensalada",
+            "kcalLabel": "520 kcal",
+            "pills": [
+              {
+                "key": "proteinaG",
+                "short": "Prot",
+                "label": "Proteínas",
+                "valueLabel": "20 g"
+              },
+              {
+                "key": "carbosG",
+                "short": "Carb",
+                "label": "Carbohidratos",
+                "valueLabel": "30 g"
+              },
+              {
+                "key": "grasasG",
+                "short": "Grasa",
+                "label": "Grasas",
+                "valueLabel": "10 g"
+              },
+              {
+                "key": "fibraG",
+                "short": "Fibra",
+                "label": "Fibra",
+                "valueLabel": "4 g"
+              }
+            ],
+            "values": {
+              "category": "almuerzo",
+              "name": "Milanesa de pollo con ensalada",
+              "kcal": 520.0,
+              "proteinG": 20.0,
+              "carbsG": 30.0,
+              "fatG": 10.0,
+              "fiberG": 4.0
+            }
+          }
+        ]
+      },
+      {
+        "id": "merienda",
+        "label": "Merienda",
+        "kcalLabel": null,
+        "meals": []
+      },
+      {
+        "id": "cena",
+        "label": "Cena",
+        "kcalLabel": null,
+        "meals": []
+      }
+    ]
+  },
+  "water": {
+    "ml": 1250,
+    "ratio": 0.4098360655737705,
+    "percentLabel": "41%",
+    "litersLabel": "1,25 L",
+    "goalLabel": "de 3,05 L",
+    "basisLabel": "Según tu altura y peso",
+    "ariaLabel": "1250 de 3050 ml",
+    "week": [
+      {
+        "date": "2026-09-22",
+        "dayLabel": "M",
+        "fill": 0.0,
+        "met": false,
+        "title": "0 L"
+      },
+      {
+        "date": "2026-09-23",
+        "dayLabel": "X",
+        "fill": 0.0,
+        "met": false,
+        "title": "0 L"
+      },
+      {
+        "date": "2026-09-24",
+        "dayLabel": "J",
+        "fill": 0.0,
+        "met": false,
+        "title": "0 L"
+      },
+      {
+        "date": "2026-09-25",
+        "dayLabel": "V",
+        "fill": 100.0,
+        "met": true,
+        "title": "3,2 L"
+      },
+      {
+        "date": "2026-09-26",
+        "dayLabel": "S",
+        "fill": 0.0,
+        "met": false,
+        "title": "0 L"
+      },
+      {
+        "date": "2026-09-27",
+        "dayLabel": "D",
+        "fill": 0.0,
+        "met": false,
+        "title": "0 L"
+      },
+      {
+        "date": "2026-09-28",
+        "dayLabel": "L",
+        "fill": 40.98360655737705,
+        "met": false,
+        "title": "1,25 L"
+      }
+    ]
+  },
+  "composition": {
+    "date": "2026-09-28",
+    "subtitle": "Medición del 28 de septiembre de 2026, comparada con la anterior",
+    "dates": [
+      {
+        "value": "2026-09-28",
+        "label": "28 sept 2026",
+        "selected": true
+      },
+      {
+        "value": "2026-08-15",
+        "label": "15 ago 2026",
+        "selected": false
+      }
+    ],
+    "stripTitle": "Tu peso de 82,4 kg se reparte así",
+    "parts": [
+      {
+        "key": "fat",
+        "label": "Grasa",
+        "detail": "18,1 kg (22 %)",
+        "share": 21.992709599027947
+      },
+      {
+        "key": "muscle",
+        "label": "Músculo",
+        "detail": "61 kg (74 %)",
+        "share": 74.1190765492102
+      },
+      {
+        "key": "bone",
+        "label": "Huesos",
+        "detail": "3,2 kg (4 %)",
+        "share": 3.888213851761847
+      }
+    ],
+    "groups": [
+      {
+        "id": "grasa",
+        "title": "Grasa",
+        "metrics": [
+          {
+            "key": "grasaPct",
+            "label": "Grasa corporal",
+            "valueLabel": "22",
+            "unit": "%",
+            "deltaLabel": "-1",
+            "bar": {
+              "segments": [
+                {
+                  "label": "Bajo",
+                  "tone": "bajo",
+                  "flex": 5.0,
+                  "active": false
+                },
+                {
+                  "label": "Normal",
+                  "tone": "ok",
+                  "flex": 12.0,
+                  "active": false
+                },
+                {
+                  "label": "Alto",
+                  "tone": "warn",
+                  "flex": 5.0,
+                  "active": true
+                },
+                {
+                  "label": "Muy alto",
+                  "tone": "alto",
+                  "flex": 15.0,
+                  "active": false
+                }
+              ],
+              "markers": [
+                {
+                  "position": 51.35135135135135,
+                  "kind": "value"
+                }
+              ],
+              "ticks": []
+            },
+            "state": {
+              "label": "Alto",
+              "tone": "warn"
+            }
+          },
+          {
+            "key": "grasaKg",
+            "label": "Peso de grasa corporal",
+            "valueLabel": "18,1",
+            "unit": "kg",
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "grasaVisceral",
+            "label": "Grasa visceral",
+            "valueLabel": "10",
+            "unit": "nivel",
+            "deltaLabel": null,
+            "bar": {
+              "segments": [
+                {
+                  "label": "Normal",
+                  "tone": "ok",
+                  "flex": 9.0,
+                  "active": false
+                },
+                {
+                  "label": "Alto",
+                  "tone": "warn",
+                  "flex": 5.0,
+                  "active": true
+                },
+                {
+                  "label": "Muy alto",
+                  "tone": "alto",
+                  "flex": 5.0,
+                  "active": false
+                }
+              ],
+              "markers": [
+                {
+                  "position": 47.368421052631575,
+                  "kind": "value"
+                }
+              ],
+              "ticks": []
+            },
+            "state": {
+              "label": "Alto",
+              "tone": "warn"
+            }
+          },
+          {
+            "key": "obesidadPct",
+            "label": "Grado de obesidad",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          }
+        ]
+      },
+      {
+        "id": "musculo",
+        "title": "Músculo",
+        "metrics": [
+          {
+            "key": "mmePct",
+            "label": "Masa muscular esquelética",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "mmeKg",
+            "label": "Masa muscular esquelética",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "musculoPct",
+            "label": "Músculo",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "musculoKg",
+            "label": "Peso muscular",
+            "valueLabel": "61",
+            "unit": "kg",
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "proteinaPct",
+            "label": "Proteína",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          }
+        ]
+      },
+      {
+        "id": "agua",
+        "title": "Agua y huesos",
+        "metrics": [
+          {
+            "key": "aguaPct",
+            "label": "Agua",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "aguaKg",
+            "label": "Peso del agua",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "huesosKg",
+            "label": "Huesos",
+            "valueLabel": "3,2",
+            "unit": "kg",
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          }
+        ]
+      },
+      {
+        "id": "general",
+        "title": "General",
+        "metrics": [
+          {
+            "key": "imc",
+            "label": "IMC",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "pesoSinGrasa",
+            "label": "Peso sin grasa",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "metabolismo",
+            "label": "Metabolismo basal",
+            "valueLabel": "—",
+            "unit": null,
+            "deltaLabel": null,
+            "bar": null,
+            "state": null
+          },
+          {
+            "key": "edadMetabolica",
+            "label": "Edad metabólica",
+            "valueLabel": "38",
+            "unit": "años",
+            "deltaLabel": null,
+            "bar": null,
+            "state": {
+              "label": "Mayor a tu edad",
+              "tone": "warn"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "profileForm": {
+    "birthDate": "1992-03-15",
+    "sex": "M",
+    "heightCm": 178.0,
+    "activity": 1.375,
+    "weightKg": 82.4,
+    "activities": [
+      {
+        "value": "1.2",
+        "label": "Sedentario (poco o nada de ejercicio)",
+        "selected": false
+      },
+      {
+        "value": "1.375",
+        "label": "Ligero (1 a 3 días por semana)",
+        "selected": true
+      },
+      {
+        "value": "1.55",
+        "label": "Moderado (3 a 5 días por semana)",
+        "selected": false
+      },
+      {
+        "value": "1.725",
+        "label": "Alto (6 a 7 días por semana)",
+        "selected": false
+      },
+      {
+        "value": "1.9",
+        "label": "Muy alto (trabajo físico o doble turno)",
+        "selected": false
+      }
+    ]
+  },
+  "mealForm": {
+    "suggestedCategory": "almuerzo",
+    "categories": [
+      {
+        "value": "desayuno",
+        "label": "Desayuno",
+        "selected": false
+      },
+      {
+        "value": "snack",
+        "label": "Snack",
+        "selected": false
+      },
+      {
+        "value": "almuerzo",
+        "label": "Almuerzo",
+        "selected": true
+      },
+      {
+        "value": "merienda",
+        "label": "Merienda",
+        "selected": false
+      },
+      {
+        "value": "cena",
+        "label": "Cena",
+        "selected": false
+      }
+    ],
+    "recent": [
+      {
+        "category": "almuerzo",
+        "name": "Milanesa de pollo con ensalada",
+        "kcal": 520.0,
+        "proteinG": 20.0,
+        "carbsG": 30.0,
+        "fatG": 10.0,
+        "fiberG": 4.0
+      },
+      {
+        "category": "desayuno",
+        "name": "Café con leche y tostadas",
+        "kcal": 320.0,
+        "proteinG": 20.0,
+        "carbsG": 30.0,
+        "fatG": 10.0,
+        "fiberG": 4.0
+      },
+      {
+        "category": "almuerzo",
+        "name": "Fideos con bolognesa",
+        "kcal": 640.0,
+        "proteinG": 20.0,
+        "carbsG": 30.0,
+        "fatG": 10.0,
+        "fiberG": 4.0
+      }
+    ]
+  },
+  "measurementFields": [
+    {
+      "id": "grasa",
+      "title": "Grasa",
+      "fields": [
+        {
+          "key": "grasaPct",
+          "label": "Grasa corporal",
+          "unit": "%"
+        },
+        {
+          "key": "grasaKg",
+          "label": "Peso de grasa corporal",
+          "unit": "kg"
+        },
+        {
+          "key": "grasaVisceral",
+          "label": "Grasa visceral",
+          "unit": "nivel"
+        },
+        {
+          "key": "obesidadPct",
+          "label": "Grado de obesidad",
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "id": "musculo",
+      "title": "Músculo",
+      "fields": [
+        {
+          "key": "mmePct",
+          "label": "Masa muscular esquelética",
+          "unit": "%"
+        },
+        {
+          "key": "mmeKg",
+          "label": "Masa muscular esquelética",
+          "unit": "kg"
+        },
+        {
+          "key": "musculoPct",
+          "label": "Músculo",
+          "unit": "%"
+        },
+        {
+          "key": "musculoKg",
+          "label": "Peso muscular",
+          "unit": "kg"
+        },
+        {
+          "key": "proteinaPct",
+          "label": "Proteína",
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "id": "agua",
+      "title": "Agua y huesos",
+      "fields": [
+        {
+          "key": "aguaPct",
+          "label": "Agua",
+          "unit": "%"
+        },
+        {
+          "key": "aguaKg",
+          "label": "Peso del agua",
+          "unit": "kg"
+        },
+        {
+          "key": "huesosKg",
+          "label": "Huesos",
+          "unit": "kg"
+        }
+      ]
+    },
+    {
+      "id": "general",
+      "title": "General",
+      "fields": [
+        {
+          "key": "imc",
+          "label": "IMC",
+          "unit": ""
+        },
+        {
+          "key": "pesoSinGrasa",
+          "label": "Peso sin grasa",
+          "unit": "kg"
+        },
+        {
+          "key": "metabolismo",
+          "label": "Metabolismo basal",
+          "unit": "kcal"
+        },
+        {
+          "key": "edadMetabolica",
+          "label": "Edad metabólica",
+          "unit": "años"
+        }
+      ]
+    }
+  ]
+}

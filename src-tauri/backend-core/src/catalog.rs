@@ -22,6 +22,12 @@ pub enum ToolPolicy {
     /// library user like Rutina.
     AgendaRead,
     AgendaWrite,
+    /// Recetas: the recipe files of the library.
+    RecipeRead,
+    RecipeWrite,
+    /// Salud: weight, meals, water and body measurements, per library user.
+    HealthRead,
+    HealthWrite,
     /// The AI actions of the library: the Owner's only.
     AiActionRead,
     AiActionWrite,
@@ -203,6 +209,12 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ],
         false,
     ));
+    catalog.extend(recipe_tools(&super::recipes::tools::RECIPE_READ_TOOLS, true));
+    catalog.extend(recipe_tools(&super::recipes::tools::RECIPE_WRITE_TOOLS, false));
+    // Salud is per library user, as Rutina: the same chats reach it and each
+    // turn gets only the areas it needs (see `tool_routing`).
+    catalog.extend(routine_tools(&super::health::tools::HEALTH_READ_TOOLS, true));
+    catalog.extend(routine_tools(&super::health::tools::HEALTH_WRITE_TOOLS, false));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_READ_TOOLS, true));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
@@ -377,6 +389,22 @@ fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
         .collect()
 }
 
+/// Recetas live in the library: the library chat, Telegram and the chat of
+/// Finanzas reach them; a photo of a dish sent by Telegram becomes a recipe.
+fn recipe_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
+    names
+        .iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Tool versionada del catálogo backend.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Library, BackendScope::Finance],
+            read_only,
+            requires_confirmation: !read_only,
+        })
+        .collect()
+}
+
 /// The AI actions are the agent's own schedule, so every chat of the app
 /// and Telegram reach them; the policy keeps them to the Owner.
 fn ai_action_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
@@ -508,6 +536,10 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "reorder_routine_tasks"
         | "set_routine_completions"
         | "set_routine_goal" => ToolPolicy::RoutineWrite,
+        name if super::recipes::tools::RECIPE_READ_TOOLS.contains(&name) => ToolPolicy::RecipeRead,
+        name if super::recipes::tools::is_recipe_write_tool(name) => ToolPolicy::RecipeWrite,
+        name if super::health::tools::HEALTH_READ_TOOLS.contains(&name) => ToolPolicy::HealthRead,
+        name if super::health::tools::is_health_write_tool(name) => ToolPolicy::HealthWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
         "list_agenda" => ToolPolicy::AgendaRead,
@@ -640,6 +672,20 @@ pub fn authorize_tool_call(
         ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta de Agenda no está autorizada para este scope.",
+            false,
+        )),
+        // Salud data is always the acting user's own, as Rutina.
+        ToolPolicy::HealthRead | ToolPolicy::HealthWrite if matches!(context.scope, BackendScope::Library | BackendScope::Finance) => Ok(()),
+        ToolPolicy::HealthRead | ToolPolicy::HealthWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta de Salud no está autorizada para este scope.",
+            false,
+        )),
+        // Recipes are library files: whoever uses the library or finance chat.
+        ToolPolicy::RecipeRead | ToolPolicy::RecipeWrite if matches!(context.scope, BackendScope::Library | BackendScope::Finance) => Ok(()),
+        ToolPolicy::RecipeRead | ToolPolicy::RecipeWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta de Recetas no está autorizada para este scope.",
             false,
         )),
         // The actions answer only the Owner, by Telegram.
@@ -781,6 +827,40 @@ mod tests {
     }
 
     #[test]
+    fn health_tools_reach_every_user_for_their_own_data() {
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), allowed_contexts: Vec::new(), ..principal() };
+        let tools = project_tool_catalog(&guest, &guest_principal, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        for name in crate::health::tools::HEALTH_READ_TOOLS.iter().chain(crate::health::tools::HEALTH_WRITE_TOOLS.iter()) {
+            let tool = tools.iter().find(|tool| tool.name == *name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
+        }
+        assert_eq!(tool_policy("log_meal"), ToolPolicy::HealthWrite);
+        assert_eq!(tool_policy("get_health_summary"), ToolPolicy::HealthRead);
+        let finance = project_tool_catalog(&context(BackendScope::Finance), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("finance");
+        assert!(finance.iter().any(|tool| tool.name == "log_meal"));
+        let board = project_tool_catalog(&context(BackendScope::TaskManager), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("board");
+        assert!(board.iter().all(|tool| !crate::health::tools::is_health_tool(&tool.name)));
+        assert_eq!(crate::tool_routing::tool_area("log_weight"), Some(crate::tool_routing::ToolArea::Health));
+    }
+
+    #[test]
+    fn recipe_tools_reach_the_library_chat_of_every_user() {
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), allowed_contexts: Vec::new(), ..principal() };
+        let tools = project_tool_catalog(&guest, &guest_principal, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        for name in ["list_recipes", "get_recipe", "create_recipe", "update_recipe", "delete_recipe"] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
+        }
+        let finance = project_tool_catalog(&context(BackendScope::Finance), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("finance");
+        assert!(finance.iter().any(|tool| tool.name == "create_recipe"));
+        assert_eq!(crate::tool_routing::tool_area("create_recipe"), Some(crate::tool_routing::ToolArea::Recipes));
+    }
+
+    #[test]
     fn ai_action_tools_reach_every_chat_for_the_owner_only() {
         let limits = crate::protocol::BackendLimits::default();
         let names = crate::ai_actions::tools::AI_ACTION_READ_TOOLS
@@ -793,9 +873,7 @@ mod tests {
                 let tool = tools.iter().find(|tool| &&tool.name.as_str() == name).unwrap_or_else(|| panic!("{name} in {scope:?}"));
                 assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
             }
-            if scope != BackendScope::Library {
-                assert!(restrict_tool_access(tools, ToolAccess::All, true).len() <= limits.max_tools, "{scope:?}");
-            }
+            assert_every_area_fits(&restrict_tool_access(tools, ToolAccess::All, true), limits.max_tools);
         }
         let mut guest = context(BackendScope::Library);
         guest.actor.library_user_id = "user-ana".into();
@@ -810,6 +888,19 @@ mod tests {
         assert_eq!(crate::tool_routing::tool_area("create_ai_action"), Some(crate::tool_routing::ToolArea::Actions));
     }
 
+    /// Every chat is routed by area: each area it offers fits in one round
+    /// with the tools every round keeps and `change_tool_areas`.
+    fn assert_every_area_fits(tools: &[ToolDefinition], max_tools: usize) {
+        use crate::tool_routing::{offered_areas, tool_area, turn_tools};
+        for area in offered_areas(tools) {
+            let round = turn_tools(tools, &[area], max_tools);
+            assert!(round.len() <= max_tools, "{area:?}: {}", round.len());
+            let all = tools.iter().filter(|tool| tool_area(&tool.name) == Some(area)).count();
+            let kept = round.iter().filter(|tool| tool_area(&tool.name) == Some(area)).count();
+            assert_eq!(kept, all, "{area:?} does not fit in a round");
+        }
+    }
+
     #[test]
     fn mail_tools_are_confidential_and_fit_the_tool_limit() {
         let mut owner = principal();
@@ -818,7 +909,7 @@ mod tests {
         for scope in [BackendScope::Document, BackendScope::TaskManager] {
             let tools = project_tool_catalog(&context(scope.clone()), &owner, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
             assert!(tools.iter().any(|tool| tool.name == "send_gmail_message"), "{scope:?}");
-            assert!(restrict_tool_access(tools, ToolAccess::All, true).len() <= limits.max_tools, "{scope:?}");
+            assert_every_area_fits(&restrict_tool_access(tools, ToolAccess::All, true), limits.max_tools);
         }
         // The library chat reaches every area and is routed: each area fits
         // in a turn with the tools every turn keeps.
@@ -830,10 +921,7 @@ mod tests {
         assert!(crate::tool_routing::needs_routing(&library));
         let offered = crate::tool_routing::offered_areas(&library);
         assert!(offered.contains(&crate::tool_routing::ToolArea::Finance) && offered.contains(&crate::tool_routing::ToolArea::Mail));
-        for area in offered {
-            let turn = crate::tool_routing::tools_for_areas(library.clone(), &[area], limits.max_tools);
-            assert!(turn.iter().any(|tool| crate::tool_routing::tool_area(&tool.name) == Some(area)), "{area:?}");
-        }
+        assert_every_area_fits(&library, limits.max_tools);
         let mut guest = context(BackendScope::Library);
         guest.actor.library_user_id = "user-guest".into();
         let mut confidential = principal();

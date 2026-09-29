@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 28;
+pub const CURRENT_SCHEMA_VERSION: i64 = 30;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -1144,6 +1144,70 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
                  value TEXT NOT NULL
              );
              INSERT INTO notia_schema_migrations (version) VALUES (28);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 29 && target >= 29 {
+        // Salud, per library user: one row of settings (profile, weight
+        // goal and plan as JSON), weights and water by day, scale
+        // measurements by day and the meals of each day.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS health_settings (
+                 owner_user_id TEXT PRIMARY KEY REFERENCES library_users(id) ON DELETE CASCADE,
+                 profile_json TEXT,
+                 objective_json TEXT,
+                 plan_json TEXT,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS health_weights (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 kg REAL NOT NULL CHECK (kg > 0),
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (owner_user_id, date)
+             );
+             CREATE TABLE IF NOT EXISTS health_measurements (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 weight REAL NOT NULL CHECK (weight > 0),
+                 values_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (owner_user_id, date)
+             );
+             CREATE TABLE IF NOT EXISTS health_water (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 ml INTEGER NOT NULL CHECK (ml >= 0),
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (owner_user_id, date)
+             );
+             CREATE TABLE IF NOT EXISTS health_meals (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 category TEXT NOT NULL CHECK (category IN ('desayuno', 'snack', 'almuerzo', 'merienda', 'cena')),
+                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+                 kcal REAL NOT NULL CHECK (kcal >= 0),
+                 protein_g REAL NOT NULL,
+                 carbs_g REAL NOT NULL,
+                 fat_g REAL NOT NULL,
+                 fiber_g REAL NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_health_meals_owner_date
+                 ON health_meals(owner_user_id, date);
+             INSERT INTO notia_schema_migrations (version) VALUES (29);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 30 && target >= 30 {
+        // A meal of Salud keeps the recipe of Recetas it was logged from.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE health_meals ADD COLUMN recipe_id TEXT;
+             INSERT INTO notia_schema_migrations (version) VALUES (30);",
         )?;
         transaction.commit()?;
     }

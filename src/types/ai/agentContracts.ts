@@ -13,6 +13,8 @@ export type WorkspaceAiView =
   | 'agenda'
   | 'routine'
   | 'ai-actions'
+  | 'recipes'
+  | 'health'
   | 'home'
 
 export type WorkspaceAiScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance' | 'published'

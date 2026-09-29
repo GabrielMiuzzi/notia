@@ -383,6 +383,33 @@ El acceso **Acciones IA** (ícono del cuervo, Munin) aparece debajo de **Rutina*
 - **Horarios**: se leen en la zona horaria del lugar configurado en **Configuración → Clima** (Buenos Aires si no elegiste otro).
 - **La IA las administra**: desde cualquier chat (el principal, el lateral, el de Finanzas, el del tablero de tareas, el de una nota) o por Telegram podés pedirle «recordame mañana a las 10 que pague la tarjeta», «todos los días a las 8 armame un resumen», «pausá la revisión de cada hora», «cambiá la de gastos a cada 2 horas», «borrá el recordatorio del contador», «ejecutá ahora el briefing» o «reintentá la que falló». La IA crea o cambia cualquier campo (tipo, nombre, prompt, fecha, hora, repetición, días, ventana, activa o pausada) y pide confirmación antes de guardar. Solo el Owner puede.
 
+### Recetas
+
+El acceso **Recetas** (ícono de un plato hondo) aparece debajo de **Rutina** en la barra izquierda. Es tu recetario: cada comida con su foto, sus ingredientes, la preparación y la información nutricional por porción.
+
+- **Dónde se guardan**: cada receta es un archivo `.md` en la carpeta `recipes` de la biblioteca, con los datos en tablas y la foto adentro del mismo archivo. Se puede abrir como cualquier nota.
+- **Tablero**: buscador por nombre o ingrediente, filtros por momento (**Desayuno**, **Almuerzo**, **Cena**, **Snack**), orden (más recientes, menos calorías, más proteína o por nombre) y una tarjeta por receta con calorías, tiempo y reparto de proteína, carbohidratos y grasas.
+- **Detalle**: calorías por porción y qué parte son de una dieta de 2000 kcal, macros, fibra, azúcares, vitaminas y minerales con su porcentaje del valor diario. El sodio se muestra como parte del límite diario y se marca cuando es alto. Desde ahí se edita o se elimina (pide confirmación).
+- **Nueva comida**: nombre, momento, tiempo, porciones, descripción, foto, ingredientes, pasos y los nutrientes que sepas. Al guardar, la IA revisa la comida y completa lo que falte, sobre todo vitaminas y minerales. Lo que escribiste se respeta. Sin foto, se muestra una ilustración del plato.
+- **Sin repetidas**: si la comida ya está en el recetario (aunque la escribas un poco distinto), no se guarda otra igual y te ofrece **Ver la receta**.
+- **Lo que comés también queda en el recetario**: si le mandás al asistente la foto de lo que comiste (con o sin texto) o le contás qué comiste, busca la receta. Si no existe, la arma con sus ingredientes y pesos estimados y la guarda (con la foto si la mandaste). Si ya existe, usa esa. En los dos casos también la carga en **Salud**. Para guardar una receta que todavía no comiste, pedíselo así: «guardá esta receta».
+- **La IA la administra**: desde el chat principal, el lateral o Telegram podés pedirle «qué recetas tengo con lentejas», «cuánto hierro tiene el guiso», «cambiá las porciones del bowl a 3» o «borrá la receta de hummus». Cada cambio pide confirmación.
+
+### Salud
+
+El acceso **Salud** (ícono de un corazón con pulso) aparece debajo de **Recetas** en la barra izquierda. Es tu panel de peso, alimentación, agua y composición corporal. Cada usuario de la biblioteca ve solo sus propios datos.
+
+- **Perfil**: fecha de nacimiento, sexo biológico, altura, peso y nivel de actividad. Con eso se calculan tu IMC, tu metabolismo basal, tu gasto diario y el agua que necesitás.
+- **IMC**: el valor, su rango (bajo peso, normal, sobrepeso u obesidad), cuántos kilos te separan del rango normal para tu altura y dónde quedarías con tu objetivo.
+- **Peso**: el gráfico de 30 días, 90 días, 1 año o todo, con la línea de tu objetivo. Podés cargar el peso de cualquier día y ver o borrar los registros. Tocá un punto del gráfico para ver su valor.
+- **Peso objetivo y plan**: fijá el objetivo y el ritmo (0,25 a 1 kg por semana). **Generar plan con IA** arma tus calorías y macros diarios con recomendaciones; **Calcular sin IA** usa una fórmula. Las calorías nunca quedan por debajo de tu metabolismo basal. Sin plan, los objetivos son de mantenimiento.
+- **Alimentación**: las comidas de cada día por desayuno, snack, almuerzo, merienda y cena, con calorías, proteínas, carbohidratos, grasas y fibra comparados con tu objetivo. Al agregar una comida podés tocar **Estimar con IA** para que complete los valores, o repetir una que ya cargaste.
+- **Agua**: vaso de 250 ml, botella de 500 ml u otra cantidad, con el avance del día y los últimos 7 días.
+- **Composición corporal**: cargá lo que te mide tu balanza (grasa, músculo, agua, huesos, grasa visceral, metabolismo, edad metabólica…). Se ve cómo se reparte tu peso, cada valor con su rango y la diferencia con la medición anterior. Lo que la balanza no da y se puede calcular se completa solo.
+- **Desde cualquier chat**: también desde el chat de Finanzas, y el asistente cambia solo al módulo que haga falta.
+- **Con la IA y por Telegram**: contale lo que comiste («almorcé dos empanadas de carne», «comí 500 g del guiso», «la milanesa pero con el doble de papas») o mandale la foto de tu plato, aunque no escribas nada. Busca la receta en **Recetas** (si no existe, la crea con ingredientes y pesos estimados) y la carga en tu alimentación con las calorías y macros de lo que comiste, ajustados si fue otra cantidad. También podés decirle «me pesé 82,4», «tomé un vaso de agua», pasarle los datos de la balanza, pedirle tu plan o preguntarle cuánto te queda por comer hoy. Cada cambio pide confirmación.
+- Los rangos son referencias generales para adultos y no reemplazan una consulta profesional.
+
 ### ColdPass
 
 Gestor de credenciales cifradas integrado en Notia.
@@ -555,6 +582,28 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Entradas esperadas** | Nombre (hasta 80 caracteres), prompt (hasta 4000), fecha y hora futuras (una vez) o «cada N» con unidad, días de la semana y, opcionalmente, «desde» y «hasta» (recurrente). |
 | **Salidas / Resultado** | La respuesta de la IA llega por Telegram. El tablero, las métricas y la línea **Hoy** se actualizan solos al cambiar algo o al terminar una ejecución. |
 | **Errores comunes** | **«La fecha y hora tienen que ser futuras»**. **«En minutos, el mínimo es 5»**. **«Elegí al menos un día»**. **«En días o semanas, «Desde» es la hora de ejecución»**. **«Telegram no está activo en este equipo…»**: activá el bot en **Configuración → Telegram** y vinculá tu chat de Owner; las acciones solo corren donde está el bot. |
+
+### Recetas: recetario con información nutricional
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | Guarda tus comidas en la carpeta `recipes` de la biblioteca, con foto, ingredientes, preparación, calorías, macros, vitaminas y minerales por porción. La IA revisa cada comida nueva y completa los datos que faltan. |
+| **Cuándo usarlo** | Para armar tu recetario, ver qué aporta cada comida o registrar lo que cocinaste mandando una foto por Telegram. |
+| **Pasos para consumir** | 1. Abrir **Recetas** en la barra izquierda. 2. Tocar **Nueva comida**. 3. Escribir al menos el nombre; opcionalmente momento, tiempo, porciones, foto, ingredientes, pasos y nutrientes. 4. **Guardar receta** y esperar la revisión de la IA. 5. Tocar una tarjeta para ver el detalle, editarla o eliminarla. Por Telegram: mandar la foto del plato con la descripción y confirmar. |
+| **Entradas esperadas** | Nombre (hasta 120 caracteres, sin `/`, `\` ni `\|`), descripción (hasta 400), tiempo en minutos (hasta 1440), porciones (1 a 100), hasta 60 ingredientes y 40 pasos (uno por línea) y una foto JPG, PNG o WebP de hasta 15 MB. |
+| **Salidas / Resultado** | Un archivo `.md` por receta con los datos en tablas y la foto embebida (reducida a 1024 px). El tablero se actualiza solo, también cuando la receta llega por Telegram. |
+| **Errores comunes** | **«Ya tenés esta comida en el recetario»**: tocá **Ver la receta** y editala en lugar de cargarla de nuevo. **Error de la IA**: la receta no se guarda; revisá que el modelo esté configurado y probá otra vez. **«Escribí un nombre…»** u otros avisos de campo: corregí el campo marcado. |
+
+### Salud: peso, alimentación, agua y composición corporal
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | Lleva tu peso, lo que comés cada día, el agua y las mediciones de tu balanza. Calcula tu IMC, tu gasto diario y un plan de calorías y macros hacia tu peso objetivo, con IA o sin ella. |
+| **Cuándo usarlo** | Para bajar, subir o mantener el peso, controlar calorías y macros, tomar suficiente agua o seguir tu composición corporal. |
+| **Pasos para consumir** | 1. Abrir **Salud** en la barra izquierda. 2. **Configurar perfil**. 3. Fijar el **Peso objetivo** y tocar **Generar plan con IA** o **Calcular sin IA**. 4. Cargar comidas con **Agregar comida** (opcional: **Estimar con IA**), el agua y el peso de cada día. 5. Opcional: **Registrar medición** con los datos de la balanza. También se puede hacer todo desde el chat o por Telegram. |
+| **Entradas esperadas** | Fecha de nacimiento (14 años o más), altura de 100 a 250 cm, peso de 20 a 400 kg, fechas que no sean futuras, comida con descripción de hasta 120 caracteres y calorías o macros (o la estimación de la IA), agua de hasta 20 litros por día. |
+| **Salidas / Resultado** | El panel se actualiza al instante. Lo que registra la IA desde el chat o Telegram aparece solo en la pantalla abierta. |
+| **Errores comunes** | **«La fecha no puede ser futura»**. **«El peso tiene que estar entre 20 y 400 kg»**. **«Cargá las calorías o los macros…»**: tocá **Estimar con IA** o completá algún valor. **«Fijá primero tu peso objetivo»** o **«hacen falta tu perfil y tu peso»** antes del plan. **Error de la IA**: revisá el modelo configurado, probá de nuevo o usá **Calcular sin IA**. |
 
 ### ColdPass (Credenciales Cifradas)
 

@@ -17,6 +17,8 @@ import {
   CalendarCheck,
   CalendarClock,
   House,
+  Soup,
+  HeartPulse,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
 import { MuninIcon } from '../components/notia/icons/MuninIcon'
@@ -39,6 +41,8 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
   [
     { id: 'agenda', label: 'Agenda', icon: CalendarClock },
     { id: 'routine', label: 'Rutina', icon: CalendarCheck },
+    { id: 'recipes', label: 'Recetas', icon: Soup },
+    { id: 'health', label: 'Salud', icon: HeartPulse },
     { id: 'ai-actions', label: 'Acciones IA', icon: MuninIcon },
   ],
 ]

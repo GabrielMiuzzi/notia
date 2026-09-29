@@ -42,6 +42,10 @@ tokio = { version = "1", features = ["time", "rt", "rt-multi-thread", "sync"] }
 lopdf = "0.38"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 chrono = "0.4"
+# Salud: civil dates shared with the core.
+jiff = "0.2"
+# Recipe photos: decoded, scaled down and saved as JPEG inside the recipe.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Native speech runtimes (sherpa-onnx, Qwen3-TTS) are loaded at run time.
 libloading = "0.8"
 # TLS and WebSocket of the Host mode server and of the client that reaches

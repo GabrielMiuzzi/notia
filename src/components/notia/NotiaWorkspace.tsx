@@ -15,6 +15,8 @@ import { FinanceView } from './views/FinanceView'
 import { AgendaView } from './views/AgendaView'
 import { RoutineView } from './views/RoutineView'
 import { AiActionsView } from './views/AiActionsView'
+import { RecipesView } from './views/RecipesView'
+import { HealthView } from './views/HealthView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntryView } from '../../types/coldpass'
@@ -248,6 +250,12 @@ function NotiaWorkspaceComponent({
   }
   if (activeWorkspaceView === 'ai-actions') {
     return <AiActionsView library={activeLibrary} />
+  }
+  if (activeWorkspaceView === 'recipes') {
+    return <RecipesView library={activeLibrary} />
+  }
+  if (activeWorkspaceView === 'health') {
+    return <HealthView library={activeLibrary} />
   }
 
   return (

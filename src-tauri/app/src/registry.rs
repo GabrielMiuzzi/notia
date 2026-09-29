@@ -133,6 +133,16 @@ fn route(command: &str) -> Option<Route> {
         "ai_action_runs" => ai_action_runs,
         "ai_action_retry" => ai_action_retry,
         "ai_action_test" => ai_action_test,
+        "recipes_grid" => recipes_grid,
+        "recipes_detail" => recipes_detail,
+        "recipes_photo" => recipes_photo,
+        "recipes_create" => recipes_create,
+        "recipes_update" => recipes_update,
+        "recipes_delete" => recipes_delete,
+        "health_dashboard" => health_dashboard,
+        "health_apply" => health_apply,
+        "health_generate_plan" => health_generate_plan,
+        "health_estimate_meal" => health_estimate_meal,
         "finance_dev_list_tables" => finance_dev_list_tables,
         "finance_dev_query_table" => finance_dev_query_table,
         "finance_dev_query_sql" => finance_dev_query_sql,
@@ -368,6 +378,16 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_action_runs",
     "ai_action_retry",
     "ai_action_test",
+    "recipes_grid",
+    "recipes_detail",
+    "recipes_photo",
+    "recipes_create",
+    "recipes_update",
+    "recipes_delete",
+    "health_dashboard",
+    "health_apply",
+    "health_generate_plan",
+    "health_estimate_meal",
     "finance_dev_list_tables",
     "finance_dev_query_table",
     "finance_dev_query_sql",
@@ -1076,6 +1096,56 @@ fn ai_action_retry(app: &AppHandle, _window_label: &str, command: &str, args: &V
 fn ai_action_test(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "input")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_test(arg0, arg1, arg2).await) })))
+}
+
+fn recipes_grid(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_grid(arg0, arg1, arg2).await) })))
+}
+
+fn recipes_detail(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "id")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_detail(arg0, arg1, arg2).await) })))
+}
+
+fn recipes_photo(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "id")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_photo(arg0, arg1, arg2).await) })))
+}
+
+fn recipes_create(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "input")?, arg(command, args, "photo")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_create(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn recipes_update(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3, arg4) = (app.clone(), arg(command, args, "context")?, arg(command, args, "id")?, arg(command, args, "input")?, arg(command, args, "photo")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_update(arg0, arg1, arg2, arg3, arg4).await) })))
+}
+
+fn recipes_delete(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "id")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::recipes::recipes_delete(arg0, arg1, arg2).await) })))
+}
+
+fn health_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::health::health_dashboard(arg0, arg1, arg2).await) })))
+}
+
+fn health_apply(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "mutation")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::health::health_apply(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn health_generate_plan(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::health::health_generate_plan(arg0, arg1, arg2).await) })))
+}
+
+fn health_estimate_meal(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "description")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::health::health_estimate_meal(arg0, arg1, arg2).await) })))
 }
 
 fn finance_dev_list_tables(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

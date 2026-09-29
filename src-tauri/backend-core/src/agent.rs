@@ -17,6 +17,9 @@ use super::protocol::{
     ResumeDecision, ToolCall, ToolDefinition, ToolResult,
 };
 use super::runtime::InteractionRuntime;
+use super::tool_routing::{
+    area_ids, needs_routing, offered_areas, parse_area_ids, parse_switch_arguments, turn_tools, MAX_AREA_SWITCHES, SWITCH_AREA_TOOL,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,6 +194,10 @@ pub struct AgentContinuation {
     /// and plans run without asking again until the request ends.
     #[serde(default)]
     pub approve_all: bool,
+    /// Tool areas the run had when it paused (it may have changed them with
+    /// `change_tool_areas`); `None` for a run without areas.
+    #[serde(default)]
+    pub tool_areas: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -454,12 +461,23 @@ fn run_agent_inner(
         return Ok(previous);
     }
 
-    let tools = project_tool_catalog(
+    // A routed run offers, each round, the tools of its current areas out of
+    // every tool the actor may use; the agent may change them mid-run.
+    let pool = project_tool_catalog(
         &request.context,
         principal,
         &request.tools,
         options.projection,
     )?;
+    let routed = request.tool_areas.is_some() && needs_routing(&pool);
+    let mut areas = continuation
+        .as_ref()
+        .and_then(|value| value.tool_areas.clone())
+        .or_else(|| request.tool_areas.clone())
+        .map(|ids| parse_area_ids(&ids))
+        .unwrap_or_default();
+    let mut tools = if routed { turn_tools(&pool, &areas, options.limits.max_tools) } else { pool.clone() };
+    let mut area_switches = 0usize;
     let mut messages = continuation
         .as_ref()
         .map(|value| value.messages.clone())
@@ -470,10 +488,10 @@ fn run_agent_inner(
                 .map(provider_message_from_backend)
                 .collect::<Vec<_>>()
         });
-    let provider_request = |messages: &[ProviderMessage], with_tools: bool| ProviderRequest {
+    let provider_request = |messages: &[ProviderMessage], tools: &[ToolDefinition], with_tools: bool| ProviderRequest {
         context: request.context.clone(),
         messages: messages.to_vec(),
-        tools: if with_tools { tools.clone() } else { Vec::new() },
+        tools: if with_tools { tools.to_vec() } else { Vec::new() },
     };
     let mut executed = HashMap::<String, ExecutedTool>::new();
     let mut tool_results = continuation
@@ -691,7 +709,7 @@ fn run_agent_inner(
         // A run that kept repeating its calls answers with what it has.
         let answer_only = stalled_rounds >= MAX_STALLED_ROUNDS;
         compact_tool_results(&mut messages);
-        let provider_request = provider_request(&messages, !answer_only);
+        let provider_request = provider_request(&messages, &tools, !answer_only);
         let mut streamed_content = false;
         let mut provider_response = call_provider_with_retry(
             provider,
@@ -887,6 +905,69 @@ fn run_agent_inner(
         let mut seen_call_keys = HashSet::new();
         for call in calls {
             control.check()?;
+            // The agent changes the areas of its tools and goes on in the
+            // same run with the new ones (see `tool_routing`).
+            if routed && call.name == SWITCH_AREA_TOOL {
+                emit(
+                    events,
+                    options,
+                    &mut event_count,
+                    BackendEvent::ToolStarted {
+                        request_id: request.context.request_id.clone(),
+                        tool_name: call.name.clone(),
+                        round: rounds,
+                    },
+                )?;
+                let requested = if area_switches >= MAX_AREA_SWITCHES {
+                    Err("Ya cambiaste de área muchas veces en este pedido: seguí con las herramientas que tenés o respondé con lo que lograste.".to_string())
+                } else {
+                    parse_switch_arguments(&call.arguments, &offered_areas(&pool))
+                };
+                let result = match requested {
+                    Ok(next) => {
+                        area_switches += 1;
+                        progressed = true;
+                        areas = next;
+                        tools = turn_tools(&pool, &areas, options.limits.max_tools);
+                        ToolResult {
+                            call_id: call.id.clone(),
+                            ok: true,
+                            changed: false,
+                            data: Some(serde_json::json!({
+                                "areas": area_ids(&areas),
+                                "tools": tools.iter().map(|tool| tool.name.as_str()).filter(|name| *name != SWITCH_AREA_TOOL).collect::<Vec<_>>(),
+                                "note": "Ya tenés las herramientas de estas áreas: seguí con el pedido.",
+                            })),
+                            error: None,
+                            preview: None,
+                        }
+                    }
+                    Err(message) => ToolResult {
+                        call_id: call.id.clone(),
+                        ok: false,
+                        changed: false,
+                        data: None,
+                        error: Some(BackendError::invalid_input(message)),
+                        preview: None,
+                    },
+                };
+                emit(
+                    events,
+                    options,
+                    &mut event_count,
+                    BackendEvent::ToolCompleted {
+                        request_id: request.context.request_id.clone(),
+                        tool_name: call.name.clone(),
+                        round: rounds,
+                        ok: result.ok,
+                        changed: Some(false),
+                        operation_id: Some(call.id.clone()),
+                    },
+                )?;
+                append_tool_message(&mut messages, &call, &result);
+                had_tool_result = true;
+                continue;
+            }
             let Some(tool) = tools.iter().find(|tool| tool.name == call.name) else {
                 let result = ToolResult {
                     call_id: call.id.clone(),
@@ -940,6 +1021,7 @@ fn run_agent_inner(
                                 tool_results: tool_results.clone(),
                                 preview: None,
                                 approve_all,
+                                tool_areas: routed.then(|| area_ids(&areas)),
                             },
                         )?;
                         interactions.begin_clarification(
@@ -964,6 +1046,7 @@ fn run_agent_inner(
                                 tool_results: tool_results.clone(),
                                 preview: Some(preview.clone()),
                                 approve_all,
+                                tool_areas: routed.then(|| area_ids(&areas)),
                             },
                         )?;
                         interactions.begin_confirmation_with_preview(
@@ -990,6 +1073,7 @@ fn run_agent_inner(
                                 tool_results: tool_results.clone(),
                                 preview: None,
                                 approve_all,
+                                tool_areas: routed.then(|| area_ids(&areas)),
                             },
                         )?;
                         interactions.begin_plan(
@@ -1036,6 +1120,7 @@ fn run_agent_inner(
                                 tool_results: tool_results.clone(),
                                 preview: preview.clone(),
                                 approve_all,
+                                tool_areas: routed.then(|| area_ids(&areas)),
                             },
                         )?;
                         let _ = interactions.begin_confirmation_with_preview(
@@ -1816,6 +1901,7 @@ mod tests {
             library_search: true,
             autonomous: false,
             scheduled_action: None,
+            tool_areas: None,
         }
     }
 
@@ -2021,6 +2107,7 @@ mod tests {
             tool_results: Vec::new(),
             preview: None,
             approve_all: false,
+            tool_areas: None,
         };
         let decision = ResumeDecision::Plan(super::super::PlanDecision {
             plan_id: "plan-1".into(),
@@ -2120,6 +2207,7 @@ mod tests {
             tool_results: Vec::new(),
             preview: None,
             approve_all: false,
+            tool_areas: None,
         };
         let result = run_agent_inner(
             &provider,
@@ -2228,6 +2316,7 @@ mod tests {
             tool_results: Vec::new(),
             preview: None,
             approve_all: false,
+            tool_areas: None,
         };
         let decision = ResumeDecision::Confirmation(ConfirmationDecision {
             operation_id: "call-1".into(),
@@ -2610,6 +2699,78 @@ mod tests {
                 preview: None,
             },
         }
+    }
+
+    /// Answers from a script and keeps the tool names of every request.
+    struct RecordingProvider {
+        responses: Mutex<Vec<ProviderResponse>>,
+        offered: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl AgentProvider for RecordingProvider {
+        fn chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            self.offered.lock().expect("offered").push(request.tools.iter().map(|tool| tool.name.clone()).collect());
+            Ok(self.responses.lock().expect("responses").remove(0))
+        }
+        fn stream_chat(
+            &self,
+            request: &ProviderRequest,
+            control: &RequestControl,
+            _: &mut dyn FnMut(ProviderStreamDelta) -> Result<(), BackendError>,
+        ) -> Result<ProviderResponse, BackendError> {
+            self.chat(request, control)
+        }
+        fn tool_chat(&self, request: &ProviderRequest, control: &RequestControl) -> Result<ProviderResponse, BackendError> {
+            self.chat(request, control)
+        }
+    }
+
+    fn call(id: &str, name: &str, arguments: serde_json::Value) -> ProviderToolCall {
+        ProviderToolCall { id: id.into(), name: name.into(), arguments }
+    }
+
+    #[test]
+    fn a_routed_run_changes_areas_and_goes_on_with_the_new_tools() {
+        let provider = RecordingProvider {
+            responses: Mutex::new(vec![
+                // Starts in Finanzas, finds that it is a meal and moves to Salud.
+                assistant("", vec![call("switch-1", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["salud"], "reason": "es una comida" }))]),
+                assistant("", vec![call("switch-2", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["correo"] }))]),
+                assistant("", vec![call("meal-1", "log_meal", serde_json::json!({ "name": "Milanesa" }))]),
+                assistant("Listo, registré la milanesa.", Vec::new()),
+            ]),
+            offered: Mutex::new(Vec::new()),
+        };
+        let executor = read_executor();
+        let mut routed = request(vec![tool("search_web", true), tool("get_finance_dashboard", true), tool("log_meal", true)]);
+        routed.tool_areas = Some(vec!["finanzas".into()]);
+        let response = run_agent(
+            &provider,
+            &executor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &routed,
+            &principal(),
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("agent completes");
+        assert_eq!(response.response.markdown, "Listo, registré la milanesa.");
+        let offered = provider.offered.lock().expect("offered").clone();
+        assert_eq!(offered[0], ["search_web", "get_finance_dashboard", SWITCH_AREA_TOOL]);
+        assert_eq!(offered[1], ["search_web", "log_meal", SWITCH_AREA_TOOL]);
+        // An area the actor cannot use is refused and the areas stay.
+        assert_eq!(offered[2], offered[1]);
+        // Only the meal reaches the executor; the switches run in the loop.
+        assert_eq!(*executor.executions.lock().expect("executions"), 1);
+        assert_eq!(response.tool_results.len(), 1);
+
+        // Without areas, the tools are offered as they come.
+        let plain = RecordingProvider { responses: Mutex::new(vec![assistant("Hola.", Vec::new())]), offered: Mutex::new(Vec::new()) };
+        let request = request(vec![tool("search_web", true), tool("get_finance_dashboard", true), tool("log_meal", true)]);
+        run_agent(&plain, &read_executor(), &NoopAgentState, &VecEventSink::default(), &request, &principal(), &RequestControl::new(None), &AgentRuntimeOptions::default())
+            .expect("agent completes");
+        assert_eq!(plain.offered.lock().expect("offered")[0], ["search_web", "get_finance_dashboard", "log_meal"]);
     }
 
     #[test]

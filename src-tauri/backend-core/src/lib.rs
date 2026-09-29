@@ -53,6 +53,8 @@ pub mod paths;
 pub mod ports;
 pub mod prompt;
 pub mod prompt_guidance;
+pub mod health;
+pub mod recipes;
 pub mod protocol;
 pub mod remote_audio;
 pub mod runtime;
@@ -164,7 +166,7 @@ pub use protocol::{
     PreviewHunk, ProtocolVersion, ResumeDecision, ResumeRequest, ReviewRequest,
     SelectionBlockSnapshot, SelectionSnapshot,
     SnapshotCapabilities, ToolAccess, ToolCall, ToolDefinition, ToolResult, UndoOperationRequest,
-    MAX_BACKEND_PROTOCOL_VERSION,
+    MAX_BACKEND_PROTOCOL_VERSION, MAX_TOOL_POOL,
 };
 pub use runtime::InteractionRuntime;
 pub use task_manager_tool_input::{

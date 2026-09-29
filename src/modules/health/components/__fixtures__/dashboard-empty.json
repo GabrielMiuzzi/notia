@@ -1,0 +1,244 @@
+{
+  "today": "2026-09-28",
+  "hasProfile": false,
+  "header": {
+    "chips": [],
+    "bmi": null
+  },
+  "bmi": null,
+  "weight": {
+    "currentLabel": "—",
+    "summary": "",
+    "ranges": [
+      {
+        "value": "30",
+        "label": "30 días",
+        "selected": false
+      },
+      {
+        "value": "90",
+        "label": "90 días",
+        "selected": true
+      },
+      {
+        "value": "365",
+        "label": "1 año",
+        "selected": false
+      },
+      {
+        "value": "all",
+        "label": "Todo",
+        "selected": false
+      }
+    ],
+    "chart": null,
+    "emptyText": "Cargá al menos dos pesos para ver tu evolución.",
+    "entries": []
+  },
+  "objective": {
+    "targetKg": null,
+    "pace": 0.5,
+    "paces": [
+      {
+        "value": "0.25",
+        "label": "0,25 kg",
+        "selected": false
+      },
+      {
+        "value": "0.5",
+        "label": "0,5 kg",
+        "selected": true
+      },
+      {
+        "value": "0.75",
+        "label": "0,75 kg",
+        "selected": false
+      },
+      {
+        "value": "1",
+        "label": "1 kg",
+        "selected": false
+      }
+    ],
+    "differenceLabel": null,
+    "targetBmiLabel": null,
+    "targetState": null,
+    "lowBmiWarning": false,
+    "canPlan": false,
+    "plan": null
+  },
+  "food": null,
+  "water": null,
+  "composition": null,
+  "profileForm": {
+    "birthDate": "",
+    "sex": "M",
+    "heightCm": null,
+    "activity": 1.375,
+    "weightKg": null,
+    "activities": [
+      {
+        "value": "1.2",
+        "label": "Sedentario (poco o nada de ejercicio)",
+        "selected": false
+      },
+      {
+        "value": "1.375",
+        "label": "Ligero (1 a 3 días por semana)",
+        "selected": true
+      },
+      {
+        "value": "1.55",
+        "label": "Moderado (3 a 5 días por semana)",
+        "selected": false
+      },
+      {
+        "value": "1.725",
+        "label": "Alto (6 a 7 días por semana)",
+        "selected": false
+      },
+      {
+        "value": "1.9",
+        "label": "Muy alto (trabajo físico o doble turno)",
+        "selected": false
+      }
+    ]
+  },
+  "mealForm": {
+    "suggestedCategory": "almuerzo",
+    "categories": [
+      {
+        "value": "desayuno",
+        "label": "Desayuno",
+        "selected": false
+      },
+      {
+        "value": "snack",
+        "label": "Snack",
+        "selected": false
+      },
+      {
+        "value": "almuerzo",
+        "label": "Almuerzo",
+        "selected": true
+      },
+      {
+        "value": "merienda",
+        "label": "Merienda",
+        "selected": false
+      },
+      {
+        "value": "cena",
+        "label": "Cena",
+        "selected": false
+      }
+    ],
+    "recent": []
+  },
+  "measurementFields": [
+    {
+      "id": "grasa",
+      "title": "Grasa",
+      "fields": [
+        {
+          "key": "grasaPct",
+          "label": "Grasa corporal",
+          "unit": "%"
+        },
+        {
+          "key": "grasaKg",
+          "label": "Peso de grasa corporal",
+          "unit": "kg"
+        },
+        {
+          "key": "grasaVisceral",
+          "label": "Grasa visceral",
+          "unit": "nivel"
+        },
+        {
+          "key": "obesidadPct",
+          "label": "Grado de obesidad",
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "id": "musculo",
+      "title": "Músculo",
+      "fields": [
+        {
+          "key": "mmePct",
+          "label": "Masa muscular esquelética",
+          "unit": "%"
+        },
+        {
+          "key": "mmeKg",
+          "label": "Masa muscular esquelética",
+          "unit": "kg"
+        },
+        {
+          "key": "musculoPct",
+          "label": "Músculo",
+          "unit": "%"
+        },
+        {
+          "key": "musculoKg",
+          "label": "Peso muscular",
+          "unit": "kg"
+        },
+        {
+          "key": "proteinaPct",
+          "label": "Proteína",
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "id": "agua",
+      "title": "Agua y huesos",
+      "fields": [
+        {
+          "key": "aguaPct",
+          "label": "Agua",
+          "unit": "%"
+        },
+        {
+          "key": "aguaKg",
+          "label": "Peso del agua",
+          "unit": "kg"
+        },
+        {
+          "key": "huesosKg",
+          "label": "Huesos",
+          "unit": "kg"
+        }
+      ]
+    },
+    {
+      "id": "general",
+      "title": "General",
+      "fields": [
+        {
+          "key": "imc",
+          "label": "IMC",
+          "unit": ""
+        },
+        {
+          "key": "pesoSinGrasa",
+          "label": "Peso sin grasa",
+          "unit": "kg"
+        },
+        {
+          "key": "metabolismo",
+          "label": "Metabolismo basal",
+          "unit": "kcal"
+        },
+        {
+          "key": "edadMetabolica",
+          "label": "Edad metabólica",
+          "unit": "años"
+        }
+      ]
+    }
+  ]
+}

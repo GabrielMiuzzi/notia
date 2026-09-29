@@ -4649,5 +4649,612 @@
         "runId"
       ]
     }
+  },
+  "list_recipes": {
+    "description": "Lista las recetas del recetario (carpeta recipes/): id, nombre, momento, calorías y proteína por porción, tiempo y si tiene foto. Filtra por texto (nombre o ingrediente) y por momento.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "meal": {
+          "type": "string",
+          "enum": [
+            "desayuno",
+            "almuerzo",
+            "cena",
+            "snack"
+          ]
+        }
+      }
+    }
+  },
+  "get_recipe": {
+    "description": "Lee una receta completa: ingredientes, pasos y todos sus nutrientes por porción con el % del valor diario.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "recipe": {
+          "type": "string",
+          "description": "id de la receta (de list_recipes) o su nombre exacto."
+        }
+      },
+      "required": [
+        "recipe"
+      ]
+    }
+  },
+  "create_recipe": {
+    "description": "Guarda una comida nueva en el recetario. Notia la revisa con IA, completa los datos que falten (sobre todo vitaminas y minerales) y rechaza una receta repetida. Puede llevar la foto del plato del mensaje. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Nombre del plato, hasta 120 caracteres."
+        },
+        "meal": {
+          "type": "string",
+          "enum": [
+            "desayuno",
+            "almuerzo",
+            "cena",
+            "snack"
+          ]
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tiempo de preparación en minutos."
+        },
+        "servings": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "servingGrams": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Peso de una porción en gramos."
+        },
+        "description": {
+          "type": "string",
+          "description": "Una línea que describa el plato."
+        },
+        "ingredients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Un ingrediente por elemento, con su cantidad."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Un paso por elemento."
+        },
+        "nutrition": {
+          "type": "object",
+          "description": "Valores por porción. Claves: kcal (kcal), prot, carb, grasa, fibra, azucar (g); vitA, vitD, vitK, b12, folato (µg); vitC, vitE, b6 (mg); calcio, hierro, magnesio, potasio, zinc, sodio (mg).",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "photoFromMessage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de la imagen del mensaje del usuario que es la foto del plato (1 si hay una sola)."
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  "update_recipe": {
+    "description": "Cambia cualquier dato de una receta; lo que no se manda queda igual y nutrition cambia solo los nutrientes que nombra. photoFromMessage reemplaza la foto y removePhoto la quita. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "recipe": {
+          "type": "string",
+          "description": "id de la receta (de list_recipes) o su nombre exacto."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre del plato, hasta 120 caracteres."
+        },
+        "meal": {
+          "type": "string",
+          "enum": [
+            "desayuno",
+            "almuerzo",
+            "cena",
+            "snack"
+          ]
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tiempo de preparación en minutos."
+        },
+        "servings": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "servingGrams": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Peso de una porción en gramos."
+        },
+        "description": {
+          "type": "string",
+          "description": "Una línea que describa el plato."
+        },
+        "ingredients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Un ingrediente por elemento, con su cantidad."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Un paso por elemento."
+        },
+        "nutrition": {
+          "type": "object",
+          "description": "Valores por porción. Claves: kcal (kcal), prot, carb, grasa, fibra, azucar (g); vitA, vitD, vitK, b12, folato (µg); vitC, vitE, b6 (mg); calcio, hierro, magnesio, potasio, zinc, sodio (mg).",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "photoFromMessage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de la imagen del mensaje del usuario que es la foto del plato (1 si hay una sola)."
+        },
+        "removePhoto": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "recipe"
+      ]
+    }
+  },
+  "delete_recipe": {
+    "description": "Elimina una receta y su archivo. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "recipe": {
+          "type": "string",
+          "description": "id de la receta (de list_recipes) o su nombre exacto."
+        }
+      },
+      "required": [
+        "recipe"
+      ]
+    }
+  },
+  "get_health_summary": {
+    "description": "Estado de Salud del usuario hoy: perfil, edad, peso y su cambio en 30 días, IMC, metabolismo basal, gasto diario, peso objetivo, plan de calorías y macros (o el de mantenimiento), lo comido hoy con lo que queda, agua de hoy y su objetivo, y la última medición de la balanza con el estado de cada valor.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "list_health_records": {
+    "description": "Registros de Salud entre dos fechas (los últimos 30 días si faltan): pesos, mediciones de la balanza, comidas (con id, categoría, calorías y macros) o agua por día.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "weights",
+            "measurements",
+            "meals",
+            "water"
+          ]
+        },
+        "from": {
+          "type": "string",
+          "description": "YYYY-MM-DD"
+        },
+        "to": {
+          "type": "string",
+          "description": "YYYY-MM-DD"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  },
+  "save_health_profile": {
+    "description": "Guarda o cambia el perfil de Salud: nacimiento, sexo biológico, altura y nivel de actividad, y opcionalmente el peso de hoy. Lo que no se manda queda como estaba. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "birthDate": {
+          "type": "string",
+          "description": "YYYY-MM-DD"
+        },
+        "sex": {
+          "type": "string",
+          "enum": [
+            "M",
+            "F"
+          ],
+          "description": "Sexo biológico: se usa para el metabolismo basal y los rangos."
+        },
+        "heightCm": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 250
+        },
+        "activity": {
+          "type": "string",
+          "enum": [
+            "sedentario",
+            "ligero",
+            "moderado",
+            "alto",
+            "muy alto"
+          ],
+          "description": "sedentario (poco o nada de ejercicio), ligero (1 a 3 días por semana), moderado (3 a 5), alto (6 a 7), muy alto (trabajo físico o doble turno)."
+        },
+        "weightKg": {
+          "type": "number",
+          "minimum": 20,
+          "maximum": 400
+        }
+      }
+    }
+  },
+  "log_weight": {
+    "description": "Registra el peso de un día (reemplaza el de esa fecha si ya había). Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "kg": {
+          "type": "number",
+          "minimum": 20,
+          "maximum": 400
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD; hoy si falta. No puede ser futura."
+        }
+      },
+      "required": [
+        "kg"
+      ]
+    }
+  },
+  "save_body_measurement": {
+    "description": "Registra una medición de la balanza de composición corporal: el peso y los valores que informó. Registra también el peso del día; lo derivable (IMC, kg de grasa, agua o músculo, peso sin grasa) se completa solo. Reemplaza la medición de esa fecha. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "weight": {
+          "type": "number",
+          "minimum": 20,
+          "maximum": 400
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD; hoy si falta. No puede ser futura."
+        },
+        "values": {
+          "type": "object",
+          "description": "Valores de la balanza por clave: grasaPct = Grasa corporal (%); grasaKg = Peso de grasa corporal (kg); grasaVisceral = Grasa visceral (nivel); obesidadPct = Grado de obesidad (%); mmePct = Masa muscular esquelética (%); mmeKg = Masa muscular esquelética (kg); musculoPct = Músculo (%); musculoKg = Peso muscular (kg); proteinaPct = Proteína (%); aguaPct = Agua (%); aguaKg = Peso del agua (kg); huesosKg = Huesos (kg); imc = IMC; pesoSinGrasa = Peso sin grasa (kg); metabolismo = Metabolismo basal (kcal); edadMetabolica = Edad metabólica (años).",
+          "properties": {
+            "grasaPct": {
+              "type": "number"
+            },
+            "grasaKg": {
+              "type": "number"
+            },
+            "grasaVisceral": {
+              "type": "number"
+            },
+            "obesidadPct": {
+              "type": "number"
+            },
+            "mmePct": {
+              "type": "number"
+            },
+            "mmeKg": {
+              "type": "number"
+            },
+            "musculoPct": {
+              "type": "number"
+            },
+            "musculoKg": {
+              "type": "number"
+            },
+            "proteinaPct": {
+              "type": "number"
+            },
+            "aguaPct": {
+              "type": "number"
+            },
+            "aguaKg": {
+              "type": "number"
+            },
+            "huesosKg": {
+              "type": "number"
+            },
+            "imc": {
+              "type": "number"
+            },
+            "pesoSinGrasa": {
+              "type": "number"
+            },
+            "metabolismo": {
+              "type": "number"
+            },
+            "edadMetabolica": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "weight"
+      ]
+    }
+  },
+  "set_weight_goal": {
+    "description": "Fija o cambia el peso objetivo y el ritmo semanal. targetKg null quita el objetivo; lo que no se manda queda igual. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "targetKg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 20,
+          "maximum": 400
+        },
+        "pace": {
+          "type": "number",
+          "enum": [
+            0.25,
+            0.5,
+            0.75,
+            1
+          ],
+          "description": "kg por semana"
+        }
+      }
+    }
+  },
+  "set_health_plan": {
+    "description": "Arma el plan diario de calorías y macros con el peso objetivo guardado: mode ai lo pide a la IA (respetando el piso del metabolismo basal), calculated lo calcula sin IA y none quita el plan y vuelve a los objetivos de mantenimiento. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ai",
+            "calculated",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ]
+    }
+  },
+  "log_water": {
+    "description": "Registra agua tomada: mode add (por defecto) suma ml al día, o resta con ml negativo; mode set fija el total del día. Un vaso son 250 ml y una botella 500 ml. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ml": {
+          "type": "integer"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "add",
+            "set"
+          ]
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD; hoy si falta. No puede ser futura."
+        }
+      },
+      "required": [
+        "ml"
+      ]
+    }
+  },
+  "log_meal": {
+    "description": "Registra lo que comió el usuario (contado o en la foto de su plato, con o sin texto). Notia busca la receta en Recetas (por recipe o por el nombre del plato) y, si no existe, la crea revisada por IA a partir del plato (con la foto si la hay); si ya existía, usa esa. Después carga la comida en Salud con las calorías y macros de la cantidad que comió: una porción, servings porciones, grams gramos (sobre el peso por porción de la receta) o lo que describe portionNote. Si dijo las calorías o macros, se usan esos. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "El plato, sin cantidades (por ejemplo «Guiso de lentejas»); hasta 120 caracteres. Con una foto sin texto, reconstruilo vos."
+        },
+        "recipe": {
+          "type": "string",
+          "description": "id o nombre exacto de la receta del recetario, si la sabés (list_recipes)."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "desayuno",
+            "snack",
+            "almuerzo",
+            "merienda",
+            "cena"
+          ]
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD; hoy si falta. No puede ser futura."
+        },
+        "servings": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 20,
+          "description": "Porciones de la receta que comió (1,5, 2…)."
+        },
+        "grams": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Peso de lo que comió, en gramos."
+        },
+        "portionNote": {
+          "type": "string",
+          "description": "Lo que cambió respecto de la receta, si no se dice con porciones o gramos: «con 200 g de papas en vez de 100», «sin pan», «medio plato»."
+        },
+        "description": {
+          "type": "string",
+          "description": "Una línea que describa el plato, para crear la receta si no existe."
+        },
+        "ingredients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ingredientes con pesos estimados en gramos (reconstruidos de la foto o de lo que contó), para crear la receta si no existe."
+        },
+        "kcal": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Calorías de lo que comió. Sin kcal, salen de los macros."
+        },
+        "proteinG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "carbsG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fatG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fiberG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "photoFromMessage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de la imagen del mensaje que es la foto del plato (1 si hay una sola)."
+        }
+      }
+    }
+  },
+  "update_meal": {
+    "description": "Cambia una comida registrada: descripción, categoría, fecha (newDate) o valores; lo que no se manda queda igual. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "meal": {
+          "type": "string",
+          "description": "id de la comida (de list_health_records o get_health_summary) o su descripción exacta."
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha de la comida, para encontrarla por descripción."
+        },
+        "newDate": {
+          "type": "string",
+          "description": "Nueva fecha YYYY-MM-DD."
+        },
+        "name": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "desayuno",
+            "snack",
+            "almuerzo",
+            "merienda",
+            "cena"
+          ]
+        },
+        "kcal": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Calorías de lo que comió. Sin kcal, salen de los macros."
+        },
+        "proteinG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "carbsG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fatG": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fiberG": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "meal"
+      ]
+    }
+  },
+  "delete_health_record": {
+    "description": "Elimina un peso (por fecha), una medición de la balanza (por fecha; el peso de ese día queda) o una comida (por id o descripción). Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "weight",
+            "measurement",
+            "meal"
+          ]
+        },
+        "date": {
+          "type": "string",
+          "description": "YYYY-MM-DD del peso o la medición, o de la comida si se la busca por descripción."
+        },
+        "meal": {
+          "type": "string",
+          "description": "id de la comida (de list_health_records o get_health_summary) o su descripción exacta."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
   }
 }

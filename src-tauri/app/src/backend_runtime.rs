@@ -930,11 +930,30 @@ fn compose_request_system_prompt(
 /// Replaces any client-supplied system message with the backend-owned prompt.
 struct AuthoritativePromptProvider<'a, T> {
     inner: &'a T,
-    system_prompt: String,
+    /// Composes the system prompt for the tools of a round: its guidance
+    /// depends on them, and a routed run changes them mid-run.
+    compose: Box<dyn Fn(&[notia_backend_core::ToolDefinition]) -> Result<String, BackendError> + Send + Sync + 'a>,
+    /// The last prompt, by the tool names it was composed for.
+    composed: Mutex<Option<(Vec<String>, String)>>,
 }
 
 impl<'a, T: AgentProvider> AuthoritativePromptProvider<'a, T> {
+    fn system_prompt(&self, tools: &[notia_backend_core::ToolDefinition]) -> Result<String, BackendError> {
+        let names = tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>();
+        let mut composed = self.composed.lock().map_err(|_| storage_error("No se pudo preparar el prompt del agente."))?;
+        if let Some((cached, prompt)) = composed.as_ref() {
+            // A round without tools keeps the guidance of the run's tools.
+            if *cached == names || names.is_empty() {
+                return Ok(prompt.clone());
+            }
+        }
+        let prompt = (self.compose)(tools)?;
+        *composed = Some((names, prompt.clone()));
+        Ok(prompt)
+    }
+
     fn request(&self, request: &ProviderRequest) -> Result<ProviderRequest, BackendError> {
+        let system_prompt = self.system_prompt(&request.tools)?;
         let mut messages = request
             .messages
             .iter()
@@ -945,7 +964,7 @@ impl<'a, T: AgentProvider> AuthoritativePromptProvider<'a, T> {
             0,
             ProviderMessage {
                 role: ProviderMessageRole::System,
-                content: self.system_prompt.clone(),
+                content: system_prompt,
                 images: Vec::new(),
                 tool_calls: Vec::new(),
                 tool_name: None,
@@ -1023,6 +1042,9 @@ struct TauriBackendToolExecutor {
     control: RequestControl,
     journal: Arc<BackendJournal>,
     idempotency_key: String,
+    /// Images of the person's last message, for the tools that keep one
+    /// (a recipe's photo).
+    request_images: Vec<crate::recipes::MessageImage>,
 }
 
 /// Documents a single multi-document apply may touch.
@@ -1158,6 +1180,22 @@ impl TauriBackendToolExecutor {
             "reorder_routine_tasks",
             "set_routine_completions",
             "set_routine_goal",
+            "list_recipes",
+            "get_recipe",
+            "create_recipe",
+            "update_recipe",
+            "delete_recipe",
+            "get_health_summary",
+            "list_health_records",
+            "save_health_profile",
+            "log_weight",
+            "save_body_measurement",
+            "set_weight_goal",
+            "set_health_plan",
+            "log_water",
+            "log_meal",
+            "update_meal",
+            "delete_health_record",
             "list_ai_actions",
             "get_ai_action",
             "create_ai_action",
@@ -1309,6 +1347,13 @@ impl TauriBackendToolExecutor {
             return Err(BackendError::new(
                 BackendErrorCode::Forbidden,
                 "Los índices de Task Manager no se editan como documentos: los grupos, su orden, nombre y color se cambian con las herramientas de Task Manager.",
+                false,
+            ));
+        }
+        if crate::recipes::is_recipe_path(locator.logical_path.as_str()) {
+            return Err(BackendError::new(
+                BackendErrorCode::Forbidden,
+                "Las recetas no se editan como documentos: se cargan y se cambian con create_recipe, update_recipe y delete_recipe, que las revisan con IA.",
                 false,
             ));
         }
@@ -1652,6 +1697,14 @@ impl TauriBackendToolExecutor {
             actor_library_user_id: context.actor.library_user_id.clone(),
             source: source.to_string(),
         })
+    }
+
+    /// Salud of the acting library user.
+    fn health_context(context: &BackendRequestContext) -> crate::health::HealthContext {
+        crate::health::HealthContext {
+            library_id: context.library_id.clone(),
+            actor_library_user_id: context.actor.library_user_id.clone(),
+        }
     }
 
     /// The library database of the AI actions, which are the Owner's only.
@@ -2528,6 +2581,54 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if crate::recipes::is_recipe_write_tool(&call.name) {
+            // A new recipe is reviewed by the AI here: the confirmation shows
+            // what it completed, and a repeated dish goes back to the model.
+            let summary = crate::recipes::preview_tool(&self.app, &context.library_id, &call.id, &call.name, &call.arguments, &self.request_images)
+                .map_err(crate::recipes::tool_error)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Cambiar Recetas").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("recipes:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
+        if crate::health::is_health_write_tool(&call.name) {
+            // A meal without values and an AI plan are estimated here: the
+            // confirmation shows them, and a rejection goes back to the model.
+            let summary = crate::health::preview_tool(&self.app, &Self::health_context(context), &call.id, &call.name, &call.arguments, &self.request_images)
+                .map_err(crate::health::tool_error)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Cambiar Salud").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("health:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         if crate::ai_actions::is_ai_action_write_tool(&call.name) {
             // The call is read and checked as its execution will do it; a
             // rejection goes back to the model before asking the Owner.
@@ -2841,6 +2942,16 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 } else {
                     reader.read_documents(&context.library_id, &ids)?
                 };
+                // Recipes are read without their embedded photo (see the recipe tools).
+                let documents = documents
+                    .into_iter()
+                    .map(|mut document| {
+                        if crate::recipes::is_recipe_path(document.locator.logical_path.as_str()) {
+                            document.content = notia_backend_core::recipes::markdown::without_photos(&document.content);
+                        }
+                        document
+                    })
+                    .collect::<Vec<_>>();
                 json!({ "documents": documents })
             }
             "search_library_documents" => {
@@ -3934,6 +4045,14 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &call.arguments,
                 )?
             }
+            name if crate::health::is_health_tool(name) => {
+                crate::health::execute_tool(&self.app, &Self::health_context(context), &call.id, name, &call.arguments, &self.request_images)
+                    .map_err(crate::health::tool_error)?
+            }
+            name if crate::recipes::is_recipe_tool(name) => {
+                crate::recipes::execute_tool(&self.app, &context.library_id, &call.id, name, &call.arguments, &self.request_images)
+                    .map_err(crate::recipes::tool_error)?
+            }
             name if crate::ai_actions::is_ai_action_tool(name) => {
                 let database = self.ai_actions_database(context)?;
                 crate::ai_actions::execute_tool(&self.app, &context.library_id, &database, name, &call.arguments)
@@ -3972,7 +4091,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4201,9 +4320,11 @@ pub(crate) fn execute_backend_request(
             log::error!("[notia:memory] no se pudo recrear thoughts.md: {:?}", error.code);
         }
     }
-    if fresh_run && request.context.scope == BackendScope::Library {
-        let tools = std::mem::take(&mut request.tools);
-        request.tools = route_turn_tools(app, state, &request, tools);
+    // Every chat with more than one area is routed: the turn keeps every
+    // tool the actor may use and offers those of its areas, which the agent
+    // may change mid-run (see `backend_core::tool_routing`).
+    if fresh_run {
+        request.tool_areas = route_turn_areas(app, state, &request);
     }
     state.journal.store_request(&request)?;
     let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
@@ -4231,15 +4352,10 @@ pub(crate) fn execute_backend_request(
     } else {
         ToolCatalogProjection::Full
     };
-    let visible_tools = notia_backend_core::project_tool_catalog(
-        &request.context,
-        &principal,
-        &request.tools,
-        options.projection,
-    )?;
     let provider = AuthoritativePromptProvider {
         inner: &provider,
-        system_prompt: compose_request_system_prompt(app, &request, &visible_tools)?,
+        compose: Box::new(|tools| compose_request_system_prompt(app, &request, tools)),
+        composed: Mutex::new(None),
     };
     // The run works until the task is done: no overall deadline. Each model
     // call and each tool keeps its own timeout, and the person can cancel.
@@ -4251,6 +4367,7 @@ pub(crate) fn execute_backend_request(
         control: control.clone(),
         journal: Arc::clone(&state.journal),
         idempotency_key: request.idempotency_key.clone(),
+        request_images: last_user_images(&request),
     };
     let revisions = TauriRevisionPort { app: app.clone() };
     let interactions = state.interactions(Some(&revisions));
@@ -4366,25 +4483,24 @@ fn provider_settings_for_library(
 /// words. It covers loading a local model, which the turn then reuses.
 const ROUTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// Tools of a library-chat turn: the model reads the recent conversation and
-/// picks the areas it needs among those the actor may use (the tools come
-/// already projected for the actor's contexts); words decide when it does
-/// not answer. See `backend_core::tool_routing`.
-fn route_turn_tools(
-    app: &AppHandle,
-    state: &BackendRuntimeState,
-    request: &AgentRequest,
-    tools: Vec<notia_backend_core::ToolDefinition>,
-) -> Vec<notia_backend_core::ToolDefinition> {
+/// Tool areas of a turn: the model reads the recent conversation and picks
+/// the areas it needs among those the actor may use (the tools come already
+/// projected for the actor's contexts); a module's chat suggests its own
+/// area, which also decides with words when the model does not answer.
+/// `None` when the tools span a single area. See
+/// `backend_core::tool_routing`.
+fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &AgentRequest) -> Option<Vec<String>> {
     use notia_backend_core::tool_routing::{
-        fallback_areas, needs_routing, offered_areas, parse_router_answer, router_prompt, tools_for_areas, RouterMessage,
+        area_ids, fallback_areas, home_area, needs_routing, offered_areas, parse_router_answer, router_prompt, RouterMessage,
         MAX_ROUTER_IMAGES,
     };
     use notia_backend_core::{BackendMessage, MessageRole};
-    if !needs_routing(&tools) {
-        return tools;
+    // The published board only reaches its tickets.
+    if !needs_routing(&request.tools) || matches!(request.context.persistence_policy, PersistencePolicy::PublishedNoMemory) {
+        return None;
     }
-    let offered = offered_areas(&tools);
+    let offered = offered_areas(&request.tools);
+    let home = home_area(&request.context.scope);
     let attachment_count = |message: &BackendMessage| message.images.len() + message.attachments.len();
     // The last request goes with the text of its files and its first images:
     // the attachment itself tells what kind of request it is.
@@ -4406,20 +4522,20 @@ fn route_turn_tools(
             attachments: attachment_count(message),
         })
         .collect::<Vec<_>>();
-    let (system, user) = router_prompt(&offered, &conversation);
+    let (system, user) = router_prompt(&offered, &conversation, home);
     let picked = provider_settings_for_library(app, state, &request.context.library_id)
         .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, last_images, ROUTING_TIMEOUT))
         .ok()
         .and_then(|answer| parse_router_answer(&answer, &offered));
     let (areas, source) = match picked {
         Some(areas) => (areas, "modelo"),
-        None => (fallback_areas(&last_text, &offered, with_attachments), "palabras"),
+        None => (fallback_areas(&last_text, &offered, with_attachments, home), "palabras"),
     };
     log::info!(
         "[notia:router] áreas {:?} elegidas por {source}",
         areas.iter().map(|area| area.id()).collect::<Vec<_>>()
     );
-    tools_for_areas(tools, &areas, BackendLimits::default().max_tools)
+    Some(area_ids(&areas))
 }
 
 /// One completion without tools for a background task of the library
@@ -4443,6 +4559,28 @@ pub(crate) fn complete_text(
         persistence_policy: PersistencePolicy::EphemeralNoMemory,
     };
     complete_with(app, settings, context, system, user, Vec::new(), timeout)
+}
+
+/// Like [`complete_text`], with images (base64) for the model to look at.
+pub(crate) fn complete_with_images(
+    app: &AppHandle,
+    library_id: &str,
+    system: &str,
+    user: &str,
+    images: Vec<String>,
+    timeout: std::time::Duration,
+) -> Result<String, BackendError> {
+    let config = crate::library_config::read_library_config(app, library_id)?.unwrap_or(Value::Null);
+    let settings = provider_settings_from_config(&config)?;
+    let context = BackendRequestContext {
+        request_id: uuid::Uuid::new_v4().simple().to_string(),
+        library_id: library_id.to_string(),
+        actor: notia_backend_core::BackendActor { library_user_id: "user-owner".to_string(), external_identity: None },
+        channel: notia_backend_core::BackendChannel::App,
+        scope: BackendScope::Library,
+        persistence_policy: PersistencePolicy::EphemeralNoMemory,
+    };
+    complete_with(app, settings, context, system, user, images, timeout)
 }
 
 /// Decides what to do with a message sent while a request of the same chat
@@ -4681,6 +4819,20 @@ fn task_mutation_summary(
     }
 }
 
+/// Images of the last message of the person: its images and the pages of
+/// its image attachments, in order.
+fn last_user_images(request: &AgentRequest) -> Vec<crate::recipes::MessageImage> {
+    let Some(message) = request.messages.iter().rev().find(|message| message.role == notia_backend_core::MessageRole::User) else {
+        return Vec::new();
+    };
+    let attached = message
+        .attachments
+        .iter()
+        .filter(|attachment| attachment.kind == notia_backend_core::chat_attachments::MessageAttachmentKind::Image)
+        .flat_map(|attachment| attachment.pages.iter().take(1));
+    message.images.iter().chain(attached).map(|base64| crate::recipes::MessageImage { base64: base64.clone() }).collect()
+}
+
 /// Current UTC date as `YYYY-MM-DD`.
 fn utc_today() -> String {
     let now_ms = std::time::SystemTime::now()
@@ -4858,6 +5010,9 @@ mod tests {
         assert_eq!(refused.code, BackendErrorCode::Forbidden);
         assert!(TauriBackendToolExecutor::ensure_agent_writable(&locator("task-mannager/default/Cobranzas integradas.md")).is_ok());
         assert!(TauriBackendToolExecutor::ensure_agent_writable(&locator("Personal/notas.md")).is_ok());
+        // Recipes change only through the recipe tools, which review them.
+        let recipe = TauriBackendToolExecutor::ensure_agent_writable(&locator("recipes/Guiso de lentejas.md")).expect_err("recipe");
+        assert_eq!(recipe.code, BackendErrorCode::Forbidden);
     }
 
     #[test]
@@ -4927,6 +5082,7 @@ mod tests {
                 tool_results: Vec::new(),
                 preview: None,
                 approve_all: false,
+                tool_areas: None,
             }),
             ..Default::default()
         };
@@ -4970,16 +5126,15 @@ mod tests {
                 true,
             );
             let max = BackendLimits::default().max_tools;
-            if scope == BackendScope::Library {
-                // Routed: every area it offers fits in a turn.
-                use notia_backend_core::tool_routing::{needs_routing, offered_areas, tool_area, tools_for_areas};
-                assert!(needs_routing(&tools));
-                for area in offered_areas(&tools) {
-                    let turn = tools_for_areas(tools.clone(), &[area], max);
-                    assert!(turn.len() <= max && turn.iter().any(|tool| tool_area(&tool.name) == Some(area)), "{area:?}");
-                }
-            } else {
-                assert!(tools.len() <= max, "{scope:?}: {} tools", tools.len());
+            // Every chat is routed: each area it offers fits in a round with
+            // the tools every round keeps and `change_tool_areas`.
+            use notia_backend_core::tool_routing::{offered_areas, tool_area, turn_tools};
+            assert!(tools.len() <= notia_backend_core::MAX_TOOL_POOL, "{scope:?}");
+            for area in offered_areas(&tools) {
+                let round = turn_tools(&tools, &[area], max);
+                let all = tools.iter().filter(|tool| tool_area(&tool.name) == Some(area)).count();
+                let kept = round.iter().filter(|tool| tool_area(&tool.name) == Some(area)).count();
+                assert!(round.len() <= max && kept == all, "{scope:?} {area:?}: {} tools", round.len());
             }
         }
     }

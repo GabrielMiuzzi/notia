@@ -45,6 +45,8 @@ mod config_vault;
 mod device_secret;
 mod agent_autonomy;
 mod ai_actions;
+mod recipes;
+mod health;
 mod app_auth;
 mod agent_history;
 mod agent_knowledge;

@@ -773,6 +773,7 @@ impl TurnSetup {
             library_search: self.library_search,
             autonomous: false,
             scheduled_action: None,
+            tool_areas: None,
         })
     }
 }
