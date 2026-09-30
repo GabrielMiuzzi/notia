@@ -100,6 +100,10 @@ pub(crate) struct ChangePasswordPayload {
     new: String,
 }
 
+/// The answer to a wrong Owner password in ColdPass. The fingerprint unlock
+/// recognizes it (also from a host) to forget a password that changed.
+pub(crate) const WRONG_OWNER_PASSWORD: &str = "La contraseña del Owner no es correcta.";
+
 fn unauthorized(message: &str) -> BackendError {
     BackendError::new(BackendErrorCode::Unauthorized, message, false)
 }
@@ -348,7 +352,7 @@ pub(crate) fn owner_data_key(app: &AppHandle, library_id: &str, password: &str) 
     check_cooldown(&library.id)?;
     let result = stored_envelope(app, &library.id).and_then(|envelope| {
         let envelope = envelope.ok_or_else(|| unauthorized("Iniciá sesión con el Owner antes de usar ColdPass."))?;
-        unwrap_key(&envelope.key, password).ok_or_else(|| unauthorized("La contraseña del Owner no es correcta."))
+        unwrap_key(&envelope.key, password).ok_or_else(|| unauthorized(WRONG_OWNER_PASSWORD))
     });
     record_attempt(&library.id, result.is_ok());
     result

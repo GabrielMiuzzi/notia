@@ -6,15 +6,19 @@ import type { ColdPassEntry, ColdPassEntryView } from '../../../types/coldpass'
 import {
   confirmColdPassImport,
   deleteColdPassEntry,
+  getColdPassBiometricStatus,
+  isColdPassCancellation,
   lockColdPassSession,
   pickColdPassCsvImport,
   getColdPassStatus,
   saveColdPassEntry,
   unlockColdPassSession,
+  unlockColdPassWithBiometric,
   type ColdPassImportPreview,
   type ColdPassSessionData,
 } from '../../../services/coldpass/coldpassStorage'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
+import { backendSupports } from '../../../services/transport'
 
 const EMPTY_COLDPASS_ENTRIES: ColdPassEntryView[] = []
 
@@ -24,6 +28,8 @@ interface ColdPassPromptState {
   isNew: boolean
   /** The vault still uses its own passkey, asked once to migrate it. */
   needsLegacyPasskey: boolean
+  /** This device's fingerprint opens the vault. */
+  canUseBiometric: boolean
   errorMessage: string | null
   isSubmitting: boolean
 }
@@ -32,8 +38,18 @@ const INITIAL_PROMPT_STATE: ColdPassPromptState = {
   open: false,
   isNew: false,
   needsLegacyPasskey: false,
+  canUseBiometric: false,
   errorMessage: null,
   isSubmitting: false,
+}
+
+/** Whether the fingerprint is on for the library here; `false` when it cannot be asked. */
+async function isBiometricEnabled(libraryId: string): Promise<boolean> {
+  if (!backendSupports('coldpass_biometric_status')) {
+    return false
+  }
+  const status = await getColdPassBiometricStatus(libraryId).catch(() => null)
+  return Boolean(status?.enabled && status.availability === 'available')
 }
 
 /** What the unlock prompt sends. */
@@ -106,6 +122,7 @@ export interface UseColdPassSessionReturn {
   coldPassImportPromptState: ColdPassImportPromptState
   isImportingVault: boolean
   handleSubmitColdPassUnlock: (values: ColdPassUnlockValues) => void
+  handleUnlockColdPassWithBiometric: () => void
   handleCloseColdPassPrompt: () => void
   handleOpenColdPassCredentialModal: () => void
   handleEditColdPassCredential: (index: number, options?: { generate?: boolean }) => void
@@ -140,8 +157,10 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     let cancelled = false
 
     const openColdPassPrompt = async () => {
-      const status = await getColdPassStatus(activeLibrary.id)
-        .catch(() => ({ exists: true, needsLegacyPasskey: false }))
+      const [status, biometric] = await Promise.all([
+        getColdPassStatus(activeLibrary.id).catch(() => ({ exists: true, needsLegacyPasskey: false })),
+        isBiometricEnabled(activeLibrary.id),
+      ])
       if (cancelled) {
         return
       }
@@ -153,6 +172,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
               open: true,
               isNew: !status.exists,
               needsLegacyPasskey: status.needsLegacyPasskey,
+              canUseBiometric: biometric && status.exists && !status.needsLegacyPasskey,
               errorMessage: null,
               isSubmitting: false,
             }
@@ -184,6 +204,35 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
           ...current,
           open: true,
           errorMessage: error instanceof Error ? error.message : 'No se pudo desbloquear ColdPass.',
+          isSubmitting: false,
+        }))
+      })
+  }, [activeLibrary])
+
+  const handleUnlockColdPassWithBiometric = useCallback(() => {
+    if (!activeLibrary) {
+      return
+    }
+
+    const libraryId = activeLibrary.id
+    setColdPassPromptState((current) => ({ ...current, errorMessage: null, isSubmitting: true }))
+
+    void unlockColdPassWithBiometric(libraryId)
+      .then((session) => {
+        setColdPassSession(session)
+        setColdPassPromptState(INITIAL_PROMPT_STATE)
+      })
+      .catch(async (error) => {
+        if (isColdPassCancellation(error)) {
+          setColdPassPromptState((current) => ({ ...current, isSubmitting: false }))
+          return
+        }
+        // The backend turns the fingerprint off when it no longer opens the vault.
+        const canUseBiometric = await isBiometricEnabled(libraryId)
+        setColdPassPromptState((current) => ({
+          ...current,
+          canUseBiometric,
+          errorMessage: error instanceof Error ? error.message : 'No se pudo desbloquear ColdPass con la huella.',
           isSubmitting: false,
         }))
       })
@@ -433,6 +482,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     coldPassImportPromptState,
     isImportingVault: coldPassImportPromptState.isSelectingFile,
     handleSubmitColdPassUnlock,
+    handleUnlockColdPassWithBiometric,
     handleCloseColdPassPrompt,
     handleOpenColdPassCredentialModal,
     handleEditColdPassCredential,

@@ -50,6 +50,7 @@ interface NotiaModalsProps {
     open: boolean
     isNew: boolean
     needsLegacyPasskey: boolean
+    canUseBiometric: boolean
     errorMessage: string | null
     isSubmitting: boolean
   }
@@ -76,6 +77,7 @@ interface NotiaModalsProps {
   }
   coldPassSession: { entries: ColdPassEntryView[] } | null
   handleSubmitColdPassUnlock: (values: ColdPassUnlockValues) => void
+  handleUnlockColdPassWithBiometric: () => void
   handleCloseColdPassPrompt: () => void
   handleSubmitColdPassDeletePassword: (password: string) => void
   handleCloseColdPassDeletePrompt: () => void
@@ -100,6 +102,7 @@ function NotiaModalsComponent({
   coldPassCredentialModalState,
   coldPassSession,
   handleSubmitColdPassUnlock,
+  handleUnlockColdPassWithBiometric,
   handleCloseColdPassPrompt,
   handleSubmitColdPassDeletePassword,
   handleCloseColdPassDeletePrompt,
@@ -341,6 +344,8 @@ function NotiaModalsComponent({
         needsLegacyPasskey={coldPassPromptState.needsLegacyPasskey}
         errorMessage={coldPassPromptState.errorMessage}
         isSubmitting={coldPassPromptState.isSubmitting}
+        onUseBiometric={coldPassPromptState.canUseBiometric ? handleUnlockColdPassWithBiometric : undefined}
+        autoBiometric={coldPassPromptState.canUseBiometric}
         onSubmit={handleSubmitColdPassUnlock}
         onClose={handleCloseColdPassPrompt}
       />

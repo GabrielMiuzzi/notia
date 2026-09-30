@@ -3785,6 +3785,13 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   margin: 0;
 }
 
+.notia-coldpass-passkey-biometric {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 12px;
+  gap: 8px;
+}
+
 .notia-coldpass-passkey-label {
   display: block;
   margin: 12px 0 6px;

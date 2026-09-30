@@ -1,5 +1,5 @@
-import { useEffect, useId, useState } from 'react'
-import { Eye, EyeOff, KeyRound, X } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Eye, EyeOff, Fingerprint, KeyRound, X } from 'lucide-react'
 import { NotiaModalShell } from './NotiaModalShell'
 import { NotiaButton } from '../common/NotiaButton'
 
@@ -18,6 +18,10 @@ interface ColdPassOwnerPasswordModalProps {
   needsLegacyPasskey?: boolean
   errorMessage?: string | null
   isSubmitting?: boolean
+  /** Offers this device's fingerprint instead of the password. */
+  onUseBiometric?: () => void
+  /** Asks for the fingerprint once as soon as the prompt opens. */
+  autoBiometric?: boolean
   onSubmit: (values: ColdPassOwnerPasswordValues) => void
   onClose: () => void
 }
@@ -32,6 +36,8 @@ export function ColdPassOwnerPasswordModal({
   needsLegacyPasskey = false,
   errorMessage,
   isSubmitting = false,
+  onUseBiometric,
+  autoBiometric = false,
   onSubmit,
   onClose,
 }: ColdPassOwnerPasswordModalProps) {
@@ -40,14 +46,23 @@ export function ColdPassOwnerPasswordModal({
   const [isVisible, setIsVisible] = useState(false)
   const passwordId = useId()
   const legacyId = useId()
+  const didAutoBiometric = useRef(false)
 
   useEffect(() => {
     if (!open) {
       setPassword('')
       setLegacyPasskey('')
       setIsVisible(false)
+      didAutoBiometric.current = false
     }
   }, [open])
+
+  useEffect(() => {
+    if (open && autoBiometric && onUseBiometric && !didAutoBiometric.current) {
+      didAutoBiometric.current = true
+      onUseBiometric()
+    }
+  }, [autoBiometric, onUseBiometric, open])
 
   if (!open) {
     return null
@@ -79,11 +94,24 @@ export function ColdPassOwnerPasswordModal({
         </div>
         <div className="notia-coldpass-passkey-body">
           <p>{message}</p>
+          {onUseBiometric ? (
+            <NotiaButton
+              type="button"
+              variant="secondary"
+              className="notia-coldpass-passkey-biometric"
+              onClick={onUseBiometric}
+              disabled={isSubmitting}
+            >
+              <Fingerprint size={18} aria-hidden="true" />
+              Usar huella
+            </NotiaButton>
+          ) : null}
           <label className="notia-coldpass-passkey-label" htmlFor={passwordId}>Contraseña del Owner</label>
           <div className="notia-coldpass-passkey-field">
             <input
               id={passwordId}
-              autoFocus
+              // The keyboard would cover the fingerprint prompt.
+              autoFocus={!onUseBiometric}
               autoComplete="current-password"
               className="notia-settings-input notia-coldpass-passkey-input"
               type={isVisible ? 'text' : 'password'}

@@ -12,6 +12,7 @@ fn main() {
         prepare_android_database_plugin();
         prepare_android_ai_plugin();
         prepare_android_continuity_plugin();
+        prepare_android_biometric_plugin();
         tauri_build::build()
     }
 }
@@ -130,6 +131,27 @@ fn prepare_android_continuity_plugin() {
     std::fs::copy(source, destination).expect("failed to install Android continuity plugin source");
 }
 
+fn prepare_android_biometric_plugin() {
+    if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() != Some(std::ffi::OsStr::new("android")) {
+        return;
+    }
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let source = manifest_dir
+        .join("resources")
+        .join("biometric")
+        .join("android")
+        .join("BiometricPlugin.kt");
+    let destination = manifest_dir
+        .join("gen/android/app/src/main/java/com/gabriel/notia/BiometricPlugin.kt");
+    println!("cargo:rerun-if-changed={}", source.display());
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create Android biometric plugin directory");
+    }
+    std::fs::copy(source, destination).expect("failed to install Android biometric plugin source");
+}
+
 /// Los modelos base se distribuyen dentro del bundle de la aplicación. Fallar
 /// durante el build evita generar un APK/EXE que luego pida una instalación
 /// manual en AppData.
@@ -203,6 +225,8 @@ fn prepare_android_speech_runtime() {
             "\n    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MICROPHONE\" />",
             "\n    <uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_DATA_SYNC\" />",
             "\n    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
+            // ColdPass unlocks with the fingerprint (BiometricPlugin).
+            "\n    <uses-permission android:name=\"android.permission.USE_BIOMETRIC\" />",
         ];
         for permission_tag in permissions {
             let permission_name = permission_tag

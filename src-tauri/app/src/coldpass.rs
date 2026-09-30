@@ -28,6 +28,11 @@ use crate::filesystem::adapter::TauriFilesystemDocumentAdapter;
 use crate::library_registry::LibraryBindingRegistry;
 use crate::mobile_directory_picker::AndroidDirectoryPickerState;
 
+mod biometric;
+pub(crate) use biometric::{
+    coldpass_biometric_status, coldpass_disable_biometric, coldpass_enable_biometric, coldpass_unlock_biometric,
+};
+
 const VAULT_HEADER: &str = "<!-- NOTIA_COLDPASS_OWNER_V1 -->";
 const LEGACY_HEADER: &str = "<!-- NOTIA_COLDPASS_AES256_PBKDF2_V1 -->";
 /// Associated data of the sealed vault.
@@ -365,42 +370,45 @@ pub(crate) fn coldpass_generate_password(payload: GeneratePasswordPayload) -> Re
 /// first use. A vault from before is opened with `legacyPasskey` and saved
 /// again with the Owner's key.
 pub(crate) async fn coldpass_unlock(app: AppHandle, payload: ColdPassPayload) -> Result<ColdPassEntriesDto, BackendError> {
-    crate::host::async_runtime::spawn_blocking(move || {
-        let key = owner_vault_key(&app, &payload.library_id, payload.password)?;
-        let locator = vault_locator(&payload.library_id)?;
-        let markdown = with_adapter(&app, &payload.library_id, |adapter| {
-            if !adapter.exists_locator(&locator)? {
-                let markdown = empty_coldpass_markdown();
+    crate::host::async_runtime::spawn_blocking(move || unlock_with_password(&app, payload))
+        .await
+        .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo abrir ColdPass.", true))?
+}
+
+/// `coldpass_unlock` on this device; the fingerprint unlock runs it too.
+fn unlock_with_password(app: &AppHandle, payload: ColdPassPayload) -> Result<ColdPassEntriesDto, BackendError> {
+    let key = owner_vault_key(app, &payload.library_id, payload.password)?;
+    let locator = vault_locator(&payload.library_id)?;
+    let markdown = with_adapter(app, &payload.library_id, |adapter| {
+        if !adapter.exists_locator(&locator)? {
+            let markdown = empty_coldpass_markdown();
+            adapter.upsert_text_locator(&locator, &encrypt_vault(&markdown, &key)?)?;
+            return Ok(markdown);
+        }
+        let content = adapter.read_locator(&locator)?;
+        match vault_format(&content)? {
+            VaultFormat::Owner => decrypt_vault(&content, &key),
+            VaultFormat::Legacy => {
+                let passkey = secret(
+                    payload.legacy_passkey,
+                    "Este vault todavía usa su passkey anterior: ingresala una vez para pasarlo a la contraseña del Owner.",
+                )?;
+                let markdown = decrypt_legacy_vault(&content, &passkey)?;
+                // The same text, sealed with the Owner's key: the old
+                // passkey is not needed any more.
                 adapter.upsert_text_locator(&locator, &encrypt_vault(&markdown, &key)?)?;
-                return Ok(markdown);
+                Ok(markdown)
             }
-            let content = adapter.read_locator(&locator)?;
-            match vault_format(&content)? {
-                VaultFormat::Owner => decrypt_vault(&content, &key),
-                VaultFormat::Legacy => {
-                    let passkey = secret(
-                        payload.legacy_passkey,
-                        "Este vault todavía usa su passkey anterior: ingresala una vez para pasarlo a la contraseña del Owner.",
-                    )?;
-                    let markdown = decrypt_legacy_vault(&content, &passkey)?;
-                    // The same text, sealed with the Owner's key: the old
-                    // passkey is not needed any more.
-                    adapter.upsert_text_locator(&locator, &encrypt_vault(&markdown, &key)?)?;
-                    Ok(markdown)
-                }
-            }
-        })?;
-        let entries = parse_coldpass_markdown(&markdown, &mut new_id);
-        let response = ColdPassEntriesDto::of(&entries);
-        app.state::<ColdPassState>()
-            .vaults
-            .lock()
-            .map_err(|_| locked())?
-            .insert(payload.library_id.clone(), UnlockedVault { key, entries, pending_import: None });
-        Ok(response)
-    })
-    .await
-    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo abrir ColdPass.", true))?
+        }
+    })?;
+    let entries = parse_coldpass_markdown(&markdown, &mut new_id);
+    let response = ColdPassEntriesDto::of(&entries);
+    app.state::<ColdPassState>()
+        .vaults
+        .lock()
+        .map_err(|_| locked())?
+        .insert(payload.library_id.clone(), UnlockedVault { key, entries, pending_import: None });
+    Ok(response)
 }
 
 pub(crate) fn coldpass_lock(payload: ColdPassPayload, state: State<'_, ColdPassState>) -> Result<(), BackendError> {

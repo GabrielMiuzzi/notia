@@ -10378,3 +10378,107 @@ Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos d
   - deshacer lo devolvió y «Borrar» lo quitó.
 
 **Pendiente.** Probar con lápiz real (botón lateral) en Windows y Android.
+
+## ColdPass: desbloqueo con huella en Android (2026-09-30)
+
+ColdPass se puede abrir con la huella en dispositivos Android con Android 11 o superior y un sensor de huella fuerte (clase 3). Es opcional y se activa por biblioteca y por dispositivo.
+- La huella reemplaza escribir la contraseña del Owner.
+- La contraseña sigue disponible en el mismo diálogo.
+- Funciona igual con la biblioteca en el dispositivo, en modo cliente de un host y en la copia offline.
+
+**Diseño.**
+- **Qué se sella.** La huella sella la **contraseña del Owner**, no la clave del vault. El desbloqueo con huella es el mismo `coldpass_unlock` con esa contraseña. Corre donde está el vault:
+  - con la biblioteca local o la copia offline, en este dispositivo (`unlock_with_password`);
+  - en modo cliente, en el host (`host_client::call_host("coldpass_unlock")`).
+
+  Así la clave del vault nunca sale del backend que tiene el vault. La primera versión sellaba la clave del vault y no servía en modo cliente, porque la sesión vive en el host.
+- **Keystore.** `BiometricPlugin` crea una clave AES-256-GCM con alias `notia-coldpass-<id de biblioteca saneado>`:
+  - `setUserAuthenticationRequired(true)`;
+  - `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG)`, que exige la huella en cada uso;
+  - `setInvalidatedByBiometricEnrollment(true)`.
+
+  `enable` y `unlock` muestran el `BiometricPrompt` con un `CryptoObject` y sellan o abren los bytes solo con el dedo aceptado.
+- **Dónde se guarda.** Rust guarda `{ iv, ciphertext }` en `app_data_dir/coldpass-biometric/<id>.json`, en la carpeta privada de la app. Nunca entra en la biblioteca que se sincroniza.
+
+**Contratos.**
+
+| Comando | Entrada | Salida | Qué hace |
+|---|---|---|---|
+| `coldpass_biometric_status` | `{ libraryId }` | `{ availability: "available" \| "not-enrolled" \| "unsupported", enabled }` | Fuera de Android siempre `unsupported`. |
+| `coldpass_enable_biometric` | `{ libraryId, password }` | igual que el estado | Comprueba la contraseña desbloqueando con ella, donde está el vault; después pide el dedo y la sella. |
+| `coldpass_unlock_biometric` | `{ libraryId }` | `{ entries }`, como `coldpass_unlock` | Pide el dedo, abre la contraseña y desbloquea con ella. |
+| `coldpass_disable_biometric` | `{ libraryId }` | igual que el estado | Borra el archivo y la clave del Keystore. |
+
+Los cuatro comandos están en `LOCAL_ONLY_COMMANDS` y en `CLIENT_LOCAL_COMMANDS`, como `coldpass_copy_secret`:
+- un cliente los ofrece y los corre en su dispositivo;
+- el navegador del servidor headless no los ve.
+
+**Errores.**
+
+| Caso | Código | Efecto |
+|---|---|---|
+| La persona cierra el diálogo, elige «Usar contraseña» o vence el tiempo | `cancelled` | La interfaz no muestra error. |
+| Demasiados dedos incorrectos (lockout de Android) | `forbidden`, reintentable | «Usá la contraseña del Owner». |
+| Cambiaron las huellas (`KeyPermanentlyInvalidatedException`) o falta la clave | `forbidden` | Se borra la activación y se pide la contraseña. |
+| La contraseña sellada ya no es la del Owner | `forbidden` | Se borra la activación: «La contraseña del Owner cambió…». |
+| Otro diálogo de huella abierto | `conflict` | — |
+| Sin sensor compatible o sin huellas registradas | `unsupported` | — |
+
+La contraseña sellada se da por vieja solo con `unauthorized` y el mensaje exacto `app_auth::WRONG_OWNER_PASSWORD`, venga de este dispositivo o del host. El enfriamiento de intentos, una biblioteca sin sesión del Owner, un host caído o un permiso SAF revocado no borran la activación.
+
+**Plataformas.**
+- **Android.** El plugin Kotlin está en `resources/biometric/android/BiometricPlugin.kt`. `build.rs` lo copia a `gen/` y agrega `android.permission.USE_BIOMETRIC` al manifest. Usa `android.hardware.biometrics`, sin dependencias Gradle nuevas. `mobile_biometric.rs` lo registra como hook `notia-biometric`. Las llamadas bloquean hasta la respuesta del dedo, así que corren en `spawn_blocking`.
+- **Windows y Linux.** No hay sensor: `unsupported`, y el botón no se muestra.
+- **Cerrar sesión del Owner.** No borra la activación, igual que «Recordar datos».
+- **Qué no cambia.** Eliminar e importar siguen pidiendo la contraseña.
+
+**Interfaz.**
+- `ColdPassBiometricButton`, en la cabecera de ColdPass con el vault abierto:
+  - **Activar huella**: pide la contraseña del Owner y después el dedo;
+  - **Huella activada**: pide confirmación y la desactiva;
+  - sin huellas registradas, el botón se deshabilita con una indicación.
+- `ColdPassOwnerPasswordModal` acepta `onUseBiometric` y `autoBiometric`:
+  - con la huella activada, el diálogo de desbloqueo muestra **Usar huella**;
+  - pide el dedo una vez al abrirse;
+  - no enfoca el campo de contraseña, para que el teclado no tape el diálogo del sistema.
+- `useColdPassSession` consulta `coldpass_biometric_status` junto con `coldpass_status` al entrar en la vista. `coldpassStorage.ts` conserva el `code` del backend en `ColdPassError` (`isColdPassCancellation`).
+
+**Validación.**
+- Pruebas nuevas:
+  - `coldpass::biometric::tests` (4): alias seguro, formato del estado, códigos de error y cuándo se da por vieja la contraseña sellada, también con el error llegado del host;
+  - `ColdPassOwnerPasswordModal.test.tsx` (3).
+- Resultados:
+  - `cargo test -p notia-app --features bluetooth`: 454 pruebas;
+  - `cargo test -p notia-backend-core`: 477 pruebas;
+  - `cargo check --target aarch64-linux-android`: sin warnings nuevos;
+  - `vitest`: 97 archivos, 414 pruebas;
+  - `tsc -p tsconfig.app.json` y `eslint`: sin errores;
+  - `npm run install:android:release`: el plugin Kotlin compila y el APK quedó instalado en la tableta de prueba (Lenovo TB520FU, Android 16, sensor de huella de clase 3).
+
+**Pendiente.** El desbloqueo con huella ya funciona en la tableta. Falta probar:
+- activar, desbloquear, cancelar y el lockout;
+- cambiar las huellas o la contraseña del Owner y comprobar que se pide la contraseña.
+
+## Plugins Kotlin: lectura de argumentos en Android (2026-09-30)
+
+**Problema.** `invoke.parseArgs(X::class.java)` usa Jackson sin el módulo de Kotlin, así que no puede construir una `data class` de Kotlin, ni siquiera de un solo campo: lanza `InvalidDefinitionException` o `MismatchedInputException`. Se descubrió con el plugin de huella de ColdPass. El mismo error rompía en Android, sin mostrar nada:
+- **`ContinuityPlugin`:**
+  - `beginWork`: el servicio en primer plano nunca arrancaba, así que las grabaciones y las tareas de IA no quedaban protegidas en segundo plano;
+  - `openUrl`: no se abría el navegador para conectar Gmail;
+  - `copySecret`: la interfaz copiaba sin borrar a los 30 s.
+- **`LibraryDatabasePlugin`:** `prepareDatabase` y `syncDatabase` fallaban antes de su `try`, así que SQLite no funcionaba en librerías locales de Android. En modo cliente no se nota, porque la base está en el host.
+
+**Arreglo.**
+- Los plugins leen los argumentos con `invoke.getArgs().getString(key, null)`, como `DirectoryPickerPlugin`. Un argumento que falta falla con el error del plugin.
+- `LibraryDatabasePlugin` exige además que `libraryUri` empiece con `content://`, y la conserva tal cual.
+- Siguen con `parseArgs` solo los casos que Jackson sí construye: `Map` y clases con `lateinit var` en `AiBridgePlugin`.
+- `BiometricPlugin` registra con `Log.w` (tag `NotiaBiometric`) solo el paso y la clase de la excepción, nunca su mensaje. El mensaje de Jackson cita los argumentos, que llevan el secreto.
+
+**Validación.**
+- `npm run install:android:release` compila e instala.
+- El desbloqueo con huella se probó en la tableta y funciona.
+- Pendiente de probar en el dispositivo:
+  - el borrado del portapapeles a los 30 s;
+  - la notificación de continuidad durante una grabación o una respuesta de IA;
+  - el inicio de sesión de Gmail;
+  - una librería local (no cliente) en Android.

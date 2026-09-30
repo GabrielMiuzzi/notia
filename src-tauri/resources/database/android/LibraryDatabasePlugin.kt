@@ -40,7 +40,7 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun syncDatabase(invoke: Invoke) {
-        val libraryUri = invoke.parseArgs(DatabaseArgs::class.java).libraryUri
+        val libraryUri = libraryUri(invoke) ?: return
         try {
             val temporary = temporaryDatabases[libraryUri] ?: error("La copia temporal no está preparada")
             if (!temporary.isFile) {
@@ -78,8 +78,21 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    /**
+     * The library's tree URI, read by hand: `parseArgs` cannot build Kotlin
+     * data classes (Jackson has no Kotlin module here). The URI stays opaque.
+     */
+    private fun libraryUri(invoke: Invoke): String? {
+        val uri = invoke.getArgs().getString("libraryUri", null)
+        if (uri.isNullOrEmpty() || !uri.startsWith("content://")) {
+            invoke.resolve(failure("La biblioteca no tiene una carpeta Android válida."))
+            return null
+        }
+        return uri
+    }
+
     private fun prepare(invoke: Invoke) {
-        val libraryUri = invoke.parseArgs(DatabaseArgs::class.java).libraryUri
+        val libraryUri = libraryUri(invoke) ?: return
         try {
             val existing = synchronized(temporaryDatabases) { temporaryDatabases[libraryUri] }
             val temporary = if (existing?.isFile == true) existing else {
@@ -215,4 +228,3 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
     }
 }
 
-private data class DatabaseArgs(val libraryUri: String)

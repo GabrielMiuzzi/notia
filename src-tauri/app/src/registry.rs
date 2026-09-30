@@ -115,6 +115,10 @@ fn route(command: &str) -> Option<Route> {
         "coldpass_pick_csv_import" => coldpass_pick_csv_import,
         "coldpass_confirm_import" => coldpass_confirm_import,
         "coldpass_copy_secret" => coldpass_copy_secret,
+        "coldpass_biometric_status" => coldpass_biometric_status,
+        "coldpass_enable_biometric" => coldpass_enable_biometric,
+        "coldpass_disable_biometric" => coldpass_disable_biometric,
+        "coldpass_unlock_biometric" => coldpass_unlock_biometric,
         "stop_library_tree_watch" => stop_library_tree_watch,
         "list_library_roles" => list_library_roles,
         "create_library_role" => create_library_role,
@@ -370,6 +374,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "coldpass_pick_csv_import",
     "coldpass_confirm_import",
     "coldpass_copy_secret",
+    "coldpass_biometric_status",
+    "coldpass_enable_biometric",
+    "coldpass_disable_biometric",
+    "coldpass_unlock_biometric",
     "stop_library_tree_watch",
     "list_library_roles",
     "create_library_role",
@@ -569,6 +577,11 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "coldpass_pick_csv_import",
     // The clipboard of this device.
     "coldpass_copy_secret",
+    // The fingerprint sensor and Keystore of this device.
+    "coldpass_biometric_status",
+    "coldpass_enable_biometric",
+    "coldpass_disable_biometric",
+    "coldpass_unlock_biometric",
     // Opens the browser and listens on the loopback address of this computer.
     "backend_connect_mail_account",
     "backend_cancel_mail_account_connection",
@@ -950,6 +963,30 @@ fn coldpass_unlock(app: &AppHandle, _window_label: &str, command: &str, args: &V
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_unlock(arg0, arg1).await) })))
+}
+
+fn coldpass_biometric_status(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_biometric_status(arg0, arg1).await) })))
+}
+
+fn coldpass_enable_biometric(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_enable_biometric(arg0, arg1).await) })))
+}
+
+fn coldpass_disable_biometric(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_disable_biometric(arg0, arg1).await) })))
+}
+
+fn coldpass_unlock_biometric(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::coldpass::coldpass_unlock_biometric(arg0, arg1).await) })))
 }
 
 fn coldpass_status(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

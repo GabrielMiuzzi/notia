@@ -179,6 +179,12 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "backend_save_device_preferences",
     // The clipboard of the device the person is using.
     "coldpass_copy_secret",
+    // The fingerprint sensor of the device the person is using: the
+    // unlock it opens still runs on the host.
+    "coldpass_biometric_status",
+    "coldpass_enable_biometric",
+    "coldpass_disable_biometric",
+    "coldpass_unlock_biometric",
 ];
 
 pub fn is_client_local_command(command: &str) -> bool {

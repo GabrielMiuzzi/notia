@@ -95,6 +95,7 @@ mod dto {
 }
 mod filesystem;
 mod mobile_ai_bridge;
+mod mobile_biometric;
 mod mobile_continuity;
 mod mobile_directory_picker;
 mod mobile_speech_permission;
@@ -210,6 +211,7 @@ pub fn startup_hooks() -> Vec<TauriPlugin> {
         database::init(),
         mobile_ai_bridge::init(),
         mobile_continuity::init(),
+        mobile_biometric::init(),
         mobile_directory_picker::init(),
         mobile_speech_permission::init(),
         services::speech_service::init_preload(),

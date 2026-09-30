@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, Copy, Download, ExternalLink, Eye, EyeOff, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { ColdPassEntryView, ColdPassHealth } from '../../../types/coldpass'
+import { ColdPassBiometricButton } from '../ColdPassBiometricButton'
 import { ColdPassBluetoothCard } from '../ColdPassBluetoothCard'
 import { backendSupports } from '../../../services/transport'
 import { copyColdPassSecret } from '../../../services/coldpass/coldpassStorage'
@@ -149,6 +150,7 @@ function ColdPassViewComponent({
             />
           </div>
           <div className="cp-header__actions">
+            {isUnlocked && backendSupports('coldpass_biometric_status') ? <ColdPassBiometricButton onChanged={showToast} /> : null}
             {backendSupports('coldpass_pick_csv_import') ? (
               <button type="button" className="cp-btn cp-btn--ghost" onClick={onImportVault} disabled={!isUnlocked || isImportingVault}>
                 <Download {...ICON} size={18} aria-hidden="true" />

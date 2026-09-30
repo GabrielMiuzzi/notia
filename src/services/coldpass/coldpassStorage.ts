@@ -20,15 +20,41 @@ export interface ColdPassStatus {
   needsLegacyPasskey: boolean
 }
 
+/** Whether this device can unlock ColdPass with a fingerprint. */
+export type ColdPassBiometricAvailability = 'available' | 'not-enrolled' | 'unsupported'
+
+export interface ColdPassBiometricStatus {
+  availability: ColdPassBiometricAvailability
+  /** The fingerprint opens this library's vault on this device. */
+  enabled: boolean
+}
+
+/** A ColdPass failure with the backend's error code (`cancelled`, `forbidden`…). */
+export class ColdPassError extends Error {
+  readonly code: string | null
+
+  constructor(message: string, code: string | null) {
+    super(message)
+    this.name = 'ColdPassError'
+    this.code = code
+  }
+}
+
+/** The person closed the fingerprint prompt: nothing to report. */
+export function isColdPassCancellation(error: unknown): boolean {
+  return error instanceof ColdPassError && error.code === 'cancelled'
+}
+
 async function invokeColdPass<T>(command: string, payload: Record<string, unknown>): Promise<T> {
   try {
     return await callBackend<T>(command, { payload })
   } catch (error) {
     if (error instanceof Error) throw error
-    const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
-      ? (error as { message: string }).message
+    const failure = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown } : {}
+    const message = typeof failure.message === 'string'
+      ? failure.message
       : 'No se pudo completar la operación de ColdPass.'
-    throw new Error(message)
+    throw new ColdPassError(message, typeof failure.code === 'string' ? failure.code : null)
   }
 }
 
@@ -46,6 +72,24 @@ export async function unlockColdPassSession(
     password,
     ...(legacyPasskey ? { legacyPasskey } : {}),
   })
+}
+
+/** Opens the vault with this device's fingerprint (Android). */
+export async function unlockColdPassWithBiometric(libraryId: string): Promise<ColdPassSessionData> {
+  return invokeColdPass<ColdPassSessionData>('coldpass_unlock_biometric', { libraryId })
+}
+
+export async function getColdPassBiometricStatus(libraryId: string): Promise<ColdPassBiometricStatus> {
+  return invokeColdPass<ColdPassBiometricStatus>('coldpass_biometric_status', { libraryId })
+}
+
+/** Turns the fingerprint on with the vault open; asks for the finger. */
+export async function enableColdPassBiometric(libraryId: string, password: string): Promise<ColdPassBiometricStatus> {
+  return invokeColdPass<ColdPassBiometricStatus>('coldpass_enable_biometric', { libraryId, password })
+}
+
+export async function disableColdPassBiometric(libraryId: string): Promise<ColdPassBiometricStatus> {
+  return invokeColdPass<ColdPassBiometricStatus>('coldpass_disable_biometric', { libraryId })
 }
 
 export async function lockColdPassSession(libraryId: string): Promise<void> {

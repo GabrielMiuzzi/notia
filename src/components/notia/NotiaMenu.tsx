@@ -90,6 +90,7 @@ function NotiaMenuComponent() {
     coldPassImportPromptState,
     isImportingVault,
     handleSubmitColdPassUnlock,
+    handleUnlockColdPassWithBiometric,
     handleCloseColdPassPrompt,
     handleOpenColdPassCredentialModal,
     handleEditColdPassCredential,
@@ -588,6 +589,7 @@ function NotiaMenuComponent() {
           coldPassCredentialModalState={coldPassCredentialModalState}
           coldPassSession={coldPassSession}
           handleSubmitColdPassUnlock={handleSubmitColdPassUnlock}
+          handleUnlockColdPassWithBiometric={handleUnlockColdPassWithBiometric}
           handleCloseColdPassPrompt={handleCloseColdPassPrompt}
           handleSubmitColdPassDeletePassword={handleSubmitColdPassDeletePassword}
           handleCloseColdPassDeletePrompt={handleCloseColdPassDeletePrompt}

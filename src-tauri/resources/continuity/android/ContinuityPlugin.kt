@@ -43,7 +43,7 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun beginWork(invoke: Invoke) {
         try {
-            val workKind = invoke.parseArgs(WorkArgs::class.java).workKind
+            val workKind = invoke.getArgs().getString("workKind", null)
             val normalizedKind = when (workKind) {
                 "microphone" -> "microphone"
                 else -> "dataSync"
@@ -69,7 +69,7 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun openUrl(invoke: Invoke) {
         try {
-            val uri = Uri.parse(invoke.parseArgs(UrlArgs::class.java).url)
+            val uri = Uri.parse(invoke.getArgs().text("url"))
             if (uri.scheme != "https") {
                 invoke.resolve(JSObject().put("ok", false).put("error", "Solo se abren direcciones https."))
                 return
@@ -91,7 +91,7 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun copySecret(invoke: Invoke) {
         try {
-            val args = invoke.parseArgs(SecretArgs::class.java)
+            val args = secretArgs(invoke.getArgs())
             val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText(SECRET_LABEL, args.text)
             val sensitiveKey = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -223,8 +223,11 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     }
 }
 
-private data class WorkArgs(val workKind: String)
-
-private data class UrlArgs(val url: String)
-
 private data class SecretArgs(val text: String, val clearAfterMs: Long)
+
+// Read by hand: `parseArgs` cannot build Kotlin data classes (Jackson has
+// no Kotlin module here), so every call failed.
+private fun JSObject.text(key: String): String =
+    getString(key, null) ?: throw IllegalArgumentException("missing argument")
+
+private fun secretArgs(args: JSObject) = SecretArgs(args.text("text"), args.optLong("clearAfterMs", 30_000L))

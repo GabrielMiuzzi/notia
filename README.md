@@ -419,6 +419,7 @@ Gestor de credenciales cifradas integrado en Notia.
 
 - Tus credenciales se almacenan en un archivo `ColdPass.md` dentro de cada librería, **cifrado con AES-256-GCM**.
 - Se abre con la **contraseña del Owner**, la misma con la que iniciás sesión en Notia; no hay una contraseña aparte. Aunque tengas «Recordar sesión», ColdPass la pide cada vez que lo abrís y se bloquea al salir. Eliminar una credencial o importar un vault también la piden. Si cambiás la contraseña del Owner, ColdPass sigue abriéndose con la nueva.
+- **Huella en Android**: se puede usar en tabletas y teléfonos con sensor de huella y Android 11 o superior. Con ColdPass abierto, tocá **Activar huella**, ingresá la contraseña del Owner y apoyá el dedo. Desde ese momento, al abrir ColdPass en ese dispositivo se pide la huella, con la opción de usar la contraseña. La huella se activa por dispositivo y por librería y no se sincroniza. También funciona si la tableta o el teléfono usa Notia en modo cliente de un host. Si cambiás las huellas registradas en Android o la contraseña del Owner, ColdPass vuelve a pedir la contraseña y hay que activar la huella de nuevo. Eliminar e importar siguen pidiendo la contraseña.
 - La pantalla tiene la lista de credenciales con buscador y filtros (**Todas**, **Débiles**, **Antiguas**) y, al lado, el detalle: contraseña (mostrar y copiar), usuario, usuario secundario, sitio web, historial de contraseñas anteriores con su fecha y notas. En el teléfono, la lista y el detalle se ven de a uno.
 - Cada contraseña muestra si es **Fuerte**, **Débil** (corta, fácil de adivinar o con el nombre, el sitio o el usuario adentro) o **Antigua** (más de un año sin cambiar), y ofrece **Generar nueva**.
 - Al copiar una contraseña, Notia la borra del portapapeles a los 30 segundos si no copiaste otra cosa (Windows y Android). En Windows tampoco queda en el historial del portapapeles.
@@ -783,7 +784,7 @@ En Linux, el servidor se compila desde `src-tauri` con `cargo build --release --
 ### Usar ColdPass
 
 1. En el **Icon Rail**, seleccioná **ColdPass**.
-2. Ingresá la **contraseña del Owner**. La primera vez se crean una carpeta `ColdPass/` y un archivo `ColdPass.md` cifrado en tu librería activa. Si tu vault es de antes, también te pide su passkey anterior, una sola vez.
+2. Ingresá la **contraseña del Owner**. La primera vez se crean una carpeta `ColdPass/` y un archivo `ColdPass.md` cifrado en tu librería activa. Si tu vault es de antes, también te pide su passkey anterior, una sola vez. Si activaste la huella en ese dispositivo Android, se pide la huella: podés apoyar el dedo o usar la contraseña.
 3. Agregá, editá o eliminá credenciales. Cada cambio se cifra automáticamente al guardar. Para eliminar te vuelve a pedir la contraseña del Owner.
 4. Usá los filtros **Débiles** y **Antiguas** para encontrar las contraseñas que conviene cambiar, y **Generar nueva** para reemplazarlas.
 5. Para sincronizar con otro dispositivo:

@@ -30,7 +30,7 @@ Esta matriz es un artefacto de desarrollo. Describe la frontera vigente entre la
 | Finanzas | SQLite, reconciliación, `finance_insights` y extracción nativa | comandos financieros y proveedores | dashboard y formularios | registro | hecho |
 | Graph View | índice, referencias y `wiki_links` | inventario SQLite | canvas React | registro | hecho |
 | Agentes del Chat IA | reglas de rondas (`chat_agents`), permisos (`ToolAccess`) y contexto permanente | motor del chat, un Run por agente | panel de contexto y hilo | registro y eventos (`ai-chat-agent`) | hecho |
-| ColdPass y Bluetooth | cifrado, sesión y generador | vault Rust y enlace Bluetooth nativo | panel de credenciales | registro; Bluetooth e importación CSV solo locales | hecho |
+| ColdPass y Bluetooth | cifrado, sesión y generador | vault Rust y enlace Bluetooth nativo | panel de credenciales | registro; Bluetooth, importación CSV y huella (Android) solo locales | hecho |
 | Voz, Meeting y adjuntos | límites, cola, estado de operación y `remote_audio` | ASR, TTS, captura y decodificación | controles y transcripción | registro; sesiones de voz solo locales; dictado remoto por fragmentos | hecho |
 | Telegram | worker por biblioteca, offsets y cola | HTTP/Telegram y multimedia nativos | configuración y feedback | worker Rust sin interfaz | hecho |
 | Backups y bandeja Windows | ciclo de vida de aplicación | adaptadores Windows; bandeja en el host Tauri | preferencias | registro (selector de carpeta solo local) | hecho |

@@ -56,6 +56,7 @@
 - Herramientas del asistente para Gmail (buscar, leer, papelera, mover de carpeta, spam, leídos, enviar y responder) y Google Calendar (listar y crear eventos), confidenciales (Owner o acceso a #Confidencial), que distinguen de qué cuenta y tipo es cada correo o evento, con confirmación antes de cada cambio o envío.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas con la contraseña del Owner: lista con buscador y filtros por contraseñas débiles o antiguas, detalle con historial fechado y copiado que se borra del portapapeles a los 30 segundos.
+- Desbloqueo de ColdPass con huella en Android, opcional por dispositivo.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
 - Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
