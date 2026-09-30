@@ -16,8 +16,8 @@
   --notia-el-mono: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
 }
 
-/* On a page the sheet already has the panel color: panels go one step up. */
-.notia-markdown-host.is-paged {
+/* On the sheet (pages or continuous) the paper has the panel color: panels go one step up. */
+.notia-markdown-host.is-sheet {
   --notia-el-panel: var(--color-card-bg);
   --notia-el-raised: color-mix(in srgb, var(--color-card-bg) 80%, var(--color-border-soft));
 }

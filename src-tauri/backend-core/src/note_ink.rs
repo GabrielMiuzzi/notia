@@ -2,12 +2,15 @@
 //!
 //! The strokes of `folder/note.md` live in `.notia/ink/folder/note.md.json`,
 //! next to the library's other Notia data, so the note stays plain Markdown
-//! and a Host copies them with the note. A stroke belongs to one surface: a
-//! page of the note in page mode (`page` = its index) or the continuous
-//! sheet (`page` = `None`); each mode shows only its own strokes.
+//! and a Host copies them with the note. Both modes show the same strokes:
+//! they are kept in the note's flow, the text as it is laid out out of page
+//! mode (the sheet is as wide in both), and the editor moves them below the
+//! page breaks in page mode. Strokes drawn on a page before that (`page` =
+//! its index, coordinates of that page) are moved into the flow by the
+//! editor the next time it lays the pages out (`replace_strokes`).
 //!
-//! Coordinates are CSS pixels of the unscaled sheet (of the page, in page
-//! mode). This module validates what the editor sends, smooths and
+//! Coordinates are CSS pixels of the unscaled sheet. This module validates
+//! what the editor sends, smooths and
 //! simplifies the strokes, finds what the eraser touches and says where the
 //! strokes go when their note is renamed, moved, copied or deleted.
 
@@ -23,6 +26,9 @@ pub const MAX_STROKES: usize = 5000;
 /// Largest strokes file; a note past it takes no more strokes.
 pub const MAX_INK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ERASER_POINTS: usize = 512;
+const MAX_LASSO_POINTS: usize = 4000;
+/// Share of a stroke's points that must fall inside the lasso to select it.
+const LASSO_INSIDE_SHARE: f64 = 0.5;
 const MAX_ID_CHARS: usize = 64;
 /// Widest sheet: an A4 in landscape is 1123 px.
 const MAX_X: f64 = 4000.0;
@@ -261,9 +267,18 @@ pub fn add_stroke(document: &mut InkDocument, stroke: InkStroke) -> Result<(), B
     Ok(())
 }
 
-/// The strokes of the pages (`paged`) or of the continuous sheet.
-pub fn strokes_on(document: &InkDocument, paged: bool) -> Vec<InkStroke> {
-    document.strokes.iter().filter(|stroke| stroke.page.is_some() == paged).cloned().collect()
+/// Puts new versions of strokes that are already kept (same id), for
+/// example strokes drawn on a page moved into the flow. Unknown ids are
+/// refused, so this never adds a stroke.
+pub fn replace_strokes(document: &mut InkDocument, strokes: Vec<InkStroke>) -> Result<(), BackendError> {
+    for stroke in strokes {
+        check_stroke(&stroke)?;
+        let Some(existing) = document.strokes.iter_mut().find(|existing| existing.id == stroke.id) else {
+            return Err(invalid("El trazo que se quiere cambiar no existe."));
+        };
+        *existing = stroke;
+    }
+    Ok(())
 }
 
 /// Takes out the strokes with these ids and returns them, for undo.
@@ -329,6 +344,68 @@ pub fn erase(document: &mut InkDocument, page: Option<u32>, path: &[[f64; 2]], r
         .map(|stroke| stroke.id.clone())
         .collect();
     Ok(remove_strokes(document, &ids))
+}
+
+/// Whether a point is inside a closed path (even–odd rule).
+fn inside(point: [f64; 2], polygon: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon[polygon.len() - 1];
+    for &current in polygon {
+        let crosses = (current[1] > point[1]) != (previous[1] > point[1]);
+        if crosses && point[0] < (previous[0] - current[0]) * (point[1] - current[1]) / (previous[1] - current[1]) + current[0] {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
+}
+
+/// The strokes of the note's flow the lasso takes: at least half of their
+/// points inside the closed path. Strokes still on a page are left out.
+pub fn select_in_lasso(document: &InkDocument, lasso: &[[f64; 2]]) -> Result<Vec<String>, BackendError> {
+    let valid = lasso.iter().all(|point| point.iter().all(|value| value.is_finite()));
+    if lasso.len() < 3 || lasso.len() > MAX_LASSO_POINTS || !valid {
+        return Err(invalid("El lazo no es válido."));
+    }
+    Ok(document
+        .strokes
+        .iter()
+        .filter(|stroke| stroke.page.is_none())
+        .filter(|stroke| {
+            let taken = stroke.points.iter().filter(|point| inside(xy(point), lasso)).count();
+            taken as f64 >= stroke.points.len() as f64 * LASSO_INSIDE_SHARE
+        })
+        .map(|stroke| stroke.id.clone())
+        .collect())
+}
+
+/// Moves strokes by `(dx, dy)` and returns them as they are now. Nothing
+/// moves when one of them would leave the sheet.
+pub fn move_strokes(document: &mut InkDocument, ids: &[String], dx: f64, dy: f64) -> Result<Vec<InkStroke>, BackendError> {
+    if !dx.is_finite() || !dy.is_finite() || ids.is_empty() {
+        return Err(invalid("El movimiento de los trazos no es válido."));
+    }
+    let moved: Vec<InkStroke> = document
+        .strokes
+        .iter()
+        .filter(|stroke| ids.contains(&stroke.id))
+        .map(|stroke| InkStroke {
+            points: stroke
+                .points
+                .iter()
+                .map(|point| [round(point[0] + dx, 0.1), round(point[1] + dy, 0.1), point[2]])
+                .collect(),
+            ..stroke.clone()
+        })
+        .collect();
+    if moved.len() != ids.len() {
+        return Err(invalid("Algún trazo que se quiere mover ya no existe."));
+    }
+    for stroke in &moved {
+        check_stroke(stroke).map_err(|_| invalid("Los trazos quedarían fuera de la hoja."))?;
+    }
+    replace_strokes(document, moved.clone())?;
+    Ok(moved)
 }
 
 /// What happened to an entry of the library, for its notes' strokes.
@@ -470,13 +547,44 @@ mod tests {
     }
 
     #[test]
-    fn each_mode_sees_its_own_strokes() {
+    fn strokes_drawn_on_a_page_are_moved_into_the_flow_by_id() {
         let mut document = InkDocument::default();
         add_stroke(&mut document, line("sheet", None, [0.0, 0.0], [10.0, 0.0])).unwrap();
         add_stroke(&mut document, line("page", Some(1), [0.0, 0.0], [10.0, 0.0])).unwrap();
         assert!(add_stroke(&mut document, line("page", Some(1), [0.0, 0.0], [1.0, 0.0])).is_err());
-        assert_eq!(strokes_on(&document, false).iter().map(|stroke| stroke.id.as_str()).collect::<Vec<_>>(), vec!["sheet"]);
-        assert_eq!(strokes_on(&document, true).iter().map(|stroke| stroke.id.as_str()).collect::<Vec<_>>(), vec!["page"]);
+        replace_strokes(&mut document, vec![line("page", None, [0.0, 1150.0], [10.0, 1150.0])]).unwrap();
+        assert_eq!(document.strokes.len(), 2);
+        assert_eq!(document.strokes[1].page, None);
+        assert_eq!(document.strokes[1].points[0][1], 1150.0);
+        // Never adds a stroke, and validates what it puts.
+        assert!(replace_strokes(&mut document, vec![line("otro", None, [0.0, 0.0], [1.0, 1.0])]).is_err());
+        let mut invalid_color = line("sheet", None, [0.0, 0.0], [1.0, 1.0]);
+        invalid_color.color = "fucsia".to_string();
+        assert!(replace_strokes(&mut document, vec![invalid_color]).is_err());
+    }
+
+    #[test]
+    fn the_lasso_takes_the_strokes_mostly_inside_and_they_move_together() {
+        let mut document = InkDocument::default();
+        add_stroke(&mut document, line("inside", None, [20.0, 20.0], [40.0, 40.0])).unwrap();
+        add_stroke(&mut document, line("half", None, [50.0, 50.0], [150.0, 50.0])).unwrap();
+        add_stroke(&mut document, line("outside", None, [200.0, 200.0], [220.0, 220.0])).unwrap();
+        add_stroke(&mut document, line("on-page", Some(0), [20.0, 20.0], [40.0, 40.0])).unwrap();
+        let lasso = [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        assert_eq!(select_in_lasso(&document, &lasso).unwrap(), vec!["inside".to_string(), "half".to_string()]);
+        assert!(select_in_lasso(&document, &lasso[..2]).is_err());
+
+        let ids = vec!["inside".to_string(), "half".to_string()];
+        let moved = move_strokes(&mut document, &ids, 10.0, 300.0).unwrap();
+        assert_eq!(moved[0].points[0], [30.0, 320.0, 0.5]);
+        assert_eq!(document.strokes[0].points[1], [50.0, 340.0, 0.5]);
+        // Undo is the opposite move.
+        move_strokes(&mut document, &ids, -10.0, -300.0).unwrap();
+        assert_eq!(document.strokes[0].points[0], [20.0, 20.0, 0.5]);
+        // Off the sheet or unknown: nothing moves.
+        assert!(move_strokes(&mut document, &ids, 0.0, -1000.0).is_err());
+        assert_eq!(document.strokes[0].points[0], [20.0, 20.0, 0.5]);
+        assert!(move_strokes(&mut document, &["nada".to_string()], 1.0, 1.0).is_err());
     }
 
     #[test]

@@ -4,8 +4,8 @@
  * `backend_core::device_preferences`).
  */
 
-/** Page mode only offers A4. */
-export type PaperFormatId = 'a4'
+/** Page mode only offers A3. */
+export type PaperFormatId = 'a3'
 export type PageOrientation = 'portrait' | 'landscape'
 export type PageMarginsId = 'narrow' | 'normal' | 'wide'
 
@@ -46,13 +46,13 @@ export interface EditorPageSetup {
   heightMm: number
   marginMm: number
   pageNumbers: boolean
-  /** Width of the sheet of a note not in page mode: a portrait A4. */
+  /** Width of the sheet of a note not in page mode: a portrait A3. */
   continuousWidthMm: number
 }
 
 /**
- * The sheet the editor draws: A4 pages in page mode, or one continuous
- * sheet as wide as an A4, with the same margins, when the note is not.
+ * The sheet the editor draws: A3 pages in page mode, or one continuous
+ * sheet as wide as an A3, with the same margins, when the note is not.
  */
 export interface MarkdownPageLayout {
   paged: boolean

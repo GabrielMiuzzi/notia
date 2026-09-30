@@ -91,6 +91,9 @@ fn route(command: &str) -> Option<Route> {
         "markdown_ink_add" => markdown_ink_add,
         "markdown_ink_remove" => markdown_ink_remove,
         "markdown_ink_restore" => markdown_ink_restore,
+        "markdown_ink_replace" => markdown_ink_replace,
+        "markdown_ink_select" => markdown_ink_select,
+        "markdown_ink_move" => markdown_ink_move,
         "markdown_ink_erase" => markdown_ink_erase,
         "markdown_export_diagram" => markdown_export_diagram,
         "markdown_note_preview" => markdown_note_preview,
@@ -343,6 +346,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "markdown_ink_add",
     "markdown_ink_remove",
     "markdown_ink_restore",
+    "markdown_ink_replace",
+    "markdown_ink_select",
+    "markdown_ink_move",
     "markdown_ink_erase",
     "markdown_export_diagram",
     "markdown_note_preview",
@@ -1621,6 +1627,21 @@ fn markdown_ink_remove(app: &AppHandle, _window_label: &str, command: &str, args
 fn markdown_ink_restore(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (app, payload) = (app.clone(), arg(command, args, "payload")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_restore(app, payload).await) })))
+}
+
+fn markdown_ink_replace(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_replace(app, payload).await) })))
+}
+
+fn markdown_ink_select(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_select(app, payload).await) })))
+}
+
+fn markdown_ink_move(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_move(app, payload).await) })))
 }
 
 fn markdown_ink_erase(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

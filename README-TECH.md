@@ -10311,3 +10311,70 @@ Estado vigente desde 2026-09-29. Implementa los tableros «Elementos · Texto»,
 `cargo test -p notia-app --features bluetooth`: 450 (3 ignoradas). `cargo test -p notia-backend-core`: 476. El fixture de `library_document_adapter` usa ahora una carpeta temporal por proceso y la limpia antes de empezar: una corrida fallida dejaba la suya y rompía la siguiente. `cargo check` para `aarch64-linux-android`: compila.
 
 **Pendiente.** Repetir el pedido original desde Telegram con la biblioteca real.
+
+## Editor Markdown: páginas A3 y hoja continua pintada (2026-09-29)
+
+Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos del canvas, hoja A4 y escritura a mano» dice sobre el tamaño y el aspecto de la hoja.
+
+- `backend_core::page_setup::PAPER_FORMATS` tiene solo A3 (297 × 420 mm). Un formato guardado antes (A4, Carta…) se lee como A3, y se conservan la orientación y los márgenes. `continuousWidthMm` es 297, el ancho de un A3 vertical. Las exportaciones a PDF y Word toman el mismo tamaño; también la de Meeting, que usa la configuración por defecto.
+- La hoja de una nota sin modo página se pinta igual que las páginas: el mismo fondo, el mismo borde y la misma sombra (`.notia-markdown-page-sheet.is-continuous`). Queda abierta abajo: sin borde inferior, y el contenido del zoom no deja margen al pie. Así llega hasta el borde del editor y crece con la nota y con el trazo más bajo. El texto usa los mismos márgenes que las páginas, también el de arriba.
+- Como la hoja continua ahora tiene el color del papel, los paneles de los elementos y de los bloques GitBook suben un escalón de color también en ese modo (`.is-sheet`, antes solo `.is-paged`).
+- Un A3 mide 1123 px de ancho: en ventanas más angostas la hoja se achica para entrar (`pageFit`), igual que antes.
+
+**Validación.** `cargo test -p notia-backend-core` 476 y `-p notia-app --features bluetooth` 450, con las pruebas de `page_setup` y `device_preferences` pasadas a A3; `vitest` de `src/components/notia` 189; `tsc`. Revisión visual con el arnés: hoja continua corta en oscuro (llega abajo) y páginas A3 en claro.
+
+## Escritura a mano: los mismos trazos en los dos modos (2026-09-29)
+
+Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos del canvas, hoja A4 y escritura a mano» dice sobre los trazos propios de cada modo.
+
+**Problema.** Cada modo guardaba sus propios trazos (`page` = índice de la hoja o ninguno). Lo escrito en modo página desaparecía al pasar al modo normal y volvía al regresar.
+
+**Modelo.** Los trazos se guardan en el flujo de la nota: el texto como queda fuera del modo página, en píxeles de la hoja sin escalar. La hoja continua y las páginas verticales tienen el mismo ancho (un A3) y los mismos márgenes, así que el texto corta igual. El modo página solo agrega espacios en blanco donde termina una hoja.
+
+- `paginationPlugin` informa cada salto por `onFlowBreaksChange`: su altura y dónde empieza en el flujo (el alto medido sin saltos del bloque que abre la hoja). Informa también cuando el modo página se prende o se apaga, aunque no haya saltos.
+- `views/markdown/ink/inkFlow.ts` traduce las alturas en los dos sentidos. `flowToPage` suma los saltos anteriores. `pageToFlow` los resta, y un punto dentro de un blanco va al comienzo de ese blanco.
+  - En modo página, `InkLayer` dibuja cada trazo del flujo corrido por los saltos.
+  - Lo que se dibuja o se borra en una hoja se pasa al flujo antes de mandarlo a Rust. El trazo nuevo va sin `page`; el borrador manda su recorrido en el flujo.
+- Rust (`markdown_ink_load`) devuelve todos los trazos de la nota, sin filtrar por modo, y el historial de deshacer sirve en los dos.
+
+**Trazos anteriores.** Los que tienen `page` (dibujados en una hoja antes de este cambio) se pasan al flujo solos la primera vez que la nota muestra sus páginas: `strokeInFlow` con los saltos reales y el comando nuevo `markdown_ink_replace { libraryId, path, strokes }`. `note_ink::replace_strokes` cambia trazos existentes por id, valida y nunca agrega. Hasta entonces, el modo normal los ubica como si cada hoja estuviera llena (`estimatedBreaks`), que puede correrlos unas líneas.
+
+**Límites.**
+- Con las páginas horizontales (420 mm de ancho) el texto corta distinto que en la hoja continua (297 mm), y los trazos no coinciden exactamente con el texto al cambiar de modo.
+- Los trazos no siguen al texto si este se edita: quedan en su altura del flujo.
+
+**Validación.**
+- `inkFlow.test.ts` (4 casos: ida y vuelta, blancos, trazos de hoja al flujo, saltos estimados), `note_ink::tests::strokes_drawn_on_a_page_are_moved_into_the_flow_by_id` y las pruebas del servicio (`markdown_ink_replace`, carga sin modo).
+- `vitest` 95 archivos, 409 pruebas; `cargo test` core 476 y app 450; `cargo check` Android.
+- Revisión en el navegador con el arnés: un trazo hecho bajo el título de la hoja 2 queda a 7,95 px del mismo título en modo página, en modo normal y al volver. Un trazo viejo de la hoja 2 se ve en el mismo lugar, se guarda en el flujo y aparece ahí en modo normal.
+
+## Editor Markdown: selección de bloques con rectángulo y lazo para trazos (2026-09-30)
+
+**Rectángulo con el Selector (`views/markdown/blockMarquee.ts`).**
+- `attachBlockMarquee` escucha en el contenedor del editor. Un arrastre con mouse o lápiz que empieza en un lugar vacío dibuja el rectángulo (`.notia-block-marquee`, en coordenadas del contenido, así acompaña el desplazamiento). Lugar vacío es fuera del texto (`.ProseMirror`), de las propiedades, de la barra, de los menús y de los controles.
+  - Cerca del borde superior o inferior, la nota se desplaza sola.
+  - Menos de 4 px es un clic: se reporta a `handleClickBelowContent`, que sigue agregando una línea bajo la nota.
+  - El dedo no dibuja el rectángulo: desplaza la nota, y la selección de texto sigue disponible.
+  - Solo funciona con la herramienta Selector (`penToolRef`).
+- `selectBlocksInRect` toma los bloques de primer nivel cuyo rectángulo toca el trazado. La selección es una `TextSelection` desde el primero hasta el último, así funcionan copiar, cortar, borrar y la barra de formato; una sola imagen, línea o fórmula se selecciona como nodo. `createBlockSelectionPlugin` pinta esos bloques (`.notia-block-selected`) hasta que cambia el documento o la selección sale del rango.
+
+**Lazo para trazos.**
+- La herramienta nueva «Lazo» de la barra, o el botón lateral del lápiz en «Selección» (antes no hacía nada), dibuja un contorno punteado.
+  - Al soltar, `markdown_ink_select { libraryId, path, lasso }` → `{ ids }`: Rust toma los trazos del flujo con al menos la mitad de sus puntos dentro del contorno (regla par-impar, `note_ink::select_in_lasso`, hasta 4000 puntos).
+  - La selección se muestra con un recuadro punteado, la cantidad y «Borrar».
+- Arrastrar dentro del recuadro mueve los trazos: se ven corridos mientras se arrastra y al soltar `markdown_ink_move { libraryId, path, ids, dx, dy }` → `{ strokes }`.
+  - `note_ink::move_strokes` los traslada y valida que sigan en la hoja; si alguno saldría o no existe, no mueve ninguno.
+  - En modo página el desplazamiento vertical se traduce al flujo (`pageToFlow` del punto final menos el del inicial).
+- «Borrar», Delete o Retroceso quitan la selección (`markdown_ink_remove`).
+- Mover y borrar son pasos del historial: deshacer un movimiento es el movimiento opuesto.
+- Cambiar de herramienta suelta la selección.
+
+**Validación.**
+- `blockMarquee.test.ts` (2 casos, con un editor real) y `note_ink::tests::the_lasso_takes_the_strokes_mostly_inside_and_they_move_together`.
+- `vitest` 96 archivos, 411 pruebas; `cargo test` core 477 y app 450; `cargo check` Android.
+- Revisión en el navegador con el arnés:
+  - un rectángulo desde el margen izquierdo seleccionó los cinco bloques que tocaba;
+  - el lazo tomó solo el trazo rodeado y lo movió exactamente (+100, +150);
+  - deshacer lo devolvió y «Borrar» lo quitó.
+
+**Pendiente.** Probar con lápiz real (botón lateral) en Windows y Android.

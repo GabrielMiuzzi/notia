@@ -1191,14 +1191,15 @@
   }
 }
 
-/* ---------- Sheet: pages or one continuous A4 ---------- */
+/* ---------- Sheet: pages or one continuous A3 ---------- */
 
 /*
- * The note is written on paper of A4 width, centred on the app background:
- * sheets 32px apart in page mode, or one sheet as long as the note when it
- * is not. The text sits in the page margins, so it wraps the same in both
- * modes. The sheets are drawn behind the editor; in page mode the
- * pagination plugin moves the blocks that start a page with blank space.
+ * The note is written on paper of A3 width, centred on the app background:
+ * sheets 32px apart in page mode, or one sheet with the same look that
+ * reaches the bottom of the editor and grows with the note when it is not.
+ * The text sits in the page margins, so it wraps the same in both modes.
+ * The sheets are drawn behind the editor; in page mode the pagination
+ * plugin moves the blocks that start a page with blank space.
  */
 .notia-markdown-host.is-sheet {
   --notia-page-sheet: var(--color-sidebar-bg);
@@ -1219,7 +1220,8 @@
   display: flex;
   flex-direction: column;
   min-height: 100%;
-  padding-top: 0;
+  /* Open at the bottom: the sheet runs past the lower edge of the editor. */
+  padding-bottom: 0;
 }
 
 .notia-markdown-host.is-sheet .notia-markdown-pages {
@@ -1252,13 +1254,12 @@
   box-shadow: 0 12px 32px var(--color-menu-shadow);
 }
 
-/* The continuous sheet only sets the A4 column: the note sits on the app background, as in the canvas. */
+/* The continuous sheet: a page without an end, open at the bottom. */
 .notia-markdown-page-sheet.is-continuous {
   top: 0;
   height: 100%;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
 }
 
 .notia-markdown-page-number {
@@ -1277,9 +1278,7 @@
   padding: var(--notia-page-margin) var(--notia-page-margin) 0;
 }
 
-/* Without a visible sheet the text starts 36px down, as in the canvas; the sides keep the page margins. */
 .notia-markdown-host.is-continuous .notia-markdown-page-flow {
-  padding-top: 36px;
   padding-bottom: var(--notia-page-margin);
 }
 
@@ -1297,4 +1296,23 @@
 .notia-page-spacer {
   pointer-events: none;
   user-select: none;
+}
+
+/* ---------- Rectangle selection of blocks ---------- */
+
+.notia-block-marquee {
+  position: absolute;
+  z-index: 25;
+  box-sizing: border-box;
+  border: 1px solid var(--color-accent-text);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
+  pointer-events: none;
+}
+
+/* The blocks the rectangle took, while the selection stays on them. */
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-block-selected {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-accent-text) 10%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-text) 35%, transparent);
 }

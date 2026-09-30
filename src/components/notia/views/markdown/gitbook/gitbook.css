@@ -23,8 +23,8 @@
   margin: 10px 0;
 }
 
-/* On a page the sheet already has the panel color: the blocks go one step up. */
-.notia-markdown-host.is-paged .notia-gb {
+/* On the sheet (pages or continuous) the paper has the panel color: the blocks go one step up. */
+.notia-markdown-host.is-sheet .notia-gb {
   --notia-gb-panel: var(--color-card-bg);
   --notia-gb-raised: color-mix(in srgb, var(--color-card-bg) 80%, var(--color-border-soft));
 }

@@ -22,11 +22,24 @@ export interface PageBreak {
   height: number
 }
 
+/**
+ * A page break in the note's flow: where the blank space starts in the text
+ * without page breaks (the layout of a note out of page mode, in layout
+ * pixels from the top of the sheet) and how tall it is. The handwriting uses
+ * it to show the same strokes on the same text in both modes.
+ */
+export interface FlowBreak {
+  flowTop: number
+  height: number
+}
+
 export interface PaginationPluginOptions {
   getGeometry: () => PaginationGeometry | null
   /** Element the sheets are laid out in; its top is the first page's top. */
   getContainer: () => HTMLElement | null
   onPageCountChange: (count: number) => void
+  /** The page breaks in the flow, each time they change or page mode turns on or off (none out of page mode). */
+  onFlowBreaksChange?: (breaks: FlowBreak[]) => void
 }
 
 interface PaginationState {
@@ -169,7 +182,7 @@ export function requestPagination(view: EditorView): void {
  * flows from sheet to sheet. The spaces are decorations; the Markdown does
  * not change.
  */
-export function createPaginationPlugin({ getGeometry, getContainer, onPageCountChange }: PaginationPluginOptions): Plugin {
+export function createPaginationPlugin({ getGeometry, getContainer, onPageCountChange, onFlowBreaksChange }: PaginationPluginOptions): Plugin {
   return new Plugin<PaginationState>({
     key: paginationKey,
     state: {
@@ -190,16 +203,29 @@ export function createPaginationPlugin({ getGeometry, getContainer, onPageCountC
     view: (view) => {
       let frame = 0
       let lastCount = 0
+      let lastFlow = ''
       const paginate = () => {
         const current = paginationKey.getState(view.state)?.breaks ?? []
         const geometry = getGeometry()
         const container = getContainer()
         let next: PageBreak[] = []
         let pageCount = 1
+        let flow: FlowBreak[] = []
         if (geometry && container) {
-          const layout = layoutPages(measureBlocks(view, container, current, geometry.zoom), geometry)
+          const blocks = measureBlocks(view, container, current, geometry.zoom)
+          const layout = layoutPages(blocks, geometry)
           next = layout.breaks
           pageCount = layout.pageCount
+          flow = next.map((pageBreak) => ({
+            flowTop: blocks.find((block) => block.pos === pageBreak.pos)?.top ?? 0,
+            height: pageBreak.height,
+          }))
+        }
+        // Turning page mode on or off is reported too, even without breaks.
+        const flowKey = JSON.stringify([geometry !== null, flow])
+        if (flowKey !== lastFlow) {
+          lastFlow = flowKey
+          onFlowBreaksChange?.(flow)
         }
         if (!sameBreaks(current, next)) {
           view.dispatch(view.state.tr.setMeta(paginationKey, next).setMeta('addToHistory', false))

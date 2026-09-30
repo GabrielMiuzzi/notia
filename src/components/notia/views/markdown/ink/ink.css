@@ -413,3 +413,66 @@
 .notia-ink-layer[data-tool='eraser'] {
   cursor: cell;
 }
+
+/* ---------- Lasso and selected strokes ---------- */
+
+.notia-ink-lasso {
+  fill: color-mix(in srgb, var(--color-accent-text) 8%, transparent);
+  stroke: var(--color-accent-text);
+  stroke-width: 1.5px;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.notia-ink-selection-box {
+  fill: color-mix(in srgb, var(--color-accent-text) 6%, transparent);
+  stroke: var(--color-accent-text);
+  stroke-width: 1px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.notia-ink-layer[data-tool='lasso'] .notia-ink-selection {
+  cursor: move;
+}
+
+/* The count and «Borrar» above the selection's right corner. */
+.notia-ink-selection-tools {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 3px 3px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-card-bg);
+  box-shadow: 0 8px 20px var(--color-menu-shadow);
+  color: var(--color-muted-text);
+  font-size: 12px;
+  white-space: nowrap;
+  translate: -100% calc(-100% - 6px);
+}
+
+.notia-ink-selection-tools button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-coral) 14%, transparent);
+  color: var(--color-coral);
+  font: inherit;
+  cursor: pointer;
+}
+
+.notia-ink-selection-tools button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+@media (pointer: coarse) {
+  .notia-ink-selection-tools button {
+    min-height: 44px;
+    padding: 0 14px;
+  }
+}

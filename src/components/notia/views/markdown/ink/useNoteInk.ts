@@ -3,8 +3,11 @@ import {
   addInkStroke,
   eraseInk,
   loadInk,
+  moveInkStrokes,
   removeInkStrokes,
+  replaceInkStrokes,
   restoreInkStrokes,
+  selectInkInLasso,
   type InkStroke,
   type InkStrokeDraft,
 } from '../../../../../services/markdown/noteInkRuntime'
@@ -15,7 +18,10 @@ import {
  * new stroke shows at once as drawn and is replaced by the one Rust keeps.
  */
 
-type HistoryEntry = { kind: 'add'; stroke: InkStroke } | { kind: 'erase'; strokes: InkStroke[] }
+type HistoryEntry =
+  | { kind: 'add'; stroke: InkStroke }
+  | { kind: 'erase'; strokes: InkStroke[] }
+  | { kind: 'move'; ids: string[]; dx: number; dy: number }
 
 const LOAD_ERROR = 'No se pudieron leer los trazos de esta nota.'
 const SAVE_ERROR = 'No se pudo guardar el trazo.'
@@ -30,9 +36,18 @@ export interface NoteInk {
   erase: (page: number | null, points: Array<[number, number]>, radius: number, gesture: number) => void
   undo: () => void
   redo: () => void
+  /** Saves new versions of strokes (same ids), outside the undo history. */
+  replace: (strokes: InkStroke[]) => void
+  /** The strokes a lasso (in the note's flow) takes. */
+  select: (lasso: Array<[number, number]>) => Promise<string[]>
+  /** Moves strokes; one undo step. */
+  move: (ids: string[], dx: number, dy: number) => void
+  /** Takes out the selected strokes; one undo step. */
+  remove: (ids: string[]) => void
 }
 
-export function useNoteInk(libraryId: string | null | undefined, path: string, paged: boolean): NoteInk {
+/** The strokes of a note, the same in both modes. */
+export function useNoteInk(libraryId: string | null | undefined, path: string): NoteInk {
   const [strokes, setStrokes] = useState<InkStroke[]>([])
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<{ undo: HistoryEntry[]; redo: HistoryEntry[] }>({ undo: [], redo: [] })
@@ -53,7 +68,7 @@ export function useNoteInk(libraryId: string | null | undefined, path: string, p
     setError(null)
     if (!libraryId || !path) return
     let active = true
-    void loadInk(libraryId, path, paged)
+    void loadInk(libraryId, path)
       .then((loaded) => {
         if (active) setStrokes(loaded)
       })
@@ -63,7 +78,7 @@ export function useNoteInk(libraryId: string | null | undefined, path: string, p
     return () => {
       active = false
     }
-  }, [libraryId, path, paged])
+  }, [libraryId, path])
 
   const enqueue = useCallback(<T,>(run: () => Promise<T>, onDone: (value: T) => void, onFail: () => void) => {
     const generation = generationRef.current
@@ -110,9 +125,33 @@ export function useNoteInk(libraryId: string | null | undefined, path: string, p
     }, () => setError('No se pudo borrar el trazo.'))
   }, [enqueue, libraryId, path])
 
+  /** Puts strokes as Rust returns them after a change. */
+  const merge = useCallback((changed: InkStroke[]) => {
+    const byId = new Map(changed.map((stroke) => [stroke.id, stroke]))
+    setStrokes((current) => current.map((stroke) => byId.get(stroke.id) ?? stroke))
+  }, [])
+
   /** Takes a stroke out or puts strokes back, as undo and redo need. */
   const apply = useCallback((entry: HistoryEntry, direction: 'undo' | 'redo') => {
     if (!libraryId) return
+    const settle = () => {
+      applyingRef.current = false
+      setHistory((current) => direction === 'undo'
+        ? { undo: current.undo.slice(0, -1), redo: [...current.redo, entry] }
+        : { undo: [...current.undo, entry], redo: current.redo.slice(0, -1) })
+    }
+    if (entry.kind === 'move') {
+      const sign = direction === 'undo' ? -1 : 1
+      applyingRef.current = true
+      enqueue(() => moveInkStrokes(libraryId, path, entry.ids, sign * entry.dx, sign * entry.dy), (moved) => {
+        merge(moved)
+        settle()
+      }, () => {
+        applyingRef.current = false
+        setError('No se pudo deshacer el cambio.')
+      })
+      return
+    }
     const removing = (entry.kind === 'add') === (direction === 'undo')
     const affected = entry.kind === 'add' ? [entry.stroke] : entry.strokes
     const ids = new Set(affected.map((stroke) => stroke.id))
@@ -123,18 +162,49 @@ export function useNoteInk(libraryId: string | null | undefined, path: string, p
         else await restoreInkStrokes(libraryId, path, affected)
       },
       () => {
-        applyingRef.current = false
         setStrokes((current) => (removing ? current.filter((stroke) => !ids.has(stroke.id)) : [...current, ...affected]))
-        setHistory((current) => direction === 'undo'
-          ? { undo: current.undo.slice(0, -1), redo: [...current.redo, entry] }
-          : { undo: [...current.undo, entry], redo: current.redo.slice(0, -1) })
+        settle()
       },
       () => {
         applyingRef.current = false
         setError('No se pudo deshacer el cambio.')
       },
     )
+  }, [enqueue, libraryId, merge, path])
+
+  const select = useCallback((lasso: Array<[number, number]>) => new Promise<string[]>((resolve) => {
+    if (!libraryId) {
+      resolve([])
+      return
+    }
+    // After the strokes still on their way to Rust.
+    enqueue(() => selectInkInLasso(libraryId, path, lasso), resolve, () => {
+      setError('No se pudieron seleccionar los trazos.')
+      resolve([])
+    })
+  }), [enqueue, libraryId, path])
+
+  const move = useCallback((ids: string[], dx: number, dy: number) => {
+    if (!libraryId || ids.length === 0 || (dx === 0 && dy === 0)) return
+    enqueue(() => moveInkStrokes(libraryId, path, ids, dx, dy), (moved) => {
+      merge(moved)
+      setHistory((current) => ({ undo: [...current.undo, { kind: 'move', ids, dx, dy }], redo: [] }))
+    }, () => setError('No se pudieron mover los trazos.'))
+  }, [enqueue, libraryId, merge, path])
+
+  const remove = useCallback((ids: string[]) => {
+    if (!libraryId || ids.length === 0) return
+    enqueue(() => removeInkStrokes(libraryId, path, ids), (removed) => {
+      const gone = new Set(removed.map((stroke) => stroke.id))
+      setStrokes((current) => current.filter((stroke) => !gone.has(stroke.id)))
+      setHistory((current) => ({ undo: [...current.undo, { kind: 'erase', strokes: removed }], redo: [] }))
+    }, () => setError('No se pudieron borrar los trazos.'))
   }, [enqueue, libraryId, path])
+
+  const replace = useCallback((changed: InkStroke[]) => {
+    if (!libraryId || changed.length === 0) return
+    enqueue(() => replaceInkStrokes(libraryId, path, changed), () => merge(changed), () => setError('No se pudieron acomodar los trazos a la nota.'))
+  }, [enqueue, libraryId, merge, path])
 
   const undo = useCallback(() => {
     const entry = history.undo[history.undo.length - 1]
@@ -157,5 +227,9 @@ export function useNoteInk(libraryId: string | null | undefined, path: string, p
     erase,
     undo,
     redo,
+    replace,
+    select,
+    move,
+    remove,
   }
 }

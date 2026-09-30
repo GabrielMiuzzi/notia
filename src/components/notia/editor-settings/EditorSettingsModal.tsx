@@ -76,7 +76,7 @@ function PageTab({ pageMode, onTogglePageMode }: Pick<EditorSettingsModalProps, 
       <div className="notia-editor-settings-lead">
         <div>
           <h3>Modo página</h3>
-          <p>Divide esta nota en hojas A4, como en un procesador de texto. Se guarda en la nota, así que cada nota abre como la dejaste; sin activarlo, la nota es un lienzo continuo del ancho de una hoja A4. La orientación y los márgenes valen para todas las notas en modo página.</p>
+          <p>Divide esta nota en hojas A3, como en un procesador de texto. Se guarda en la nota, así que cada nota abre como la dejaste; sin activarlo, la nota es una sola hoja del ancho de un A3, sin fin hacia abajo. La orientación y los márgenes valen para todas las notas en modo página.</p>
         </div>
         <SettingsSwitch label="Modo página" checked={pageMode === true} disabled={pageMode === null} onChange={onTogglePageMode} />
       </div>
@@ -129,7 +129,7 @@ function PageTab({ pageMode, onTogglePageMode }: Pick<EditorSettingsModalProps, 
   )
 }
 
-/** Editor settings: page mode with its A4 page setup. */
+/** Editor settings: page mode with its A3 page setup. */
 export function EditorSettingsModal({ open, tab, onTabChange, onClose, pageMode, onTogglePageMode }: EditorSettingsModalProps) {
   const { error } = useEditorPreferences()
   return (

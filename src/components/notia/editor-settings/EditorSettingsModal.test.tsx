@@ -14,7 +14,7 @@ vi.mock('../../../services/preferences/devicePreferencesStorage', () => ({
 }))
 
 const SETUP = {
-  formats: [{ id: 'a4', label: 'A4', widthMm: 210, heightMm: 297 }],
+  formats: [{ id: 'a3', label: 'A3', widthMm: 297, heightMm: 420 }],
   margins: [
     { id: 'narrow', label: 'Estrechos', marginMm: 12.7 },
     { id: 'normal', label: 'Normales', marginMm: 25.4 },
@@ -26,7 +26,7 @@ const SETUP = {
 } as DevicePreferences['editorPageSetup']
 
 const PREFERENCES = {
-  editorPage: { format: 'a4', orientation: 'portrait', margins: 'normal', pageNumbers: true },
+  editorPage: { format: 'a3', orientation: 'portrait', margins: 'normal', pageNumbers: true },
   pen: { color: 'ink', thickness: 4, smoothing: 40, pressure: true, palmRejection: true, penOnly: false, sideButton: 'eraser' },
   editorPageSetup: SETUP,
 } as unknown as DevicePreferences
@@ -53,19 +53,19 @@ describe('EditorSettingsModal', () => {
 
   it('turns page mode on for the note and saves the page setup in the backend', async () => {
     const { onTogglePageMode } = renderModal()
-    expect(screen.getByRole('radio', { name: /A4/ }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('radio', { name: /A3/ }).getAttribute('aria-checked')).toBe('true')
 
     // Page mode is the note's property: the switch asks the note to change, not the device.
     fireEvent.click(screen.getByRole('switch', { name: 'Modo página' }))
     expect(onTogglePageMode).toHaveBeenCalled()
-    // A4 is the only size.
+    // A3 is the only size.
     expect(screen.getAllByRole('radio', { name: /× .* mm/ })).toHaveLength(1)
     fireEvent.click(screen.getByRole('radio', { name: 'Horizontal' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Estrechos' }))
 
     await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(2))
     expect(saveDevicePreferences).toHaveBeenLastCalledWith({
-      editorPage: { format: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
+      editorPage: { format: 'a3', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
     })
   })
 
@@ -101,7 +101,7 @@ describe('MarkdownDocumentMenu', () => {
       onOpenPageSettings: vi.fn(),
       onExport: vi.fn(),
     }
-    render(<MarkdownDocumentMenu pageMode={pageMode} pageSizeLabel={pageMode ? 'A4' : 'Continuo'} canExportPdf={pageMode === true} exportingFormat={null} {...handlers} />)
+    render(<MarkdownDocumentMenu pageMode={pageMode} pageSizeLabel={pageMode ? 'A3' : 'Continuo'} canExportPdf={pageMode === true} exportingFormat={null} {...handlers} />)
     fireEvent.click(screen.getByRole('button', { name: 'Más opciones' }))
     return handlers
   }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const callBackend = vi.fn()
 vi.mock('../transport', () => ({ callBackend: (...args: unknown[]) => callBackend(...args) }))
 
-const { addInkStroke, eraseInk, loadInk, removeInkStrokes, restoreInkStrokes } = await import('./noteInkRuntime')
+const { addInkStroke, eraseInk, loadInk, removeInkStrokes, replaceInkStrokes, restoreInkStrokes } = await import('./noteInkRuntime')
 const { exportNoteDiagram } = await import('./noteDiagramExport')
 const { loadNoteLinkPreview } = await import('./noteLinkPreviewRuntime')
 
@@ -12,10 +12,16 @@ const stroke = { id: 's1', tool: 'pen' as const, color: 'teal' as const, width: 
 describe('noteInkRuntime', () => {
   beforeEach(() => callBackend.mockReset())
 
-  it('loads the strokes of one mode of a note', async () => {
+  it('loads every stroke of a note, the same for both modes', async () => {
     callBackend.mockResolvedValue({ strokes: [stroke] })
-    await expect(loadInk('lib', 'C:/lib/a.md', true)).resolves.toEqual([stroke])
-    expect(callBackend).toHaveBeenCalledWith('markdown_ink_load', { payload: { libraryId: 'lib', path: 'C:/lib/a.md', paged: true } })
+    await expect(loadInk('lib', 'C:/lib/a.md')).resolves.toEqual([stroke])
+    expect(callBackend).toHaveBeenCalledWith('markdown_ink_load', { payload: { libraryId: 'lib', path: 'C:/lib/a.md' } })
+  })
+
+  it('saves strokes moved into the flow by id', async () => {
+    callBackend.mockResolvedValue({ strokes: [stroke] })
+    await replaceInkStrokes('lib', 'a.md', [stroke])
+    expect(callBackend).toHaveBeenCalledWith('markdown_ink_replace', { payload: { libraryId: 'lib', path: 'a.md', strokes: [stroke] } })
   })
 
   it('sends new strokes with the smoothing for Rust to apply', async () => {

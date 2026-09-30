@@ -26,9 +26,6 @@ pub(crate) struct InkNotePayload {
     library_id: String,
     /// The note, as the explorer shows it.
     path: String,
-    /// Strokes of the pages (page mode) or of the continuous sheet.
-    #[serde(default)]
-    paged: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +61,31 @@ pub(crate) struct InkErasePayload {
     page: Option<u32>,
     points: Vec<[f64; 2]>,
     radius: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InkSelectPayload {
+    library_id: String,
+    path: String,
+    /// The closed path of the lasso, in the note's flow.
+    lasso: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InkSelectResult {
+    ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InkMovePayload {
+    library_id: String,
+    path: String,
+    ids: Vec<String>,
+    dx: f64,
+    dy: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,7 +135,7 @@ async fn blocking<T: Send + 'static>(
 pub(crate) async fn markdown_ink_load(app: AppHandle, payload: InkNotePayload) -> Result<InkStrokesResult, BackendError> {
     blocking(move || {
         let document = read(&app, &payload.library_id, &payload.path)?;
-        Ok(InkStrokesResult { strokes: note_ink::strokes_on(&document, payload.paged) })
+        Ok(InkStrokesResult { strokes: document.strokes })
     })
     .await
 }
@@ -144,6 +166,37 @@ pub(crate) async fn markdown_ink_restore(app: AppHandle, payload: InkRestorePayl
         update(&app, &payload.library_id, &payload.path, |document| {
             note_ink::restore_strokes(document, payload.strokes.clone())?;
             Ok(InkStrokesResult { strokes: payload.strokes })
+        })
+    })
+    .await
+}
+
+/// New versions of strokes already kept: the ones drawn on a page, moved
+/// into the note's flow once the editor has laid the pages out.
+pub(crate) async fn markdown_ink_replace(app: AppHandle, payload: InkRestorePayload) -> Result<InkStrokesResult, BackendError> {
+    blocking(move || {
+        update(&app, &payload.library_id, &payload.path, |document| {
+            note_ink::replace_strokes(document, payload.strokes.clone())?;
+            Ok(InkStrokesResult { strokes: payload.strokes })
+        })
+    })
+    .await
+}
+
+/// The strokes the lasso takes.
+pub(crate) async fn markdown_ink_select(app: AppHandle, payload: InkSelectPayload) -> Result<InkSelectResult, BackendError> {
+    blocking(move || {
+        let document = read(&app, &payload.library_id, &payload.path)?;
+        Ok(InkSelectResult { ids: note_ink::select_in_lasso(&document, &payload.lasso)? })
+    })
+    .await
+}
+
+/// Moves the selected strokes and returns them as they are now.
+pub(crate) async fn markdown_ink_move(app: AppHandle, payload: InkMovePayload) -> Result<InkStrokesResult, BackendError> {
+    blocking(move || {
+        update(&app, &payload.library_id, &payload.path, |document| {
+            Ok(InkStrokesResult { strokes: note_ink::move_strokes(document, &payload.ids, payload.dx, payload.dy)? })
         })
     })
     .await

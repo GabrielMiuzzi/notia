@@ -5,7 +5,7 @@ import type { PenBarTool } from './InkLayer'
 
 /*
  * «Herramientas de lápiz», as in the design canvas: the tool (selector,
- * pen, highlighter, eraser), the ink color, the tip, undo and redo of
+ * lasso, pen, highlighter, eraser), the ink color, the tip, undo and redo of
  * strokes, and «Opciones» with the pen's hardware settings. The tool lives
  * in the bar; the rest are device preferences saved by the backend.
  */
@@ -29,6 +29,7 @@ const icon = (path: ReactNode) => (
 
 const TOOLS: Array<{ id: PenBarTool; label: string; icon: ReactNode }> = [
   { id: 'selector', label: 'Selector', icon: icon(<path d="M3.5 2.5l9.5 4.6-4.2 1.3-1.9 4.3z" />) },
+  { id: 'lasso', label: 'Lazo', icon: icon(<><path d="M8 11.5c3.3 0 6-1.8 6-4.2S11.3 3 8 3 2 4.9 2 7.3c0 1.6 1.2 3 3 3.6" strokeDasharray="2 2" /><path d="M5 10.9c-.6.9-.8 1.9-.3 2.6" /></>) },
   { id: 'pen', label: 'Lápiz', icon: icon(<><path d="M11 2.5l2.5 2.5-8 8H3v-2.5z" /><path d="M9.5 4l2.5 2.5" /></>) },
   { id: 'highlighter', label: 'Resaltador', icon: icon(<><path d="M10 2.5l3.5 3.5-5.5 5.5H4.5V8z" /><path d="M2.5 13.5h5" /></>) },
   { id: 'eraser', label: 'Borrador', icon: icon(<path d="M6 13.5h7.5M2.8 9.7l6-6a1.5 1.5 0 012.1 0l2.4 2.4a1.5 1.5 0 010 2.1L8 13.5H5.5L2.8 10.8a.8.8 0 010-1.1zM6 6.5l4 4" />) },

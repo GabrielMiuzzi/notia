@@ -84,6 +84,7 @@ import {
 } from './markdown/blockHandle'
 import { createFormatToolbarPlugin, type FormatToolbarState } from './markdown/formatToolbarPlugin'
 import { createBlockGapPlugin, handleClickBelowContent } from './markdown/blockGapPlugin'
+import { attachBlockMarquee, createBlockSelectionPlugin, isMarqueeTarget } from './markdown/blockMarquee'
 import {
   clearFormatting,
   selectBlockText,
@@ -93,7 +94,7 @@ import {
   toggleFormatMark,
 } from './markdown/formatCommands'
 import { MarkdownFormatToolbar, type MarkdownFormatToolbarActions } from './markdown/MarkdownFormatToolbar'
-import { createPaginationPlugin, requestPagination, type PaginationGeometry } from './markdown/paginationPlugin'
+import { createPaginationPlugin, requestPagination, type FlowBreak, type PaginationGeometry } from './markdown/paginationPlugin'
 import type { MarkdownPageLayout } from '../../../services/preferences/editorPreferences'
 import './markdown/markdownEditor.css'
 import { createGitbookPlugins, GITBOOK_PART_NODE_NAMES } from './markdown/gitbook/gitbookPlugins'
@@ -111,6 +112,7 @@ import { InkLayer, type PenBarTool } from './markdown/ink/InkLayer'
 import { MarkdownPenBar } from './markdown/ink/MarkdownPenBar'
 import { useNoteInk } from './markdown/ink/useNoteInk'
 import { inkBottom } from './markdown/ink/inkPaths'
+import { isPageStroke, strokeInFlow } from './markdown/ink/inkFlow'
 import { useEditorPreferences } from '../hooks/useEditorPreferences'
 import { WikiLinkPreviewCard } from './markdown/WikiLinkPreviewCard'
 import { codeHighlight } from './markdown/codeHighlight'
@@ -451,8 +453,8 @@ function MarkdownViewInner({
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const pagesRef = useRef<HTMLDivElement | null>(null)
   const [pageCount, setPageCount] = useState(1)
-  // The sheet the note is written on: A4 pages, or one continuous sheet as
-  // wide as an A4. Only pages are paginated.
+  // The sheet the note is written on: A3 pages, or one continuous sheet as
+  // wide as an A3. Only pages are paginated.
   const sheetPixels = useMemo(() => (pageLayout ? toPagePixels(pageLayout) : null), [pageLayout])
   const pagePixels = pageLayout?.paged ? sheetPixels : null
   const [hostWidth, setHostWidth] = useState(0)
@@ -463,8 +465,37 @@ function MarkdownViewInner({
     : 1
   // Handwriting over the sheet: the tool of the pen bar and the note's strokes.
   const [penTool, setPenTool] = useState<PenBarTool>('selector')
+  // The rectangle selection of blocks only works with the selector.
+  const penToolRef = useRef<PenBarTool>('selector')
+  useEffect(() => {
+    penToolRef.current = penTool
+  }, [penTool])
   const { pen, updatePen } = useEditorPreferences()
-  const ink = useNoteInk(libraryId, documentPath, pagePixels !== null)
+  const ink = useNoteInk(libraryId, documentPath)
+  // Where the page breaks fall in the note's flow, once the pages are laid out.
+  const [flowBreaks, setFlowBreaks] = useState<FlowBreak[]>([])
+  const [pagesLaidOut, setPagesLaidOut] = useState(false)
+  const inkSheet = useMemo(() => (sheetPixels
+    ? {
+      width: sheetPixels.width,
+      paged: pagePixels !== null,
+      pageHeight: sheetPixels.height,
+      pageGap: PAGE_GAP_PX,
+      margin: sheetPixels.margin,
+      numberBand: sheetPixels.pageNumbers ? PAGE_NUMBER_BAND_PX : 0,
+    }
+    : null), [pagePixels, sheetPixels])
+  // Strokes drawn on a page before strokes were kept in the flow move into
+  // it the first time the pages are laid out; then both modes show them.
+  const movedStrokesRef = useRef(new Set<string>())
+  const { strokes: inkStrokes, replace: replaceInkStrokes } = ink
+  useEffect(() => {
+    if (!pagePixels || !pagesLaidOut) return
+    const onPages = inkStrokes.filter((stroke) => isPageStroke(stroke) && !movedStrokesRef.current.has(stroke.id))
+    if (onPages.length === 0) return
+    onPages.forEach((stroke) => movedStrokesRef.current.add(stroke.id))
+    replaceInkStrokes(onPages.map((stroke) => strokeInFlow(stroke, flowBreaks, pagePixels.height + PAGE_GAP_PX)))
+  }, [flowBreaks, inkStrokes, pagePixels, pagesLaidOut, replaceInkStrokes])
   const paginationGeometryRef = useRef<PaginationGeometry | null>(null)
   const pointerRowRef = useRef<number | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -930,11 +961,17 @@ function MarkdownViewInner({
       runPrompt: (text) => runPromptRef.current(text),
     }))
     crepe.editor.use($prose(() => activeBlockPlugin))
+    crepe.editor.use($prose(() => createBlockSelectionPlugin()))
     crepe.editor.use($prose(() => createPaginationPlugin({
       getGeometry: () => paginationGeometryRef.current,
       getContainer: () => pagesRef.current,
       onPageCountChange: (count) => {
         if (isMounted) setPageCount(count)
+      },
+      onFlowBreaksChange: (breaks) => {
+        if (!isMounted) return
+        setFlowBreaks(breaks)
+        setPagesLaidOut(paginationGeometryRef.current !== null)
       },
     })))
     crepe.editor.use($prose(() => createFormatToolbarPlugin({
@@ -1128,13 +1165,26 @@ function MarkdownViewInner({
         pointerRowRef.current = clientY
       })
       // The blank page under the note belongs to the host, not to the editor.
-      const onHostMouseDown = (event: MouseEvent) => {
+      const clickBelowContent = (event: MouseEvent) => {
         const pages = pagesRef.current
         const target = event.target
         const isOnPage = target === host || (target instanceof Node && zoomContentRef.current?.contains(target))
         if (pages && isOnPage) handleClickBelowContent(editorView, event, pages.getBoundingClientRect())
       }
+      // With the selector, an empty place is the marquee's: a press there is
+      // a click when it does not drag, and the marquee reports it.
+      const onHostMouseDown = (event: MouseEvent) => {
+        if (host && penToolRef.current === 'selector' && isMarqueeTarget(event.target, host)) return
+        clickBelowContent(event)
+      }
       host?.addEventListener('mousedown', onHostMouseDown, true)
+      const detachMarquee = host
+        ? attachBlockMarquee(host, {
+          isEnabled: () => penToolRef.current === 'selector',
+          getView: () => editorView,
+          onClick: clickBelowContent,
+        })
+        : () => {}
       selectionCleanupRef.current = () => {
         editorView.dom.removeEventListener('keyup', notifySelectionChange)
         editorView.dom.removeEventListener('mouseup', notifySelectionChange)
@@ -1145,6 +1195,7 @@ function MarkdownViewInner({
         stopHidingHandle()
         stopTrackingPointerRow()
         host?.removeEventListener('mousedown', onHostMouseDown, true)
+        detachMarquee()
       }
       notifySelectionChange()
       onSelectionChangeRef.current(buildMarkdownSelectionContext(
@@ -1449,10 +1500,14 @@ function MarkdownViewInner({
               strokes={ink.strokes}
               tool={penTool}
               pen={pen}
-              sheet={{ width: sheetPixels.width, pageHeight: pagePixels ? pagePixels.height : null, pageGap: PAGE_GAP_PX }}
+              sheet={inkSheet ?? { width: sheetPixels.width, paged: false, pageHeight: sheetPixels.height, pageGap: PAGE_GAP_PX, margin: sheetPixels.margin, numberBand: 0 }}
+              breaks={flowBreaks}
               scrollContainerRef={viewportRef}
               onCommit={ink.commit}
               onErase={ink.erase}
+              onLassoSelect={ink.select}
+              onMove={ink.move}
+              onRemove={ink.remove}
             />
           ) : null}
         </div>

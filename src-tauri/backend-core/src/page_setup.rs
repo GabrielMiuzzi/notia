@@ -1,6 +1,6 @@
-//! Page setup shared by the editor's page mode and the PDF exports: the A4
+//! Page setup shared by the editor's page mode and the PDF exports: the A3
 //! sheet, its orientation, margins and page numbers, all in millimetres.
-//! Page mode only offers A4; a setup saved with another format reads as A4.
+//! Page mode only offers A3; a setup saved with another format reads as A3.
 
 use serde_json::{json, Value};
 
@@ -14,7 +14,7 @@ pub struct PaperFormat {
     pub height_mm: f64,
 }
 
-pub const PAPER_FORMATS: [PaperFormat; 1] = [PaperFormat { id: "a4", label: "A4", width_mm: 210.0, height_mm: 297.0 }];
+pub const PAPER_FORMATS: [PaperFormat; 1] = [PaperFormat { id: "a3", label: "A3", width_mm: 297.0, height_mm: 420.0 }];
 
 /// A margin preset, the same on the four sides.
 pub struct MarginPreset {
@@ -29,7 +29,7 @@ pub const MARGIN_PRESETS: [MarginPreset; 3] = [
     MarginPreset { id: "wide", label: "Amplios", margin_mm: 38.1 },
 ];
 
-const DEFAULT_FORMAT: &str = "a4";
+const DEFAULT_FORMAT: &str = "a3";
 const DEFAULT_MARGINS: &str = "normal";
 const ORIENTATIONS: [&str; 2] = ["portrait", "landscape"];
 
@@ -101,7 +101,7 @@ pub fn ensure_export_allowed(format: ExportFormat, note_in_page_mode: bool) -> R
 }
 
 impl Default for PageGeometry {
-    /// A4 portrait with normal margins and page numbers.
+    /// A3 portrait with normal margins and page numbers.
     fn default() -> Self {
         page_geometry(&Value::Null)
     }
@@ -109,7 +109,7 @@ impl Default for PageGeometry {
 
 /// What the editor shows of a page setup: the formats with their size in the
 /// chosen orientation, the margin presets, the resulting page and the width
-/// of the continuous sheet (an A4 in portrait, whatever the orientation).
+/// of the continuous sheet (an A3 in portrait, whatever the orientation).
 pub fn page_setup_view(editor_page: &Value) -> Value {
     let landscape = normalize_editor_page(editor_page)["orientation"] == "landscape";
     let geometry = page_geometry(editor_page);
@@ -139,27 +139,28 @@ mod tests {
         let normalized = normalize_editor_page(&json!({ "pageMode": true, "format": "tabloid", "orientation": 3, "margins": "enormes" }));
         assert_eq!(
             normalized,
-            json!({ "format": "a4", "orientation": "portrait", "margins": "normal", "pageNumbers": true })
+            json!({ "format": "a3", "orientation": "portrait", "margins": "normal", "pageNumbers": true })
         );
-        // Page mode is A4 only: a format saved before reads as A4.
-        assert_eq!(normalize_editor_page(&json!({ "format": " Letter " }))["format"], "a4");
+        // Page mode is A3 only: a format saved before (A4, Letter…) reads as A3.
+        assert_eq!(normalize_editor_page(&json!({ "format": " Letter " }))["format"], "a3");
+        assert_eq!(normalize_editor_page(&json!({ "format": "a4" }))["format"], "a3");
     }
 
     #[test]
     fn landscape_swaps_the_paper_sides() {
         let geometry = page_geometry(&json!({ "format": "a5", "orientation": "landscape", "margins": "narrow", "pageNumbers": false }));
-        assert_eq!(geometry, PageGeometry { width_mm: 297.0, height_mm: 210.0, margin_mm: 12.7, page_numbers: false });
-        assert_eq!(PageGeometry::default(), PageGeometry { width_mm: 210.0, height_mm: 297.0, margin_mm: 25.4, page_numbers: true });
+        assert_eq!(geometry, PageGeometry { width_mm: 420.0, height_mm: 297.0, margin_mm: 12.7, page_numbers: false });
+        assert_eq!(PageGeometry::default(), PageGeometry { width_mm: 297.0, height_mm: 420.0, margin_mm: 25.4, page_numbers: true });
     }
 
     #[test]
     fn the_view_lists_formats_in_the_chosen_orientation() {
         let view = page_setup_view(&json!({ "orientation": "landscape", "format": "legal" }));
-        assert_eq!(view["formats"], json!([{ "id": "a4", "label": "A4", "widthMm": 297.0, "heightMm": 210.0 }]));
+        assert_eq!(view["formats"], json!([{ "id": "a3", "label": "A3", "widthMm": 420.0, "heightMm": 297.0 }]));
         assert_eq!(view["margins"].as_array().map(Vec::len), Some(3));
-        assert_eq!(view["widthMm"].as_f64(), Some(297.0));
-        // The continuous sheet is always as wide as a portrait A4.
-        assert_eq!(view["continuousWidthMm"].as_f64(), Some(210.0));
+        assert_eq!(view["widthMm"].as_f64(), Some(420.0));
+        // The continuous sheet is always as wide as a portrait A3.
+        assert_eq!(view["continuousWidthMm"].as_f64(), Some(297.0));
     }
 
     #[test]

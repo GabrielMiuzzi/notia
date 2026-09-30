@@ -4,13 +4,14 @@ import type { PenColor } from '../preferences/editorPreferences'
 /*
  * Handwriting over a note. Rust keeps the strokes in `.notia/ink/<note>.json`
  * of the library, validates, smooths and simplifies each new one, and finds
- * what the eraser touches. A stroke belongs to a page (page mode) or to the
- * continuous sheet; each mode loads only its own.
+ * what the eraser touches. Strokes are kept in the note's flow (the text out
+ * of page mode), so both modes show them; the editor moves them below the
+ * page breaks in page mode (`views/markdown/ink/inkFlow`).
  */
 
 export type InkTool = 'pen' | 'highlighter'
 
-/** `[x, y, pressure]` in CSS pixels of the unscaled sheet (of the page, in page mode). */
+/** `[x, y, pressure]` in CSS pixels of the unscaled sheet, `y` in the note's flow. */
 export type InkPoint = [number, number, number]
 
 export interface InkStroke {
@@ -18,7 +19,11 @@ export interface InkStroke {
   tool: InkTool
   color: PenColor
   width: number
-  /** Index of the page in page mode; absent on the continuous sheet. */
+  /**
+   * Only strokes drawn on a page before strokes were kept in the flow: the
+   * index of that page, with `y` on that page. The editor moves them into
+   * the flow (`replaceInkStrokes`).
+   */
   page?: number | null
   points: InkPoint[]
 }
@@ -32,8 +37,25 @@ interface InkStrokesResult {
   strokes: InkStroke[]
 }
 
-export async function loadInk(libraryId: string, path: string, paged: boolean): Promise<InkStroke[]> {
-  const result = await callBackend<InkStrokesResult>('markdown_ink_load', { payload: { libraryId, path, paged } })
+export async function loadInk(libraryId: string, path: string): Promise<InkStroke[]> {
+  const result = await callBackend<InkStrokesResult>('markdown_ink_load', { payload: { libraryId, path } })
+  return result.strokes
+}
+
+/** New versions of strokes already kept (same ids): strokes drawn on a page, moved into the flow. */
+export async function replaceInkStrokes(libraryId: string, path: string, strokes: InkStroke[]): Promise<void> {
+  await callBackend<InkStrokesResult>('markdown_ink_replace', { payload: { libraryId, path, strokes } })
+}
+
+/** The strokes a lasso (closed path in the note's flow) takes: at least half of each inside. */
+export async function selectInkInLasso(libraryId: string, path: string, lasso: Array<[number, number]>): Promise<string[]> {
+  const result = await callBackend<{ ids: string[] }>('markdown_ink_select', { payload: { libraryId, path, lasso } })
+  return result.ids
+}
+
+/** Moves strokes; resolves with them as they are now. */
+export async function moveInkStrokes(libraryId: string, path: string, ids: string[], dx: number, dy: number): Promise<InkStroke[]> {
+  const result = await callBackend<InkStrokesResult>('markdown_ink_move', { payload: { libraryId, path, ids, dx, dy } })
   return result.strokes
 }
 

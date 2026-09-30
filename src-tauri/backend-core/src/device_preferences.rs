@@ -137,7 +137,7 @@ mod tests {
         }));
         assert_eq!(
             normalized["editorPage"],
-            json!({ "format": "a4", "orientation": "landscape", "margins": "normal", "pageNumbers": true })
+            json!({ "format": "a3", "orientation": "landscape", "margins": "normal", "pageNumbers": true })
         );
         assert_eq!(
             normalized["pen"],
