@@ -88,6 +88,22 @@ export function toggleButton(label: string, icon: string, pressed: boolean, onTo
   return button
 }
 
+/** A labelled on/off switch: the label, then the track with its knob. */
+export function switchButton(label: string, checked: boolean, onToggle: (checked: boolean) => void, className = ''): HTMLButtonElement {
+  const button = el('button', { className: `notia-gb-switch ${className}`.trim(), attrs: { type: 'button', role: 'switch' } }, [
+    el('span', { text: label }),
+    el('span', { className: 'notia-gb-switch__track', attrs: { 'aria-hidden': 'true' } }, [el('span', { className: 'notia-gb-switch__knob' })]),
+  ])
+  button.setAttribute('aria-checked', String(checked))
+  keepSelection(button)
+  button.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onToggle(button.getAttribute('aria-checked') !== 'true')
+  })
+  return button
+}
+
 interface InputOptions {
   label: string
   placeholder?: string

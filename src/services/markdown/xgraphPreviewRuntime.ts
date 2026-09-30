@@ -1,6 +1,21 @@
-import { createXGraphDocument } from '../../engines/markdown/xgraphEngine'
+import { createXGraphDocument, type XGraphTheme } from '../../engines/markdown/xgraphEngine'
 import jsxGraphRuntimeUrl from '../../../node_modules/jsxgraph/distrib/jsxgraphcore.js?url'
 import jsxGraphStylesheetUrl from '../../../node_modules/jsxgraph/distrib/jsxgraph.css?url'
+
+/** The board's colors, read from the theme tokens around the block. */
+function boardTheme(host: HTMLElement): XGraphTheme | undefined {
+  const style = getComputedStyle(host)
+  const token = (name: string) => style.getPropertyValue(name).trim()
+  const theme = {
+    background: token('--notia-el-well') || token('--color-app-bg'),
+    text: token('--color-muted-text'),
+    axis: token('--color-muted-text'),
+    grid: token('--color-card-bg'),
+    curve: token('--color-accent-text'),
+    point: token('--color-amber'),
+  }
+  return Object.values(theme).every(Boolean) ? theme : undefined
+}
 
 export function observeXGraphPreviews(root: HTMLElement): () => void {
   const mounted = new Map<HTMLElement, () => void>()
@@ -19,6 +34,7 @@ export function observeXGraphPreviews(root: HTMLElement): () => void {
           new URL(jsxGraphRuntimeUrl, document.baseURI).href,
           new URL(jsxGraphStylesheetUrl, document.baseURI).href,
           crypto.randomUUID().replaceAll('-', ''),
+          boardTheme(host),
         )
         host.replaceChildren(frame)
       }).catch(() => {

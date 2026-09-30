@@ -11,4 +11,6 @@ export interface GitbookViewEnvironment {
   editDrawing: (source: string) => Promise<string | null>
   /** Shows Markdown read-only inside `host`; returns how to remove it. */
   renderMarkdown: (host: HTMLElement, markdown: string) => () => void
+  /** Sends a prompt block's text to the side chat, in a new chat. */
+  runPrompt: (text: string) => void
 }

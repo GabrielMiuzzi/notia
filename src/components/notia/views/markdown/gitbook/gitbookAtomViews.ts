@@ -49,6 +49,21 @@ function hostOf(url: string): string {
   }
 }
 
+/** A web address without its scheme, as the cards show it. */
+function bareAddress(url: string): string {
+  return url.replace(/^https?:\/\//i, '').replace(/^www\./i, '')
+}
+
+/** A library path with spaced separators: «Personal / filosofia / lider.md». */
+function spacedPath(path: string): string {
+  return path.split('/').filter(Boolean).join(' / ')
+}
+
+/** The square that heads a media card. */
+function tile(icon: string, className = ''): HTMLElement {
+  return el('span', { className: `notia-gb-tile ${className}`.trim() }, [iconSpan(icon, 'notia-gb-icon', 18)])
+}
+
 function youtubeId(url: string): string | null {
   const match = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{6,})/.exec(url)
   return match?.[1] ?? null
@@ -187,12 +202,18 @@ export class EmbedView extends GitbookFieldsView {
   protected renderDisplay(): void {
     const url = this.attr('url')
     const video = youtubeId(url)
-    const thumbnail = video ? el('img', { className: 'notia-gb-embed__thumbnail', attrs: { src: `https://img.youtube.com/vi/${video}/hqdefault.jpg`, alt: '', loading: 'lazy' } }) : null
+    const thumbnail = video
+      ? el('span', { className: 'notia-gb-embed__media' }, [
+        el('img', { className: 'notia-gb-embed__thumbnail', attrs: { src: `https://img.youtube.com/vi/${video}/hqdefault.jpg`, alt: '', loading: 'lazy' } }),
+        el('span', { className: 'notia-gb-embed__play' }, [iconSpan('notia-play', 'notia-gb-icon', 13)]),
+      ])
+      : null
     this.dom.replaceChildren(
-      thumbnail ?? iconSpan('notia-embed', 'notia-gb-atom__icon', 20),
+      thumbnail ?? tile('notia-embed'),
       el('div', { className: 'notia-gb-atom__text' }, [
         el('strong', { text: this.attr('caption') || hostOf(url) || 'URL embebida' }),
-        el('span', { className: 'notia-gb-atom__detail', text: url }),
+        el('span', { className: 'notia-gb-atom__detail', text: bareAddress(url) }),
+        el('span', { className: 'notia-gb-atom__tags' }, [el('span', { className: 'notia-gb-tag', text: video ? 'YouTube' : hostOf(url) || 'Web' })]),
       ]),
       controls('notia-gb-atom__actions', [
         isWebAddress(url) ? iconButton('notia-open', 'Abrir en el navegador', () => openExternal(url)) : null,
@@ -222,7 +243,7 @@ export class FileView extends GitbookFieldsView {
     const missing = result !== undefined && (!result.exists || result.kind === 'invalid')
     this.dom.dataset.missing = String(missing)
     this.dom.replaceChildren(
-      iconSpan('notia-file', 'notia-gb-atom__icon', 20),
+      tile('notia-file'),
       el('div', { className: 'notia-gb-atom__text' }, [
         el('strong', { text: fileName(src) || 'Archivo' }),
         el('span', { className: 'notia-gb-atom__detail', text: missing ? 'No se encontró el archivo' : this.attr('caption') }),
@@ -256,16 +277,18 @@ export class ContentRefView extends GitbookFieldsView {
     const title = result?.title || this.attr('label') || url
     this.dom.dataset.missing = String(missing)
     const open = el('button', { className: 'notia-gb-page-link__open', attrs: { type: 'button' } }, [
-      iconSpan('notia-page', 'notia-gb-atom__icon', 20),
+      tile('notia-page', 'notia-gb-tile--accent'),
       el('span', { className: 'notia-gb-atom__text' }, [
         el('strong', { text: title || 'Enlace a página' }),
-        el('span', { className: 'notia-gb-atom__detail', text: missing ? `No se encontró ${url}` : url }),
+        el('span', { className: 'notia-gb-atom__detail', text: missing ? `No se encontró ${url}` : spacedPath(url) }),
       ]),
     ])
     open.disabled = missing
     open.addEventListener('mousedown', (event) => event.preventDefault())
     open.addEventListener('click', () => openReference(this.env, url))
-    this.dom.replaceChildren(controls('notia-gb-page-link__row', [open, this.editButton('Editar enlace a página')]))
+    const go = iconButton('notia-go', 'Ir a la página', () => openReference(this.env, url))
+    go.disabled = missing
+    this.dom.replaceChildren(controls('notia-gb-page-link__row', [open, el('span', { className: 'notia-gb-atom__actions' }, [this.editButton('Editar enlace a página'), go])]))
   }
 }
 
@@ -273,6 +296,11 @@ export class IncludeView extends GitbookFieldsView {
   private removePreview: (() => void) | null = null
   private previewMarkdown: string | null = null
   private preview = el('div', { className: 'notia-gb-include__preview' })
+  private expanded = false
+  private expandButton = textButton('Mostrar todo', () => {
+    this.expanded = !this.expanded
+    this.markExpanded()
+  }, { icon: 'notia-chevron', className: 'notia-gb-include__expand' })
 
   constructor(node: ProseMirrorNode, view: EditorView, getPos: GetPos, env: GitbookViewEnvironment) {
     super(node, view, getPos, env, 'notia-gb-include')
@@ -290,15 +318,21 @@ export class IncludeView extends GitbookFieldsView {
     const target = result?.target ?? null
     this.dom.replaceChildren(
       controls('notia-gb-include__header', [
-        iconSpan('notia-include'),
-        el('span', { className: 'notia-gb-label', text: 'Contenido reutilizable' }),
-        el('span', { className: 'notia-gb-atom__detail', text: result?.title ?? reference }),
-        target && !result?.error ? iconButton('notia-open', 'Abrir nota reutilizable', () => this.env.openLibraryPath(target)) : null,
-        iconButton('notia-undo', 'Actualizar', () => this.env.resolver.invalidate(['include'])),
-        this.editButton('Cambiar nota reutilizable'),
+        el('span', { className: 'notia-gb-include__label' }, [
+          iconSpan('notia-include', 'notia-gb-icon', 14),
+          el('span', { className: 'notia-gb-include__name', text: 'Contenido reutilizable' }),
+          el('span', { className: 'notia-gb-atom__detail', text: `· ${result?.title ?? reference}` }),
+        ]),
+        el('span', { className: 'notia-gb-atom__actions' }, [
+          target && !result?.error ? iconButton('notia-open', 'Abrir nota reutilizable', () => this.env.openLibraryPath(target)) : null,
+          iconButton('notia-undo', 'Actualizar', () => this.env.resolver.invalidate(['include'])),
+          this.editButton('Cambiar nota reutilizable'),
+        ]),
       ]),
       this.preview,
+      controls('notia-gb-include__footer', [this.expandButton]),
     )
+    this.markExpanded()
     const markdown = result?.error ? null : result?.markdown ?? null
     if (markdown === this.previewMarkdown && this.removePreview) return
     this.removePreview?.()
@@ -313,6 +347,18 @@ export class IncludeView extends GitbookFieldsView {
       this.removePreview = this.env.renderMarkdown(this.preview, markdown)
       if (result?.truncated) this.preview.append(el('p', { className: 'notia-gb-muted', text: 'Vista recortada.' }))
     }
+    this.markExpanded()
+  }
+
+  /** Long content shows its start with a fade and «Mostrar todo». */
+  private markExpanded(): void {
+    this.dom.dataset.expanded = String(this.expanded)
+    const label = this.expandButton.querySelector('span:last-child')
+    if (label) label.textContent = this.expanded ? 'Mostrar menos' : 'Mostrar todo'
+    requestAnimationFrame(() => {
+      const long = this.expanded || this.preview.scrollHeight > this.preview.clientHeight + 1
+      this.dom.dataset.long = String(long)
+    })
   }
 
   protected setEditing(editing: boolean): void {
@@ -337,6 +383,9 @@ function readCards(value: string): GitbookCard[] {
   }
 }
 
+/** Tones of the card icons, one after the other. */
+const CARD_TONES = ['accent-text', 'violet', 'periwinkle', 'amber', 'sage', 'gold']
+
 export class CardsView extends GitbookAtomView {
   constructor(node: ProseMirrorNode, view: EditorView, getPos: GetPos, env: GitbookViewEnvironment) {
     super(node, view, getPos, env, 'notia-gb-cards')
@@ -359,20 +408,30 @@ export class CardsView extends GitbookAtomView {
       this.renderEditor()
       return
     }
-    const grid = el('div', { className: 'notia-gb-cards__grid' }, this.cards().map((card) => {
+    const cards = this.cards().map((card, index) => {
       const cover = card.cover ? imageSource(this.env, card.cover) : null
-      const tile = el('button', { className: 'notia-gb-card', attrs: { type: 'button' } }, [
+      const button = el('button', { className: 'notia-gb-card', attrs: { type: 'button' } }, [
         cover ? el('img', { className: 'notia-gb-card__cover', attrs: { src: cover, alt: '', loading: 'lazy' } }) : null,
-        card.icon ? iconSpan(card.icon, 'notia-gb-card__icon', 20) : null,
-        el('strong', { text: card.title || 'Tarjeta' }),
-        card.description ? el('span', { className: 'notia-gb-atom__detail', text: card.description }) : null,
+        el('span', { className: 'notia-gb-card__icon' }, [iconSpan(card.icon || 'book', 'notia-gb-icon', 16)]),
+        el('span', { className: 'notia-gb-card__text' }, [
+          el('strong', { text: card.title || 'Tarjeta' }),
+          card.description ? el('span', { className: 'notia-gb-atom__detail', text: card.description }) : null,
+        ]),
       ])
-      tile.disabled = !card.target
-      tile.addEventListener('mousedown', (event) => event.preventDefault())
-      tile.addEventListener('click', () => openReference(this.env, card.target))
-      return tile
-    }))
-    this.dom.replaceChildren(controls('notia-gb-cards__view', [grid, el('div', { className: 'notia-gb-form__actions' }, [textButton('Editar tarjetas', () => this.setEditing(true), { icon: 'notia-edit' })])]))
+      button.style.setProperty('--notia-gb-tone', `var(--color-${CARD_TONES[index % CARD_TONES.length]})`)
+      button.disabled = !card.target
+      button.addEventListener('mousedown', (event) => event.preventDefault())
+      button.addEventListener('click', () => openReference(this.env, card.target))
+      return button
+    })
+    const add = el('button', { className: 'notia-gb-card notia-gb-card--new', attrs: { type: 'button' } }, [iconSpan('notia-add', 'notia-gb-icon', 14), el('span', { text: 'Nueva tarjeta' })])
+    add.addEventListener('mousedown', (event) => event.preventDefault())
+    add.addEventListener('click', () => {
+      this.saveCards([...this.cards(), { title: '', description: '', target: '', cover: '', icon: '' }])
+      this.setEditing(true)
+    })
+    const grid = el('div', { className: 'notia-gb-cards__grid' }, [...cards, add])
+    this.dom.replaceChildren(controls('notia-gb-cards__view', [grid, el('div', { className: 'notia-gb-cards__actions' }, [textButton('Editar tarjetas', () => this.setEditing(true), { icon: 'notia-edit' })])]))
   }
 
   private renderEditor(): void {
@@ -404,7 +463,7 @@ export class CardsView extends GitbookAtomView {
 }
 
 export class DrawingView extends GitbookAtomView {
-  private altField: HTMLInputElement | HTMLTextAreaElement | null = null
+  private captionField: HTMLInputElement | HTMLTextAreaElement | null = null
 
   constructor(node: ProseMirrorNode, view: EditorView, getPos: GetPos, env: GitbookViewEnvironment) {
     super(node, view, getPos, env, 'notia-gb-drawing')
@@ -414,18 +473,18 @@ export class DrawingView extends GitbookAtomView {
   render(): void {
     const src = this.attr('src')
     const image = imageSource(this.env, src)
-    if (this.altField && document.activeElement === this.altField) return
-    this.altField = field(this.attr('alt'), { label: 'Descripción del dibujo', placeholder: 'Descripción del dibujo' }, (alt) => this.setAttrs({ alt }))
+    if (this.captionField && document.activeElement === this.captionField) return
+    this.captionField = field(this.attr('caption'), { label: 'Leyenda del dibujo', placeholder: 'Escribí una leyenda' }, (caption) => this.setAttrs({ caption }))
     const editable = !src || src.startsWith('data:image/svg+xml')
+    // The drawing sits on a dotted board with its edit button; the caption goes under it.
     this.dom.replaceChildren(...present<Node>([
-      image
-        ? el('img', { className: 'notia-gb-drawing__image', attrs: { src: image, alt: this.attr('alt') } })
-        : el('div', { className: 'notia-gb-drawing__empty' }, [iconSpan('notia-drawing', 'notia-gb-icon', 28), el('span', { text: src ? 'No se encontró el dibujo' : 'Dibujo vacío' })]),
-      this.attr('caption') ? el('p', { className: 'notia-gb-atom__detail', text: this.attr('caption') }) : null,
-      controls('notia-gb-drawing__actions', [
-        this.altField,
-        editable ? textButton(src ? 'Editar dibujo' : 'Dibujar', () => void this.draw(), { icon: 'notia-drawing', className: 'notia-gb-primary' }) : null,
+      el('div', { className: 'notia-gb-drawing__board' }, [
+        image
+          ? el('img', { className: 'notia-gb-drawing__image', attrs: { src: image, alt: this.attr('alt') || this.attr('caption') } })
+          : el('div', { className: 'notia-gb-drawing__empty' }, [iconSpan('notia-drawing', 'notia-gb-icon', 28), el('span', { text: src ? 'No se encontró el dibujo' : 'Dibujo vacío' })]),
+        editable ? controls('notia-gb-drawing__tools', [textButton(src ? 'Editar dibujo' : 'Dibujar', () => void this.draw(), { icon: 'notia-edit' })]) : null,
       ]),
+      controls('notia-gb-drawing__caption', [el('span', { className: 'notia-gb-drawing__caption-label', text: 'Leyenda' }), this.captionField]),
     ]))
   }
 
@@ -528,6 +587,8 @@ export class ExpressionView extends GitbookInlineView {
     const result = expression ? this.env.resolver.get('expression', expression) : undefined
     const value = result?.value ?? null
     this.dom.dataset.state = !expression || result?.error ? 'invalid' : value === null ? 'empty' : 'value'
+    // A plain variable reads blue; a calculation, violet.
+    this.dom.dataset.kind = /^[\w.]+$/.test(expression) ? 'variable' : 'calculation'
     this.dom.textContent = value ?? (result?.dependsOnReader ? 'Según el lector' : expression || 'Variable')
     this.dom.title = result?.error ? `${expression}: ${result.error}` : expression
   }

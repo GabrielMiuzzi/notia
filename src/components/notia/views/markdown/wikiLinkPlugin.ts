@@ -141,7 +141,8 @@ function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLo
         ? `notia-wikilink-token ${RESOLVED_WIKI_LINK_CLASS}`
         : 'notia-wikilink-token notia-wikilink-token--broken'
 
-      decorations.push(Decoration.inline(link.from, link.to, { class: className }))
+      // The note's path lets the editor show its card on hover.
+      decorations.push(Decoration.inline(link.from, link.to, target ? { class: className, 'data-wikilink-path': target.path } : { class: className }))
       if (link.labelTo <= link.labelFrom) continue
       const syntaxClass = isEditingWikiLink(state.selection, link) ? WIKI_LINK_SYNTAX_CLASS : `${WIKI_LINK_SYNTAX_CLASS} is-hidden`
       decorations.push(Decoration.inline(link.from, link.labelFrom, { class: syntaxClass }))

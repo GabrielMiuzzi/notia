@@ -2,12 +2,12 @@ import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   Bell, Bolt, Book, BookOpen, Bookmark, Braces, Brain, Brush, Calendar, Camera, Check, ChevronDown, ChevronRight,
-  Circle, CircleCheck, CircleHelp, CircleX, Clock, Cloud, Code, Coffee, Columns2, Copy, Cpu, Database, Download,
+  Circle, CircleAlert, CircleCheck, CircleHelp, CircleX, Clock, Cloud, Code, Coffee, Columns2, Copy, Cpu, Database, Download,
   Eraser, ExternalLink, Eye, File, FileText, Filter, Flag, Folder, Gift, GitBranch, Github, Globe, Heart, House,
   Image, Info, Key, Layers, LayoutGrid, Lightbulb, Link, ListOrdered, Lock, Mail, Map as MapIcon, MapPin, MessageSquare,
   Monitor, Music, Newspaper, OctagonAlert, Package, Palette, PanelTop, Paperclip, Pencil, PenLine, Play, Plus,
   Puzzle, Repeat, Rocket, Search, Send, Server, Settings, Share2, Shield, Smartphone, Sparkles, Star, Tag, Terminal,
-  ThumbsUp, Trash2, TriangleAlert, Trophy, Undo2, Upload, User, Users, Variable, Video, Workflow, Wrench, X, Zap,
+  ThumbsUp, Trash2, TriangleAlert, Trophy, Undo2, Upload, User, Users, Variable, Video, Workflow, Wrench, WrapText, X, Zap,
 } from 'lucide-react'
 
 /*
@@ -26,10 +26,11 @@ const ICONS: Record<string, IconComponent> = {
   'notia-steps': ListOrdered, 'notia-tabs': PanelTop, 'notia-updates': Newspaper, 'notia-cards': LayoutGrid,
   'notia-drawing': Brush, 'notia-prompt': Sparkles, 'notia-embed': Globe, 'notia-page': FileText, 'notia-file': Paperclip,
   'notia-details': ChevronRight, 'notia-code': Code, 'notia-annotation': MessageSquare, 'notia-button': PenLine,
+  'notia-wrap': WrapText, 'notia-go': ChevronRight, 'notia-play': Play,
   // Hint styles.
   info: Info, 'circle-info': Info, 'info-circle': Info, success: CircleCheck, 'circle-check': CircleCheck,
   'check-circle': CircleCheck, warning: TriangleAlert, 'triangle-exclamation': TriangleAlert,
-  'exclamation-triangle': TriangleAlert, danger: OctagonAlert, 'octagon-exclamation': OctagonAlert,
+  'exclamation-triangle': TriangleAlert, danger: CircleAlert, 'octagon-exclamation': OctagonAlert,
   'circle-exclamation': OctagonAlert, 'circle-xmark': CircleX, xmark: X,
   // Font Awesome names GitBook uses often.
   check: Check, bell: Bell, bolt: Bolt, book: Book, 'book-open': BookOpen, books: Book, bookmark: Bookmark,
@@ -57,7 +58,7 @@ export function iconMarkup(name: string, size = 16): string {
   const cached = markupCache.get(key)
   if (cached !== undefined) return cached
   const Icon = ICONS[name.replace(/^fa-/, '').toLowerCase()] ?? Circle
-  const markup = renderToStaticMarkup(createElement(Icon, { size, strokeWidth: 2, 'aria-hidden': true }))
+  const markup = renderToStaticMarkup(createElement(Icon, { size, strokeWidth: 1.75, 'aria-hidden': true }))
   markupCache.set(key, markup)
   return markup
 }

@@ -857,7 +857,9 @@ mod tests {
 
     fn fixture() -> (PathBuf, LibraryBindingRegistry, AndroidDirectoryPickerState) {
         let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("notia-library-read-{id}"));
+        // Per process, and cleared first: a run that failed leaves its folder.
+        let root = std::env::temp_dir().join(format!("notia-library-read-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".notia")).expect("root");
         std::fs::create_dir_all(root.join("notes")).expect("notes");
         std::fs::write(
@@ -891,6 +893,23 @@ mod tests {
             }
         };
         (root, registry, state)
+    }
+
+    /// Creating a note first reads it and needs «not found» to know it is new:
+    /// a missing note was a storage error, so the agent could not save any
+    /// note (2026-09-29, «Haceme una nota…» from Telegram).
+    #[test]
+    fn a_note_that_does_not_exist_reads_as_not_found() {
+        let (root, registry, state) = fixture();
+        let adapter =
+            TauriLibraryDocumentReadAdapter::for_library(&registry, "library-one", &state)
+                .expect("adapter");
+        for path in ["notes/nueva idea.md", "Ideas/nueva idea.md", "nueva idea.md"] {
+            let locator = DocumentLocatorDto::new("library-one", path, None, None).expect("locator");
+            let error = adapter.read_document(&locator).expect_err("missing note");
+            assert_eq!(error.code, BackendErrorCode::NotFound, "{path}");
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

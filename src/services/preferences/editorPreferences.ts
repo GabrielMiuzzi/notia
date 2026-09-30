@@ -4,7 +4,8 @@
  * `backend_core::device_preferences`).
  */
 
-export type PaperFormatId = 'a3' | 'a4' | 'a5' | 'b5' | 'letter' | 'legal'
+/** Page mode only offers A4. */
+export type PaperFormatId = 'a4'
 export type PageOrientation = 'portrait' | 'landscape'
 export type PageMarginsId = 'narrow' | 'normal' | 'wide'
 
@@ -20,13 +21,14 @@ export interface EditorPagePreferences {
   pageNumbers: boolean
 }
 
-export type PenTool = 'fountain' | 'pencil' | 'marker'
 export type PenColor = 'ink' | 'teal' | 'blue' | 'red' | 'orange' | 'yellow'
 export type PenSideButton = 'eraser' | 'select' | 'none'
 
-/** Handwriting settings, kept for the pen that is not available yet. */
+/**
+ * Handwriting settings of the pen bar: ink color, tip size (1 to 16 px),
+ * smoothing and the hardware options. The tool is chosen in the bar.
+ */
 export interface PenPreferences {
-  tool: PenTool
   color: PenColor
   thickness: number
   smoothing: number
@@ -44,10 +46,16 @@ export interface EditorPageSetup {
   heightMm: number
   marginMm: number
   pageNumbers: boolean
+  /** Width of the sheet of a note not in page mode: a portrait A4. */
+  continuousWidthMm: number
 }
 
-/** The page the editor draws in page mode. */
+/**
+ * The sheet the editor draws: A4 pages in page mode, or one continuous
+ * sheet as wide as an A4, with the same margins, when the note is not.
+ */
 export interface MarkdownPageLayout {
+  paged: boolean
   widthMm: number
   heightMm: number
   marginMm: number

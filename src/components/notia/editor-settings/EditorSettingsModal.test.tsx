@@ -14,10 +14,7 @@ vi.mock('../../../services/preferences/devicePreferencesStorage', () => ({
 }))
 
 const SETUP = {
-  formats: [
-    { id: 'a4', label: 'A4', widthMm: 210, heightMm: 297 },
-    { id: 'a5', label: 'A5', widthMm: 148, heightMm: 210 },
-  ],
+  formats: [{ id: 'a4', label: 'A4', widthMm: 210, heightMm: 297 }],
   margins: [
     { id: 'narrow', label: 'Estrechos', marginMm: 12.7 },
     { id: 'normal', label: 'Normales', marginMm: 25.4 },
@@ -30,7 +27,7 @@ const SETUP = {
 
 const PREFERENCES = {
   editorPage: { format: 'a4', orientation: 'portrait', margins: 'normal', pageNumbers: true },
-  pen: { tool: 'fountain', color: 'ink', thickness: 3, smoothing: 40, pressure: true, palmRejection: true, penOnly: false, sideButton: 'eraser' },
+  pen: { color: 'ink', thickness: 4, smoothing: 40, pressure: true, palmRejection: true, penOnly: false, sideButton: 'eraser' },
   editorPageSetup: SETUP,
 } as unknown as DevicePreferences
 
@@ -61,13 +58,14 @@ describe('EditorSettingsModal', () => {
     // Page mode is the note's property: the switch asks the note to change, not the device.
     fireEvent.click(screen.getByRole('switch', { name: 'Modo página' }))
     expect(onTogglePageMode).toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('radio', { name: /A5/ }))
+    // A4 is the only size.
+    expect(screen.getAllByRole('radio', { name: /× .* mm/ })).toHaveLength(1)
     fireEvent.click(screen.getByRole('radio', { name: 'Horizontal' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Estrechos' }))
 
-    await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(2))
     expect(saveDevicePreferences).toHaveBeenLastCalledWith({
-      editorPage: { format: 'a5', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
+      editorPage: { format: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: true },
     })
   })
 
@@ -87,23 +85,10 @@ describe('EditorSettingsModal', () => {
     expect(store.getState().preferences.editorPage?.pageNumbers).toBe(true)
   })
 
-  it('keeps the pen settings for the pen to come', async () => {
-    renderModal('pen')
-    expect(screen.getByText('Próximamente')).toBeTruthy()
-    fireEvent.click(screen.getByRole('radio', { name: 'Marcador' }))
-    fireEvent.click(screen.getByRole('radio', { name: 'Teal' }))
-    fireEvent.change(screen.getByRole('slider', { name: /Grosor/ }), { target: { value: '8' } })
-    fireEvent.click(screen.getByRole('switch', { name: 'Dibujar solo con lápiz' }))
-    await waitFor(() => expect(saveDevicePreferences).toHaveBeenCalledTimes(4))
-    expect(saveDevicePreferences).toHaveBeenLastCalledWith({
-      pen: expect.objectContaining({ tool: 'marker', color: 'teal', thickness: 8, penOnly: true }),
-    })
-  })
-
-  it('switches sections from the navigation', () => {
-    const { onTabChange } = renderModal()
-    fireEvent.click(screen.getByRole('button', { name: 'Lápiz' }))
-    expect(onTabChange).toHaveBeenCalledWith('pen')
+  it('has only the page section: the pen options are in the pen bar', () => {
+    renderModal()
+    expect(screen.queryByRole('button', { name: 'Lápiz' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Página' })).toBeTruthy()
   })
 })
 
@@ -114,7 +99,6 @@ describe('MarkdownDocumentMenu', () => {
     const handlers = {
       onTogglePageMode: vi.fn(),
       onOpenPageSettings: vi.fn(),
-      onOpenPenSettings: vi.fn(),
       onExport: vi.fn(),
     }
     render(<MarkdownDocumentMenu pageMode={pageMode} pageSizeLabel={pageMode ? 'A4' : 'Continuo'} canExportPdf={pageMode === true} exportingFormat={null} {...handlers} />)
@@ -130,8 +114,9 @@ describe('MarkdownDocumentMenu', () => {
     expect(handlers.onTogglePageMode).toHaveBeenCalled()
     expect(screen.getByRole('menuitem', { name: /Tamaño de página/ }).textContent).toContain('Continuo')
 
-    fireEvent.click(screen.getByRole('menuitem', { name: /Lápiz/ }))
-    expect(handlers.onOpenPenSettings).toHaveBeenCalled()
+    expect(screen.queryByRole('menuitem', { name: /Lápiz/ })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Configuración/ }))
+    expect(handlers.onOpenPageSettings).toHaveBeenCalled()
     expect(screen.queryByRole('menu')).toBeNull()
   })
 

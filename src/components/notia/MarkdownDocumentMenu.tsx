@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, Ellipsis, FileText, PanelsTopLeft, PenLine, Settings } from 'lucide-react'
+import { Download, Ellipsis, FileText, PanelsTopLeft, Settings } from 'lucide-react'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import './markdownDocumentMenu.css'
 
@@ -13,7 +13,6 @@ interface MarkdownDocumentMenuProps {
   exportingFormat: MarkdownExportFormat | null
   onTogglePageMode: () => void
   onOpenPageSettings: () => void
-  onOpenPenSettings: () => void
   onExport: (format: MarkdownExportFormat) => void
 }
 
@@ -25,7 +24,6 @@ export function MarkdownDocumentMenu({
   exportingFormat,
   onTogglePageMode,
   onOpenPageSettings,
-  onOpenPenSettings,
   onExport,
 }: MarkdownDocumentMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
@@ -86,10 +84,6 @@ export function MarkdownDocumentMenu({
           <button type="button" role="menuitem" className="notia-document-menu-item" onClick={() => run(onOpenPageSettings)}>
             <span className="notia-document-menu-label"><Settings size={15} aria-hidden="true" />Configuración…</span>
             <kbd className="notia-document-menu-shortcut">Ctrl ,</kbd>
-          </button>
-          <button type="button" role="menuitem" className="notia-document-menu-item" onClick={() => run(onOpenPenSettings)}>
-            <span className="notia-document-menu-label"><PenLine size={15} aria-hidden="true" />Lápiz</span>
-            <span className="notia-document-menu-soon">Próximamente</span>
           </button>
           <span className="notia-document-menu-divider" aria-hidden="true" />
           <button

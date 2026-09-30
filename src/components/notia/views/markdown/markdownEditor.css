@@ -1191,33 +1191,47 @@
   }
 }
 
-/* ---------- Page mode ---------- */
+/* ---------- Sheet: pages or one continuous A4 ---------- */
 
 /*
- * Sheets of paper size on the app background, 32px apart, with the text in
- * their margins. The sheets are drawn behind the editor; the pagination
- * plugin moves the blocks that start a page with blank space.
+ * The note is written on paper of A4 width, centred on the app background:
+ * sheets 32px apart in page mode, or one sheet as long as the note when it
+ * is not. The text sits in the page margins, so it wraps the same in both
+ * modes. The sheets are drawn behind the editor; in page mode the
+ * pagination plugin moves the blocks that start a page with blank space.
  */
-.notia-markdown-host.is-paged {
+.notia-markdown-host.is-sheet {
   --notia-page-sheet: var(--color-sidebar-bg);
   background: var(--color-app-bg);
 }
 
-.notia-theme-light .notia-markdown-host.is-paged {
+.notia-theme-light .notia-markdown-host.is-sheet {
   --notia-page-sheet: var(--color-card-bg);
 }
 
-.notia-markdown-host.is-paged .notia-markdown-zoom-content {
+.notia-markdown-host.is-sheet .notia-markdown-zoom-content {
   box-sizing: border-box;
   min-width: fit-content;
   padding: var(--notia-desk-padding, 40px) var(--notia-desk-padding, 40px) 64px;
 }
 
-.notia-markdown-host.is-paged .notia-markdown-pages {
+.notia-markdown-host.is-continuous .notia-markdown-zoom-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding-top: 0;
+}
+
+.notia-markdown-host.is-sheet .notia-markdown-pages {
   position: relative;
   box-sizing: border-box;
   width: var(--notia-page-width);
   margin: 0 auto;
+}
+
+/* The continuous sheet reaches at least the bottom of the editor. */
+.notia-markdown-host.is-continuous .notia-markdown-pages {
+  flex: 1 0 auto;
 }
 
 .notia-markdown-page-sheets {
@@ -1238,6 +1252,15 @@
   box-shadow: 0 12px 32px var(--color-menu-shadow);
 }
 
+/* The continuous sheet only sets the A4 column: the note sits on the app background, as in the canvas. */
+.notia-markdown-page-sheet.is-continuous {
+  top: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .notia-markdown-page-number {
   position: absolute;
   right: 0;
@@ -1249,17 +1272,23 @@
   text-align: center;
 }
 
-.notia-markdown-host.is-paged .notia-markdown-page-flow {
+.notia-markdown-host.is-sheet .notia-markdown-page-flow {
   position: relative;
   padding: var(--notia-page-margin) var(--notia-page-margin) 0;
 }
 
-.notia-markdown-host.is-paged .notia-markdown-properties-wrap {
+/* Without a visible sheet the text starts 36px down, as in the canvas; the sides keep the page margins. */
+.notia-markdown-host.is-continuous .notia-markdown-page-flow {
+  padding-top: 36px;
+  padding-bottom: var(--notia-page-margin);
+}
+
+.notia-markdown-host.is-sheet .notia-markdown-properties-wrap {
   max-width: none;
   padding: 0;
 }
 
-.notia-markdown-host.is-paged .notia-markdown-editor-root .milkdown .ProseMirror {
+.notia-markdown-host.is-sheet .notia-markdown-editor-root .milkdown .ProseMirror {
   max-width: none;
   min-height: 0;
   padding: 0 0 0 var(--notia-editor-text-inset);

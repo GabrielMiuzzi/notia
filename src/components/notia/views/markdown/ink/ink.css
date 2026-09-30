@@ -1,0 +1,415 @@
+/*
+ * The pen bar and the canvas over the note, as in the design canvas (Main:
+ * «Herramientas de lápiz»). The bar stays at the top of the editor while the
+ * note scrolls; on a narrow editor its tools scroll sideways and drop their
+ * labels. Controls are 30–32px, 44px under a coarse pointer.
+ */
+
+.notia-pen-bar {
+  --notia-pen-control: 30px;
+  --notia-pen-sunken: color-mix(in srgb, var(--color-app-bg) 50%, var(--color-sidebar-bg));
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 46px;
+  box-sizing: border-box;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-sidebar-bg);
+  color: var(--color-body-text);
+  container-type: inline-size;
+  font-size: 13px;
+}
+
+@media (pointer: coarse) {
+  .notia-pen-bar {
+    --notia-pen-control: 44px;
+    height: 56px;
+    padding: 0 8px;
+  }
+}
+
+.notia-pen-bar-scroll {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.notia-pen-bar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.notia-pen-bar button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: var(--notia-pen-control);
+  height: var(--notia-pen-control);
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-body-text) 80%, var(--color-muted-text));
+  font: inherit;
+  cursor: pointer;
+}
+
+.notia-pen-bar button:hover:not(:disabled) {
+  background: var(--color-card-bg);
+  color: var(--color-body-text);
+}
+
+.notia-pen-bar button:focus-visible,
+.notia-pen-bar input:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.notia-pen-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.notia-pen-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--notia-pen-sunken);
+}
+
+.notia-pen-bar .notia-pen-tool {
+  height: 32px;
+  padding: 0 10px;
+}
+
+@media (pointer: coarse) {
+  .notia-pen-bar .notia-pen-tool {
+    height: 44px;
+  }
+}
+
+.notia-pen-bar .notia-pen-tool[aria-checked='true'],
+.notia-pen-bar .notia-pen-tip[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-accent-text) 16%, transparent);
+  color: var(--color-accent-text);
+}
+
+.notia-pen-divider {
+  flex: none;
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  background: var(--color-border-soft);
+}
+
+.notia-pen-ink {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  transition: opacity 0.15s;
+}
+
+.notia-pen-ink[data-active='false'] {
+  opacity: 0.4;
+}
+
+.notia-pen-swatch > span {
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+}
+
+.notia-pen-swatch.is-highlighter > span {
+  width: 16px;
+  height: 8px;
+  border-radius: 3px;
+  opacity: 0.55;
+}
+
+.notia-pen-swatch[aria-pressed='true'] > span {
+  box-shadow: 0 0 0 2px var(--color-sidebar-bg), 0 0 0 4px var(--color-accent-text);
+}
+
+.notia-pen-tip-label {
+  flex: none;
+  margin: 0 6px 0 2px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-pen-tip > span {
+  border-radius: 50%;
+  background: var(--color-muted-text);
+}
+
+.notia-pen-tip[aria-pressed='true'] > span {
+  background: var(--color-accent-text);
+}
+
+.notia-pen-size {
+  flex: none;
+  width: 96px;
+  margin: 0 8px;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-pen-size-value {
+  flex: none;
+  width: 38px;
+  color: color-mix(in srgb, var(--color-body-text) 80%, var(--color-muted-text));
+  font-family: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.notia-pen-spacer {
+  flex: 1 0 8px;
+}
+
+.notia-pen-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  margin-right: 10px;
+  color: var(--color-accent-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.notia-pen-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-accent-text);
+}
+
+.notia-pen-status.is-error {
+  color: var(--color-coral);
+}
+
+.notia-pen-bar .notia-pen-options-button {
+  height: 32px;
+  padding: 0 10px;
+}
+
+.notia-pen-bar .notia-pen-options-button[aria-expanded='true'] {
+  background: var(--color-card-bg);
+}
+
+/* A narrow editor: the tools keep their icons. */
+@container (max-width: 760px) {
+  .notia-pen-tool-label,
+  .notia-pen-status,
+  .notia-pen-size,
+  .notia-pen-size-value {
+    display: none;
+  }
+
+  .notia-pen-status.is-error {
+    display: inline-flex;
+  }
+
+  .notia-pen-bar .notia-pen-tool,
+  .notia-pen-bar .notia-pen-options-button {
+    padding: 0;
+    min-width: var(--notia-pen-control);
+  }
+}
+
+/* ---------- Options ---------- */
+
+.notia-pen-options {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(320px, calc(100cqw - 32px));
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 16px 40px var(--color-modal-shadow);
+}
+
+.notia-pen-options-toggles {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+}
+
+.notia-pen-options-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.notia-pen-options-toggle + .notia-pen-options-toggle {
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.notia-pen-options-label {
+  font-size: 13px;
+}
+
+.notia-pen-options-description {
+  margin-top: 1px;
+  color: var(--color-muted-text);
+  font-size: 11.5px;
+}
+
+.notia-pen-bar .notia-pen-switch {
+  position: relative;
+  width: 36px;
+  min-width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--color-border-soft);
+}
+
+.notia-pen-bar .notia-pen-switch:hover:not(:disabled) {
+  background: var(--color-border-soft);
+}
+
+.notia-pen-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--color-app-text);
+  transition: transform 0.15s;
+}
+
+.notia-pen-bar .notia-pen-switch[aria-checked='true'],
+.notia-pen-bar .notia-pen-switch[aria-checked='true']:hover:not(:disabled) {
+  background: var(--color-accent-text);
+}
+
+.notia-pen-switch[aria-checked='true'] > span {
+  background: var(--color-on-accent);
+  transform: translateX(16px);
+}
+
+.notia-theme-light .notia-pen-switch > span {
+  background: var(--color-card-bg);
+}
+
+@media (pointer: coarse) {
+  .notia-pen-bar .notia-pen-switch {
+    width: 44px;
+    height: 28px;
+    border-radius: 14px;
+  }
+
+  .notia-pen-switch > span {
+    top: 5px;
+    left: 5px;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+  }
+}
+
+.notia-pen-options-range {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.notia-pen-options-range > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.notia-pen-options-value {
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-pen-options-range input {
+  accent-color: var(--color-accent-text);
+}
+
+.notia-pen-options-heading {
+  margin-bottom: 8px;
+  color: var(--color-muted-text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.notia-pen-segmented {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--notia-pen-sunken);
+}
+
+.notia-pen-bar .notia-pen-segmented button {
+  flex: 1;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+}
+
+.notia-pen-bar .notia-pen-segmented button[aria-checked='true'] {
+  background: var(--color-card-bg);
+  color: var(--color-body-text);
+}
+
+@media (pointer: coarse) {
+  .notia-pen-bar .notia-pen-segmented button {
+    height: 44px;
+  }
+}
+
+/* ---------- The canvas over the note ---------- */
+
+.notia-ink-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.notia-ink-layer:not([data-tool='selector']) {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.notia-ink-layer[data-tool='eraser'] {
+  cursor: cell;
+}

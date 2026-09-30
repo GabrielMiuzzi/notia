@@ -1,16 +1,32 @@
 /*
- * GitBook blocks in the Markdown editor. Colors come from the theme tokens;
- * mixes only soften a token. Controls are 30px, 44px under a coarse pointer.
+ * GitBook blocks in the Markdown editor, drawn as in the design canvas
+ * (Elementos · Bloques and Elementos · Medios). Colors come from the theme
+ * tokens; mixes only soften a token. Controls are 30px, 44px under a coarse
+ * pointer.
  */
 
 .notia-gb {
   --notia-gb-control: 30px;
-  --notia-gb-radius: 10px;
+  --notia-gb-radius: 12px;
   --notia-gb-edge: var(--color-border-soft);
-  --notia-gb-surface: var(--color-card-bg);
+  /* Panel, raised surface (cards, active tab) and sunken surface (tab bar, columns). */
+  --notia-gb-panel: var(--color-sidebar-bg);
+  --notia-gb-raised: var(--color-card-bg);
+  --notia-gb-sunken: color-mix(in srgb, var(--color-app-bg) 50%, var(--color-sidebar-bg));
+  --notia-gb-well: color-mix(in srgb, var(--color-app-bg) 60%, var(--color-sidebar-bg));
+  /* Body text inside the blocks: a step softer than the headings. */
+  --notia-gb-soft-text: color-mix(in srgb, var(--color-body-text) 62%, var(--color-muted-text));
   --notia-gb-accent: var(--color-accent-text);
+  --notia-gb-tone: var(--color-accent-text);
+  --notia-gb-title-font: var(--crepe-font-title, inherit);
   position: relative;
   margin: 10px 0;
+}
+
+/* On a page the sheet already has the panel color: the blocks go one step up. */
+.notia-markdown-host.is-paged .notia-gb {
+  --notia-gb-panel: var(--color-card-bg);
+  --notia-gb-raised: color-mix(in srgb, var(--color-card-bg) 80%, var(--color-border-soft));
 }
 
 @media (pointer: coarse) {
@@ -35,20 +51,22 @@
 /* ---------- Shared controls ---------- */
 
 .notia-gb-button-icon,
-.notia-gb-text-button {
+.notia-gb-text-button,
+.notia-gb-switch {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-width: var(--notia-gb-control, 30px);
   min-height: var(--notia-gb-control, 30px);
-  padding: 0 8px;
+  padding: 0 9px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--color-muted-text);
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -58,15 +76,17 @@
 
 .notia-gb-button-icon:hover,
 .notia-gb-text-button:hover {
-  background: color-mix(in srgb, var(--color-body-text) 8%, transparent);
+  background: var(--notia-gb-raised);
   color: var(--color-body-text);
 }
 
 .notia-gb-button-icon:focus-visible,
 .notia-gb-text-button:focus-visible,
+.notia-gb-switch:focus-visible,
 .notia-gb-field:focus-visible,
 .notia-gb-card:focus-visible,
-.notia-gb-page-link__open:focus-visible {
+.notia-gb-page-link__open:focus-visible,
+.notia-gb-update__summary:focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
@@ -80,6 +100,7 @@
 .notia-gb-primary {
   background: var(--color-accent-text);
   color: var(--color-on-accent);
+  font-weight: 600;
 }
 
 .notia-gb-primary:hover {
@@ -88,8 +109,50 @@
 }
 
 .notia-gb-toggle[aria-pressed='true'] {
-  background: var(--color-accent-bg);
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
   color: var(--color-accent-text);
+}
+
+/* An on/off switch: its label, then a 30×18 track. */
+.notia-gb-switch {
+  gap: 8px;
+  padding: 0 4px 0 8px;
+  font-size: 12px;
+}
+
+.notia-gb-switch__track {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-border-soft);
+  transition: background 0.15s;
+}
+
+.notia-gb-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--color-app-text);
+  transition: transform 0.15s;
+}
+
+.notia-gb-switch[aria-checked='true'] .notia-gb-switch__track {
+  background: var(--color-accent-text);
+}
+
+.notia-gb-switch[aria-checked='true'] .notia-gb-switch__knob {
+  background: var(--color-on-accent);
+  transform: translateX(12px);
+}
+
+.notia-theme-light .notia-gb-switch__knob,
+.notia-theme-light .notia-gb-switch[aria-checked='true'] .notia-gb-switch__knob {
+  background: var(--color-card-bg);
 }
 
 .notia-gb-icon,
@@ -98,20 +161,26 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  color: var(--color-muted-text);
+  color: inherit;
 }
 
 .notia-gb-field {
   min-width: 0;
   min-height: var(--notia-gb-control, 30px);
   box-sizing: border-box;
-  padding: 4px 8px;
-  border: 1px solid var(--color-border-soft);
-  border-radius: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: 7px;
   background: var(--color-app-bg);
   color: var(--color-body-text);
   font: inherit;
-  font-size: 14px;
+  font-size: 13.5px;
+}
+
+.notia-gb-field:focus {
+  border-color: var(--color-accent-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent-text) 15%, transparent);
+  outline: none;
 }
 
 textarea.notia-gb-field {
@@ -122,9 +191,15 @@ textarea.notia-gb-field {
   color: var(--color-muted-text);
 }
 
+.notia-gb-mono,
+.notia-gb-tag,
+.notia-gb-update__date-text,
+.notia-gb-expression {
+  font-family: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
+}
+
 .notia-gb-mono {
-  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .notia-gb-label {
@@ -132,15 +207,26 @@ textarea.notia-gb-field {
   color: var(--color-muted-text);
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .notia-gb-muted,
 .notia-gb-atom__detail {
   color: var(--color-muted-text);
-  font-size: 13px;
+  font-size: 12.5px;
   overflow-wrap: anywhere;
+}
+
+/* A small mono chip: «YouTube», a language. */
+.notia-gb-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: 7px;
+  background: var(--notia-gb-raised);
+  color: var(--color-muted-text);
+  font-size: 10.5px;
 }
 
 .notia-gb__content > :first-child {
@@ -182,8 +268,8 @@ textarea.notia-gb-field {
   width: min(340px, calc(100vw - 16px));
   border: 1px solid var(--color-border-soft);
   border-radius: 12px;
-  background: var(--color-modal-bg);
-  box-shadow: 0 12px 32px var(--color-modal-shadow);
+  background: var(--color-card-bg);
+  box-shadow: 0 14px 34px var(--color-modal-shadow);
   color: var(--color-body-text);
 }
 
@@ -197,6 +283,7 @@ textarea.notia-gb-field {
   justify-content: flex-start;
   width: 100%;
   color: var(--color-body-text);
+  font-size: 13.5px;
 }
 
 .notia-gb-menu__item[aria-checked='true'] {
@@ -208,58 +295,102 @@ textarea.notia-gb-field {
 .notia-gb-menu__item--warning .notia-gb-icon { color: var(--color-amber); }
 .notia-gb-menu__item--danger .notia-gb-icon { color: var(--color-coral); }
 
-/* ---------- Hint ---------- */
+/* ---------- Hint: a tinted card with its kind as title ---------- */
 
 .notia-gb-hint {
   --notia-gb-tone: var(--color-periwinkle);
   display: flex;
-  gap: 8px;
-  padding: 10px 14px 10px 8px;
-  border: 1px solid color-mix(in srgb, var(--notia-gb-tone) 34%, transparent);
-  border-left-width: 4px;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--notia-gb-tone) 28%, var(--notia-gb-edge));
   border-radius: var(--notia-gb-radius);
-  background: color-mix(in srgb, var(--notia-gb-tone) 10%, transparent);
+  background: color-mix(in srgb, var(--notia-gb-tone) 9%, var(--notia-gb-panel));
 }
 
 .notia-gb-hint[data-style='success'] { --notia-gb-tone: var(--color-sage); }
 .notia-gb-hint[data-style='warning'] { --notia-gb-tone: var(--color-amber); }
 .notia-gb-hint[data-style='danger'] { --notia-gb-tone: var(--color-coral); }
 
-.notia-gb-hint__style {
+.notia-gb-hint__aside {
+  flex: none;
+}
+
+.notia-gb-hint .notia-gb-hint__style {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--notia-gb-tone) 18%, transparent);
   color: var(--notia-gb-tone);
 }
 
-.notia-gb-hint > .notia-gb__content {
+.notia-gb-hint .notia-gb-hint__style:hover {
+  background: color-mix(in srgb, var(--notia-gb-tone) 28%, transparent);
+  color: var(--notia-gb-tone);
+}
+
+@media (pointer: coarse) {
+  .notia-gb-hint .notia-gb-hint__style {
+    width: 44px;
+    height: 44px;
+    margin: -9px;
+  }
+}
+
+.notia-gb-hint__body {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
-  padding-top: 3px;
+  padding-top: 2px;
+}
+
+.notia-gb-hint__title {
+  color: var(--notia-gb-tone);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-hint .notia-gb__content p {
+  --notia-block-pad-top: 0px;
+  --notia-block-pad-bottom: 0px;
+  color: var(--notia-gb-soft-text);
 }
 
 /* ---------- Tabs ---------- */
 
 .notia-gb-tabs {
+  overflow: hidden;
   border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
-  background: var(--notia-gb-surface);
+  background: var(--notia-gb-panel);
 }
 
 .notia-gb-tabs__bar {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 4px 6px 0;
+  padding: 6px 6px 0;
   border-bottom: 1px solid var(--notia-gb-edge);
+  background: var(--notia-gb-sunken);
   overflow-x: auto;
   scrollbar-width: thin;
 }
 
 .notia-gb-tabs__tab {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
   max-width: 220px;
-  border-bottom: 2px solid transparent;
+  min-height: 36px;
+  padding: 0 14px;
   border-radius: 8px 8px 0 0;
+  color: var(--color-muted-text);
+  font-size: 13.5px;
 }
 
 .notia-gb-tabs__tab > span {
@@ -269,14 +400,31 @@ textarea.notia-gb-field {
 }
 
 .notia-gb-tabs__tab--active {
-  border-bottom-color: var(--notia-gb-accent);
+  gap: 2px;
+  padding: 0 4px 0 6px;
+  background: var(--notia-gb-panel);
+  color: var(--color-body-text);
+}
+
+.notia-gb-tabs__tab--active::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  left: 10px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--notia-gb-accent);
 }
 
 .notia-gb-tabs__title {
-  width: 16ch;
+  width: 14ch;
+  min-height: 30px;
+  padding: 0 8px;
   border-color: transparent;
   background: transparent;
   color: var(--color-body-text);
+  font-size: 13.5px;
   font-weight: 600;
 }
 
@@ -285,8 +433,25 @@ textarea.notia-gb-field {
   background: var(--color-app-bg);
 }
 
+.notia-gb-tabs .notia-gb-tabs__remove {
+  min-width: 24px;
+  min-height: 24px;
+  opacity: 0.7;
+}
+
+@media (pointer: coarse) {
+  .notia-gb-tabs .notia-gb-tabs__remove {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.notia-gb-tabs__add {
+  margin-left: 2px;
+}
+
 .notia-gb-tabs > .notia-gb__content {
-  padding: 12px 16px;
+  padding: 16px 18px;
 }
 
 .notia-gb-part--tab:not([data-active='true']) {
@@ -309,11 +474,11 @@ textarea.notia-gb-field {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 8px;
 }
 
 .notia-gb-part__remove {
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
 .notia-gb-part:hover .notia-gb-part__remove,
@@ -329,16 +494,43 @@ textarea.notia-gb-field {
 
 .notia-gb-parts__footer {
   display: flex;
-  padding-top: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
 }
 
+.notia-gb-parts__count {
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+/* The first heading of a part is its title. */
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-part__content > :is(h1, h2, h3, h4, h5, h6):first-child {
+  --notia-block-pad-top: 0px;
+  --notia-block-pad-bottom: 2px;
+  font-family: var(--notia-gb-title-font);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-part__content p {
+  color: var(--notia-gb-soft-text);
+}
+
+/* Stepper: numbered circles joined by a line. */
 .notia-gb-stepper > .notia-gb__content {
   counter-reset: notia-gb-step;
 }
 
 .notia-gb-part--step {
   counter-increment: notia-gb-step;
-  padding: 0 0 12px 42px;
+  min-height: 28px;
+  padding: 2px 40px 18px 44px;
+}
+
+.notia-gb-part--step:last-child {
+  padding-bottom: 0;
 }
 
 .notia-gb-part--step::before {
@@ -346,111 +538,244 @@ textarea.notia-gb-field {
   position: absolute;
   top: 0;
   left: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--color-accent-bg);
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--color-accent-text) 40%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-accent-text) 14%, transparent);
   color: var(--color-accent-text);
+  font-family: var(--notia-gb-title-font);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 26px;
   text-align: center;
 }
 
-.notia-gb-part--step::after {
+.notia-gb-part--step:not(:last-child)::after {
   content: '';
   position: absolute;
-  top: 30px;
-  bottom: 4px;
-  left: 12px;
+  top: 34px;
+  bottom: -6px;
+  left: 13px;
   width: 2px;
+  border-radius: 1px;
   background: var(--notia-gb-edge);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-part--step .notia-gb-part__content > :is(h1, h2, h3, h4, h5, h6):first-child {
+  font-size: 16px;
 }
 
 .notia-gb-part--step > .notia-gb-part__header {
   position: absolute;
-  top: -2px;
+  top: 0;
   right: 0;
   z-index: 1;
 }
 
+.notia-gb-stepper > .notia-gb-parts__footer {
+  padding-left: 36px;
+}
+
+/* Columns: two panels side by side. */
 .notia-gb-columns > .notia-gb__content {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .notia-gb-part--column {
   min-width: 0;
-  padding: 8px 12px;
-  border: 1px dashed var(--notia-gb-edge);
+  padding: 14px 16px;
+  border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
+  background: var(--notia-gb-sunken);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-part--column .notia-gb-part__content > :is(h1, h2, h3, h4, h5, h6):first-child {
+  --notia-block-pad-bottom: 4px;
+  font-size: 14.5px;
 }
 
 .notia-gb-part--column > .notia-gb-part__header {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 4px;
+  right: 4px;
   z-index: 1;
 }
 
+/* Updates: a timeline with a dot, the date and the tags of each one. */
 .notia-gb-updates > .notia-gb__content {
+  margin-left: 5px;
   border-left: 2px solid var(--notia-gb-edge);
-  padding-left: 16px;
 }
 
 .notia-gb-part--update {
-  padding: 4px 0 16px;
+  padding: 0 0 22px 28px;
 }
 
 .notia-gb-part--update::before {
   content: '';
   position: absolute;
-  top: 16px;
-  left: -22px;
+  top: 9px;
+  left: -6px;
+  box-sizing: border-box;
   width: 10px;
   height: 10px;
-  border-radius: 50%;
-  background: var(--color-accent-text);
+  border: 2px solid var(--notia-gb-tone);
+  border-radius: 5px;
+  background: var(--color-app-bg);
 }
 
 .notia-gb-part--update > .notia-gb-part__header {
   justify-content: flex-start;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
+}
+
+.notia-gb-update__summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 0 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.notia-gb-update__summary:hover {
+  background: var(--notia-gb-raised);
+}
+
+.notia-gb-update__date-text {
+  font-size: 12px;
+}
+
+.notia-gb-update__tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--notia-gb-tone) 16%, transparent);
+  color: var(--notia-gb-tone);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.notia-gb-update__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: 8px;
+  background: var(--color-app-bg);
+  color: var(--color-muted-text);
+}
+
+.notia-gb-update__field:focus-within {
+  border-color: var(--color-accent-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent-text) 15%, transparent);
+}
+
+.notia-gb-update__field .notia-gb-field {
+  min-height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.notia-gb-update__tags .notia-gb-field {
+  width: 16ch;
+}
+
+.notia-gb-update__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--notia-gb-tone);
 }
 
 .notia-gb-part--update .notia-gb-field[type='date'] {
   color-scheme: light dark;
 }
 
-/* ---------- Code frame ---------- */
+.notia-gb-part--update[data-editing='false'] .notia-gb-update__field,
+.notia-gb-part--update[data-editing='false'] .notia-gb-part__remove,
+.notia-gb-part--update[data-editing='true'] .notia-gb-update__summary {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-gb-part--update .notia-gb-part__content > :is(h1, h2, h3, h4, h5, h6):first-child {
+  font-size: 19px;
+}
+
+/* ---------- Code frame: the file name heads the code ---------- */
 
 .notia-gb-code {
+  overflow: hidden;
   border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
-  overflow: hidden;
+  background: var(--notia-gb-panel);
 }
 
 .notia-gb-code__header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 10px 0 14px;
   border-bottom: 1px solid var(--notia-gb-edge);
-  background: var(--notia-gb-surface);
+}
+
+.notia-gb-code__name {
+  display: inline-flex;
+  flex: 1 1 160px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-accent-text);
 }
 
 .notia-gb-code__title {
-  flex: 1 1 160px;
+  flex: 1;
+  padding: 0 4px;
   border-color: transparent;
   background: transparent;
+  color: var(--color-body-text);
+  font-family: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
-.notia-gb-code > .notia-gb__content .milkdown-code-block {
+.notia-gb-code__actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+/* The frame has its own bar: the code block inside drops its own. */
+.notia-markdown-editor-root .milkdown .notia-gb-code > .notia-gb__content .milkdown-code-block {
   margin: 0;
+  border: 0;
   border-radius: 0;
+  box-shadow: none;
+}
+
+.notia-gb-code > .notia-gb__content .milkdown-code-block > .tools {
+  display: none;
 }
 
 /* Code blocks number their lines; a frame without numbers hides them. */
@@ -464,77 +789,51 @@ textarea.notia-gb-field {
   overflow-wrap: anywhere;
 }
 
-/* ---------- Prompt, condition and details ---------- */
+/* ---------- Details ---------- */
 
-.notia-gb-prompt,
-.notia-gb-condition,
 .notia-gb-details {
+  overflow: hidden;
   border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
+  background: var(--notia-gb-panel);
 }
 
-.notia-gb-prompt__header,
-.notia-gb-condition__header,
 .notia-gb-details__header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--notia-gb-edge);
-  background: var(--notia-gb-surface);
-  border-radius: var(--notia-gb-radius) var(--notia-gb-radius) 0 0;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 10px 0 12px;
 }
 
-.notia-gb-prompt__header .notia-gb-field,
-.notia-gb-condition__header .notia-gb-field,
-.notia-gb-details__summary {
-  flex: 1;
+.notia-gb-details .notia-gb-details__toggle {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  border-radius: 6px;
+  background: var(--notia-gb-raised);
+  color: var(--color-accent-text);
 }
 
-.notia-gb-prompt__header .notia-gb-icon {
-  color: var(--color-violet);
-}
-
-.notia-gb-prompt > .notia-gb__content,
-.notia-gb-condition > .notia-gb__content,
-.notia-gb-details > .notia-gb__content {
-  padding: 10px 14px;
-}
-
-.notia-gb-condition {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--color-gold) 55%, transparent);
-}
-
-.notia-gb-condition__header .notia-gb-icon {
-  color: var(--color-gold);
-}
-
-.notia-gb-condition__status {
-  flex: none;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-muted-text) 14%, transparent);
-  color: var(--color-muted-text);
-  font-size: 12px;
-}
-
-.notia-gb-condition[data-state='satisfied'] .notia-gb-condition__status {
-  background: color-mix(in srgb, var(--color-sage) 18%, transparent);
-  color: var(--color-sage);
-}
-
-.notia-gb-condition[data-state='notSatisfied'] > .notia-gb__content {
-  opacity: 0.55;
-}
-
-.notia-gb-condition[data-state='invalid'] .notia-gb-condition__status {
-  background: color-mix(in srgb, var(--color-coral) 16%, transparent);
-  color: var(--color-coral);
+@media (pointer: coarse) {
+  .notia-gb-details .notia-gb-details__toggle {
+    width: 44px;
+    height: 44px;
+    margin: -11px;
+  }
 }
 
 .notia-gb-details__toggle svg {
   transition: transform 120ms ease;
+}
+
+.notia-gb-details[data-expanded='false'] {
+  background: var(--notia-gb-sunken);
+}
+
+.notia-gb-details[data-expanded='false'] .notia-gb-details__toggle {
+  color: var(--color-muted-text);
 }
 
 .notia-gb-details[data-expanded='false'] .notia-gb-details__toggle svg {
@@ -545,27 +844,162 @@ textarea.notia-gb-field {
   display: none;
 }
 
-.notia-gb-details[data-expanded='false'] > .notia-gb-details__header {
-  border-bottom: 0;
-  border-radius: var(--notia-gb-radius);
-}
-
 .notia-gb-details__summary {
+  flex: 1;
+  padding: 0 4px;
   border-color: transparent;
   background: transparent;
+  font-size: 14px;
   font-weight: 600;
 }
 
-/* ---------- Atoms ---------- */
+.notia-gb-details[data-expanded='false'] .notia-gb-details__summary {
+  color: var(--notia-gb-soft-text);
+}
+
+.notia-gb-details > .notia-gb__content {
+  padding: 12px 16px 16px 46px;
+  border-top: 1px solid var(--notia-gb-edge);
+  color: var(--notia-gb-soft-text);
+}
+
+/* ---------- Condition: dashed gold, «SI» and its expression ---------- */
+
+.notia-gb-condition {
+  overflow: hidden;
+  border: 1.5px dashed color-mix(in srgb, var(--color-gold) 55%, transparent);
+  border-radius: var(--notia-gb-radius);
+  background: color-mix(in srgb, var(--color-gold) 4%, transparent);
+}
+
+.notia-gb-condition__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 12px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-gold) 35%, transparent);
+}
+
+.notia-gb-condition__if {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-gold);
+  font-family: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.notia-gb-condition__expression {
+  flex: 1;
+}
+
+.notia-gb-condition__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-muted-text) 14%, transparent);
+  color: var(--color-muted-text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.notia-gb-condition[data-state='satisfied'] .notia-gb-condition__status {
+  background: color-mix(in srgb, var(--color-sage) 14%, transparent);
+  color: var(--color-sage);
+}
+
+.notia-gb-condition[data-state='notSatisfied'] > .notia-gb__content {
+  opacity: 0.55;
+}
+
+.notia-gb-condition[data-state='invalid'] .notia-gb-condition__status {
+  background: color-mix(in srgb, var(--color-coral) 14%, transparent);
+  color: var(--color-coral);
+}
+
+.notia-gb-condition > .notia-gb__content {
+  padding: 14px 16px;
+  color: var(--notia-gb-soft-text);
+}
+
+/* ---------- Prompt: violet, with «Copiar» and «Ejecutar» ---------- */
+
+.notia-gb-prompt {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-violet) 35%, transparent);
+  border-radius: var(--notia-gb-radius);
+  background: var(--notia-gb-panel);
+}
+
+.notia-gb-prompt__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--notia-gb-edge);
+  background: color-mix(in srgb, var(--color-violet) 5%, transparent);
+}
+
+.notia-gb-prompt__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-violet) 16%, transparent);
+  color: var(--color-violet);
+}
+
+.notia-gb-prompt__title {
+  flex: 1;
+  padding: 0 4px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notia-gb-prompt .notia-gb-prompt__run {
+  border-color: color-mix(in srgb, var(--color-violet) 45%, transparent);
+  color: var(--color-violet);
+}
+
+.notia-gb-prompt .notia-gb-prompt__run:hover {
+  background: color-mix(in srgb, var(--color-violet) 12%, transparent);
+  color: var(--color-violet);
+}
+
+.notia-gb-prompt > .notia-gb__content {
+  padding: 14px 16px;
+  color: var(--notia-gb-soft-text);
+}
+
+/* Fields in a header read as its title until they get the focus. */
+.notia-gb-tabs__title:not(:focus),
+.notia-gb-code__title:not(:focus),
+.notia-gb-details__summary:not(:focus),
+.notia-gb-prompt__title:not(:focus) {
+  box-shadow: none;
+}
+
+/* ---------- Media cards: embeds, files, page links ---------- */
 
 .notia-gb-atom {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 14px;
+  padding: 10px 10px 10px 12px;
   border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
-  background: var(--notia-gb-surface);
+  background: var(--notia-gb-panel);
 }
 
 .notia-gb-atom.ProseMirror-selectednode,
@@ -580,41 +1014,102 @@ textarea.notia-gb-field {
   padding: 0;
 }
 
+.notia-gb-tile {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: 10px;
+  background: var(--notia-gb-raised);
+  color: var(--color-muted-text);
+}
+
+.notia-gb-tile--accent {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
+  color: var(--color-accent-text);
+}
+
+.notia-gb-atom[data-missing='true'] .notia-gb-tile {
+  color: var(--color-coral);
+}
+
 .notia-gb-atom__text {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  gap: 2px;
 }
 
 .notia-gb-atom__text strong {
   overflow: hidden;
   color: var(--color-body-text);
+  font-size: 14.5px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.notia-gb-atom__text .notia-gb-atom__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-gb-atom__tags {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .notia-gb-atom__actions {
   display: flex;
   flex: none;
-  gap: 4px;
+  gap: 2px;
 }
 
-.notia-gb-atom[data-missing='true'] .notia-gb-atom__icon {
-  color: var(--color-coral);
+.notia-gb-embed__media {
+  position: relative;
+  flex: none;
+  width: 128px;
+  height: 72px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--notia-gb-raised);
 }
 
 .notia-gb-embed__thumbnail {
-  width: 96px;
-  height: 54px;
-  flex: none;
-  border-radius: 6px;
+  display: block;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
 }
 
+.notia-gb-embed__play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-app-bg) 75%, transparent);
+  color: var(--color-app-text);
+}
+
+.notia-gb-embed__play svg {
+  fill: currentColor;
+}
+
 .notia-gb-page-link {
-  padding: 4px;
+  padding: 0;
 }
 
 .notia-gb-page-link__row {
@@ -623,18 +1118,19 @@ textarea.notia-gb-field {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  padding: 0 10px 0 0;
 }
 
 .notia-gb-page-link__open {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
   min-height: var(--notia-gb-control);
-  padding: 8px;
+  padding: 10px 0 10px 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--notia-gb-radius) 0 0 var(--notia-gb-radius);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -642,43 +1138,96 @@ textarea.notia-gb-field {
   cursor: pointer;
 }
 
-.notia-gb-page-link__open:hover:not(:disabled) {
-  background: var(--color-accent-bg);
+.notia-gb-page-link__open:disabled {
+  cursor: default;
 }
 
-.notia-gb-page-link .notia-gb-atom__icon {
-  color: var(--color-accent-text);
-}
+/* ---------- Reusable content: periwinkle, with a fade when long ---------- */
 
 .notia-gb-include {
   display: block;
+  overflow: hidden;
   padding: 0;
-  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-periwinkle) 35%, transparent);
 }
 
 .notia-gb-include__header {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
-  border-bottom: 1px dashed var(--notia-gb-edge);
+  min-height: 40px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--notia-gb-edge);
+  background: color-mix(in srgb, var(--color-periwinkle) 7%, transparent);
 }
 
-.notia-gb-include__header .notia-gb-atom__detail {
+.notia-gb-include__label {
+  display: inline-flex;
   flex: 1;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
+  color: var(--color-periwinkle);
+  font-size: 12px;
+}
+
+.notia-gb-include__name {
+  flex: none;
+  color: color-mix(in srgb, var(--color-periwinkle) 60%, var(--color-body-text));
+  font-weight: 600;
+}
+
+.notia-gb-include__label .notia-gb-atom__detail {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notia-gb-include__preview {
-  max-height: 420px;
-  overflow: auto;
-  padding: 10px 14px;
+  position: relative;
+  max-height: 190px;
+  overflow: hidden;
+  padding: 14px 18px;
+  color: var(--notia-gb-soft-text);
+  line-height: 1.7;
 }
+
+.notia-gb-include[data-long='true'][data-expanded='false'] .notia-gb-include__preview::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 70px;
+  background: linear-gradient(transparent, var(--notia-gb-panel));
+  pointer-events: none;
+}
+
+.notia-gb-include[data-expanded='true'] .notia-gb-include__preview {
+  max-height: none;
+}
+
+.notia-gb-include__footer {
+  padding: 0 0 10px 10px;
+}
+
+.notia-gb-include:not([data-long='true']) .notia-gb-include__footer {
+  display: none;
+}
+
+.notia-gb-include[data-expanded='true'] .notia-gb-include__expand svg {
+  transform: rotate(180deg);
+}
+
+/* ---------- Cards ---------- */
 
 .notia-gb-cards {
   display: block;
-  padding: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .notia-gb-cards__view {
@@ -689,21 +1238,22 @@ textarea.notia-gb-field {
 
 .notia-gb-cards__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
+  gap: 12px;
 }
 
 .notia-gb-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  min-height: 88px;
-  padding: 12px;
+  gap: 10px;
+  min-height: 118px;
+  box-sizing: border-box;
+  padding: 16px;
   overflow: hidden;
   border: 1px solid var(--notia-gb-edge);
   border-radius: var(--notia-gb-radius);
-  background: var(--color-app-bg);
+  background: var(--notia-gb-raised);
   color: var(--color-body-text);
   font: inherit;
   text-align: left;
@@ -711,7 +1261,7 @@ textarea.notia-gb-field {
 }
 
 .notia-gb-card:hover:not(:disabled) {
-  border-color: var(--color-accent-text);
+  border-color: color-mix(in srgb, var(--notia-gb-tone) 55%, var(--notia-gb-edge));
 }
 
 .notia-gb-card:disabled {
@@ -719,14 +1269,65 @@ textarea.notia-gb-field {
 }
 
 .notia-gb-card__cover {
-  width: calc(100% + 24px);
+  width: calc(100% + 32px);
   height: 96px;
-  margin: -12px -12px 4px;
+  margin: -16px -16px 0;
   object-fit: cover;
 }
 
 .notia-gb-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--notia-gb-tone) 14%, transparent);
+  color: var(--notia-gb-tone);
+}
+
+.notia-gb-card__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.notia-gb-card__text strong {
+  font-family: var(--notia-gb-title-font);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.notia-gb-card__text .notia-gb-atom__detail {
+  font-size: 13px;
+}
+
+.notia-gb-card--new {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1.5px dashed var(--notia-gb-edge);
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: 13px;
+}
+
+.notia-gb-card--new:hover:not(:disabled) {
+  border-color: var(--color-accent-text);
   color: var(--color-accent-text);
+}
+
+.notia-gb-cards__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.notia-gb-cards__editor {
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: var(--notia-gb-radius);
+  background: var(--notia-gb-panel);
 }
 
 .notia-gb-cards__edit-card {
@@ -748,17 +1349,29 @@ textarea.notia-gb-field {
   justify-self: end;
 }
 
+/* ---------- Drawing: a dotted board and its caption ---------- */
+
 .notia-gb-drawing {
   display: block;
-  padding: 8px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.notia-gb-drawing__board {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+  background-color: var(--notia-gb-well);
+  background-image: radial-gradient(color-mix(in srgb, var(--color-border-soft) 70%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
 }
 
 .notia-gb-drawing__image {
   display: block;
   max-width: 100%;
-  margin: 0 auto;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--color-body-text) 3%, transparent);
+  max-height: 520px;
 }
 
 .notia-gb-drawing__empty {
@@ -770,15 +1383,42 @@ textarea.notia-gb-field {
   color: var(--color-muted-text);
 }
 
-.notia-gb-drawing__actions {
+.notia-gb-drawing__tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 8px;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--notia-gb-edge);
+  border-radius: 10px;
+  background: var(--notia-gb-panel);
 }
 
-.notia-gb-drawing__actions .notia-gb-field {
-  flex: 1 1 180px;
+.notia-gb-drawing__caption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--notia-gb-edge);
+}
+
+.notia-gb-drawing__caption-label {
+  flex: none;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-gb-drawing__caption .notia-gb-field {
+  flex: 1;
+  padding: 0 4px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 13.5px;
+}
+
+.notia-gb-drawing__caption .notia-gb-field:not(:focus) {
+  box-shadow: none;
 }
 
 /* ---------- Inline elements ---------- */
@@ -786,26 +1426,31 @@ textarea.notia-gb-field {
 .notia-gb-inline {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   margin: 0 1px;
   vertical-align: baseline;
   cursor: pointer;
 }
 
 .notia-gb-link-button {
-  padding: 2px 10px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 12px;
   border: 1px solid var(--color-accent-text);
-  border-radius: 999px;
+  border-radius: 14px;
   background: var(--color-accent-text);
   color: var(--color-on-accent);
-  font-size: 0.9em;
+  font-size: 12.5px;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1;
+  vertical-align: middle;
 }
 
 .notia-gb-link-button[data-variant='secondary'] {
+  border-color: color-mix(in srgb, var(--color-accent-text) 50%, transparent);
   background: transparent;
   color: var(--color-accent-text);
+  font-weight: 400;
 }
 
 .notia-gb-inline-icon {
@@ -814,11 +1459,16 @@ textarea.notia-gb-field {
 }
 
 .notia-gb-expression {
-  padding: 0 6px;
+  padding: 2px 7px;
   border-radius: 6px;
+  background: color-mix(in srgb, var(--color-periwinkle) 14%, transparent);
+  color: color-mix(in srgb, var(--color-periwinkle) 60%, var(--color-body-text));
+  font-size: 12.5px;
+}
+
+.notia-gb-expression[data-kind='calculation'] {
   background: color-mix(in srgb, var(--color-violet) 14%, transparent);
-  color: var(--color-violet);
-  font-size: 0.95em;
+  color: color-mix(in srgb, var(--color-violet) 60%, var(--color-body-text));
 }
 
 .notia-gb-expression[data-state='invalid'] {
@@ -831,22 +1481,26 @@ textarea.notia-gb-field {
 }
 
 .notia-gb-inline-image img {
-  height: 1.2em;
   width: auto;
-  vertical-align: -0.2em;
+  height: 1.05em;
+  border-radius: 50%;
+  vertical-align: -0.15em;
 }
 
 .notia-gb-inline-form {
   padding: 12px;
 }
 
-/* ---------- Annotations ---------- */
+/* ---------- Annotations and footnotes ---------- */
 
 .notia-markdown-host sup[data-type='footnote_reference'] {
-  padding: 0 3px;
-  border-radius: 4px;
-  background: var(--color-accent-bg);
+  margin-left: 2px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
   color: var(--color-accent-text);
+  font-size: 11px;
+  font-weight: 600;
   cursor: help;
 }
 
@@ -856,11 +1510,11 @@ textarea.notia-gb-field {
   display: flex;
   gap: 8px;
   max-width: min(320px, calc(100vw - 16px));
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--color-border-soft);
-  border-radius: 10px;
-  background: var(--color-modal-bg);
-  box-shadow: 0 8px 24px var(--color-modal-shadow);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 14px 34px var(--color-modal-shadow);
   color: var(--color-body-text);
   font-size: 13px;
   line-height: 1.45;
@@ -967,19 +1621,22 @@ textarea.notia-gb-field {
  * the controls of the blocks keep their own borders and backgrounds.
  */
 .milkdown .notia-gb .notia-gb-button-icon,
-.milkdown .notia-gb .notia-gb-text-button {
+.milkdown .notia-gb .notia-gb-text-button,
+.milkdown .notia-gb .notia-gb-switch,
+.milkdown .notia-gb .notia-gb-update__summary {
   border: 1px solid transparent;
   background: transparent;
 }
 
 .milkdown .notia-gb .notia-gb-button-icon:hover,
-.milkdown .notia-gb .notia-gb-text-button:hover {
-  background: color-mix(in srgb, var(--color-body-text) 8%, transparent);
+.milkdown .notia-gb .notia-gb-text-button:hover,
+.milkdown .notia-gb .notia-gb-update__summary:hover {
+  background: var(--notia-gb-raised);
 }
 
 .milkdown .notia-gb .notia-gb-toggle[aria-pressed='true'],
 .milkdown .notia-gb .notia-gb-menu__item[aria-checked='true'] {
-  background: var(--color-accent-bg);
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
 }
 
 .milkdown .notia-gb .notia-gb-primary,
@@ -988,36 +1645,74 @@ textarea.notia-gb-field {
   color: var(--color-on-accent);
 }
 
+.milkdown .notia-gb .notia-gb-hint__style {
+  background: color-mix(in srgb, var(--notia-gb-tone) 18%, transparent);
+}
+
+.milkdown .notia-gb .notia-gb-details__toggle {
+  background: var(--notia-gb-raised);
+}
+
+.milkdown .notia-gb .notia-gb-prompt__run {
+  border-color: color-mix(in srgb, var(--color-violet) 45%, transparent);
+}
+
 .milkdown .notia-gb .notia-gb-field {
-  border: 1px solid var(--color-border-soft);
+  border: 1px solid var(--notia-gb-edge);
   background: var(--color-app-bg);
 }
 
 .milkdown .notia-gb .notia-gb-tabs__title,
 .milkdown .notia-gb .notia-gb-code__title,
-.milkdown .notia-gb .notia-gb-details__summary {
+.milkdown .notia-gb .notia-gb-details__summary,
+.milkdown .notia-gb .notia-gb-prompt__title,
+.milkdown .notia-gb .notia-gb-drawing__caption .notia-gb-field,
+.milkdown .notia-gb .notia-gb-update__field .notia-gb-field {
   border-color: transparent;
   background: transparent;
 }
 
 .milkdown .notia-gb .notia-gb-tabs__title:focus,
 .milkdown .notia-gb .notia-gb-code__title:focus,
-.milkdown .notia-gb .notia-gb-details__summary:focus {
+.milkdown .notia-gb .notia-gb-details__summary:focus,
+.milkdown .notia-gb .notia-gb-prompt__title:focus,
+.milkdown .notia-gb .notia-gb-drawing__caption .notia-gb-field:focus {
   border-color: var(--color-border-soft);
   background: var(--color-app-bg);
 }
 
 .milkdown .notia-gb .notia-gb-card {
   border: 1px solid var(--notia-gb-edge);
-  background: var(--color-app-bg);
+  background: var(--notia-gb-raised);
+}
+
+.milkdown .notia-gb .notia-gb-card--new {
+  border: 1.5px dashed var(--notia-gb-edge);
+  background: transparent;
 }
 
 .milkdown .notia-gb .notia-gb-card:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--notia-gb-tone) 55%, var(--notia-gb-edge));
+}
+
+.milkdown .notia-gb .notia-gb-card--new:hover:not(:disabled) {
   border-color: var(--color-accent-text);
 }
 
+.milkdown .notia-gb .notia-gb-page-link__open {
+  background: transparent;
+}
+
 .milkdown .notia-gb .notia-gb-page-link__open:hover:not(:disabled) {
-  background: var(--color-accent-bg);
+  background: color-mix(in srgb, var(--color-accent-text) 6%, transparent);
+}
+
+.milkdown .notia-gb .notia-gb-switch__track {
+  background: var(--color-border-soft);
+}
+
+.milkdown .notia-gb .notia-gb-switch[aria-checked='true'] .notia-gb-switch__track {
+  background: var(--color-accent-text);
 }
 
 .milkdown .notia-gb :focus-visible {

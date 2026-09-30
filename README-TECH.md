@@ -10181,3 +10181,133 @@ Sigue el canvas `SaludDashboard.jsx` que pasó el usuario (un componente React c
 - `cargo test --offline -p notia-app --features bluetooth` → 447 + 3 ignoradas (la base guarda y lee `recipe_id`).
 - `cargo check` de escritorio (40) y Android (59), sin warnings nuevos. `tsc` limpio.
 - **Pendiente:** con el modelo real, probar una foto sin texto por Telegram (receta nueva con foto y comida en Salud), un texto de una comida que ya existe («comí 500 g del guiso») y uno con otra cantidad de un ingrediente.
+
+## Editor Markdown: elementos del canvas, hoja A4 y escritura a mano (2026-09-29)
+
+Estado vigente desde 2026-09-29. Implementa los tableros «Elementos · Texto», «Elementos · Código», «Elementos · Bloques» y «Elementos · Medios» y la barra «Herramientas de lápiz» del canvas «Notia · Editor rediseño» (https://claude.ai/artifact/JxwKk6XC4BCfe8guRCBB5G). Reemplaza lo que «Editor Markdown: modo página, configuración y lápiz» dice sobre los formatos de papel, la pestaña Lápiz, el ítem «Lápiz» del menú «⋯» y la herramienta del lápiz.
+
+### Hoja A4
+
+- `backend_core::page_setup::PAPER_FORMATS` tiene solo A4. Cualquier formato guardado (Carta, A5…) se normaliza a `a4`; la orientación y los márgenes se conservan. `page_setup_view` agrega `continuousWidthMm` (210): el ancho de la hoja de una nota sin modo página.
+- `MainView` arma `MarkdownPageLayout { paged, widthMm, heightMm, marginMm, pageNumbers }`: con modo página, el A4 en la orientación elegida; sin él, `continuousWidthMm`. `MarkdownView` dibuja las dos variantes con la misma estructura (`is-sheet is-paged` o `is-sheet is-continuous`), así que cambiar de modo no remonta el editor.
+- La hoja continua no se pinta: fija una columna del ancho de un A4 centrada sobre el fondo de la app (como el canvas sin modo página), con los márgenes laterales de la página para que el texto corte igual en los dos modos y 36 px arriba. Su alto es el del contenido, y además llega al trazo más bajo más 120 px (480 px mientras una herramienta de dibujo está activa, para seguir escribiendo hacia abajo).
+- Una ventana más angosta que la hoja la achica (`pageFit`), igual que las páginas; así los trazos quedan sobre el mismo texto en cualquier dispositivo.
+- El diálogo «Configuración» quedó solo con la pestaña Página (un tamaño). La sección `pen` de las preferencias del dispositivo ya no guarda herramienta: `{ color, thickness (1–16, por defecto 4), smoothing (0–100), pressure, palmRejection, penOnly, sideButton }`; la herramienta vive en la barra y no se guarda.
+
+### Elementos
+
+- `views/markdown/editorElements.css`: títulos 4 a 6 (el 6 en versalitas atenuadas), tachado atenuado, código en línea como chip teal, enlaces con subrayado suave, resaltado dorado por defecto, emojis a 1,25 em, citas en panel con comilla teal y cita anidada elevada, viñetas teal (anillo en el segundo nivel, cuadrado atenuado en el tercero), números mono, tareas con casilla teal y texto tachado, línea horizontal con tres puntos, tablas en panel con encabezado elevado y filas alternas, notas al pie bajo una línea con la etiqueta mono teal, y la tarjeta de los enlaces entre notas. Los íconos de viñeta y casillas se pasan a Crepe (`Crepe.Feature.ListItem`). Los títulos 1 a 3 y los párrafos conservan las medidas del tablero principal.
+- Bloques de código: barra de 44 px con el lenguaje como chip mono, botones de 30 px (44 px con puntero grueso), pozo más oscuro con números atenuados e interlineado 1,75. Los colores de sintaxis son un `HighlightStyle` de CodeMirror con tokens del tema (`views/markdown/codeHighlight.ts`, pasado como `theme` de `Crepe.Feature.CodeMirror`); por eso `@codemirror/language` y `@lezer/highlight` pasaron a ser dependencias directas (las mismas versiones que ya instalaba Crepe). La barra de Crepe queda en español: «Copiar», «Ocultar código» / «Mostrar», «Vista previa», «Buscar lenguaje».
+- `views/markdown/codeBlockChrome.ts` completa esa barra según el tipo de bloque, desde el `MutationObserver` del editor. El estado va en atributos `data-*` del bloque, así que sobrevive a que Vue redibuje la barra:
+  - código: «Números» y «Ajustar» (`data-notia-numbers`, `data-notia-wrap`; solo visuales, no se guardan en el Markdown; el marco `{% code %}` de GitBook sí los guarda);
+  - LaTeX: el botón de OCR pasó a «Escribir a mano» y las acciones van en una píldora; con el código oculto la barra dice «Código oculto · Mostrar»;
+  - Mermaid: «Código · Dividido · Vista» (`data-notia-view`) y «Exportar SVG»;
+  - XGraph: «Gráfico interactivo», «Ocultar código» y «PNG».
+  Un bloque sin lenguaje ya no intenta Mermaid salvo que su contenido lo parezca; queda como texto plano, como en el canvas.
+- XGraph: `createXGraphDocument` recibe `XGraphTheme` (fondo, texto, ejes, grilla, curva y punto), leído de los tokens alrededor del bloque (`xgraphPreviewRuntime`), y lo aplica a `JXG.Options` y al fondo del marco. Solo pasan valores de color CSS simples. El marco responde a `{ type: 'notia-xgraph-export', id }` con el SVG del tablero (`notia-xgraph-svg`), que la interfaz convierte en PNG con el fondo del tablero.
+- Bloques GitBook (`gitbook.css`, `gitbookBlockViews.ts`, `gitbookAtomViews.ts`): aviso con ícono en recuadro teñido y el tipo como título («Información», «Éxito», «Advertencia», «Error»; antes «Peligro»); pestañas con barra hundida, activa elevada con subrayado teal; pasos con círculos numerados y línea; columnas en paneles con «Agregar columna · N de 2 columnas» (el botón se deshabilita en el límite); novedades en línea de tiempo con la fecha («28 sep 2026») y las etiquetas en chips de color estable por palabra, que se editan al tocarlas; desplegable con recuadro de flecha e interruptor «Abierto al leer» (`role="switch"`); condición con borde dorado punteado, «SI», la expresión y el estado con ícono; prompt violeta con «Copiar» y «Ejecutar»; tarjetas de URL, archivo y página con recuadro de 44 px (la de página suma «Ir»); contenido reutilizable con encabezado azul, desvanecido y «Mostrar todo» cuando es largo; tarjetas en tres columnas con ícono teñido y «Nueva tarjeta»; dibujo sobre tablero punteado con «Editar dibujo» flotante y la leyenda editable debajo; botones, íconos y expresiones en línea (azul para variables, violeta para cálculos). En modo página los paneles suben un escalón de color para no confundirse con la hoja.
+- «Ejecutar» llama a `GitbookViewEnvironment.runPrompt`, que `MarkdownView` implementa abriendo el chat lateral y pidiéndole `{ kind: 'send', text, agentFileName: null }` (`chatComposerRequests`), igual que la caja de Inicio.
+
+### Tarjeta de los enlaces entre notas
+
+- La decoración de un wikilink resuelto lleva `data-wikilink-path`. `WikiLinkPreviewCard` muestra la tarjeta tras 350 ms con el puntero encima (no con toque: tocar abre la nota como antes) y la esconde al salir, al presionar o al desplazar. Se guarda en memoria por ruta mientras la nota está abierta.
+- Comando `markdown_note_preview { libraryId, path }` → `{ title, folder, excerpt, edited?, links }`. `backend_core::note_preview` arma el título (`document_title`), las carpetas separadas por « / », el primer párrafo de prosa sin marcas (140 caracteres, cortado en una palabra), la edición en lenguaje natural («Editada hace 3 días», «Editada ayer», «Editada el 28 sep 2026») y la cantidad de `[[…]]` de la nota. La fecha sale del índice de la biblioteca (`library_inventory::file_modified_at`); en Android el índice no la tiene y la tarjeta no muestra esa parte.
+
+### Exportar diagramas
+
+- Comando `markdown_export_diagram { libraryId, path, format: 'svg' | 'png', data }` → `{ path }`. `backend_core::note_diagram` valida (SVG que empieza con `<svg` o `<?xml`, cierra `</svg>` y no contiene `<script` ni `javascript:`; PNG decodificado de base64 con su firma; hasta 16 MB) y elige el nombre junto a la nota: `<nota> - diagrama.svg`, luego `(2)`, hasta 20. La app escribe con `write_binary_locator` (escritorio y SAF) sin pisar un archivo existente y reindexa la biblioteca.
+
+### Escritura a mano
+
+**Persistencia.** Los trazos de `carpeta/nota.md` se guardan en `.notia/ink/carpeta/nota.md.json` de la biblioteca. La nota Markdown no cambia, el explorador no muestra `.notia` y el modo Host copia la carpeta con la nota.
+
+```json
+{
+  "version": 1,
+  "strokes": [
+    { "id": "3f2c…-1", "tool": "pen", "color": "teal", "width": 4, "page": 0,
+      "points": [[120.4, 260.1, 0.5], [128.0, 262.3, 0.62]] }
+  ]
+}
+```
+
+- `page` es el índice de la hoja en modo página y falta en la hoja continua. Cada modo carga solo sus trazos.
+- Coordenadas en píxeles CSS de la hoja sin escalar (de la página, en modo página); `points` es `[x, y, presión]`, presión de 0 a 1.
+- `color` es un color del lápiz (`ink`, `teal`, `blue`, `red`, `orange`, `yellow`), pintado con el token del tema (`ink` sigue el color del texto). El resaltador se dibuja al 35 %.
+
+**Rust (`backend_core::note_ink`, `app/src/note_ink.rs`).**
+
+| Comando | Entrada (`payload`) | Salida |
+|---|---|---|
+| `markdown_ink_load` | `libraryId`, `path`, `paged` | `{ strokes }` del modo pedido |
+| `markdown_ink_add` | `libraryId`, `path`, `stroke` (`id`, `tool`, `color`, `width`, `page?`, `points`, `smoothing`) | el trazo guardado |
+| `markdown_ink_erase` | `libraryId`, `path`, `page?`, `points` (`[x, y]`), `radius` | `{ strokes }` borrados |
+| `markdown_ink_remove` | `libraryId`, `path`, `ids` | `{ strokes }` quitados |
+| `markdown_ink_restore` | `libraryId`, `path`, `strokes` | `{ strokes }` repuestos |
+
+- `prepare_stroke` valida identificador (hasta 64 caracteres `[A-Za-z0-9_-]`), color, grosor (0,5 a 64), página (hasta 10 000), puntos (1 a 4 000, finitos, dentro de la hoja, presión 0–1); aplica el suavizado del lápiz (media móvil que conserva los extremos), simplifica con Ramer–Douglas–Peucker (0,35 px, conservando los cambios de presión) y redondea a décimas.
+- `erase` quita los trazos de la misma superficie que el recorrido del borrador toca (distancia entre segmentos ≤ radio + medio grosor) y los devuelve para deshacer. `restore_strokes` los repone una sola vez.
+- Límites: 5 000 trazos y 8 MB por nota. Un archivo dañado da error y no se sobrescribe.
+- Los cambios de un archivo de trazos pasan de a uno (`INK_LOCK`), leen, modifican y escriben con `with_documents` (escritorio y SAF).
+- `library_mutate_entry` mueve, copia o borra los trazos con su nota o carpeta (`entry_change` y `relocated_ink_path`). Antes de un pegado o un renombre revisa que el destino no exista, porque en ese caso la operación falla y no hay que tocar los trazos de otra nota. Si mover los trazos falla, la nota ya cambió: se registra un aviso sin rutas y los trazos quedan donde estaban.
+
+**Interfaz (`views/markdown/ink/`).**
+
+- `MarkdownPenBar`: barra fija arriba del editor (`position: sticky`) con Selector, Lápiz, Resaltador y Borrador, seis colores (en rectángulos con el resaltador), las tres puntas y el control de 1 a 16 px, deshacer y rehacer, «Dibujando sobre la nota» y «Opciones» (presión, rechazo de palma, solo lápiz, suavizado y botón lateral). Es un contenedor: más angosta que 760 px deja solo los íconos y desplaza las herramientas de costado. Los cambios del lápiz se guardan con `useEditorPreferences().updatePen`.
+- `InkLayer`: un SVG sobre `.notia-markdown-pages`, dentro del zoom, así que acompaña el zoom y el ajuste de la hoja. Con Selector deja pasar todo al texto; con las otras herramientas captura el puntero (`touch-action: none`). En modo página ubica la hoja bajo el puntero y no dibuja entre hojas; un trazo no pasa de su hoja. Usa los eventos agrupados del puntero. Reglas:
+  - la presión del lápiz se usa si está activada; mouse y dedo dibujan con 0,5;
+  - rechazo de palma: se ignora un toque hasta un segundo después de ver el lápiz o con un contacto mayor que 40 px;
+  - solo lápiz: el dedo desplaza la nota;
+  - la goma del lápiz borra siempre; el botón lateral borra, no hace nada («Selección») o dibuja, según la opción;
+  - el borrador manda su recorrido cada 60 ms; un gesto es un paso de deshacer.
+- `useNoteInk`: carga los trazos al abrir la nota o cambiar de modo, muestra el trazo nuevo al instante y lo reemplaza por el que devuelve Rust, encola los pedidos en orden y lleva el historial de deshacer y rehacer de la sesión. Descarta las respuestas de otra nota o de otro modo.
+
+### Diferencias con el canvas
+
+- Con una ventana más angosta que un A4, la hoja continua se achica en lugar de acomodar el texto al ancho, para que los trazos queden sobre el mismo texto en todos los dispositivos. En un teléfono el texto se ve chico hasta hacer zoom.
+- Las tarjetas GitBook mantienen «Editar tarjetas» debajo de la grilla, porque el canvas no muestra cómo editar una tarjeta existente.
+- La tarjeta de archivo no muestra el tamaño («4,2 KB»): la resolución de referencias no lo lee.
+- Las notas al pie no tienen el «↩» de vuelta a la referencia.
+- La vista previa de Mermaid conserva la barra de zoom y la exportación propias de su módulo.
+- El control deslizante de XGraph es el de JSXGraph con los colores del tema, no el panel flotante del canvas.
+- Las fuentes del canvas (Space Grotesk, Public Sans, JetBrains Mono) no se cargan: el editor usa las de la app.
+
+### Validación
+
+- `tsc -p tsconfig.app.json` y `eslint` de los archivos tocados, sin errores.
+- `vitest`: 94 archivos, 404 pruebas. Nuevas: `inkPaths.test.ts`, `codeBlockChrome.test.ts`, `noteInkRuntime.test.ts` (tinta, exportación y tarjeta) y cinco casos en `gitbookViews.test.ts` (título del aviso, «Ejecutar», límite de columnas, fecha y etiquetas de una novedad, «Abierto al leer»).
+- `cargo test -p notia-backend-core`: 475. Nuevas: `note_ink` (9), `note_diagram` (2), `note_preview` (3) y la normalización a A4.
+- `cargo test -p notia-app --features bluetooth`: 447 (3 ignoradas), sin fallas.
+- Revisión visual con un arnés de Vite y Chrome sin ventana: tema oscuro y claro, 1300 px y 390 px, con y sin modo página, dibujo con lápiz, color, resaltador y deshacer, y la tarjeta de un enlace.
+
+### Pendiente
+
+- Probar en Windows con lápiz (presión, goma y botón lateral) y en Android con lápiz y dedo (rechazo de palma, solo lápiz, desplazamiento) y con una biblioteca SAF: guardar, mover y borrar notas con trazos.
+- Probar «Exportar SVG» y «PNG» con una biblioteca real en los dos sistemas.
+- Probar en modo Cliente que los trazos se guardan en el Host y viajan a la copia sin conexión.
+
+## Notas del asistente con títulos largos, comillas o carpetas nuevas (2026-09-29)
+
+**Síntoma.** Desde Telegram, el asistente no pudo guardar una nota («retirar el chárter de los productos…»). A veces falló después de confirmar y a veces antes de pedir confirmación, siempre con «No se pudo acceder al documento de la biblioteca.».
+
+**Causa principal.** `create_library_note` lee primero el destino y necesita un «no encontrado» (`NotFound`) para saber que la nota es nueva. En escritorio, `desktop::read_library_file` devolvía «Could not read file.» para cualquier error, también para un archivo inexistente, y `map_filesystem_error` lo convertía en `Storage`. Resultado: crear una nota en una carpeta existente fallaba siempre en la vista previa. Cuando la carpeta no existía, la vista previa pasaba (la ruta no se resolvía y daba `NotFound`) y fallaba después, al escribir. Ahora la lectura de un archivo inexistente dice «File not found.» y `map_filesystem_error` lo traduce a `NotFound` («El documento no existe.»).
+
+**Causas secundarias**, también corregidas:
+
+- **Temporal demasiado largo.** En escritorio, `desktop::create_library_file` escribe primero un temporal junto al destino y después lo renombra. El temporal se llamaba `.<nombre>.notia-create-tmp-<uuid>`, 55 caracteres más que el nombre. El asistente usó la idea entera como título: el nombre era válido (menos de 255 caracteres), pero el temporal superaba los 255 que Windows admite en un nombre. El error de E/S se reemplazaba por el mensaje genérico, sin detalle. El guardado normal (`.<nombre>.notia-tmp-<uuid>`) y las exportaciones (`.<nombre>.notia-export-<n>.tmp`) tenían el mismo defecto.
+
+**Arreglo.**
+- Los temporales ya no repiten el nombre del archivo: `.notia-tmp-<uuid>`, `.notia-create-tmp-<uuid>` y `.notia-export-<n>.tmp`, en la misma carpeta, así que el cambio de nombre sigue siendo atómico.
+- `resolve_desktop_document` acepta un documento nuevo bajo carpetas que todavía no existen. Canonicaliza la carpeta existente más profunda, así un enlace simbólico no puede llevar afuera, y le agrega los nombres que faltan, ya validados como segmentos simples. `create_text_locator` crea esas carpetas dentro de la biblioteca antes de escribir, como ya hacía `upsert_text_locator` y como hace SAF en Android. Antes, una nota en una carpeta nueva («Ideas/…») fallaba con «No se pudo resolver la carpeta del documento.».
+- `library_tools::portable_document_path` deja el nombre de una nota nueva en caracteres que Windows y Android aceptan. `"` pasa a `'`, `:` a ` -` y `? * < > |` a espacios. Además junta los espacios, quita puntos y espacios finales y agrega `_` a los nombres de dispositivo (`CON`, `LPT1`…). `create_library_note` la usa en la vista previa, en el bloqueo del documento y en la escritura, así que la confirmación muestra el nombre que se crea. `..` y los separadores los sigue juzgando `LogicalPathDto`.
+- `map_filesystem_error` distingue «ya existe» (`Conflict`, «El documento ya existe.») y un nombre que el sistema rechaza (`InvalidInput`, «El nombre del documento tiene caracteres que el sistema no admite.»).
+
+**Validación.** Pruebas nuevas:
+- `backend_runtime::tests::the_agent_saves_a_note_it_is_asked_for`: la herramienta real (vista previa, confirmación y escritura) con el pedido de Telegram (título largo, `:` y comillas) en la raíz, en una carpeta existente y en una nueva. Sin el arreglo de lectura falla en la vista previa con el mismo mensaje que vio la persona;
+- `library_document_adapter::tests::a_note_that_does_not_exist_reads_as_not_found`;
+- `filesystem::adapter::tests::creates_notes_under_new_folders_and_with_long_names`: carpetas nuevas, un nombre de 219 caracteres, que falló antes del arreglo, y sin pisar una nota existente;
+- `library_tools::tests::new_documents_get_names_every_platform_accepts`.
+
+`cargo test -p notia-app --features bluetooth`: 450 (3 ignoradas). `cargo test -p notia-backend-core`: 476. El fixture de `library_document_adapter` usa ahora una carpeta temporal por proceso y la limpia antes de empezar: una corrida fallida dejaba la suya y rompía la siguiente. `cargo check` para `aarch64-linux-android`: compila.
+
+**Pendiente.** Repetir el pedido original desde Telegram con la biblioteca real.

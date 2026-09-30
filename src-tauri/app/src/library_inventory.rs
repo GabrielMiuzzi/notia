@@ -65,6 +65,21 @@ pub(crate) fn root_folders(app: &AppHandle, library_id: &str) -> Result<Vec<Stri
     Ok(folders)
 }
 
+/// When the index last saw a file change (milliseconds), if it knows.
+pub(crate) fn file_modified_at(app: &AppHandle, library_id: &str, logical_path: &str) -> Option<i64> {
+    let binding = app.state::<LibraryBindingRegistry>().lookup(library_id).ok()?;
+    let connection = open_connection(app, &binding).ok()?;
+    connection
+        .query_row(
+            "SELECT modified_at FROM library_inventory
+             WHERE generation=(SELECT active_generation FROM library_inventory_state WHERE id=1) AND path=?1",
+            params![logical_path],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+}
+
 /// Logical paths of the files in the published inventory and its generation.
 pub(crate) fn inventory_files(app: &AppHandle, library_id: &str) -> Result<(Vec<String>, i64), BackendError> {
     let binding = app.state::<LibraryBindingRegistry>().lookup(library_id)?;

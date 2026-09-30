@@ -386,7 +386,9 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         }
     }
 
-    /// Creates a text document (failing if it exists) and verifies it.
+    /// Creates a text document (failing if it exists) and verifies it. On
+    /// desktop its missing parent folders inside the library are created
+    /// first, as SAF does in its single native call.
     pub(crate) fn create_text_locator(
         &self,
         locator: &DocumentLocatorDto,
@@ -422,6 +424,8 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
             let path = filesystem_path.to_str().ok_or_else(|| {
                 BackendError::invalid_input("La ruta del documento no es UTF-8 válida.")
             })?;
+            // A note the agent files under a new folder («Ideas/…») needs it.
+            self.create_desktop_parent_directories(locator)?;
             let result = desktop::create_library_file(path, content);
             return if result.ok {
                 Ok(())
@@ -750,13 +754,8 @@ fn write_binary_file_atomic(path: &Path, data: &[u8]) -> Result<(), BackendError
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    let temporary_path = parent.join(format!(
-        ".{}.notia-export-{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("export"),
-        nonce
-    ));
+    // Not named after the export: a long title would pass 255 characters.
+    let temporary_path = parent.join(format!(".notia-export-{nonce}.tmp"));
     let result = (|| -> Result<(), BackendError> {
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -832,20 +831,34 @@ pub(crate) fn resolve_desktop_document(
     let candidate = canonical_root.join(logical_path.as_str());
     let resolved = match fs::canonicalize(&candidate) {
         Ok(path) => path,
+        // A document that does not exist yet, maybe under folders that do not
+        // exist either: the deepest existing folder is canonicalized (so a
+        // symlink cannot lead outside) and the missing names, already
+        // validated as plain segments, are joined to it.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = candidate.parent().ok_or_else(|| {
-                BackendError::invalid_input("La ruta del documento no es válida.")
-            })?;
-            let canonical_parent = fs::canonicalize(parent).map_err(|_| {
-                BackendError::new(
-                    BackendErrorCode::NotFound,
-                    "No se pudo resolver la carpeta del documento.",
-                    true,
-                )
-            })?;
-            canonical_parent.join(candidate.file_name().ok_or_else(|| {
-                BackendError::invalid_input("La ruta del documento no es válida.")
-            })?)
+            let mut missing = Vec::new();
+            let mut existing = candidate.as_path();
+            let canonical_existing = loop {
+                let name = existing.file_name().ok_or_else(|| {
+                    BackendError::invalid_input("La ruta del documento no es válida.")
+                })?;
+                missing.push(name.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    BackendError::invalid_input("La ruta del documento no es válida.")
+                })?;
+                match fs::canonicalize(existing) {
+                    Ok(path) => break path,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound && existing != canonical_root => {}
+                    Err(_) => {
+                        return Err(BackendError::new(
+                            BackendErrorCode::NotFound,
+                            "No se pudo resolver la carpeta del documento.",
+                            true,
+                        ))
+                    }
+                }
+            };
+            missing.iter().rev().fold(canonical_existing, |path, name| path.join(name))
         }
         Err(_) => {
             return Err(BackendError::new(
@@ -950,6 +963,17 @@ pub(crate) fn map_filesystem_error(message: &str) -> BackendError {
             true,
         );
     }
+    if lowered.contains("not found") {
+        return BackendError::new(BackendErrorCode::NotFound, "El documento no existe.", false);
+    }
+    if lowered.contains("already exists") {
+        return BackendError::new(BackendErrorCode::Conflict, "El documento ya existe.", false);
+    }
+    if lowered.contains("invalid file name") {
+        return BackendError::invalid_input(
+            "El nombre del documento tiene caracteres que el sistema no admite.",
+        );
+    }
     if lowered.contains("resolve") || lowered.contains("resolver") {
         return BackendError::new(
             BackendErrorCode::NotFound,
@@ -1020,6 +1044,37 @@ mod tests {
         // The registry keeps the canonical root (`\\?\` on Windows).
         let canonical_root = std::fs::canonicalize(&root).expect("canonical root");
         assert_eq!(filesystem_path, canonical_root.join("notes").join("opaque.md"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn creates_notes_under_new_folders_and_with_long_names() {
+        let root = std::env::temp_dir().join(format!("notia-adapter-create-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let state = state();
+        let registry = LibraryBindingRegistry::default();
+        registry
+            .register_desktop_root("library-one", &root)
+            .expect("binding");
+        let adapter = TauriFilesystemDocumentAdapter::for_library(&registry, "library-one", &state)
+            .expect("adapter");
+        let locator = DocumentLocatorDto::new("library-one", "Ideas/Trabajo/idea.md", None, None)
+            .expect("locator");
+
+        adapter.create_text_locator(&locator, "# Idea\n").expect("created");
+        assert_eq!(
+            std::fs::read_to_string(root.join("Ideas").join("Trabajo").join("idea.md")).expect("note"),
+            "# Idea\n"
+        );
+        // Creating never overwrites a note that is already there.
+        let existing = adapter.create_text_locator(&locator, "otra").expect_err("exists");
+        assert_eq!(existing.code, BackendErrorCode::Conflict);
+        // A long title (the agent named the note of 2026-09-29 after the whole
+        // idea) is a valid name; the temporary file beside it must be too.
+        let long_name = format!("Ideas/{}.md", "idea larga ".repeat(20).trim());
+        let long = DocumentLocatorDto::new("library-one", &long_name, None, None).expect("locator");
+        adapter.create_text_locator(&long, "# Idea larga\n").expect("long name created");
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

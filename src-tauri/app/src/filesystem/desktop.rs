@@ -54,6 +54,14 @@ pub(crate) fn read_library_file(file_path: &str) -> ReadLibraryFileResult {
             content,
             error: None,
         },
+        // A missing file is not a storage failure: creating a note reads it
+        // first and needs to know it is not there.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ReadLibraryFileResult {
+            ok: false,
+            revision: None,
+            content: String::new(),
+            error: Some("File not found.".to_string()),
+        },
         Err(_) => ReadLibraryFileResult {
             ok: false,
             revision: None,
@@ -87,11 +95,9 @@ pub(crate) fn write_library_file(
     }
     let target = Path::new(file_path);
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("document");
-    let temporary_path = parent.join(format!(".{}.notia-tmp-{}", file_name, uuid::Uuid::new_v4()));
+    // The temporary name does not repeat the file's: with a long title it
+    // would pass the 255 characters a name may have.
+    let temporary_path = parent.join(format!(".notia-tmp-{}", uuid::Uuid::new_v4()));
 
     let result = (|| -> std::io::Result<()> {
         let mut temporary_file = OpenOptions::new()
@@ -129,15 +135,7 @@ pub(crate) fn write_library_file(
 pub(crate) fn create_library_file(file_path: &str, content: &str) -> OperationResult {
     let target = Path::new(file_path);
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("document");
-    let temporary_path = parent.join(format!(
-        ".{}.notia-create-tmp-{}",
-        file_name,
-        uuid::Uuid::new_v4()
-    ));
+    let temporary_path = parent.join(format!(".notia-create-tmp-{}", uuid::Uuid::new_v4()));
 
     let result = (|| -> std::io::Result<()> {
         let mut temporary_file = OpenOptions::new()
@@ -170,6 +168,11 @@ pub(crate) fn create_library_file(file_path: &str, content: &str) -> OperationRe
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => OperationResult {
             ok: false,
             error: Some("An entry with that name already exists.".to_string()),
+        },
+        // Windows refuses `"`, `?`, `*`, `<`, `>` and `|` in names.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidFilename => OperationResult {
+            ok: false,
+            error: Some("Invalid file name.".to_string()),
         },
         Err(_) => OperationResult {
             ok: false,

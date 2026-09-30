@@ -62,6 +62,8 @@ mod library_catalog;
 mod library_config;
 mod page_links;
 mod note_page_mode;
+mod note_ink;
+mod note_preview;
 mod mail_accounts;
 mod mail_tools;
 mod gitbook_blocks;

@@ -1,6 +1,8 @@
 import { backendFileUrl, callBackend } from '../../../services/transport'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useAppSelector } from '../../../store/hooks'
+import { useAppDispatch, useAppSelector } from '../../../store/hooks'
+import { setRightChatPanelOpen } from '../../../features/ui/uiSlice'
+import { requestChatPanel } from '../../../services/chat/chatComposerRequests'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
@@ -98,13 +100,29 @@ import { createGitbookPlugins, GITBOOK_PART_NODE_NAMES } from './markdown/gitboo
 import { addGitbookMenu, insertGitbookInline } from './markdown/gitbook/gitbookMenu'
 import { GitbookResolver } from './markdown/gitbook/gitbookResolver'
 import { editDrawing } from './markdown/gitbook/gitbookDrawingEditor'
+import { decorateCodeBlocks } from './markdown/codeBlockChrome'
+import { exportNoteDiagram } from '../../../services/markdown/noteDiagramExport'
 import { mountMarkdownPreview } from './markdown/gitbook/gitbookMarkdownPreview'
 import { resolveGitbookBlocks } from '../../../services/markdown/gitbookBlocksRuntime'
 import './markdown/gitbook/gitbook.css'
+import './markdown/editorElements.css'
+import './markdown/ink/ink.css'
+import { InkLayer, type PenBarTool } from './markdown/ink/InkLayer'
+import { MarkdownPenBar } from './markdown/ink/MarkdownPenBar'
+import { useNoteInk } from './markdown/ink/useNoteInk'
+import { inkBottom } from './markdown/ink/inkPaths'
+import { useEditorPreferences } from '../hooks/useEditorPreferences'
+import { WikiLinkPreviewCard } from './markdown/WikiLinkPreviewCard'
+import { codeHighlight } from './markdown/codeHighlight'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
 const MATH_CODE_BLOCK_LANGUAGES = new Set(['latex', 'math', 'tex'])
+const LIST_BULLET_ICON = '<svg viewBox="0 0 6 6"><circle cx="3" cy="3" r="2.35"/><rect x="0.6" y="0.6" width="4.8" height="4.8"/></svg>'
+const TASK_CHECKED_ICON = '<svg viewBox="0 0 18 18"><rect class="notia-check-box" x="0" y="0" width="18" height="18" rx="5"/><path class="notia-check-mark" d="M4.9 9.6l2.9 2.7 5.3-6.1" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+const TASK_UNCHECKED_ICON = '<svg viewBox="0 0 18 18"><rect class="notia-check-box" x="0.75" y="0.75" width="16.5" height="16.5" rx="4.25" stroke-width="1.5"/></svg>'
+const CODE_HIDE_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2l12 12M6.5 6.6A2 2 0 009.4 9.5M4.3 4.4C2.9 5.4 2 6.8 1.5 8c1.2 2.8 3.8 4.5 6.5 4.5 1.3 0 2.5-.4 3.6-1M7 3.6c.3 0 .7-.1 1-.1 2.7 0 5.3 1.7 6.5 4.5-.3.7-.8 1.5-1.4 2.1"/></svg>'
+const CODE_SHOW_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6l3.5 3.5L11.5 6"/></svg>'
 const OCR_BUTTON_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
 const INLINE_LATEX_TOOLTIP_SELECTOR = '.milkdown-latex-inline-edit'
 const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
@@ -153,6 +171,9 @@ const PAGE_NUMBER_BAND_PX = 18
 const DESK_PADDING_PX = 40
 const NARROW_DESK_PADDING_PX = 16
 const NARROW_EDITOR_PX = 600
+/** Room below the lowest stroke of the continuous sheet; more while drawing, to keep writing. */
+const INK_TAIL_PX = 120
+const INK_DRAWING_TAIL_PX = 480
 
 interface PagePixels {
   width: number
@@ -430,13 +451,20 @@ function MarkdownViewInner({
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const pagesRef = useRef<HTMLDivElement | null>(null)
   const [pageCount, setPageCount] = useState(1)
-  const pagePixels = useMemo(() => (pageLayout ? toPagePixels(pageLayout) : null), [pageLayout])
+  // The sheet the note is written on: A4 pages, or one continuous sheet as
+  // wide as an A4. Only pages are paginated.
+  const sheetPixels = useMemo(() => (pageLayout ? toPagePixels(pageLayout) : null), [pageLayout])
+  const pagePixels = pageLayout?.paged ? sheetPixels : null
   const [hostWidth, setHostWidth] = useState(0)
   const deskPadding = hostWidth > 0 && hostWidth < NARROW_EDITOR_PX ? NARROW_DESK_PADDING_PX : DESK_PADDING_PX
   // A sheet wider than the editor (a phone, a narrow window) is scaled down to fit.
-  const pageFit = pagePixels && hostWidth > 0
-    ? Math.min(1, Math.max(0.1, (hostWidth / zoom - 2 * deskPadding) / pagePixels.width))
+  const pageFit = sheetPixels && hostWidth > 0
+    ? Math.min(1, Math.max(0.1, (hostWidth / zoom - 2 * deskPadding) / sheetPixels.width))
     : 1
+  // Handwriting over the sheet: the tool of the pen bar and the note's strokes.
+  const [penTool, setPenTool] = useState<PenBarTool>('selector')
+  const { pen, updatePen } = useEditorPreferences()
+  const ink = useNoteInk(libraryId, documentPath, pagePixels !== null)
   const paginationGeometryRef = useRef<PaginationGeometry | null>(null)
   const pointerRowRef = useRef<number | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -510,6 +538,12 @@ function MarkdownViewInner({
   }, [parsedDocument, source])
 
   const appTheme = useAppSelector(selectTheme)
+  const dispatch = useAppDispatch()
+  // A prompt block's «Ejecutar» sends its text to the side chat, in a new chat.
+  const runPromptRef = useRef((text: string) => {
+    dispatch(setRightChatPanelOpen(true))
+    requestChatPanel({ kind: 'send', text, agentFileName: null })
+  })
   const inkMathPreferences = useAppSelector(selectInkMathPreferences)
   const aiPreferences = useAppSelector(selectAiSettings)
   const inkMathPreferencesRef = useRef(inkMathPreferences)
@@ -581,6 +615,22 @@ function MarkdownViewInner({
       },
       featureConfigs: {
         [Crepe.Feature.Cursor]: { width: DROP_INDICATOR_WIDTH },
+        // The bar of the code blocks speaks Spanish, as in the canvas.
+        [Crepe.Feature.CodeMirror]: {
+          copyText: 'Copiar',
+          searchPlaceholder: 'Buscar lenguaje',
+          noResultText: 'Sin resultados',
+          previewLabel: 'Vista previa',
+          previewToggleText: (previewOnly) => (previewOnly ? 'Mostrar' : 'Ocultar código'),
+          previewToggleIcon: (previewOnly) => (previewOnly ? CODE_SHOW_ICON : CODE_HIDE_ICON),
+          theme: codeHighlight,
+        },
+        // Teal dots, and the task boxes of the canvas.
+        [Crepe.Feature.ListItem]: {
+          bulletIcon: LIST_BULLET_ICON,
+          checkBoxCheckedIcon: TASK_CHECKED_ICON,
+          checkBoxUncheckedIcon: TASK_UNCHECKED_ICON,
+        },
         [Crepe.Feature.BlockEdit]: {
           handleDragIcon: BLOCK_GRIP_ICON,
           blockHandle: {
@@ -663,7 +713,7 @@ function MarkdownViewInner({
         button.className = 'notia-math-ocr-button'
         button.setAttribute('aria-label', 'Abrir OCR matemático')
         button.title = 'Abrir OCR matemático'
-        button.innerHTML = `${OCR_BUTTON_ICON}<span>OCR</span>`
+        button.innerHTML = `${OCR_BUTTON_ICON}<span>Escribir a mano</span>`
         button.addEventListener('click', () => {
           const currentPosition = findCodeBlockPosition(editorView, codeBlockElement)
           if (currentPosition === null) {
@@ -779,9 +829,18 @@ function MarkdownViewInner({
       })
     }
 
+    const codeBlockChrome = {
+      isMathLanguage: (language: string) => MATH_CODE_BLOCK_LANGUAGES.has(language),
+      exportDiagram: (format: 'svg' | 'png', data: string) => {
+        const currentLibraryId = libraryIdRef.current
+        if (!currentLibraryId) return Promise.reject(new Error('No hay una biblioteca abierta.'))
+        return exportNoteDiagram(currentLibraryId, documentPathRef.current, format, data)
+      },
+    }
     const codeBlockObserver = new MutationObserver(() => {
       addMathOcrButtons()
       addInlineLatexInkMathButtons()
+      if (rootRef.current) decorateCodeBlocks(rootRef.current, codeBlockChrome)
     })
     codeBlockObserver.observe(rootRef.current, { childList: true, characterData: true, subtree: true })
 
@@ -812,10 +871,11 @@ function MarkdownViewInner({
           if (isXGraphLanguage(lowerLang)) return createXGraphPlaceholder(content)
           // Activar preview Mermaid en tres casos:
           // 1. Lenguaje explícitamente "mermaid"
-          // 2. Lenguaje vacío (bloques sin especificar lenguaje)
+          // 2. Lenguaje vacío pero contenido parece diagrama Mermaid
           // 3. Lenguaje "text" pero contenido parece diagrama Mermaid
+          // Un bloque de texto plano queda sin vista previa, como en el canvas.
           const isMermaidLang = lowerLang === 'mermaid'
-          const isEmptyLang = lowerLang === ''
+          const isEmptyLang = lowerLang === '' && looksLikeMermaid(content)
           const isTextButMermaid = lowerLang === 'text' && looksLikeMermaid(content)
           if (isMermaidLang || isEmptyLang || isTextButMermaid) {
             const blockIndex = mermaidPreviewBlockIndexRef.current
@@ -867,6 +927,7 @@ function MarkdownViewInner({
       fileUrl: backendFileUrl,
       editDrawing: (drawing) => editDrawing(drawing, rootRef.current),
       renderMarkdown: mountMarkdownPreview,
+      runPrompt: (text) => runPromptRef.current(text),
     }))
     crepe.editor.use($prose(() => activeBlockPlugin))
     crepe.editor.use($prose(() => createPaginationPlugin({
@@ -1314,24 +1375,41 @@ function MarkdownViewInner({
   }
 
   const sheetCount = pagePixels ? pageCount : 0
-  const pagesStyle = pagePixels
+  const pagesStyle = sheetPixels
     ? {
-      '--notia-page-width': `${pagePixels.width}px`,
-      '--notia-page-height': `${pagePixels.height}px`,
-      '--notia-page-margin': `${pagePixels.margin}px`,
-      '--notia-page-number-bottom': `${Math.max(10, Math.round(pagePixels.margin / 2 - 8))}px`,
-      minHeight: sheetCount * pagePixels.height + (sheetCount - 1) * PAGE_GAP_PX,
+      '--notia-page-width': `${sheetPixels.width}px`,
+      '--notia-page-height': `${sheetPixels.height}px`,
+      '--notia-page-margin': `${sheetPixels.margin}px`,
+      '--notia-page-number-bottom': `${Math.max(10, Math.round(sheetPixels.margin / 2 - 8))}px`,
+      // The continuous sheet reaches its lowest stroke, with room below to keep writing.
+      minHeight: pagePixels
+        ? sheetCount * pagePixels.height + (sheetCount - 1) * PAGE_GAP_PX
+        : Math.ceil(inkBottom(ink.strokes)) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
       zoom: pageFit < 1 ? pageFit : undefined,
     } as CSSProperties
     : undefined
+  const hostMode = pagePixels ? ' is-sheet is-paged' : sheetPixels ? ' is-sheet is-continuous' : ''
 
   return (
     <div
       ref={viewportRef}
-      className={`notia-markdown-host${pagePixels ? ' is-paged' : ''}`}
-      style={pagePixels ? { '--notia-desk-padding': `${deskPadding}px` } as CSSProperties : undefined}
+      className={`notia-markdown-host${hostMode}`}
+      style={sheetPixels ? { '--notia-desk-padding': `${deskPadding}px` } as CSSProperties : undefined}
       aria-label="Markdown editor"
     >
+      {sheetPixels ? (
+        <MarkdownPenBar
+          tool={penTool}
+          onToolChange={setPenTool}
+          pen={pen}
+          onPenChange={updatePen}
+          canUndo={ink.canUndo}
+          canRedo={ink.canRedo}
+          onUndo={ink.undo}
+          onRedo={ink.redo}
+          error={ink.error}
+        />
+      ) : null}
       <div ref={zoomContentRef} className="notia-markdown-zoom-content">
         {/* The structure is the same in both modes, so switching never remounts the editor. */}
         <div ref={pagesRef} className="notia-markdown-pages" style={pagesStyle}>
@@ -1342,6 +1420,10 @@ function MarkdownViewInner({
                   {pagePixels.pageNumbers ? <span className="notia-markdown-page-number">{index + 1} / {sheetCount}</span> : null}
                 </div>
               ))}
+            </div>
+          ) : sheetPixels ? (
+            <div className="notia-markdown-page-sheets" aria-hidden="true">
+              <div className="notia-markdown-page-sheet is-continuous" />
             </div>
           ) : null}
           <div className="notia-markdown-page-flow">
@@ -1362,9 +1444,21 @@ function MarkdownViewInner({
             </div>
             <div ref={rootRef} className="notia-markdown-editor-root" />
           </div>
+          {sheetPixels && pen ? (
+            <InkLayer
+              strokes={ink.strokes}
+              tool={penTool}
+              pen={pen}
+              sheet={{ width: sheetPixels.width, pageHeight: pagePixels ? pagePixels.height : null, pageGap: PAGE_GAP_PX }}
+              scrollContainerRef={viewportRef}
+              onCommit={ink.commit}
+              onErase={ink.erase}
+            />
+          ) : null}
         </div>
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
+      <WikiLinkPreviewCard rootRef={rootRef} libraryId={libraryId} />
       <MarkdownFormatToolbar
         state={formatToolbarState}
         hostRef={viewportRef}

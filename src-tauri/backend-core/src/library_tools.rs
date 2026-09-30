@@ -81,6 +81,45 @@ impl LogicalPathDto {
     }
 }
 
+/// Names Windows refuses for a file or folder, even with an extension.
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn portable_segment(segment: &str) -> String {
+    if segment == "." || segment == ".." {
+        return segment.to_string();
+    }
+    let mapped: String = segment
+        .chars()
+        .map(|char| match char {
+            '"' => "'".to_string(),
+            ':' => " -".to_string(),
+            '?' | '*' | '<' | '>' | '|' => " ".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    // A dropped character before the extension leaves no space behind.
+    let collapsed = mapped.split_whitespace().collect::<Vec<_>>().join(" ").replace(" .", ".");
+    let trimmed = collapsed.trim_end_matches(['.', ' ']).to_string();
+    let stem = trimmed.split('.').next().unwrap_or_default();
+    if RESERVED_DEVICE_NAMES.iter().any(|name| name.eq_ignore_ascii_case(stem)) {
+        return format!("{stem}_{}", &trimmed[stem.len()..]);
+    }
+    trimmed
+}
+
+/// The path for a new document with names Windows and Android accept: `"`
+/// becomes `'`, `:` becomes ` -`, the other characters Windows refuses
+/// (`? * < > |`) become spaces, spaces collapse, trailing dots and spaces go,
+/// and device names (`CON`, `LPT1`…) get a `_`. The agent names notes after
+/// what the person said, quotes included; without this, Windows refuses to
+/// write the file. Separators and `..` are left for [`LogicalPathDto`].
+pub fn portable_document_path(path: &str) -> String {
+    path.trim().split('/').map(portable_segment).collect::<Vec<_>>().join("/")
+}
+
 impl TryFrom<&str> for LogicalPathDto {
     type Error = BackendError;
 
@@ -1770,6 +1809,20 @@ fn revision_conflict(operation_id: &str, expected: u64, current: u64) -> Backend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_documents_get_names_every_platform_accepts() {
+        assert_eq!(
+            portable_document_path("Ideas/Idea: el límite que \"lockee\" la consulta?.md"),
+            "Ideas/Idea - el límite que 'lockee' la consulta.md"
+        );
+        assert_eq!(portable_document_path("Trabajo./a <b> | c*.md"), "Trabajo/a b c.md");
+        assert_eq!(portable_document_path("con.md"), "con_.md");
+        assert_eq!(portable_document_path("Personal/nota.md"), "Personal/nota.md");
+        // Traversal is not hidden: the logical path still refuses it.
+        assert!(LogicalPathDto::new(&portable_document_path("../fuera.md")).is_err());
+        assert!(LogicalPathDto::new(&portable_document_path("Ideas/Idea: \"x\".md")).is_ok());
+    }
 
     fn locator(library_id: &str, path: &str) -> DocumentLocatorDto {
         DocumentLocatorDto::new(library_id, path, None, None).expect("valid locator")

@@ -589,6 +589,16 @@ pub(crate) fn library_mutate_entry(
         }
     };
     let library_id = library.id.clone();
+    // The handwriting of the notes follows them (`.notia/ink`).
+    let ink_change = crate::note_ink::plan_entry_change(
+        &app,
+        &library_id,
+        &payload.action,
+        &logical_path,
+        payload.name.as_deref(),
+        source_logical_path.as_deref(),
+        payload.mode.as_deref(),
+    );
     let result = crate::filesystem::commands::backend_library_entry_operation(
         crate::filesystem::commands::BackendLibraryEntryPayload {
             library_id: library.id,
@@ -603,6 +613,9 @@ pub(crate) fn library_mutate_entry(
         app.state(),
     );
     if result.ok {
+        if let Some(change) = &ink_change {
+            crate::note_ink::apply_entry_change(&app, &library_id, change);
+        }
         reindex_in_background(&app, &library_id);
     }
     result

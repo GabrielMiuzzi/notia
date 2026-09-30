@@ -1,0 +1,724 @@
+/*
+ * The elements of a note as the design canvas draws them (Elementos · Texto
+ * and Elementos · Código): inline formatting, quotes, lists, rules, tables,
+ * code blocks, formulas and diagrams. Headings 1 to 3 and paragraphs keep
+ * the editor board's sizes (markdownEditor.css). Colors come from the theme
+ * tokens; mixes only soften a token.
+ */
+
+.notia-markdown-host {
+  --notia-el-panel: var(--color-sidebar-bg);
+  --notia-el-raised: var(--color-card-bg);
+  --notia-el-sunken: color-mix(in srgb, var(--color-app-bg) 50%, var(--color-sidebar-bg));
+  --notia-el-well: color-mix(in srgb, var(--color-app-bg) 60%, var(--color-sidebar-bg));
+  --notia-el-soft-text: color-mix(in srgb, var(--color-body-text) 62%, var(--color-muted-text));
+  --notia-el-faint: color-mix(in srgb, var(--color-muted-text) 45%, var(--color-border-soft));
+  --notia-el-mono: var(--crepe-font-code, ui-monospace), ui-monospace, monospace;
+}
+
+/* On a page the sheet already has the panel color: panels go one step up. */
+.notia-markdown-host.is-paged {
+  --notia-el-panel: var(--color-card-bg);
+  --notia-el-raised: color-mix(in srgb, var(--color-card-bg) 80%, var(--color-border-soft));
+}
+
+/* ---------- Headings 4 to 6 ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror h4 {
+  font-size: 18px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h5 {
+  font-size: 15.5px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror h6 {
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ---------- Inline formatting ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror del,
+.notia-markdown-editor-root .milkdown .ProseMirror s {
+  color: var(--color-muted-text);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror :not(pre) > code {
+  padding: 1px 5px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 5px;
+  background: var(--notia-el-raised);
+  color: var(--color-accent-text);
+  font-family: var(--notia-el-mono);
+  font-size: 0.85em;
+  line-height: inherit;
+  display: inline;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror a {
+  color: var(--color-accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent-text) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* Links between notes: a dashed teal line; a missing note reads muted. */
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-wikilink-token--resolved {
+  padding: 1px 2px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-accent-text) 60%, transparent);
+  border-radius: 4px 4px 0 0;
+  color: var(--color-accent-text);
+  text-decoration: none;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-wikilink-token--resolved:has(.notia-wikilink-syntax:not(.is-hidden)) {
+  background: color-mix(in srgb, var(--color-accent-text) 8%, transparent);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror .notia-wikilink-token--broken {
+  padding: 1px 2px;
+  border-bottom: 1px dashed var(--notia-el-faint);
+  color: var(--color-muted-text);
+  text-decoration: none;
+}
+
+.notia-wikilink-preview {
+  position: fixed;
+  z-index: 60;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 14px 34px var(--color-menu-shadow);
+  color: var(--color-body-text);
+  pointer-events: none;
+}
+
+.notia-wikilink-preview.is-above {
+  transform: translateY(-100%);
+}
+
+.notia-wikilink-preview-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-wikilink-preview-folder svg {
+  flex: none;
+  color: var(--color-accent-text);
+}
+
+.notia-wikilink-preview-title {
+  margin-top: 6px;
+  font-family: var(--crepe-font-title, inherit);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.notia-wikilink-preview-excerpt {
+  margin-top: 4px;
+  color: color-mix(in srgb, var(--color-body-text) 55%, var(--color-muted-text));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notia-wikilink-preview-meta {
+  margin-top: 10px;
+  color: var(--color-slate);
+  font-size: 11.5px;
+}
+
+/* Highlights: the default one is gold. */
+.notia-markdown-editor-root .milkdown .ProseMirror mark {
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-gold) 24%, transparent);
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Emojis: a little larger than the text, on its line. */
+.notia-markdown-editor-root .milkdown .ProseMirror [data-type='emoji'] {
+  font-size: 1.25em;
+  line-height: 1;
+  vertical-align: -2px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror [data-type='emoji'] img {
+  width: 1em;
+  height: 1em;
+  margin: 0 0.05em;
+  vertical-align: -0.1em;
+}
+
+/* ---------- Quotes ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror blockquote {
+  position: relative;
+  margin: 6px 0;
+  padding: 12px 18px 12px 48px;
+  border-radius: 10px;
+  background: var(--notia-el-panel);
+  color: var(--notia-el-soft-text);
+  box-sizing: border-box;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror blockquote::before {
+  content: '\201C';
+  position: absolute;
+  top: 10px;
+  bottom: auto;
+  left: 18px;
+  width: auto;
+  border-radius: 0;
+  background: none;
+  color: var(--color-accent-text);
+  font-family: var(--crepe-font-title, inherit);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 0.9;
+  padding-top: 6px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror blockquote p {
+  --notia-block-pad-top: 0px;
+  --notia-block-pad-bottom: 0px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror blockquote blockquote {
+  margin: 10px 0 0 -22px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--notia-el-raised);
+  color: color-mix(in srgb, var(--color-body-text) 50%, var(--color-muted-text));
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror blockquote blockquote::before {
+  content: none;
+}
+
+/* ---------- Lists ---------- */
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .bullet svg {
+  width: 5px;
+  height: 5px;
+  fill: var(--color-accent-text);
+}
+
+/* Second level: a ring; third level and deeper: a muted square. */
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .milkdown-list-item-block li .label-wrapper .bullet svg {
+  fill: none;
+  stroke: var(--color-accent-text);
+  stroke-width: 1.3px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .milkdown-list-item-block .milkdown-list-item-block li .label-wrapper .bullet svg {
+  fill: var(--color-muted-text);
+  stroke: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .bullet svg rect,
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .milkdown-list-item-block .milkdown-list-item-block li .label-wrapper .bullet svg circle {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .milkdown-list-item-block .milkdown-list-item-block li .label-wrapper .bullet svg rect {
+  display: inline;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .ordered {
+  color: var(--color-accent-text);
+  font-family: var(--notia-el-mono);
+  font-size: 12.5px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block .milkdown-list-item-block li .label-wrapper .ordered {
+  color: var(--color-muted-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.checked),
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.unchecked) {
+  width: 18px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .checked svg,
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .unchecked svg {
+  width: 18px;
+  height: 18px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .checked svg .notia-check-box {
+  fill: var(--color-accent-text);
+  stroke: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .checked svg .notia-check-mark {
+  fill: none;
+  stroke: var(--color-on-accent);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper .unchecked svg .notia-check-box {
+  fill: none;
+  stroke: var(--notia-el-faint);
+}
+
+/* A done task reads struck through. */
+.notia-markdown-editor-root .milkdown .milkdown-list-item-block > li:has(> .label-wrapper .checked) > .children {
+  color: var(--color-muted-text);
+  text-decoration: line-through;
+  text-decoration-color: var(--notia-el-faint);
+}
+
+@media (pointer: coarse) {
+  .notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.checked),
+  .notia-markdown-editor-root .milkdown .milkdown-list-item-block li .label-wrapper:has(.unchecked) {
+    width: 32px;
+  }
+}
+
+/* ---------- Footnotes: the notes under a line, their label in teal ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror dl[data-type='footnote_definition'] {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding: 3px 0;
+  color: color-mix(in srgb, var(--color-body-text) 55%, var(--color-muted-text));
+  font-size: 13.5px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror :not(dl[data-type='footnote_definition']) + dl[data-type='footnote_definition'] {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror dl[data-type='footnote_definition'] dt {
+  flex: none;
+  min-width: 34px;
+  color: var(--color-accent-text);
+  font-family: var(--notia-el-mono);
+  font-size: 12px;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror dl[data-type='footnote_definition'] dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror dl[data-type='footnote_definition'] dd p {
+  --notia-block-pad-top: 0px;
+  --notia-block-pad-bottom: 0px;
+  font-size: inherit;
+}
+
+/* ---------- Horizontal rule: a line with three dots ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror hr {
+  position: relative;
+  height: 20px;
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  background: linear-gradient(var(--color-border-soft), var(--color-border-soft)) left center / calc(50% - 24px) 1px no-repeat,
+    linear-gradient(var(--color-border-soft), var(--color-border-soft)) right center / calc(50% - 24px) 1px no-repeat;
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror hr::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: calc(50% - 2px);
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-accent-text);
+  box-shadow: -10px 0 0 var(--notia-el-faint), 10px 0 0 var(--notia-el-faint);
+}
+
+.notia-markdown-editor-root .milkdown .ProseMirror hr.ProseMirror-selectednode {
+  outline: 1px solid var(--color-accent-text);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- Tables ---------- */
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block table {
+  overflow: hidden;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--notia-el-panel);
+  font-size: 14px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block th {
+  border: 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--notia-el-raised);
+  color: var(--color-muted-text);
+  font-family: var(--crepe-font-title, inherit);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block td {
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border-soft) 70%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block tr:last-child td {
+  border-bottom: 0;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block tbody tr:nth-child(even) td {
+  background: var(--notia-el-sunken);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block :is(th, td) {
+  padding: 10px 16px;
+}
+
+/* ---------- Code blocks: bar, line numbers, syntax colors ---------- */
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block {
+  margin: 10px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--notia-el-panel);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block.selected {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-text) 35%, transparent), 0 10px 30px var(--color-menu-shadow);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block > .tools {
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+/* Language: a mono chip with its chevron. */
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .language-button {
+  height: 24px;
+  margin: 0;
+  padding: 0 6px 0 9px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 7px;
+  background: var(--notia-el-raised);
+  color: var(--color-muted-text);
+  font-family: var(--notia-el-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  opacity: 1;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .language-button:hover {
+  color: var(--color-body-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .language-button .expand-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .language-button .expand-icon svg {
+  width: 11px;
+  height: 11px;
+  color: currentColor;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex'] .tools .language-button,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .tools .language-button,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] .tools .language-button {
+  color: var(--color-body-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group {
+  align-items: center;
+  gap: 2px;
+}
+
+/* The bar's buttons: 30px, muted until hovered; teal when on. */
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 1;
+  cursor: pointer;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button:first-child,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button:last-child {
+  border-radius: 8px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button:hover,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button:hover {
+  background: var(--notia-el-raised);
+  color: var(--color-body-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button svg,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button.copy-button svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button[aria-pressed='true'],
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button[aria-checked='true'],
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button.notia-math-ocr-button {
+  background: color-mix(in srgb, var(--color-accent-text) 12%, transparent);
+  color: var(--color-accent-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button:focus-visible,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .tools button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-toggles {
+  display: inline-flex;
+  gap: 2px;
+}
+
+@media (pointer: coarse) {
+  .notia-markdown-editor-root .milkdown .milkdown-code-block .tools .tools-button-group button,
+  .notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-button,
+  .notia-markdown-editor-root .milkdown .milkdown-code-block .tools .language-button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* The code: a darker well with dim line numbers. */
+.notia-markdown-editor-root .milkdown .milkdown-code-block .codemirror-host {
+  background: var(--notia-el-well);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-editor,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-gutters {
+  background: var(--notia-el-well);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-editor {
+  font-family: var(--notia-el-mono);
+  font-size: 13px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-scroller {
+  padding: 10px 0;
+  font-family: inherit;
+  line-height: 1.75;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-gutters {
+  border: 0;
+  color: color-mix(in srgb, var(--color-muted-text) 55%, var(--color-border-soft));
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-lineNumbers .cm-gutterElement {
+  min-width: 28px;
+  padding: 0 4px 0 12px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-foldGutter,
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-activeLineGutter {
+  background: transparent;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-activeLine {
+  background: color-mix(in srgb, var(--color-body-text) 3%, transparent);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .cm-content {
+  padding-left: 12px;
+  color: var(--color-body-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-numbers='false'] .cm-gutters {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-wrap='true'] .cm-content,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-wrap='true'] .cm-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Preview: formulas and diagrams ---------- */
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .preview-panel .preview-divider {
+  height: 1px;
+  margin: 0;
+  background: var(--color-border-soft);
+  opacity: 1;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .preview-panel .preview-label {
+  margin: 0;
+  padding: 10px 16px 0;
+  color: var(--color-slate);
+  font-family: var(--notia-el-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .preview-panel .preview {
+  padding: 26px 16px 30px;
+  color: var(--color-body-text);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex'] .preview {
+  font-size: 1.35em;
+}
+
+/* LaTeX: its actions in one pill; with the code hidden the bar gets shorter. */
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex'] .tools .tools-button-group {
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--notia-el-raised);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex'] .tools .tools-button-group button {
+  height: 28px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex']:has(.codemirror-host.hidden) > .tools {
+  min-height: 38px;
+  border-bottom: 0;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex']:has(.codemirror-host.hidden) .tools .tools-button-group {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex']:has(.codemirror-host.hidden) .tools .tools-button-group > :not(.preview-toggle-button) {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex']:has(.codemirror-host.hidden) .tools .tools-button-group::before {
+  content: 'Código oculto';
+  align-self: center;
+  margin-right: 6px;
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='latex']:has(.codemirror-host.hidden) .preview {
+  padding-top: 6px;
+}
+
+/* Mermaid: Código · Dividido · Vista; the diagram on a dotted board. */
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-segmented {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: auto;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 9px;
+  background: var(--color-app-bg);
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-segmented .notia-code-button {
+  height: 24px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] > .tools,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] > .tools {
+  justify-content: flex-start;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .tools .tools-button-group,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] .tools .tools-button-group {
+  margin-left: auto;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .tools .copy-button,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .tools .preview-toggle-button,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] .tools .copy-button {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .preview-label,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] .preview-label {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'] .preview {
+  padding: 18px 16px;
+  background-image: radial-gradient(color-mix(in srgb, var(--color-border-soft) 70%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'][data-notia-view='code'] .preview-panel,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'][data-notia-view='preview'] .codemirror-host,
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='mermaid'][data-notia-view='preview'] .preview-divider {
+  display: none;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block .notia-code-caption {
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-code-block[data-notia-kind='xgraph'] .preview {
+  padding: 0;
+  background: var(--notia-el-well);
+}
+
+/* ---------- Inline formulas ---------- */
+
+.notia-markdown-editor-root .milkdown .ProseMirror .milkdown-latex-inline,
+.notia-markdown-editor-root .milkdown .ProseMirror [data-type='math_inline'] {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-accent-text) 8%, transparent);
+  color: var(--color-accent-text);
+}

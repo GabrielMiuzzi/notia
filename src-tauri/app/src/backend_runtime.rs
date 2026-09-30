@@ -1312,6 +1312,20 @@ impl TauriBackendToolExecutor {
         DocumentLocatorDto::new(&context.library_id, &path, None, None)
     }
 
+    /// Where a new note goes: the requested path with names Windows and
+    /// Android accept (`portable_document_path`), so a title with quotes or
+    /// `?` still becomes a note. The preview and the write use the same path.
+    fn new_note_locator(
+        context: &BackendRequestContext,
+        arguments: &Value,
+    ) -> Result<DocumentLocatorDto, BackendError> {
+        let path = Self::explicit_path(arguments).ok_or_else(|| {
+            BackendError::invalid_input("La mutación documental necesita una ruta lógica.")
+        })?;
+        let path = notia_backend_core::library_tools::portable_document_path(&path);
+        DocumentLocatorDto::new(&context.library_id, &path, None, None)
+    }
+
     /// Resolves an existing document by explicit path or by the opaque
     /// `documentId` returned from search results. Ids are resolved through the
     /// library inventory, never interpreted as paths.
@@ -2100,7 +2114,7 @@ impl TauriBackendToolExecutor {
         call: &ToolCall,
     ) -> Result<Option<(DocumentLocatorDto, Option<String>)>, BackendError> {
         let locator = match call.name.as_str() {
-            "create_library_note" => return Ok(Some((Self::locator(context, &call.arguments)?, None))),
+            "create_library_note" => return Ok(Some((Self::new_note_locator(context, &call.arguments)?, None))),
             "replace_library_document" | "delete_library_document" => {
                 self.existing_document_locator(context, &call.arguments)?
             }
@@ -2357,7 +2371,7 @@ impl TauriBackendToolExecutor {
             return Ok(None);
         }
         let locator = if call.name == "create_library_note" {
-            Self::locator(context, &call.arguments)?
+            Self::new_note_locator(context, &call.arguments)?
         } else {
             self.existing_document_locator(context, &call.arguments)?
         };
@@ -3954,7 +3968,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 serde_json::to_value(reader.read_document(&locator)?).map_err(|_| invalid_result())?
             }
             "create_library_note" => {
-                let locator = Self::locator(context, &call.arguments)?;
+                let locator = Self::new_note_locator(context, &call.arguments)?;
                 Self::ensure_agent_writable(&locator)?;
                 let content = Self::text(&call.arguments, "content");
                 if content.is_empty() {
@@ -4934,6 +4948,69 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    /// «Haceme una nota que es de una idea…» from Telegram (2026-09-29): the
+    /// agent's note, previewed, confirmed and written, in the library root,
+    /// in an existing folder and in a new one, with a long title and quotes.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn the_agent_saves_a_note_it_is_asked_for() {
+        use crate::host::{AppContext, AppPaths, HostPorts, Manager};
+        use notia_backend_core::{
+            BackendActor, BackendChannel, BackendRequestContext, BackendScope, ConfirmationDecision,
+            PersistencePolicy, RequestControl, ToolCall, ToolExecutor,
+        };
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!("notia-agent-note-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Personal")).expect("root");
+        let app = AppContext::new(AppPaths::default(), HostPorts::default());
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-1", &root).expect("binding");
+        app.manage(registry);
+        app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+        app.manage(crate::agent_history::AgentHistoryState::default());
+        let executor = TauriBackendToolExecutor {
+            app: app.clone(),
+            snapshot: None,
+            web_search_tracker: Mutex::new(Default::default()),
+            control: RequestControl::new(None),
+            journal: Arc::new(Default::default()),
+            idempotency_key: "key-1".into(),
+            request_images: Vec::new(),
+        };
+        let context = BackendRequestContext {
+            request_id: "request-1".into(),
+            library_id: "library-1".into(),
+            actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+            channel: BackendChannel::App,
+            scope: BackendScope::Library,
+            persistence_policy: PersistencePolicy::Persistent,
+        };
+        let idea = "Idea: retirar el chárter de los productos moviendo la evaluación al límite de la consulta, que se \"lockee\" mientras la consulta no esté confirmada";
+        for (index, folder) in ["", "Personal/", "Ideas/"].into_iter().enumerate() {
+            let call = ToolCall {
+                id: format!("call-{index}"),
+                name: "create_library_note".into(),
+                arguments: serde_json::json!({ "path": format!("{folder}{idea}.md"), "content": format!("# Idea\n\n{idea}\n") }),
+                round: 1,
+            };
+            let preview = executor.preview(&context, &call).expect("preview").expect("a preview");
+            let decision = ConfirmationDecision {
+                operation_id: preview.operation_id.clone(),
+                accepted: true,
+                hunk_ids: Vec::new(),
+                approve_all: false,
+                suggestion: None,
+            };
+            let result = executor.execute_confirmed(&context, &call, &decision, Some(&preview)).expect("created");
+            assert!(result.ok, "{folder}: {:?}", result.error);
+            let path = result.data.as_ref().and_then(|data| data["path"].as_str()).expect("path").to_string();
+            assert_eq!(preview.documents[0].path, path);
+            assert!(std::fs::read_to_string(root.join(&path)).expect("note").contains("lockee"), "{path}");
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn task_group_confirmations_name_the_groups() {

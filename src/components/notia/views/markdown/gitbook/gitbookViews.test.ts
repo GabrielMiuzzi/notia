@@ -43,6 +43,7 @@ async function openEditor(markdown: string) {
   const requester = vi.fn(async (request: GitbookBlocksRequest) => respond(request))
   const resolver = new GitbookResolver(requester, markdown)
   const openLibraryPath = vi.fn()
+  const runPrompt = vi.fn()
   const editor = await Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root)
@@ -55,6 +56,7 @@ async function openEditor(markdown: string) {
       openLibraryPath,
       fileUrl: (path) => `asset://${path}`,
       editDrawing: async () => null,
+      runPrompt,
       renderMarkdown: (host, text) => {
         host.textContent = text
         return () => {}
@@ -63,7 +65,7 @@ async function openEditor(markdown: string) {
     .create()
   editors.push(editor)
   const view = editor.action((ctx) => ctx.get(editorViewCtx))
-  return { editor, root, view, resolver, requester, openLibraryPath, markdown: () => editor.action(getMarkdown()) }
+  return { editor, root, view, resolver, requester, openLibraryPath, runPrompt, markdown: () => editor.action(getMarkdown()) }
 }
 
 async function settle(): Promise<void> {
@@ -100,10 +102,51 @@ describe('GitBook node views', () => {
     const hint = root.querySelector<HTMLElement>('.notia-gb-hint')
     expect(hint?.dataset.style).toBe('info')
     root.querySelector<HTMLButtonElement>('.notia-gb-hint__style')?.click()
-    const danger = [...document.querySelectorAll<HTMLButtonElement>('.notia-gb-menu__item')].find((item) => item.textContent === 'Peligro')
+    const danger = [...document.querySelectorAll<HTMLButtonElement>('.notia-gb-menu__item')].find((item) => item.textContent === 'Error')
     danger?.click()
     expect(markdown()).toContain('{% hint style="danger" %}')
     expect(root.querySelector<HTMLElement>('.notia-gb-hint')?.dataset.style).toBe('danger')
+  })
+
+  it('titles a hint with its kind', async () => {
+    const { root } = await openEditor('{% hint style="danger" %}\nHola\n{% endhint %}')
+    expect(root.querySelector('.notia-gb-hint__title')?.textContent).toBe('Error')
+  })
+
+  it('sends a prompt to the side chat with «Ejecutar»', async () => {
+    const { root, runPrompt } = await openEditor('{% prompt description="Resumir" %}\nResumí esta nota.\n{% endprompt %}')
+    const run = [...root.querySelectorAll<HTMLButtonElement>('.notia-gb-prompt button')].find((button) => button.textContent === 'Ejecutar')
+    run?.click()
+    expect(runPrompt).toHaveBeenCalledWith('Resumí esta nota.')
+  })
+
+  it('counts the columns and stops adding at the limit', async () => {
+    const { root } = await openEditor('{% columns %}\n{% column %}\nA\n{% endcolumn %}\n{% column %}\nB\n{% endcolumn %}\n{% endcolumns %}')
+    expect(root.querySelector('.notia-gb-parts__count')?.textContent).toBe('2 de 2 columnas')
+    expect(root.querySelector<HTMLButtonElement>('.notia-gb-parts__add')?.disabled).toBe(true)
+  })
+
+  it('shows the date and tags of an update and edits them on a press', async () => {
+    const { root, markdown } = await openEditor('{% updates %}\n{% update date="2026-09-28" tags="nuevo" %}\nTexto\n{% endupdate %}\n{% endupdates %}')
+    const update = root.querySelector<HTMLElement>('.notia-gb-part--update')
+    expect(update?.querySelector('.notia-gb-update__date-text')?.textContent).toBe('28 sep 2026')
+    expect(update?.querySelector('.notia-gb-update__tag')?.textContent).toBe('nuevo')
+    expect(update?.dataset.editing).toBe('false')
+    update?.querySelector<HTMLButtonElement>('.notia-gb-update__summary')?.click()
+    expect(update?.dataset.editing).toBe('true')
+    const tags = update?.querySelector<HTMLInputElement>('input[aria-label="Etiquetas"]') as HTMLInputElement
+    tags.value = 'nuevo, mejora'
+    tags.dispatchEvent(new Event('change'))
+    expect(markdown()).toContain('tags="nuevo, mejora"')
+  })
+
+  it('switches «Abierto al leer» of a details block', async () => {
+    const { root, markdown } = await openEditor('<details><summary>Más</summary>\nCuerpo\n</details>')
+    const toggle = root.querySelector<HTMLButtonElement>('.notia-gb-details__open')
+    expect(toggle?.getAttribute('role')).toBe('switch')
+    expect(toggle?.getAttribute('aria-checked')).toBe('false')
+    toggle?.click()
+    expect(markdown()).toContain('<details open>')
   })
 
   it('shows what Rust resolves for expressions, conditions, page links and reusable content', async () => {

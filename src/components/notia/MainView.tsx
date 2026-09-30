@@ -92,9 +92,10 @@ function MainViewComponent({
   }, [isMarkdownOpen])
 
   const pageLayout = useMemo<MarkdownPageLayout | null>(() => (
-    notePageMode && editorPageSetup
+    editorPageSetup
       ? {
-        widthMm: editorPageSetup.widthMm,
+        paged: notePageMode === true,
+        widthMm: notePageMode ? editorPageSetup.widthMm : editorPageSetup.continuousWidthMm,
         heightMm: editorPageSetup.heightMm,
         marginMm: editorPageSetup.marginMm,
         pageNumbers: editorPageSetup.pageNumbers,
@@ -255,7 +256,6 @@ function MainViewComponent({
                 exportingFormat={exportingFormat}
                 onTogglePageMode={() => void togglePageMode()}
                 onOpenPageSettings={() => setSettingsTab('page')}
-                onOpenPenSettings={() => setSettingsTab('pen')}
                 onExport={(format) => void handleExport(format)}
               />
             </div>

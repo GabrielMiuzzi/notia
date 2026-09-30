@@ -32,6 +32,7 @@
     "build:tauri": "./scripts/tauri-build-release.sh"
   },
   "dependencies": {
+    "@codemirror/language": "^6.12.4",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@iconify-json/fa": "^1.2.2",
@@ -44,6 +45,7 @@
     "@iconify-json/mdi": "^1.2.3",
     "@iconify-json/simple-icons": "^1.2.82",
     "@iconify/react": "^6.0.2",
+    "@lezer/highlight": "^1.2.3",
     "@milkdown/crepe": "^7.19.0",
     "@milkdown/plugin-block": "^7.19.0",
     "@milkdown/plugin-clipboard": "^7.19.0",

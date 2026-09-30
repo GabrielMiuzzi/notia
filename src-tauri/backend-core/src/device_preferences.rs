@@ -9,9 +9,9 @@ pub const MAX_PUBLICATION_CLIENTS: u64 = 64;
 const TTS_VOICES: [&str; 9] = ["vivian", "serena", "uncle_fu", "dylan", "eric", "ryan", "aiden", "ono_anna", "sohee"];
 const DEFAULT_GREETING: &str = "Hola, ¿en qué puedo ayudarte?";
 const MAX_BOARDS: usize = 200;
-/// The first option of each list is the default.
-const PEN_TOOLS: [&str; 3] = ["fountain", "pencil", "marker"];
-const PEN_COLORS: [&str; 6] = ["ink", "teal", "blue", "red", "orange", "yellow"];
+/// The first option of each list is the default. The ink strokes of the
+/// notes use the pen colors too.
+pub const PEN_COLORS: [&str; 6] = ["ink", "teal", "blue", "red", "orange", "yellow"];
 const PEN_SIDE_BUTTON: [&str; 3] = ["eraser", "select", "none"];
 
 fn text(value: &Value, key: &str) -> String {
@@ -79,13 +79,14 @@ fn one_of<'a>(value: &Value, key: &str, allowed: &[&'a str]) -> &'a str {
     allowed.iter().copied().find(|option| *option == chosen).unwrap_or(allowed[0])
 }
 
-/// Pen settings for handwriting in notes (the pen itself is not available
-/// yet): default tool, ink color by name, stroke and hardware options.
+/// Pen settings for handwriting over notes: ink color by name, tip size in
+/// px (1 to 16), smoothing and the hardware options. The tool (selector,
+/// pen, highlighter, eraser) is chosen in the editor's pen bar and is not
+/// kept.
 pub fn normalize_pen(value: &Value) -> Value {
     json!({
-        "tool": one_of(value, "tool", &PEN_TOOLS),
         "color": one_of(value, "color", &PEN_COLORS),
-        "thickness": number(value, "thickness").map_or(3, |thickness| thickness.round().clamp(1.0, 14.0) as u64),
+        "thickness": number(value, "thickness").map_or(4, |thickness| thickness.round().clamp(1.0, 16.0) as u64),
         "smoothing": number(value, "smoothing").map_or(40, |smoothing| smoothing.round().clamp(0.0, 100.0) as u64),
         "pressure": value.get("pressure").and_then(Value::as_bool) != Some(false),
         "palmRejection": value.get("palmRejection").and_then(Value::as_bool) != Some(false),
@@ -136,13 +137,13 @@ mod tests {
         }));
         assert_eq!(
             normalized["editorPage"],
-            json!({ "format": "legal", "orientation": "landscape", "margins": "normal", "pageNumbers": true })
+            json!({ "format": "a4", "orientation": "landscape", "margins": "normal", "pageNumbers": true })
         );
         assert_eq!(
             normalized["pen"],
-            json!({ "tool": "marker", "color": "ink", "thickness": 14, "smoothing": 0, "pressure": false, "palmRejection": true, "penOnly": true, "sideButton": "none" })
+            json!({ "color": "ink", "thickness": 16, "smoothing": 0, "pressure": false, "palmRejection": true, "penOnly": true, "sideButton": "none" })
         );
-        assert_eq!(normalize_device_preferences(&Value::Null)["pen"]["tool"], "fountain");
+        assert_eq!(normalize_device_preferences(&Value::Null)["pen"]["thickness"], 4);
     }
 
     #[test]
