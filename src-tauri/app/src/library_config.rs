@@ -322,10 +322,15 @@ pub(crate) fn merge_client_config(app: &AppHandle, library_id: &str, text: &str)
     store.persist(&normalize_library_config(&merged).config, exists)
 }
 
-/// Creates the default configuration when the library has none.
+/// Creates the default configuration when the library has none. An
+/// encrypted one is left as is, even locked: adding the folder again must
+/// work, and the Owner's sign-in opens it afterwards.
 pub(crate) fn backend_ensure_library_config(payload: LibraryConfigPayload, app: &AppHandle) -> LibraryConfigResult {
     LibraryConfigResult::from_result((|| {
         let store = LibraryConfigStore::open(app, &payload.library_id)?;
+        if matches!(store.stored()?, Some(StoredConfig::Encrypted(_))) && crate::config_vault::unlocked(app, &payload.library_id).is_none() {
+            return Ok(None);
+        }
         if let Some(config) = store.read()? {
             return Ok(Some(config));
         }

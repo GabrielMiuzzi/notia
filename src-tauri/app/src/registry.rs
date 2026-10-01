@@ -977,7 +977,24 @@ fn backend_classify_chat_file(_app: &AppHandle, _window_label: &str, command: &s
     Ok(Dispatch::Ready(reply_result(crate::chat_history::backend_classify_chat_file(arg(command, args, "payload")?))))
 }
 
-fn backend_save_library_catalog(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+/// The libraries of the host are folders of its disk: a client cannot
+/// replace that list or drop a binding (an empty catalog sent by a client
+/// emptied the host).
+fn refuse_host_libraries_change(window_label: &str) -> Option<Dispatch> {
+    (window_label == CLIENT_WINDOW_LABEL).then(|| {
+        let error = crate::backend::BackendError::new(
+            crate::backend::BackendErrorCode::Forbidden,
+            "Las bibliotecas del host se agregan, quitan y eligen en el host.",
+            false,
+        );
+        Dispatch::Ready(reply_result::<(), _>(Err(error)))
+    })
+}
+
+fn backend_save_library_catalog(app: &AppHandle, window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    if let Some(refused) = refuse_host_libraries_change(window_label) {
+        return Ok(refused);
+    }
     Ok(Dispatch::Ready(reply_result(crate::library_catalog::backend_save_library_catalog(app.clone(), arg(command, args, "catalog")?, app.state()))))
 }
 
@@ -1583,7 +1600,10 @@ fn check_telegram_bot(_app: &AppHandle, _window_label: &str, command: &str, args
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::commands::telegram::check_telegram_bot(arg0).await) })))
 }
 
-fn revoke_library_binding(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+fn revoke_library_binding(app: &AppHandle, window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    if let Some(refused) = refuse_host_libraries_change(window_label) {
+        return Ok(refused);
+    }
     Ok(Dispatch::Ready(reply_result(crate::library_registry::revoke_library_binding(app.clone(), arg(command, args, "libraryId")?, app.state(), app.state(), app.state()))))
 }
 

@@ -10809,3 +10809,38 @@ La contraseña sellada se da por vieja solo con `unauthorized` y el mensaje exac
   - la notificación de continuidad durante una grabación o una respuesta de IA;
   - el inicio de sesión de Gmail;
   - una librería local (no cliente) en Android.
+
+## Android: el servicio de continuidad cerraba la app (2026-10-01)
+
+**Problema.** En el celular (Android 16), Notia se cerraba sola al rato de abrirla con `ForegroundServiceDidNotStartInTimeException`. Una tarea corta llamaba a `beginWork` y a `endWork` con 6 ms de diferencia. Así, `stopService` llegaba antes de que `ContinuityService` alcanzara a llamar a `startForeground`, y Android mata el proceso cuando se detiene un servicio que todavía espera pasar a primer plano. Esto apareció cuando `beginWork` empezó a funcionar (sección anterior).
+
+**Arreglo** (`resources/continuity/android/ContinuityPlugin.kt`; `build.rs` lo copia a `gen/android`):
+- El contador `activeWork` y la marca `inForeground` pasan al `companion object`, compartidos entre el plugin y el servicio.
+- `endWork` solo llama a `stopService` si el servicio ya está en primer plano. Si todavía no llegó, el servicio llama a `startForeground`, ve que no queda trabajo y se detiene solo con `stopForeground` + `stopSelfResult(startId)`. Así no corta un arranque más nuevo.
+- Las dos partes escriben su marca antes de leer la otra, así que al menos una detiene el servicio.
+- Si Android rechaza el tipo `microphone` (`SecurityException`, por ejemplo sin permiso de micrófono), el servicio pasa a primer plano como `dataSync` en vez de cerrar la app.
+
+**Validación.**
+- `npm run install:android:release` compila el plugin.
+- Probado en el celular: la app ya no se cierra al abrirla.
+- Pendiente: la notificación durante una grabación larga con la pantalla apagada.
+
+## Host/Cliente: un cliente vació el catálogo del host (2026-10-01)
+
+**Problema.** Al conectar el celular como cliente «Con copia», el host (Windows) quedó con `library-catalog.json` vacío y sin el binding de su biblioteca. Desde ahí `/api/health` respondía `library: null`, el cliente mostraba «El host no tiene una biblioteca abierta» y la copia no tenía qué sincronizar (`served_library` vacío). Hay dos causas que se combinan:
+- **El catálogo del host aceptaba cambios de un cliente.** Un cliente reenvía al host todo comando no local, incluidos `backend_save_library_catalog` y `revoke_library_binding`. Así, la lista de bibliotecas del celular reemplazaba la del host, y cada biblioteca que faltaba perdía su binding, su ColdPass abierto y su espacio del agente.
+- **Una carga fallida guardaba una lista vacía.** Si `loadLibraryCatalog` fallaba, `useLibraryCatalogPersistence` mostraba una lista vacía y no la marcaba como recién cargada, así que el efecto siguiente la guardaba.
+
+**Arreglo.**
+- **Host** (`registry.rs`): `refuse_host_libraries_change` rechaza con `forbidden` los dos comandos cuando llegan con la etiqueta `client` (`CLIENT_WINDOW_LABEL`), como ya hace la configuración con Telegram. Así quedan protegidos también los clientes con versiones anteriores, como la tableta. El servidor headless sigue aceptándolos: ahí elegir la biblioteca es parte de la interfaz remota.
+- **Interfaz**: después de una carga fallida, el hook no guarda nada (`loadFailedRef`). La lista vacía es solo un relleno.
+- **Volver a agregar una biblioteca cifrada**: `backend_ensure_library_config` deja como está una configuración cifrada que todavía no se abrió. Antes intentaba leerla y fallaba con «La biblioteca está bloqueada», así que la carpeta no se podía agregar de nuevo. Ahora se agrega y el inicio de sesión del Owner la abre.
+
+**Validación.**
+- `a_client_signs_in_runs_commands_and_receives_the_events_of_its_host` comprueba que un cliente no vacía el catálogo ni revoca el binding y que el host sigue sirviendo su biblioteca.
+- `the_owner_seals_opens_and_seals_again_the_configuration`: con la biblioteca bloqueada, `ensure` responde bien y no toca el archivo sellado.
+- `useLibraryCatalogPersistence.test.tsx` (2) cubre los cambios guardados después de cargar y que no se guarda nada tras una carga fallida.
+- `tsc -p tsconfig.app.json` y `eslint`: sin errores.
+- Pendiente:
+  - volver a registrar gaia en el host;
+  - probar la primera sincronización de la copia en el celular con la biblioteca completa.

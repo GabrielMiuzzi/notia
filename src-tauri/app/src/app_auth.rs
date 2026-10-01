@@ -549,6 +549,12 @@ mod tests {
         assert!(sealed.contains("notiaEncrypted") && !sealed.contains("1:secreto"));
         assert!(read_library_config(&app, &id).is_err());
         assert!(update_library_config(&app, &id, with_token("x:x")).is_err());
+        // Adding the folder again keeps the sealed file and does not fail:
+        // the Owner's sign-in opens it.
+        let payload = serde_json::from_value(serde_json::json!({ "libraryId": id })).expect("payload");
+        let ensured = serde_json::to_value(crate::library_config::backend_ensure_library_config(payload, &app)).expect("json");
+        assert_eq!(ensured["ok"], true, "{ensured}");
+        assert_eq!(std::fs::read_to_string(&file).expect("file"), sealed);
 
         let login = |password: &str| {
             app_auth_login(

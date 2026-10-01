@@ -13,6 +13,9 @@ export function useLibraryCatalogPersistence(): void {
   const selectedLibraryId = useAppSelector((state) => state.library.selectedLibraryId)
   const catalogLoaded = useAppSelector((state) => state.library.catalogLoaded)
   const hydratedSnapshotRef = useRef<unknown>(null)
+  // Without a loaded catalog the list on screen is a placeholder: storing it
+  // would replace the real one (and, on a client, the host's).
+  const loadFailedRef = useRef(false)
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve())
 
   useEffect(() => {
@@ -25,6 +28,7 @@ export function useLibraryCatalogPersistence(): void {
       })
       .catch(() => {
         if (cancelled) return
+        loadFailedRef.current = true
         dispatch(hydrateLibraryCatalog({ libraries: [], selectedLibraryId: null }))
         dispatch(setLibraryError('No se pudo cargar el catálogo de bibliotecas.'))
       })
@@ -34,7 +38,7 @@ export function useLibraryCatalogPersistence(): void {
   }, [dispatch])
 
   useEffect(() => {
-    if (!catalogLoaded) return
+    if (!catalogLoaded || loadFailedRef.current) return
     if (hydratedSnapshotRef.current) {
       // The first render after hydration only reflects what was loaded.
       hydratedSnapshotRef.current = null

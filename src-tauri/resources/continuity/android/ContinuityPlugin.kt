@@ -22,6 +22,7 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -37,8 +38,6 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 @TauriPlugin
 class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
-
-    private val activeWork = AtomicInteger(0)
 
     @Command
     fun beginWork(invoke: Invoke) {
@@ -134,7 +133,10 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     fun endWork(invoke: Invoke) {
         try {
             val token = activeWork.updateAndGet { current -> if (current <= 0) 0 else current - 1 }
-            if (token == 0) {
+            // A service still waiting for `startForeground` must not be
+            // stopped: Android kills the app. It stops itself once it is in
+            // the foreground and sees no work left.
+            if (token == 0 && inForeground.get()) {
                 stopService()
             }
             invoke.resolve(JSObject().put("ok", true).put("activeWork", token))
@@ -151,6 +153,7 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     private fun startForegroundService(workKind: String) {
         val intent = Intent(activity, ContinuityService::class.java)
         intent.putExtra(EXTRA_WORK_KIND, workKind)
+        inForeground.set(false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             activity.startForegroundService(intent)
         } else {
@@ -169,16 +172,35 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
             val workKind = intent?.getStringExtra(EXTRA_WORK_KIND) ?: "dataSync"
             val notification = buildNotification(workKind)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val serviceType = if (workKind == "microphone") {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                try {
+                    startForeground(NOTIFICATION_ID, notification, serviceType(workKind))
+                } catch (_: SecurityException) {
+                    // Microphone without permission: the work still needs to
+                    // survive, and a service that never reaches the
+                    // foreground brings the app down.
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
                 }
-                startForeground(NOTIFICATION_ID, notification, serviceType)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            inForeground.set(true)
+            // The work may have ended before the service got here.
+            if (activeWork.get() == 0) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelfResult(startId)
+            }
             return START_NOT_STICKY
+        }
+
+        override fun onDestroy() {
+            inForeground.set(false)
+            super.onDestroy()
+        }
+
+        private fun serviceType(workKind: String): Int = if (workKind == "microphone") {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         }
 
         private fun buildNotification(workKind: String): Notification {
@@ -220,6 +242,10 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
         const val EXTRA_WORK_KIND = "workKind"
         const val CHANNEL_ID = "notia-continuity"
         const val SECRET_LABEL = "Notia ColdPass"
+
+        // Shared with the service, which outlives the plugin's calls.
+        val activeWork = AtomicInteger(0)
+        val inForeground = AtomicBoolean(false)
     }
 }
 

@@ -986,6 +986,15 @@ mod tests {
             assert_eq!(status["state"], "unlocked");
             let catalog = invoke(&client, "backend_library_catalog", json!({})).await.expect("catalog");
             assert_eq!(catalog["libraries"][0]["id"], library_id.as_str());
+            // The host's libraries stay: a client cannot empty its catalog
+            // nor drop the binding of its library.
+            let empty = json!({ "catalog": { "libraries": [], "selectedLibraryId": null } });
+            let refused = invoke(&client, "backend_save_library_catalog", empty).await.expect_err("catalog");
+            assert_eq!(refused["code"], "forbidden");
+            assert!(invoke(&client, "revoke_library_binding", json!({ "libraryId": library_id })).await.is_err());
+            let kept = invoke(&client, "backend_library_catalog", json!({})).await.expect("catalog kept");
+            assert_eq!(kept["libraries"][0]["id"], library_id.as_str());
+            assert!(crate::library_catalog::selected_library(&host).is_some());
 
             // A client never turns Telegram on in its host.
             let telegram_on = json!({ "payload": { "libraryId": library_id, "config": {
