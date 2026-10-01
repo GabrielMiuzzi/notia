@@ -56,6 +56,7 @@ pub mod paths;
 pub mod ports;
 pub mod prompt;
 pub mod prompt_guidance;
+pub mod gym;
 pub mod health;
 pub mod recipes;
 pub mod protocol;

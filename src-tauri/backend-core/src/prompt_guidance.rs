@@ -66,8 +66,22 @@ pub fn scope_guidance(
     agenda_tools(&mut guidance, today);
     recipe_tools(&mut guidance);
     health_tools(&mut guidance, today);
+    gym_tools(&mut guidance);
     ai_action_tools(&mut guidance, today);
     guidance.lines.join("\n")
+}
+
+/// Gimnasio: the user's routines, training session and workouts, and the
+/// library's exercise and equipment files.
+fn gym_tools(guidance: &mut Guidance) {
+    if !guidance.has("get_gym_summary") {
+        return;
+    }
+    guidance.push("Gimnasio guarda, para cada usuario, sus rutinas (días, ejercicios con series, peso, repeticiones o segundos y descanso), el entrenamiento en curso, el historial de entrenamientos y el equipamiento con el que cuenta. Los ejercicios y el equipamiento son notas de la biblioteca en Gym/exercises y Gym/equipment, que solo se cambian con sus herramientas.");
+    guidance.push("Leé con get_gym_summary (rutinas, semana, racha, músculos fatigados, entrenamiento en curso), get_gym_routine, search_gym_exercises (por nombre, grupo, músculo o solo con su equipamiento), get_gym_exercise, list_gym_equipment y list_gym_workouts. Antes de armar o cambiar una rutina buscá los ejercicios con search_gym_exercises y usá sus ids.");
+    guidance.push("save_gym_routine crea una rutina (con name) o cambia una existente (con routine): días, enfoque, color y, si pasás exercises, la lista completa de ejercicios en orden con sus series (sets como lista de {weight, reps} o como sets + reps + weight) y restSeconds; los que ya estaban conservan lo que no cambies. Para sumar o quitar un ejercicio, leé la rutina y mandá la lista entera.");
+    guidance.push("Durante un entrenamiento usá control_gym_session: start, mark_set (exercise y set desde 1), set_value, pause, resume, skip_rest y finish, que lo guarda en el historial. «Hoy hice…» o un entrenamiento pasado es log_gym_workout con los minutos y las series (o la rutina si la hizo como estaba). set_gym_equipment marca lo que tiene (add, remove o preset gym, casa o nada).");
+    guidance.push(format!("save_gym_exercise crea o cambia la ficha de un ejercicio (nombre, grupo, peso, por tiempo, kcalPerMinute, músculos principales y secundarios, equipamiento, pasos y photoFromMessage para usar una imagen del mensaje como demostración). {}", crate::gym::tools::vocabulary()));
 }
 
 /// Salud: the acting user's own profile, weights, scale measurements,

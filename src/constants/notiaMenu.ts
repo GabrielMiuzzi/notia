@@ -19,6 +19,7 @@ import {
   House,
   Soup,
   HeartPulse,
+  Dumbbell,
 } from 'lucide-react'
 import type { NotiaIconAction } from '../types/notia'
 import { MuninIcon } from '../components/notia/icons/MuninIcon'
@@ -43,6 +44,7 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
     { id: 'routine', label: 'Rutina', icon: CalendarCheck },
     { id: 'recipes', label: 'Recetas', icon: Soup },
     { id: 'health', label: 'Salud', icon: HeartPulse },
+    { id: 'gym', label: 'Gimnasio', icon: Dumbbell },
     { id: 'ai-actions', label: 'Acciones IA', icon: MuninIcon },
   ],
 ]

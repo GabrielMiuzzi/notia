@@ -1058,6 +1058,9 @@ struct TauriBackendToolExecutor {
     /// Images of the person's last message, for the tools that keep one
     /// (a recipe's photo).
     request_images: Vec<crate::recipes::MessageImage>,
+    /// Image attachments of that message by the reference a note inserts
+    /// them with (`![…](reference)`), as base64.
+    attachment_images: Vec<(String, String)>,
 }
 
 /// Documents a single multi-document apply may touch.
@@ -1211,6 +1214,22 @@ impl TauriBackendToolExecutor {
             "log_meal",
             "update_meal",
             "delete_health_record",
+            "get_gym_summary",
+            "get_gym_routine",
+            "search_gym_exercises",
+            "get_gym_exercise",
+            "list_gym_equipment",
+            "list_gym_workouts",
+            "save_gym_routine",
+            "delete_gym_routine",
+            "set_gym_equipment",
+            "control_gym_session",
+            "log_gym_workout",
+            "delete_gym_workout",
+            "save_gym_exercise",
+            "delete_gym_exercise",
+            "save_gym_equipment",
+            "delete_gym_equipment",
             "list_ai_actions",
             "get_ai_action",
             "create_ai_action",
@@ -1495,6 +1514,27 @@ impl TauriBackendToolExecutor {
             .map_err(|_| invalid_result())
     }
 
+    /// `content` with the images of the person's message it inserts
+    /// (`![…](reference)`) embedded as JPEG, scaled down as a recipe's photo.
+    /// The previews keep the short reference; only the written file holds
+    /// the image.
+    fn with_message_images(&self, content: String) -> Result<String, BackendError> {
+        use base64::Engine as _;
+        use notia_backend_core::chat_attachments::{embed_images, inserts_image};
+        let mut images = Vec::new();
+        for (reference, base64) in &self.attachment_images {
+            if !inserts_image(&content, reference) {
+                continue;
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(base64.trim())
+                .map_err(|_| BackendError::invalid_input(format!("La imagen «{reference}» del mensaje no se pudo leer.")))?;
+            let photo = crate::recipes::prepare_photo(&bytes).map_err(|error| BackendError::invalid_input(error.message))?;
+            images.push((reference.clone(), photo.data_uri()));
+        }
+        Ok(if images.is_empty() { content } else { embed_images(&content, &images) })
+    }
+
     fn apply_markdown_tool(
         &self,
         context: &BackendRequestContext,
@@ -1527,6 +1567,7 @@ impl TauriBackendToolExecutor {
         let Some(content) = materialize_markdown_preview(&preview, &selected_hunk_ids)? else {
             return Ok(json!({ "changed": false, "operationId": preview.operation_id }));
         };
+        let content = self.with_message_images(content)?;
         let reader = self.reader(&context.library_id)?;
         let current = reader.read_document(&preview.locator)?;
         if current.revision != preview.expected_revision {
@@ -1633,7 +1674,7 @@ impl TauriBackendToolExecutor {
                     true,
                 ));
             }
-            planned.push((document.locator, current.content, content));
+            planned.push((document.locator, current.content, self.with_message_images(content)?));
         }
         let registry = self.app.state::<LibraryBindingRegistry>();
         let picker = self.app.state::<AndroidDirectoryPickerState>();
@@ -1729,6 +1770,13 @@ impl TauriBackendToolExecutor {
     }
 
     /// Salud of the acting library user.
+    fn gym_context(context: &BackendRequestContext) -> crate::gym::GymContext {
+        crate::gym::GymContext {
+            library_id: context.library_id.clone(),
+            actor_library_user_id: context.actor.library_user_id.clone(),
+        }
+    }
+
     fn health_context(context: &BackendRequestContext) -> crate::health::HealthContext {
         crate::health::HealthContext {
             library_id: context.library_id.clone(),
@@ -2661,6 +2709,29 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if crate::gym::is_gym_write_tool(&call.name) {
+            // Resolved and tried without saving: a rejection goes back to the
+            // model before asking the person.
+            let summary = crate::gym::preview_tool(&self.app, &Self::gym_context(context), &call.name, &call.arguments).map_err(crate::gym::tool_error)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Cambiar Gimnasio").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("gym:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         if crate::ai_actions::is_ai_action_write_tool(&call.name) {
             // The call is read and checked as its execution will do it; a
             // rejection goes back to the model before asking the Owner.
@@ -2974,13 +3045,12 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 } else {
                     reader.read_documents(&context.library_id, &ids)?
                 };
-                // Recipes are read without their embedded photo (see the recipe tools).
+                // Notes and recipes are read without their embedded images:
+                // hundreds of kilobytes of base64 the model cannot use.
                 let documents = documents
                     .into_iter()
                     .map(|mut document| {
-                        if crate::recipes::is_recipe_path(document.locator.logical_path.as_str()) {
-                            document.content = notia_backend_core::recipes::markdown::without_photos(&document.content);
-                        }
+                        document.content = notia_backend_core::recipes::markdown::without_photos(&document.content);
                         document
                     })
                     .collect::<Vec<_>>();
@@ -4004,6 +4074,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         "La creación documental necesita contenido.",
                     ));
                 }
+                let content = self.with_message_images(content)?;
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 let picker = self.app.state::<AndroidDirectoryPickerState>();
                 let adapter = crate::filesystem::adapter::TauriFilesystemDocumentAdapter::for_library(
@@ -4017,7 +4088,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
             "replace_library_document" => {
                 let locator = self.existing_document_locator(context, &call.arguments)?;
                 Self::ensure_agent_writable(&locator)?;
-                let content = Self::text(&call.arguments, "content");
+                let content = self.with_message_images(Self::text(&call.arguments, "content"))?;
                 // Tools report backend-core revisions (numbers); the editor
                 // may still send the platform `sha256:` form.
                 let expected = call.arguments.get("expectedRevision");
@@ -4091,6 +4162,10 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 crate::health::execute_tool(&self.app, &Self::health_context(context), &call.id, name, &call.arguments, &self.request_images)
                     .map_err(crate::health::tool_error)?
             }
+            name if crate::gym::is_gym_tool(name) => {
+                crate::gym::execute_tool(&self.app, &Self::gym_context(context), name, &call.arguments, &self.request_images)
+                    .map_err(crate::gym::tool_error)?
+            }
             name if crate::recipes::is_recipe_tool(name) => {
                 crate::recipes::execute_tool(&self.app, &context.library_id, &call.id, name, &call.arguments, &self.request_images)
                     .map_err(crate::recipes::tool_error)?
@@ -4133,7 +4208,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4412,6 +4487,7 @@ pub(crate) fn execute_backend_request(
         journal: Arc::clone(&state.journal),
         idempotency_key: request.idempotency_key.clone(),
         request_images: last_user_images(&request),
+        attachment_images: last_user_attachment_images(&request),
     };
     let revisions = TauriRevisionPort { app: app.clone() };
     let interactions = state.interactions(Some(&revisions));
@@ -4877,6 +4953,19 @@ fn last_user_images(request: &AgentRequest) -> Vec<crate::recipes::MessageImage>
     message.images.iter().chain(attached).map(|base64| crate::recipes::MessageImage { base64: base64.clone() }).collect()
 }
 
+/// Image attachments of the last message of the person, by the reference
+/// the model was told to insert them with.
+fn last_user_attachment_images(request: &AgentRequest) -> Vec<(String, String)> {
+    let Some(message) = request.messages.iter().rev().find(|message| message.role == notia_backend_core::MessageRole::User) else {
+        return Vec::new();
+    };
+    notia_backend_core::chat_attachments::image_references(&message.attachments)
+        .into_iter()
+        .zip(&message.attachments)
+        .filter_map(|(reference, attachment)| Some((reference?, attachment.pages.first()?.clone())))
+        .collect()
+}
+
 /// Current UTC date as `YYYY-MM-DD`.
 fn utc_today() -> String {
     let now_ms = std::time::SystemTime::now()
@@ -5000,6 +5089,15 @@ mod tests {
         app.manage(registry);
         app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
         app.manage(crate::agent_history::AgentHistoryState::default());
+        // A photo of the person's message, as Telegram names it.
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([200, 120, 40]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png");
+        let photo = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(png)
+        };
         let executor = TauriBackendToolExecutor {
             app: app.clone(),
             snapshot: None,
@@ -5008,6 +5106,7 @@ mod tests {
             journal: Arc::new(Default::default()),
             idempotency_key: "key-1".into(),
             request_images: Vec::new(),
+            attachment_images: vec![("telegram-AgAC_1.jpg".into(), photo)],
         };
         let context = BackendRequestContext {
             request_id: "request-1".into(),
@@ -5039,6 +5138,27 @@ mod tests {
             assert_eq!(preview.documents[0].path, path);
             assert!(std::fs::read_to_string(root.join(&path)).expect("note").contains("lockee"), "{path}");
         }
+        // A note that inserts the photo keeps it inside the file; the
+        // preview keeps the short reference.
+        let call = ToolCall {
+            id: "call-photo".into(),
+            name: "create_library_note".into(),
+            arguments: serde_json::json!({ "path": "Salud/Progreso.md", "content": "# Progreso\n\n![Frente](telegram-AgAC_1.jpg)\n" }),
+            round: 1,
+        };
+        let preview = executor.preview(&context, &call).expect("preview").expect("a preview");
+        let decision = ConfirmationDecision {
+            operation_id: preview.operation_id.clone(),
+            accepted: true,
+            hunk_ids: Vec::new(),
+            approve_all: false,
+            suggestion: None,
+        };
+        let result = executor.execute_confirmed(&context, &call, &decision, Some(&preview)).expect("created");
+        assert!(result.ok, "{:?}", result.error);
+        let note = std::fs::read_to_string(root.join("Salud/Progreso.md")).expect("note");
+        assert!(note.contains("![Frente](data:image/jpeg;base64,"), "{note}");
+        assert!(!note.contains("telegram-AgAC_1.jpg"));
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

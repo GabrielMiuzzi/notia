@@ -157,6 +157,14 @@ fn route(command: &str) -> Option<Route> {
         "health_apply" => health_apply,
         "health_generate_plan" => health_generate_plan,
         "health_estimate_meal" => health_estimate_meal,
+        "gym_view" => gym_view,
+        "gym_apply" => gym_apply,
+        "gym_exercise" => gym_exercise,
+        "gym_catalog_apply" => gym_catalog_apply,
+        "gym_set_media" => gym_set_media,
+        "gym_video" => gym_video,
+        "gym_equipment_images" => gym_equipment_images,
+        "gym_body" => gym_body,
         "finance_dev_list_tables" => finance_dev_list_tables,
         "finance_dev_query_table" => finance_dev_query_table,
         "finance_dev_query_sql" => finance_dev_query_sql,
@@ -420,6 +428,14 @@ pub const COMMAND_NAMES: &[&str] = &[
     "health_apply",
     "health_generate_plan",
     "health_estimate_meal",
+    "gym_view",
+    "gym_apply",
+    "gym_exercise",
+    "gym_catalog_apply",
+    "gym_set_media",
+    "gym_video",
+    "gym_equipment_images",
+    "gym_body",
     "finance_dev_list_tables",
     "finance_dev_query_table",
     "finance_dev_query_sql",
@@ -1232,6 +1248,46 @@ fn health_generate_plan(app: &AppHandle, _window_label: &str, command: &str, arg
 fn health_estimate_meal(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "description")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::health::health_estimate_meal(arg0, arg1, arg2).await) })))
+}
+
+fn gym_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_view(arg0, arg1, arg2).await) })))
+}
+
+fn gym_apply(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "mutation")?, arg(command, args, "query")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_apply(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn gym_exercise(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "exerciseId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_exercise(arg0, arg1, arg2).await) })))
+}
+
+fn gym_catalog_apply(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "mutation")?, arg(command, args, "photo")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_catalog_apply(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn gym_set_media(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3) = (app.clone(), arg(command, args, "context")?, arg(command, args, "exerciseId")?, arg(command, args, "media")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_set_media(arg0, arg1, arg2, arg3).await) })))
+}
+
+fn gym_video(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "exerciseId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_video(arg0, arg1, arg2).await) })))
+}
+
+fn gym_equipment_images(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1) = (app.clone(), arg(command, args, "context")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_equipment_images(arg0, arg1).await) })))
+}
+
+fn gym_body(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1) = (app.clone(), arg(command, args, "context")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_body(arg0, arg1).await) })))
 }
 
 fn finance_dev_list_tables(_app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

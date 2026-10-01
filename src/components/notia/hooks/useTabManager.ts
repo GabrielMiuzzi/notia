@@ -24,6 +24,7 @@ import {
   AI_ACTIONS_WORKSPACE_TAB_PATH,
   RECIPES_WORKSPACE_TAB_PATH,
   HEALTH_WORKSPACE_TAB_PATH,
+  GYM_WORKSPACE_TAB_PATH,
   HOME_WORKSPACE_TAB_PATH,
 } from '../../../features/documents/documentsSlice'
 import { writeLibraryDocument } from '../../../services/libraries/libraryDocumentRuntime'
@@ -57,6 +58,7 @@ interface OpenWorkspaceSpecialTabs {
   aiActions: boolean
   recipes: boolean
   health: boolean
+  gym: boolean
   home: boolean
 }
 
@@ -116,6 +118,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.aiActions) { tabs.push({ path: AI_ACTIONS_WORKSPACE_TAB_PATH, title: 'Acciones IA' }) }
   if (specialTabs.recipes) { tabs.push({ path: RECIPES_WORKSPACE_TAB_PATH, title: 'Recetas' }) }
   if (specialTabs.health) { tabs.push({ path: HEALTH_WORKSPACE_TAB_PATH, title: 'Salud' }) }
+  if (specialTabs.gym) { tabs.push({ path: GYM_WORKSPACE_TAB_PATH, title: 'Gimnasio' }) }
   if (specialTabs.home) { tabs.push({ path: HOME_WORKSPACE_TAB_PATH, title: 'Inicio' }) }
 
   return tabs
@@ -229,6 +232,7 @@ export function useTabManager({
       || tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH
       || tabPath === RECIPES_WORKSPACE_TAB_PATH
       || tabPath === HEALTH_WORKSPACE_TAB_PATH
+      || tabPath === GYM_WORKSPACE_TAB_PATH
       || tabPath === HOME_WORKSPACE_TAB_PATH
     ) {
       const currentSpecialTabs = store.getState().documents.specialTabs
@@ -244,6 +248,7 @@ export function useTabManager({
         || (tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH && !currentSpecialTabs.aiActions)
         || (tabPath === RECIPES_WORKSPACE_TAB_PATH && !currentSpecialTabs.recipes)
         || (tabPath === HEALTH_WORKSPACE_TAB_PATH && !currentSpecialTabs.health)
+        || (tabPath === GYM_WORKSPACE_TAB_PATH && !currentSpecialTabs.health)
         || (tabPath === HOME_WORKSPACE_TAB_PATH && !currentSpecialTabs.home)
       ) { return }
 
@@ -263,6 +268,7 @@ export function useTabManager({
         aiActions: tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.aiActions,
         recipes: tabPath === RECIPES_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.recipes,
         health: tabPath === HEALTH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.health,
+        gym: tabPath === GYM_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.health,
         home: tabPath === HOME_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.home,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)
@@ -402,6 +408,7 @@ export function useTabManager({
       || tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH
       || tabPath === RECIPES_WORKSPACE_TAB_PATH
       || tabPath === HEALTH_WORKSPACE_TAB_PATH
+      || tabPath === GYM_WORKSPACE_TAB_PATH
       || tabPath === HOME_WORKSPACE_TAB_PATH
     ) {
       const specialTabs = store.getState().documents.specialTabs
@@ -417,6 +424,7 @@ export function useTabManager({
         || (tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH && !specialTabs.aiActions)
         || (tabPath === RECIPES_WORKSPACE_TAB_PATH && !specialTabs.recipes)
         || (tabPath === HEALTH_WORKSPACE_TAB_PATH && !specialTabs.health)
+        || (tabPath === GYM_WORKSPACE_TAB_PATH && !specialTabs.gym)
         || (tabPath === HOME_WORKSPACE_TAB_PATH && !specialTabs.home)
       ) { return }
       dispatch(setActiveTabPath(tabPath))

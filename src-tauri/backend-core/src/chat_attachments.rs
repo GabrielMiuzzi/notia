@@ -3,6 +3,8 @@
 //! quoted as reference data (never instructions); images and rendered PDF
 //! pages go in the message's ordered image list.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::BackendError;
@@ -113,11 +115,58 @@ fn quoted_name(name: &str) -> String {
     name.replace(['"', '<', '>'], "")
 }
 
+/// Reference a note uses to insert an image of the message: its file name
+/// with only letters, digits, `.`, `-` and `_`, numbered when it repeats.
+/// `None` for the attachments that are not images.
+pub fn image_references(attachments: &[MessageAttachment]) -> Vec<Option<String>> {
+    let mut seen = HashSet::new();
+    attachments
+        .iter()
+        .map(|attachment| {
+            if attachment.kind != MessageAttachmentKind::Image {
+                return None;
+            }
+            let safe = attachment
+                .name
+                .chars()
+                .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') { character } else { '-' })
+                .collect::<String>();
+            let base = if safe.trim_matches(['-', '.', '_']).is_empty() { "imagen.jpg".to_string() } else { safe };
+            let mut reference = base.clone();
+            let mut number = 2;
+            while !seen.insert(reference.clone()) {
+                reference = match base.rsplit_once('.') {
+                    Some((stem, extension)) => format!("{stem}-{number}.{extension}"),
+                    None => format!("{base}-{number}"),
+                };
+                number += 1;
+            }
+            Some(reference)
+        })
+        .collect()
+}
+
+/// Whether `content` inserts the image `reference` (`![…](reference)`).
+pub fn inserts_image(content: &str, reference: &str) -> bool {
+    content.contains(&format!("]({reference})")) || content.contains(&format!("](<{reference}>)"))
+}
+
+/// `content` with each image reference replaced by its `data:` URI, so the
+/// note keeps the image inside the file. `images` pairs a reference with
+/// its URI.
+pub fn embed_images(content: &str, images: &[(String, String)]) -> String {
+    images.iter().fold(content.to_string(), |text, (reference, uri)| {
+        text.replace(&format!("]({reference})"), &format!("]({uri})"))
+            .replace(&format!("](<{reference}>)"), &format!("]({uri})"))
+    })
+}
+
 /// Message text followed by the reference blocks of its attachments, and
 /// the images in the order the model must read them.
 pub fn compose_message(content: &str, attachments: &[MessageAttachment]) -> (String, Vec<String>) {
     let mut sections = Vec::new();
-    for attachment in attachments {
+    let references = image_references(attachments);
+    for (attachment, reference) in attachments.iter().zip(&references) {
         let name = quoted_name(&attachment.name);
         match attachment.kind {
             MessageAttachmentKind::Text => {
@@ -140,7 +189,13 @@ pub fn compose_message(content: &str, attachments: &[MessageAttachment]) -> (Str
                     .unwrap_or_default();
                 sections.push(format!("[{pages} Las paginas renderizadas son la fuente visual principal.]{text}"));
             }
-            MessageAttachmentKind::Image => {}
+            MessageAttachmentKind::Image => {
+                if let Some(reference) = reference {
+                    sections.push(format!(
+                        "[Imagen adjunta «{reference}». Para guardarla en una nota escribí ![descripción]({reference}): Notia inserta la imagen en el archivo.]"
+                    ));
+                }
+            }
         }
     }
     let text = if sections.is_empty() {
@@ -198,6 +253,31 @@ mod tests {
         assert!(content.contains("<pdf_text>\nHola\n</pdf_text>"));
         assert!(content.contains("<attached_file name=\"ab.txt\">\ncontenido\n</attached_file>"));
         assert_eq!(images, vec!["cGFnZTE=".to_string(), "cGFnZTI=".to_string()]);
+    }
+
+    #[test]
+    fn images_are_announced_and_embedded_by_reference() {
+        let photo = |name: &str| MessageAttachment {
+            name: name.into(),
+            media_type: "image/jpeg".into(),
+            kind: MessageAttachmentKind::Image,
+            pages: vec!["aW1n".into()],
+            text_content: None,
+            extracted_text: None,
+            page_count: None,
+        };
+        let files = [photo("Mi foto (1).jpg"), attachment(MessageAttachmentKind::Pdf), photo("Mi foto (1).jpg"), photo("??")];
+        assert_eq!(
+            image_references(&files),
+            vec![Some("Mi-foto--1-.jpg".to_string()), None, Some("Mi-foto--1--2.jpg".to_string()), Some("imagen.jpg".to_string())]
+        );
+        let (content, images) = compose_message("Guardala", &files[..1]);
+        assert!(content.contains("![descripción](Mi-foto--1-.jpg)"));
+        assert_eq!(images, vec!["aW1n".to_string()]);
+        let note = "# Progreso\n![Frente](Mi-foto--1-.jpg)\n![Otra](<b.jpg>)\n";
+        assert!(inserts_image(note, "Mi-foto--1-.jpg") && inserts_image(note, "b.jpg") && !inserts_image(note, "c.jpg"));
+        let embedded = embed_images(note, &[("Mi-foto--1-.jpg".into(), "data:image/jpeg;base64,AA".into()), ("b.jpg".into(), "data:image/jpeg;base64,BB".into())]);
+        assert_eq!(embedded, "# Progreso\n![Frente](data:image/jpeg;base64,AA)\n![Otra](data:image/jpeg;base64,BB)\n");
     }
 
     #[test]

@@ -1,0 +1,229 @@
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronUp, Clock, Info, Pause, Play } from 'lucide-react'
+import type { GymMutation, TrainItem, TrainingView } from '../types/gymTypes'
+import { CommitInput } from './GymInputs'
+
+const RING_RADIUS = 84
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS
+
+interface TrainingScreenProps {
+  training: TrainingView
+  /** Diferencia entre el reloj de Rust y el de este dispositivo. */
+  clockOffsetMs: number
+  apply: (mutation: GymMutation) => void
+  onBack: () => void
+  onOpenExercise: (exerciseId: string) => void
+}
+
+function pad(value: number) {
+  return value < 10 ? `0${value}` : String(value)
+}
+
+function clock(ms: number) {
+  const total = Math.floor(Math.max(0, ms) / 1000)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`
+}
+
+function restClock(ms: number) {
+  const total = Math.ceil(Math.max(0, ms) / 1000)
+  return `${Math.floor(total / 60)}:${pad(total % 60)}`
+}
+
+/** La hora de Rust, que avanza sola mientras corre el reloj o un descanso. */
+function useServerNow(offsetMs: number, ticking: boolean) {
+  const [now, setNow] = useState(() => Date.now() + offsetMs)
+  useEffect(() => {
+    setNow(Date.now() + offsetMs)
+    if (!ticking) return undefined
+    const timer = window.setInterval(() => setNow(Date.now() + offsetMs), 500)
+    return () => window.clearInterval(timer)
+  }, [offsetMs, ticking])
+  return now
+}
+
+export function TrainingScreen({ training, clockOffsetMs, apply, onBack, onOpenExercise }: TrainingScreenProps) {
+  const running = training.status === 'running'
+  const ticking = running || training.restEndMs !== null
+  const now = useServerNow(clockOffsetMs, ticking)
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const elapsed = training.accMs + (running ? Math.max(0, now - training.startedMs) : 0)
+  const routineId = training.routineId
+
+  const rest = useMemo(() => {
+    const resting = (training.restEndMs !== null && training.restEndMs > now) || training.restLeftMs !== null
+    const ready = training.restEndMs !== null && training.restEndMs <= now
+    const remaining = training.restEndMs !== null ? Math.max(0, training.restEndMs - now) : (training.restLeftMs ?? 0)
+    const fraction = resting ? remaining / Math.max(1, training.restTotalMs) : ready ? 1 : 0
+    return { resting, ready, remaining, fraction }
+  }, [now, training.restEndMs, training.restLeftMs, training.restTotalMs])
+
+  const nextText = training.nextText
+  const ringText = rest.resting
+    ? `Después: ${nextText ?? 'terminaste'}.`
+    : rest.ready
+      ? nextText ? `Seguí con la ${nextText}.` : 'Completaste todas las series.'
+      : nextText ? 'Marcá una serie como hecha y el descanso arranca solo.' : 'Completaste todas las series.'
+  const expandedOf = (item: TrainItem) => open[item.id] ?? item.current
+
+  return (
+    <div className="gym-training">
+      <main className="gym-main gym-training-main">
+        <header className="gym-training-header">
+          <div className="gym-routine-header-row">
+            <div className="gym-routine-titles">
+              <h1 className="gym-h1">{training.name}</h1>
+              <span className="gym-muted">{training.focusLabel}</span>
+            </div>
+            <button type="button" className="gym-button" onClick={onBack}><ChevronLeft size={18} aria-hidden="true" />Volver a la rutina</button>
+          </div>
+          <div className="gym-progress">
+            <div className="gym-progress-text">
+              <span><strong>{training.doneSets}</strong> de {training.totalSets} series hechas</span>
+              <span>{training.percent}%</span>
+            </div>
+            <div className="gym-progress-track"><div className="gym-progress-fill" style={{ width: `${training.percent}%` }} /></div>
+          </div>
+        </header>
+
+        {training.items.length === 0 ? <div className="gym-empty">Esta rutina no tiene ejercicios. Pasá a Editar para sumarlos.</div> : null}
+
+        <section aria-label="Ejercicios para hacer" className="gym-items">
+          {training.items.map((item) => {
+            const expanded = expandedOf(item)
+            return (
+              <article key={item.id} className="gym-item" data-group={item.group} data-current={item.current || undefined}>
+                <div className="gym-item-head">
+                  <button type="button" className="gym-item-toggle" aria-expanded={expanded} onClick={() => setOpen((current) => ({ ...current, [item.id]: !expanded }))}>
+                    {item.allDone ? (
+                      <span className="gym-item-number gym-item-number--done"><Check size={16} aria-hidden="true" /></span>
+                    ) : (
+                      <span className="gym-item-number">{item.n}</span>
+                    )}
+                    <span className="gym-item-text">
+                      <span className="gym-item-title-row">
+                        <span className="gym-item-name" data-done={item.allDone || undefined}>{item.name}</span>
+                        {item.current ? <span className="gym-badge">En curso</span> : null}
+                      </span>
+                      <span className="gym-item-meta">
+                        <span className="gym-item-group"><span className="gym-dot gym-dot--group" aria-hidden="true" />{item.groupLabel}</span>
+                        <span className="gym-item-rest"><Clock size={12} aria-hidden="true" />{item.restLabel} de descanso</span>
+                      </span>
+                      {item.missing ? <span className="gym-missing"><AlertTriangle size={13} aria-hidden="true" />{item.missing}</span> : null}
+                    </span>
+                    <span className="gym-item-count">{item.count}</span>
+                    {expanded ? <ChevronUp size={18} aria-hidden="true" /> : <ChevronDown size={18} aria-hidden="true" />}
+                  </button>
+                  <button type="button" className="gym-button gym-button--small" aria-label={`Ver cómo se hace ${item.name}`} onClick={() => onOpenExercise(item.exerciseId)}>
+                    <Info size={15} aria-hidden="true" /><span className="gym-hide-narrow">Cómo se hace</span>
+                  </button>
+                </div>
+                {expanded ? (
+                  <div className="gym-sets gym-sets--train">
+                    <div className="gym-set-row gym-set-row--train gym-set-row--head">
+                      <span>Serie</span>
+                      <span>Peso (kg)</span>
+                      <span>{item.timed ? 'Segundos' : 'Repeticiones'}</span>
+                      <span className="gym-center">Hecha</span>
+                    </div>
+                    {item.sets.map((set, index) => (
+                      <div key={index} className="gym-set-row gym-set-row--train" data-next={set.next || undefined} data-done={set.done || undefined}>
+                        <span className="gym-set-n">{index + 1}</span>
+                        {item.weighted ? (
+                          <CommitInput className="gym-number-input" inputMode="decimal" aria-label={`Peso de la serie ${index + 1}`} placeholder="0" value={set.weight} onCommit={(value) => apply({ type: 'set-value', routineId, itemId: item.id, index, field: 'weight', value })} />
+                        ) : (
+                          <span className="gym-bodyweight">Peso corporal</span>
+                        )}
+                        <CommitInput className="gym-number-input" inputMode="numeric" aria-label={`${item.timed ? 'Segundos' : 'Repeticiones'} de la serie ${index + 1}`} placeholder="0" value={set.reps} onCommit={(value) => apply({ type: 'set-value', routineId, itemId: item.id, index, field: 'reps', value })} />
+                        <button
+                          type="button"
+                          className="gym-check"
+                          aria-pressed={set.done}
+                          aria-label={set.done ? `Desmarcar serie ${index + 1}` : `Marcar como hecha la serie ${index + 1}`}
+                          onClick={() => apply({ type: 'toggle-set-done', routineId, itemId: item.id, index })}
+                        >
+                          <Check size={20} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            )
+          })}
+        </section>
+      </main>
+
+      <aside className="gym-side gym-timers" aria-label="Temporizadores">
+        <section aria-label="Tiempo de entrenamiento" className="gym-timer-block">
+          <span className="gym-muted">
+            {training.status === 'paused' ? 'Tiempo de entrenamiento (en pausa)' : training.status === 'done' ? 'Tiempo total' : 'Tiempo de entrenamiento'}
+          </span>
+          <span role="timer" className="gym-clock">{clock(elapsed)}</span>
+          {training.status === 'idle' ? (
+            <button type="button" className="gym-button gym-button--primary gym-button--big" onClick={() => apply({ type: 'start-session', routineId })}>
+              <Play size={16} fill="currentColor" aria-hidden="true" />Empezar entrenamiento
+            </button>
+          ) : null}
+          {training.status === 'running' || training.status === 'paused' ? (
+            <div className="gym-two-buttons">
+              {running ? (
+                <button type="button" className="gym-button gym-button--big gym-button--raised" onClick={() => apply({ type: 'pause-session' })}><Pause size={15} fill="currentColor" aria-hidden="true" />Pausar</button>
+              ) : (
+                <button type="button" className="gym-button gym-button--primary gym-button--big" onClick={() => apply({ type: 'resume-session' })}><Play size={15} fill="currentColor" aria-hidden="true" />Reanudar</button>
+              )}
+              <button type="button" className="gym-button gym-button--big gym-button--danger" onClick={() => apply({ type: 'finish-session' })}>Terminar</button>
+            </div>
+          ) : null}
+          {training.status === 'done' ? (
+            <div className="gym-done">
+              <span>{training.doneText}</span>
+              <button type="button" className="gym-button gym-button--big gym-button--raised" onClick={() => apply({ type: 'restart-session' })}>Empezar de nuevo</button>
+            </div>
+          ) : null}
+        </section>
+
+        <section aria-label="Descanso" className="gym-timer-block gym-rest">
+          <div className="gym-rest-head">
+            <h2 className="gym-h2">Descanso</h2>
+            <span className="gym-muted">{training.currentRest ?? ''}</span>
+          </div>
+          <div className="gym-ring" data-ready={rest.ready || undefined}>
+            <svg width="208" height="208" viewBox="0 0 200 200" aria-hidden="true">
+              <circle cx="100" cy="100" r={RING_RADIUS} className="gym-ring-track" />
+              <circle
+                cx="100"
+                cy="100"
+                r={RING_RADIUS}
+                className="gym-ring-fill"
+                strokeDasharray={RING_LENGTH.toFixed(2)}
+                strokeDashoffset={(RING_LENGTH * (1 - rest.fraction)).toFixed(2)}
+                transform="rotate(-90 100 100)"
+              />
+            </svg>
+            <div role="timer" className="gym-ring-center" data-idle={!rest.resting && !rest.ready ? true : undefined}>
+              <span className="gym-ring-time">{rest.resting ? restClock(rest.remaining) : rest.ready ? '0:00' : '–'}</span>
+              <span className="gym-muted">
+                {rest.resting ? (training.restLeftMs !== null ? 'Pausado' : `de ${restClock(training.restTotalMs)}`) : rest.ready ? 'Terminó el descanso' : 'Sin descanso activo'}
+              </span>
+            </div>
+          </div>
+          <p className="gym-ring-next">{ringText}</p>
+          <div className="gym-three-buttons">
+            <button type="button" className="gym-step-button gym-step-button--wide" disabled={!rest.resting && !rest.ready} onClick={() => apply({ type: 'adjust-rest-timer', deltaMs: -15000 })}>−15 s</button>
+            <button type="button" className="gym-step-button gym-step-button--wide" disabled={!rest.resting && !rest.ready} onClick={() => apply({ type: 'adjust-rest-timer', deltaMs: 15000 })}>+15 s</button>
+            <button type="button" className="gym-step-button gym-step-button--wide" disabled={!rest.resting && !rest.ready} onClick={() => apply({ type: 'skip-rest' })}>{rest.ready ? 'Cerrar' : 'Saltar'}</button>
+          </div>
+        </section>
+
+        <section aria-label="Resumen de la sesión" className="gym-mini-stats gym-mini-stats--three">
+          <div><span>Series</span><strong>{training.doneSets}/{training.totalSets}</strong></div>
+          <div><span>Levantado</span><strong>{training.volume}</strong></div>
+          <div><span>Calorías aprox.</span><strong>≈ {Math.round((elapsed / 60000) * training.kcalPerMin).toLocaleString('es-AR')}</strong></div>
+        </section>
+      </aside>
+    </div>
+  )
+}

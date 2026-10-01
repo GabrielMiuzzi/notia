@@ -15,6 +15,7 @@ export type WorkspaceAiView =
   | 'ai-actions'
   | 'recipes'
   | 'health'
+  | 'gym'
   | 'home'
 
 export type WorkspaceAiScope = 'task-manager' | 'graph' | 'document' | 'library' | 'finance' | 'published'

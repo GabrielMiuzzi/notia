@@ -1346,7 +1346,9 @@ impl Worker {
                     "[Origen: imagen {number} de Telegram fileId={id}. Referencia de evidencia: telegram:telegram-{id}.jpg]",
                     id = photo.file_id
                 );
-                Ok((origin, image(format!("foto-{number}.jpg"), "image/jpeg", bytes)))
+                // Named by its evidence reference: unique across the chat's
+                // history, and how a note inserts it.
+                Ok((origin, image(format!("telegram-{}.jpg", photo.file_id), "image/jpeg", bytes)))
             }
             JobAttachment::Document(document) => {
                 let name = document
@@ -1412,6 +1414,7 @@ impl Worker {
         let runtime = self.app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
         runtime.configure_from_library_config(&config).map_err(|error| error.message)?;
         let (text, attachments) = self.prepare_input(job)?;
+        let files = attachments.clone();
         let (run, request) = self.begin_run(job, &text, attachments);
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
         let mut seen_events = 0;
@@ -1441,13 +1444,13 @@ impl Worker {
         });
         if stopped && outcome.is_err() {
             // The next request of the chat knows what was cancelled.
-            self.remember(chat_id, text, bot::CANCELLED_MESSAGE.to_string());
+            self.remember_with_files(chat_id, text, files, bot::CANCELLED_MESSAGE.to_string());
             return Err(bot::CANCELLED_MESSAGE.to_string());
         }
         // A failed request stays in the chat's history too, so «seguí» or
         // «¿qué pasó?» has its context.
         if let Err(error) = &outcome {
-            self.remember(chat_id, text.clone(), format!("No pude terminar: {error}"));
+            self.remember_with_files(chat_id, text.clone(), files.clone(), format!("No pude terminar: {error}"));
         }
         let response = outcome?;
         if stopped {
@@ -1456,7 +1459,7 @@ impl Worker {
         // What the progress showed clipped arrives whole before the answer.
         self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
         self.send_markdown(chat_id, &response.response.markdown);
-        self.remember(chat_id, text, response.response.markdown.clone());
+        self.remember_with_files(chat_id, text, files, response.response.markdown.clone());
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
         }
@@ -1598,8 +1601,8 @@ impl Worker {
             scope: BackendScope::Library,
             persistence_policy: if owner { PersistencePolicy::Persistent } else { PersistencePolicy::EphemeralNoMemory },
         };
-        let mut messages = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
-        messages.push(BackendMessage { role: MessageRole::User, content: text.to_string(), images: Vec::new(), attachments });
+        let history = self.history.lock().map(|history| history.get(&chat_id).map(|items| items.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
+        let messages = bot::turn_messages(&history, text, attachments);
         let idempotency_key = format!("{}:{}", self.library.id, job.stored.request_id);
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Ok(mut current) = self.current.lock() {
@@ -1699,9 +1702,15 @@ impl Worker {
 
     /// Adds a request and its answer to the chat's recent history.
     fn remember(&self, chat_id: i64, request: String, answer: String) {
+        self.remember_with_files(chat_id, request, Vec::new(), answer);
+    }
+
+    /// Adds a request with its files (photos, documents) and its answer to
+    /// the chat's recent history; later requests carry the files again.
+    fn remember_with_files(&self, chat_id: i64, request: String, files: Vec<MessageAttachment>, answer: String) {
         if let Ok(mut history) = self.history.lock() {
             let entries = history.entry(chat_id).or_default();
-            entries.push_back(BackendMessage { role: MessageRole::User, content: request, images: Vec::new(), attachments: Vec::new() });
+            entries.push_back(BackendMessage { role: MessageRole::User, content: request, images: Vec::new(), attachments: files });
             entries.push_back(BackendMessage { role: MessageRole::Assistant, content: answer, images: Vec::new(), attachments: Vec::new() });
             while entries.len() > bot::MAX_HISTORY_MESSAGES {
                 entries.pop_front();

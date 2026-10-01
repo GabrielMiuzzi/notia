@@ -990,9 +990,10 @@ fn hunk_id(anchor: &MarkdownAnchor, new_text: &str) -> String {
 /// Adds the frontmatter properties every library note carries when they are
 /// missing (`createdAt`, `nextPage`, `previousPage`, `contexto`). Returns
 /// `None` when nothing changes, for empty documents and for malformed
-/// frontmatter, which is never rewritten implicitly.
+/// frontmatter, which is never rewritten implicitly. A ColdPass vault is not
+/// a note: a frontmatter in front of its header broke the vault.
 pub fn ensure_markdown_defaults(source: &str, created_at_ms: u64) -> Option<String> {
-    if source.is_empty() {
+    if source.is_empty() || crate::coldpass::is_coldpass_vault(source) {
         return None;
     }
     let metadata = frontmatter(source).ok()?;
@@ -1029,6 +1030,18 @@ pub fn ensure_markdown_defaults(source: &str, created_at_ms: u64) -> Option<Stri
             replace_range(source, metadata.close_start, metadata.close_start, &missing).ok()
         }
         None => Some(format!("---{newline}{missing}---{newline}{source}")),
+    }
+}
+
+/// The text after a closed frontmatter block, or all of `source` without one.
+pub fn without_frontmatter(source: &str) -> &str {
+    let lines = line_spans(source);
+    match frontmatter_lines(source) {
+        Ok(Some((_, close_start))) => lines
+            .iter()
+            .find(|line| line.start == close_start)
+            .map_or(source, |line| &source[line.end..]),
+        _ => source,
     }
 }
 
@@ -1657,6 +1670,11 @@ mod tests {
     #[test]
     fn markdown_defaults_fill_only_missing_properties() {
         let source = "---\ncontexto: \"#Laboral\"\n---\nCuerpo\n";
+        assert_eq!(ensure_markdown_defaults("<!-- NOTIA_COLDPASS_OWNER_V1 -->\nnonce: a\n", 1), None);
+        assert_eq!(without_frontmatter("---\ncreatedAt: 1\n---\n<!-- x -->\n"), "<!-- x -->\n");
+        assert_eq!(without_frontmatter("---\r\na: 1\r\n---\r\nCuerpo"), "Cuerpo");
+        assert_eq!(without_frontmatter("Sin frontmatter"), "Sin frontmatter");
+        assert_eq!(without_frontmatter("---\nsin cierre\n"), "---\nsin cierre\n");
         let updated = ensure_markdown_defaults(source, 42).expect("defaults");
         assert_eq!(
             updated,

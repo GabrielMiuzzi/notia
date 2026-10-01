@@ -675,7 +675,7 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         Ok(())
     }
 
-    fn read_binary_locator(&self, locator: &DocumentLocatorDto) -> Result<Vec<u8>, BackendError> {
+    pub(crate) fn read_binary_locator(&self, locator: &DocumentLocatorDto) -> Result<Vec<u8>, BackendError> {
         match self.map_locator(locator)? {
             MappedDocumentTarget::Desktop {
                 filesystem_path, ..

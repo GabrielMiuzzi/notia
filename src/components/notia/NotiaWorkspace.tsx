@@ -17,6 +17,7 @@ import { RoutineView } from './views/RoutineView'
 import { AiActionsView } from './views/AiActionsView'
 import { RecipesView } from './views/RecipesView'
 import { HealthView } from './views/HealthView'
+import { GymView } from './views/GymView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntryView } from '../../types/coldpass'
@@ -256,6 +257,9 @@ function NotiaWorkspaceComponent({
   }
   if (activeWorkspaceView === 'health') {
     return <HealthView library={activeLibrary} />
+  }
+  if (activeWorkspaceView === 'gym') {
+    return <GymView library={activeLibrary} />
   }
 
   return (

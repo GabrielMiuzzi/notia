@@ -15,9 +15,10 @@ const ROUTINE_WORKSPACE_TAB_PATH = '__workspace_routine__'
 const AI_ACTIONS_WORKSPACE_TAB_PATH = '__workspace_ai_actions__'
 const RECIPES_WORKSPACE_TAB_PATH = '__workspace_recipes__'
 const HEALTH_WORKSPACE_TAB_PATH = '__workspace_health__'
+const GYM_WORKSPACE_TAB_PATH = '__workspace_gym__'
 const HOME_WORKSPACE_TAB_PATH = '__workspace_home__'
 
-export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH }
+export { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH }
 
 const initialState: DocumentsState = {
   openTabs: [],
@@ -34,6 +35,7 @@ const initialState: DocumentsState = {
     aiActions: false,
     recipes: false,
     health: false,
+    gym: false,
     home: false,
   },
   treeNodes: [],
@@ -124,6 +126,7 @@ const documentsSlice = createSlice({
         aiActions: AI_ACTIONS_WORKSPACE_TAB_PATH,
         recipes: RECIPES_WORKSPACE_TAB_PATH,
         health: HEALTH_WORKSPACE_TAB_PATH,
+        gym: GYM_WORKSPACE_TAB_PATH,
         home: HOME_WORKSPACE_TAB_PATH,
       }
       state.activeTabPath = pathMap[action.payload]
@@ -161,7 +164,7 @@ const documentsSlice = createSlice({
     resetTabs(state) {
       state.openTabs = []
       state.activeTabPath = null
-       state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false, meeting: false, finance: false, agenda: false, routine: false, aiActions: false, recipes: false, health: false, home: false }
+       state.specialTabs = { graph: false, chat: false, taskManager: false, coldPass: false, meeting: false, finance: false, agenda: false, routine: false, aiActions: false, recipes: false, health: false, gym: false, home: false }
       state.pendingCreation = null
       state.renamingPath = null
       state.contextMenu = null

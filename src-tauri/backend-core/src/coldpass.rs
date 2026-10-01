@@ -11,6 +11,9 @@ const METADATA_END: &str = "NOTIA_COLDPASS_METADATA -->";
 const HEADER: &str = "| name | website | username | secondary_username | password | notes |\n| --- | --- | --- | --- | --- | --- |";
 const CSV_COLUMNS: [&str; 6] = ["name", "website", "username", "secondary_username", "password", "notes"];
 pub const MAX_COLDPASS_ENTRIES: usize = 10_000;
+/// Start of every ColdPass header: the sealed vaults (Owner and legacy) and
+/// the metadata of an opened one.
+const VAULT_MARKER: &str = "<!-- NOTIA_COLDPASS_";
 const MAX_FIELD_CHARS: usize = 10_000;
 const MAX_PASSWORD_HISTORY: usize = 50;
 /// A password shorter than this is weak whatever it contains.
@@ -186,6 +189,11 @@ struct MetadataEntry {
 struct Metadata {
     #[serde(default)]
     entries: Vec<MetadataEntry>,
+}
+
+/// Whether `content` is a sealed ColdPass vault rather than a note.
+pub fn is_coldpass_vault(content: &str) -> bool {
+    content.trim_start().starts_with(VAULT_MARKER)
 }
 
 pub fn empty_coldpass_markdown() -> String {

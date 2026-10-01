@@ -23,6 +23,7 @@ export interface OpenWorkspaceSpecialTabs {
   aiActions: boolean
   recipes: boolean
   health: boolean
+  gym: boolean
   home: boolean
 }
 

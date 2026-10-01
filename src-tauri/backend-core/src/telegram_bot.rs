@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::events::BackendEvent;
+use crate::protocol::{BackendMessage, MessageRole};
+use crate::chat_attachments::MessageAttachment;
 use crate::formatting::{escape_telegram_html, markdown_to_telegram_html};
 use crate::interaction::ExecutionPlan;
 use crate::protocol::MutationPreview;
@@ -15,10 +17,32 @@ use crate::protocol::MutationPreview;
 pub const MAX_PENDING_REQUESTS: usize = 10;
 pub const RECOVERY_COMMAND: &str = "/reanudar";
 pub const MAX_HISTORY_MESSAGES: usize = 20;
+/// Files of earlier requests a new request carries: an album's worth.
+pub const MAX_HISTORY_FILES: usize = 10;
 /// Telegram clients cut a text over the 4096-character limit into several
 /// messages, each longer than half that limit. Counted in UTF-16 units, as
 /// Telegram does, leaving room for the spaces trimmed at each cut.
 const SPLIT_PART_MIN_UNITS: usize = 2_000;
+
+/// Messages of a request: the chat's history as text and the new message
+/// with the files of the history (the latest `MAX_HISTORY_FILES`) and its
+/// own, as the app's chats do. A photo sent earlier stays visible to the
+/// model when the person asks about it later.
+pub fn turn_messages(history: &[BackendMessage], text: &str, attachments: Vec<MessageAttachment>) -> Vec<BackendMessage> {
+    let earlier = history.iter().flat_map(|message| message.attachments.iter().cloned()).collect::<Vec<_>>();
+    let kept = earlier.len().saturating_sub(MAX_HISTORY_FILES);
+    let mut messages = history
+        .iter()
+        .map(|message| BackendMessage { attachments: Vec::new(), ..message.clone() })
+        .collect::<Vec<_>>();
+    messages.push(BackendMessage {
+        role: MessageRole::User,
+        content: text.to_string(),
+        images: Vec::new(),
+        attachments: earlier.into_iter().skip(kept).chain(attachments).collect(),
+    });
+    messages
+}
 
 /// Whether a typed message is long enough to be a part of a text Telegram
 /// delivers in several messages, so the next message may continue it.
@@ -281,6 +305,10 @@ pub fn tool_label(tool: &str) -> &'static str {
         "extract_finance_document" => "leyendo el documento financiero",
         name if name.starts_with("get_finance_") || name.starts_with("list_finance_") => "consultando tus finanzas",
         name if name.starts_with("create_finance_") || name.starts_with("save_finance_") => "preparando el registro financiero",
+        "get_gym_summary" | "get_gym_routine" | "list_gym_workouts" => "revisando tus entrenamientos",
+        "search_gym_exercises" | "get_gym_exercise" | "list_gym_equipment" => "buscando ejercicios",
+        "control_gym_session" => "actualizando tu entrenamiento",
+        name if crate::gym::tools::is_gym_write_tool(name) => "preparando el cambio en Gimnasio",
         name if name.starts_with("get_routine_") || name.starts_with("list_routine_") => "consultando tu rutina",
         "set_routine_completions" => "registrando tus hábitos",
         name if name.contains("routine") => "preparando el cambio en tu rutina",
@@ -520,6 +548,44 @@ pub const DOCUMENT_PROMPT: &str = "[Origen: documento de Telegram sin texto. Mir
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn photo(name: &str) -> MessageAttachment {
+        MessageAttachment {
+            name: name.into(),
+            media_type: "image/jpeg".into(),
+            kind: crate::chat_attachments::MessageAttachmentKind::Image,
+            pages: vec!["aW1n".into()],
+            text_content: None,
+            extracted_text: None,
+            page_count: None,
+        }
+    }
+
+    fn said(role: MessageRole, content: &str, attachments: Vec<MessageAttachment>) -> BackendMessage {
+        BackendMessage { role, content: content.into(), images: Vec::new(), attachments }
+    }
+
+    #[test]
+    fn a_photo_sent_earlier_reaches_the_next_requests() {
+        let history = vec![
+            said(MessageRole::User, "Así estoy hoy", vec![photo("foto-1.jpg")]),
+            said(MessageRole::Assistant, "Guardé la foto.", Vec::new()),
+        ];
+        let messages = turn_messages(&history, "¿Cómo me ves?", Vec::new());
+        assert_eq!(messages.len(), 3);
+        assert!(messages[..2].iter().all(|message| message.attachments.is_empty()));
+        assert_eq!(messages[2].content, "¿Cómo me ves?");
+        assert_eq!(messages[2].attachments, vec![photo("foto-1.jpg")]);
+        // Only the latest files of the history go, then the new ones.
+        let many = (0..MAX_HISTORY_FILES + 2)
+            .map(|index| said(MessageRole::User, "foto", vec![photo(&format!("h{index}.jpg"))]))
+            .collect::<Vec<_>>();
+        let messages = turn_messages(&many, "y esta?", vec![photo("nueva.jpg")]);
+        let names = messages.last().expect("request").attachments.iter().map(|file| file.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names.len(), MAX_HISTORY_FILES + 1);
+        assert_eq!(names.first(), Some(&"h2.jpg"));
+        assert_eq!(names.last(), Some(&"nueva.jpg"));
+    }
 
     #[test]
     fn decisions_and_choices_are_parsed() {

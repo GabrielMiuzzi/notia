@@ -1,7 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { RootState } from '../../store/index'
 import type { OpenDocumentTab } from './documentsTypes'
-import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from './documentsSlice'
+import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from './documentsSlice'
 
 export const selectOpenTabs = (state: RootState) => state.documents.openTabs
 export const selectActiveTabPath = (state: RootState) => state.documents.activeTabPath
@@ -36,7 +36,7 @@ export const selectSaveStatus = createSelector(
   (tab) => tab?.saveStatus ?? 'idle' as const,
 )
 
-export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'home' => {
+export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'gym' | 'home' => {
   const path = state.documents.activeTabPath
   if (path === GRAPH_WORKSPACE_TAB_PATH) return 'graph'
   if (path === CHAT_WORKSPACE_TAB_PATH) return 'chat'
@@ -49,6 +49,7 @@ export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'grap
   if (path === AI_ACTIONS_WORKSPACE_TAB_PATH) return 'ai-actions'
   if (path === RECIPES_WORKSPACE_TAB_PATH) return 'recipes'
   if (path === HEALTH_WORKSPACE_TAB_PATH) return 'health'
+  if (path === GYM_WORKSPACE_TAB_PATH) return 'gym'
   if (path === HOME_WORKSPACE_TAB_PATH) return 'home'
   return 'documents'
 }
@@ -101,6 +102,7 @@ export const selectTitleBarTabs = createSelector(
     if (specialTabs.aiActions) tabs.push({ path: AI_ACTIONS_WORKSPACE_TAB_PATH, title: 'Acciones IA' })
     if (specialTabs.recipes) tabs.push({ path: RECIPES_WORKSPACE_TAB_PATH, title: 'Recetas' })
     if (specialTabs.health) tabs.push({ path: HEALTH_WORKSPACE_TAB_PATH, title: 'Salud' })
+    if (specialTabs.gym) tabs.push({ path: GYM_WORKSPACE_TAB_PATH, title: 'Gimnasio' })
     if (specialTabs.home) tabs.push({ path: HOME_WORKSPACE_TAB_PATH, title: 'Inicio' })
 
     return tabs

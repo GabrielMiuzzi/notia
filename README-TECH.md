@@ -10523,6 +10523,189 @@ Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos d
 
 **Pendiente.** Probar con lápiz real (botón lateral) en Windows y Android.
 
+## Telegram: las fotos siguen visibles en los pedidos siguientes (2026-10-01)
+
+Una foto mandada por Telegram llegaba al modelo solo en el pedido que la traía. `TelegramWorker::remember` guardaba en el historial reciente únicamente el texto, así que al preguntar después («¿cómo me ves?», «mirá la foto») el modelo ya no tenía la imagen y respondía que solo veía la referencia del archivo. Los chats de la app no tenían el problema: `chat_turn::turn_messages` ya manda en el mensaje nuevo los archivos de los mensajes de su ventana de memoria.
+
+- `remember_with_files` guarda los archivos del pedido (fotos, imágenes, PDF) con el mensaje de la persona; `remember` sigue para los mensajes sin archivos.
+- `telegram_bot::turn_messages` arma los mensajes como los chats de la app: el historial como texto y el mensaje nuevo con los archivos del historial (los últimos `MAX_HISTORY_FILES` = 10, lo que trae un álbum) seguidos de los propios. El historial vive solo en memoria y sigue limitado a `MAX_HISTORY_MESSAGES`.
+- Notia usa un único modelo, el del chat, que debe tener visión, tools y thinking; no hay un modelo aparte para imágenes.
+- Test: `telegram_bot::a_photo_sent_earlier_reaches_the_next_requests`.
+
+## Telegram: PDFs con fuentes de tabla laxa (2026-10-01)
+
+Un resumen de tarjeta de Galicia mandado como PDF por Telegram respondía «El PDF … no tiene texto extraíble», aunque el texto se puede seleccionar. Sus fuentes Type0 (códigos de 2 bytes, Identity-H) traen un `ToUnicode` CMap laxo: declara el espacio `<0000><FFFF>` pero mapea un código de 1 byte (`<40><0020>`). lopdf 0.38 rechazaba esa tabla (`ToUnicodeCMap(Parse)`) en cada página. `extract_pdf_text` cortaba en el primer error, así que todo el PDF quedaba sin texto.
+
+- `lopdf` pasa a 0.45 en `app` y `backend-core`. Lee esas tablas; suma dependencias de cifrado de PDF al lock.
+- `telegram_service::extract_pdf_text` saltea la página que no puede leer en lugar de descartar el documento.
+- Test: `pdf_text_survives_loose_and_broken_font_maps` arma un PDF con una página con la tabla laxa y otra con una tabla rota.
+- Verificado con el PDF real: 18.502 caracteres con el total del resumen.
+- Pendiente: probarlo por Telegram con la app recompilada. Un PDF escaneado, sin texto, sigue pidiendo fotos de las páginas: no hay rasterizador de PDF en Rust.
+
+## Gimnasio: rutinas, entrenamiento y equipamiento (2026-10-01)
+
+Módulo del rail **Gimnasio** (id de vista `gym`, pestaña `__workspace_gym__`), según el lienzo «Munin — Rutinas» (claude.ai/artifact/8WGz3dMiEPiAhT3wxjmQep). Tiene panel, equipamiento, ver y editar rutina, entrenar y ficha del ejercicio. Se llama Gimnasio y no Rutinas porque ya existe el módulo **Rutina** (hábitos). Toda la lógica está en Rust; React pinta y cuenta los relojes con los tiempos de la sesión.
+
+### Dónde vive cada dato
+
+| Dato | Dónde | Quién escribe |
+|---|---|---|
+| Ejercicios | `Gym/exercises/<nombre>.md` (imagen embebida como `data:`), video al lado (`<nombre>.mp4`) | Importación inicial; ficha editable (`gym_catalog_apply`, `gym_set_media`) |
+| Equipamiento | `Gym/equipment/<nombre>.md` (foto embebida), `origen: catalogo` o `propio` | Importación; el propio desde el formulario |
+| Cuerpo | `Gym/cuerpo-{frente,espalda}-{masculino,femenino}.svg`, cada músculo con `data-muscle` | Importación |
+| Rutinas, sesión en curso, historial, equipamiento propio | SQLite de la biblioteca, por `owner_user_id` (migración 31) | `gym_apply` |
+
+El catálogo y los SVG no están en el repositorio: salen de material de terceros que no se redistribuye. Se cargaron una vez en la biblioteca del usuario con un script fuera del repo. Una biblioteca sin `Gym/` muestra el aviso «No hay ejercicios en Gym/exercises…» y permite crear ejercicios desde la ficha.
+
+### Formato de los `.md`
+
+Ejercicio (`backend-core/src/gym/markdown.rs`):
+
+```text
+---
+id: bench_press
+grupo: pecho            # pecho, espalda, piernas, hombros, brazos, core, completo, cardio, estiramiento
+registro: peso-reps     # peso-reps, reps, tiempo, peso-tiempo
+kcalPorMinuto: 6
+principales: Pecho superior, Pecho inferior   # los 21 músculos por nombre (también clave o nombre del SVG)
+secundarios: Tríceps, Deltoide anterior
+equipamiento: barbell, flat_bench             # ids de Gym/equipment
+video: Press de banca con barra.mp4
+alias: Bench Press, Barbell Bench Press       # también entra en la búsqueda
+contexto: "#Personal"                         # líneas de nota: se conservan al reescribir
+---
+# Press de banca con barra
+
+![Press de banca con barra](data:image/png;base64,…)
+
+## Cómo se hace
+
+1. …
+```
+
+- `parse_exercise(path, text, with_image)`: sin `id` o sin nombre no es un ejercicio. Las listas no cargan la imagen (`has_image`); la ficha sí.
+- `render_exercise` reescribe el archivo completo con la imagen que tenga `Exercise.image`, así que quien edita lee antes el ejercicio con imagen.
+- Equipamiento: `id`, `categoria` (`libres`, `estructuras`, `maquinas`, `accesorios`, `otros`), `origen`, título y foto.
+- `read_library_documents` ya quita las imágenes embebidas antes de dárselas al modelo.
+
+### Datos (migración 31)
+
+- `gym_settings(owner_user_id PK, owned_json, session_json, updated_at)`: ids del equipamiento propio y la `Session` en curso. La sesión guarda el estado `running|paused|done`, `started_ms`, `acc_ms`, el descanso (`rest_end_ms`, `rest_left_ms`, `rest_total_ms`) y las series hechas por ítem.
+- `gym_routines(id PK, owner_user_id, position, routine_json, updated_at)`: la `Routine`, con:
+  - días (0 = lunes);
+  - un color de la paleta (`azul`, `violeta`, `oro`, `verde`, `ambar`, `teal`, `coral`);
+  - ítems: ejercicio, descanso en segundos y series con peso y repeticiones (o segundos).
+- `gym_workouts(id PK, owner_user_id, date, ended_at, workout_json)`: cada entrenamiento terminado, con:
+  - las series hechas;
+  - los minutos (mínimo 1);
+  - las calorías: minutos × promedio de kcal/min de los ejercicios hechos;
+  - el volumen: peso × repeticiones, en los ejercicios con peso y repeticiones.
+- Todas las tablas tienen `ON DELETE CASCADE` sobre `library_users`, y cada usuario ve solo lo suyo.
+
+### Núcleo (`backend-core/src/gym`)
+
+- `change.rs`:
+  - `GymMutation` (rutinas, ítems, series, días, descanso, equipamiento y atajos, sesión) se traduce en `StoreOp`s, guardadas en una transacción.
+  - Si hay una sesión activa de otra rutina, la nueva se rechaza con «Terminá primero el entrenamiento de …».
+  - Marcar una serie arranca la sesión si hace falta, y el descanso del ítem si quedan series.
+  - `CatalogMutation`/`ExerciseEdit` cambian la ficha: músculos en ciclo (ninguno → principal → secundario → ninguno), equipamiento, peso, tiempo, kcal (0–40), pasos (hasta 20) y quitar la demostración.
+- `view.rs`: `build_view(data, catalog, query, today, now_ms)` arma solo la pantalla pedida (`panel`, `rutinas`, `editar`, `entrenar`, `equipo`).
+  - Panel:
+    - la racha cuenta semanas seguidas con al menos tantos días entrenados como días asignados;
+    - semana, calorías, tiempo, próxima rutina y consejo;
+    - estado de los músculos de la semana: fatigado si pasaron menos de 36 h, recuperándose hasta 72 h y recuperado después. Las series principales cuentan 1 y las secundarias 0,5;
+    - calendario de 24 semanas, con niveles 1–3 por tercios de calorías, y barras de 14 días.
+  - Rutinas: resumen de músculos, volumen y descanso total. La biblioteca de ejercicios filtra por texto (nombre, alias, equipamiento), por grupo y por «solo con mi equipamiento».
+  - Entrenar, y equipamiento con la disponibilidad y el impacto en cada rutina.
+  - `exercise_detail` arma la ficha, con la lista de músculos para los chips.
+- `body.rs`: `parse_body_svg` separa silueta, contorno y los trazos de cada uno de los 21 músculos (`Rotator Cuff` no se dibuja).
+
+### Adaptador y comandos (`app/src/gym.rs`)
+
+| Comando | Entrada | Salida |
+|---|---|---|
+| `gym_view` | `context`, `query` | `GymView` |
+| `gym_apply` | `context`, `mutation`, `query` | `{ view, routineId }`: la rutina creada o duplicada, o la que queda después de borrar |
+| `gym_exercise` | `context`, `exerciseId` | `ExerciseDetail` con imagen |
+| `gym_catalog_apply` | `context`, `mutation`, `photo?` | `{ exercise?, equipmentId? }`; un equipamiento nuevo queda marcado como propio |
+| `gym_set_media` | `context`, `exerciseId`, `media {mediaType, base64}` | `ExerciseDetail`. Un video (MP4/WEBM/MOV, hasta 32 MB) queda al lado del `.md`; una imagen se embebe como JPEG reducido y un GIF (hasta 6 MB) tal cual |
+| `gym_video` | `context`, `exerciseId` | `{ mediaType, base64 }` o `null` |
+| `gym_equipment_images` | `context` | id → `data:` |
+| `gym_body` | `context` | `BodyView` con el sexo del perfil de Salud (masculino si no hay perfil) |
+
+- **Caché del catálogo**: se lee una vez por biblioteca y se guarda con la lista de archivos (nombre, tamaño y fecha de modificación). Si cambia un archivo, se vuelve a leer, también cuando se edita a mano o en el editor. Los escritos del módulo la invalidan.
+- **Android**: la lista de archivos sale de `read_android_flat_entries` y se leen con el adaptador SAF.
+- **Renombrar** un ejercicio o un equipamiento mueve el `.md` (`Nombre.md`, `Nombre 2.md`…); el video conserva su nombre.
+- **Eventos**: cada escritura emite `notia://gym-changed` con el id de la biblioteca.
+- **Modo cliente**: los comandos van al host porque no están en `CLIENT_LOCAL_COMMANDS`, así que los datos y el catálogo son los del host.
+
+### Pantalla (`src/modules/gym`)
+
+- `useGymView` guarda la consulta (pantalla, rutina, día, búsqueda, grupo, filtro) y vuelve a pedir la vista ante cada cambio o evento.
+- Los campos numéricos mandan su valor al salir o con Enter (`CommitInput`).
+- El reloj y el anillo de descanso cuentan con `nowMs` de Rust (la diferencia con el reloj del dispositivo), sin decidir nada.
+- `BodyGraph` pinta los trazos con los colores del tema; estados y niveles van como `data-tone`.
+- Los colores de la paleta están en `gym.css` (oscuro y claro), por grupo (`data-group`) y por rutina (`data-color`).
+- Es responsive con container queries: tres columnas en escritorio, dos en tablet y una en teléfono. En el teléfono, los temporizadores de Entrenar quedan arriba.
+
+### Herramientas de la IA
+
+El área de routing `gimnasio` (`ToolArea::Gym`) agrupa 16 herramientas.
+
+| Tipo | Herramientas |
+|---|---|
+| Lectura | `get_gym_summary`, `get_gym_routine`, `search_gym_exercises`, `get_gym_exercise`, `list_gym_equipment`, `list_gym_workouts` |
+| Escritura, con confirmación | `save_gym_routine`, `delete_gym_routine`, `set_gym_equipment`, `control_gym_session`, `log_gym_workout`, `delete_gym_workout`, `save_gym_exercise`, `delete_gym_exercise`, `save_gym_equipment`, `delete_gym_equipment` |
+
+- **Política y alcance**: `GymRead`/`GymWrite`, autorizadas en los scopes Library y Finance como Salud, para cualquier usuario y siempre sobre sus propios datos. El tablero de tareas no las recibe.
+- **Núcleo** (`backend-core/src/gym/tools.rs`):
+  - `tool_action` lee los argumentos y resuelve rutinas, ejercicios (id, nombre o alias, sin acentos) y equipamiento por id o nombre. Los días van en palabras y las series como lista `{weight, reps}` o como cantidad con `reps` y `weight`. Lo convierte en los mismos `GymMutation` de la pantalla o en acciones del catálogo.
+  - `action_summary` arma el texto de la confirmación.
+  - `read_tool` arma lo que lee el modelo.
+  - `save_gym_routine` con `exercises` reemplaza la lista completa: los ejercicios que siguen conservan su id y, si no se dan, sus series y su descanso (`GymMutation::SaveRoutine`).
+  - `log_gym_workout` registra un entrenamiento pasado (`LogWorkout`: fecha no futura, 1 a 600 minutos, calorías y volumen como en la sesión). Sin `exercises`, usa las series planificadas de la rutina.
+  - `control_gym_session` maneja la sesión: `start`, `pause`, `resume`, `finish`, `restart`, `mark_set`, `unmark_set`, `set_value` y `skip_rest`. `mark_set` sobre una serie ya hecha se rechaza.
+  - `SetEquipment` y `DeleteWorkout` completan los cambios. Las series validan peso (0–1000 kg), repeticiones (0–10000) y hasta 20 por ejercicio.
+- **Adaptador** (`app/src/gym.rs`):
+  - `preview_tool` resuelve la llamada y prueba `plan_change` sin guardar, así un rechazo vuelve al modelo antes de preguntar.
+  - `execute_tool` aplica la llamada:
+    - escribe en la base o en los `.md`;
+    - `save_gym_exercise` toma `photoFromMessage` como imagen de la ficha (JPEG reducido, como las recetas) y renombra el archivo si cambia el nombre;
+    - `delete_gym_exercise` borra también el video;
+    - el equipamiento del catálogo no se borra, solo se desmarca.
+- **Runtime**: `backend_runtime.rs` las lista en `supported_tool_names`, arma la confirmación (`gym:<biblioteca>`) y las marca como cambios.
+- **Prompt**: `prompt_guidance::gym_tools` explica cuándo usar cada una e incluye los grupos y músculos válidos.
+- **Telegram**: el progreso dice «revisando tus entrenamientos», «buscando ejercicios» o «actualizando tu entrenamiento».
+
+### Validación
+
+- Probado:
+  - `cargo test`: core 492 y app 457, con tests de formato, cuerpo, rutina y sesión, panel, biblioteca, equipamiento, ficha y base por usuario.
+  - Herramientas: core 494 y app 458. `the_tools_resolve_names_and_change_routines_sessions_and_workouts` cubre la rutina por nombres, la sesión, el entrenamiento pasado, el equipamiento y las lecturas. `gym_tools_reach_every_user_with_a_schema_and_an_area` cubre la política, el esquema y el área. `the_agent_tools_change_the_database_and_the_files` va de punta a punta sobre una carpeta: vista previa sin guardar, rutina en la base, ejercicio con la foto del mensaje, renombrado, equipamiento propio y entrenamiento.
+  - El test ignorado `the_imported_catalog_parses` sobre `gaia/Gym`: 610 ejercicios con imagen, 97 equipamientos y los 4 cuerpos.
+  - `vitest` (428) y `tsc`.
+  - Capturas en Chrome headless de las cinco pantallas y la ficha, con las vistas que arma Rust sobre el catálogo real (`dump_preview_fixtures`), en tema oscuro, en claro y a 400 px.
+- Pendiente:
+  - Probarlo en la app con la biblioteca real: Windows y la tablet como cliente, escritura de archivos, subida de video y SAF.
+  - Probar las herramientas con el modelo real, por chat y por Telegram.
+
+## Imágenes del mensaje dentro de las notas (2026-10-01)
+
+Al guardar «Salud/Progreso físico.md» desde Telegram, el agente escribió la referencia de evidencia de la foto (`telegram-….jpg`) como texto: ninguna herramienta de notas sabía guardar una imagen del mensaje. Las recetas ya lo hacían con su argumento de foto.
+
+- **Cómo se nombra cada imagen:** `chat_attachments::image_references` da a cada imagen adjunta del mensaje una referencia segura para Markdown: su nombre con solo letras, dígitos, `.`, `-` y `_`, numerada si se repite. Telegram nombra sus fotos `telegram-<fileId>.jpg`, la misma referencia de evidencia de la línea de origen, única en todo el historial. `compose_message` le anuncia cada una al modelo: «Para guardarla en una nota escribí `![descripción](referencia)`».
+- **Cómo se guarda:** `TauriBackendToolExecutor::with_message_images` reemplaza, justo antes de escribir, cada `](referencia)` o `](<referencia>)` de una imagen del último mensaje por su URI `data:`, como JPEG reducido con `recipes::prepare_photo` (el mismo tamaño y calidad que la foto de una receta). Lo aplican `create_library_note`, `replace_library_document`, `apply_markdown_edit` y `apply_multi_document_markdown_edit`. El preview, la confirmación y los ids de los hunks conservan la referencia corta; solo el archivo escrito tiene la imagen. Con [Telegram: las fotos siguen visibles](#telegram-las-fotos-siguen-visibles-en-los-pedidos-siguientes-2026-10-01), una foto de un mensaje anterior también se puede insertar después.
+- **Cómo se lee:** `read_library_documents` quita las imágenes embebidas de toda nota (`recipes::markdown::without_photos`, antes solo en recetas): el modelo ve `](foto embebida)` en lugar de cientos de KB de base64.
+- **Tests:** `chat_attachments::images_are_announced_and_embedded_by_reference` y `the_agent_saves_a_note_it_is_asked_for` (una nota con `![Frente](telegram-AgAC_1.jpg)` queda con `data:image/jpeg;base64,…`).
+
+## ColdPass: el vault abierto como nota (2026-10-01)
+
+Abrir `ColdPass/ColdPass.md` como nota (árbol, búsqueda o un enlace) pasaba por `with_markdown_defaults`, que agregaba y guardaba el frontmatter de toda nota (`createdAt`, `nextPage`, `previousPage`, `contexto`) delante de `<!-- NOTIA_COLDPASS_OWNER_V1 -->`. `vault_format` exigía que el archivo empezara con el encabezado y ColdPass respondía «El archivo de ColdPass no tiene el formato esperado.» antes de pedir la contraseña; el cifrado seguía intacto.
+
+- **No vuelve a pasar:** `markdown_editing::ensure_markdown_defaults` no toca un documento que `coldpass::is_coldpass_vault` reconoce (empieza con `<!-- NOTIA_COLDPASS_`).
+- **Recuperación:** `coldpass.rs` lee el vault con `vault_body`, que salta un frontmatter cerrado (`markdown_editing::without_frontmatter`), tanto en `coldpass_status` como al desbloquear. Al desbloquear con la clave del Owner, si había frontmatter, vuelve a escribir el archivo solo con el vault sellado (el mismo nonce y cifrado, sin re-cifrar).
+- **Tests:** `markdown_defaults_fill_only_missing_properties` (vault sin defaults y `without_frontmatter` con LF, CRLF y sin cierre) y `the_vault_opens_only_with_the_key_of_its_owner` (vault con frontmatter delante).
+
 ## ColdPass: desbloqueo con huella en Android (2026-09-30)
 
 ColdPass se puede abrir con la huella en dispositivos Android con Android 11 o superior y un sensor de huella fuerte (clase 3). Es opcional y se activa por biblioteca y por dispositivo.

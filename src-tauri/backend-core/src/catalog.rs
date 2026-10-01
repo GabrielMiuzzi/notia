@@ -28,6 +28,10 @@ pub enum ToolPolicy {
     /// Salud: weight, meals, water and body measurements, per library user.
     HealthRead,
     HealthWrite,
+    /// Gimnasio: the user's routines, sessions and workouts, and the
+    /// exercise and equipment files of the library.
+    GymRead,
+    GymWrite,
     /// The AI actions of the library: the Owner's only.
     AiActionRead,
     AiActionWrite,
@@ -217,6 +221,9 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     // turn gets only the areas it needs (see `tool_routing`).
     catalog.extend(routine_tools(&super::health::tools::HEALTH_READ_TOOLS, true));
     catalog.extend(routine_tools(&super::health::tools::HEALTH_WRITE_TOOLS, false));
+    // Gimnasio is per library user too; its catalog is library files.
+    catalog.extend(routine_tools(&super::gym::tools::GYM_READ_TOOLS, true));
+    catalog.extend(routine_tools(&super::gym::tools::GYM_WRITE_TOOLS, false));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_READ_TOOLS, true));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
@@ -544,6 +551,8 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::recipes::tools::is_recipe_write_tool(name) => ToolPolicy::RecipeWrite,
         name if super::health::tools::HEALTH_READ_TOOLS.contains(&name) => ToolPolicy::HealthRead,
         name if super::health::tools::is_health_write_tool(name) => ToolPolicy::HealthWrite,
+        name if super::gym::tools::GYM_READ_TOOLS.contains(&name) => ToolPolicy::GymRead,
+        name if super::gym::tools::is_gym_write_tool(name) => ToolPolicy::GymWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
         "list_agenda" => ToolPolicy::AgendaRead,
@@ -683,6 +692,13 @@ pub fn authorize_tool_call(
         ToolPolicy::HealthRead | ToolPolicy::HealthWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta de Salud no está autorizada para este scope.",
+            false,
+        )),
+        // Gimnasio: the acting user's routines and workouts, and the library's catalog.
+        ToolPolicy::GymRead | ToolPolicy::GymWrite if matches!(context.scope, BackendScope::Library | BackendScope::Finance) => Ok(()),
+        ToolPolicy::GymRead | ToolPolicy::GymWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta de Gimnasio no está autorizada para este scope.",
             false,
         )),
         // Recipes are library files: whoever uses the library or finance chat.
@@ -847,6 +863,24 @@ mod tests {
         let board = project_tool_catalog(&context(BackendScope::TaskManager), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("board");
         assert!(board.iter().all(|tool| !crate::health::tools::is_health_tool(&tool.name)));
         assert_eq!(crate::tool_routing::tool_area("log_weight"), Some(crate::tool_routing::ToolArea::Health));
+    }
+
+    #[test]
+    fn gym_tools_reach_every_user_with_a_schema_and_an_area() {
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), allowed_contexts: Vec::new(), ..principal() };
+        let tools = project_tool_catalog(&guest, &guest_principal, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        for name in crate::gym::tools::GYM_READ_TOOLS.iter().chain(crate::gym::tools::GYM_WRITE_TOOLS.iter()) {
+            let tool = tools.iter().find(|tool| tool.name == *name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
+            assert!(tool_schemas().contains_key(*name), "{name} has no schema");
+            assert_eq!(crate::tool_routing::tool_area(name), Some(crate::tool_routing::ToolArea::Gym), "{name}");
+        }
+        assert_eq!(tool_policy("save_gym_routine"), ToolPolicy::GymWrite);
+        assert_eq!(tool_policy("get_gym_summary"), ToolPolicy::GymRead);
+        let board = project_tool_catalog(&context(BackendScope::TaskManager), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("board");
+        assert!(board.iter().all(|tool| !crate::gym::tools::is_gym_tool(&tool.name)));
     }
 
     #[test]

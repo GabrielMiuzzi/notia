@@ -595,9 +595,9 @@ pub fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     }
     let mut text = String::new();
     for page_number in page_numbers {
-        let page_text = document
-            .extract_text(&[page_number])
-            .map_err(|_| "No se pudo leer el texto del PDF de Telegram.".to_string())?;
+        // A page whose fonts lopdf cannot decode is left out; the others
+        // still reach the model.
+        let Ok(page_text) = document.extract_text(&[page_number]) else { continue };
         text.push_str(&page_text);
         if text.len() > 120_000 {
             return Err("El texto extraído del PDF supera el límite permitido.".to_string());
@@ -628,6 +628,61 @@ mod tests {
         document_kind, edit_message, endpoint, send_message, DocumentKind, TelegramAudio, TelegramDocument,
         TelegramPhoto,
     };
+
+    /// A Type0 font (2-byte codes) whose map has a 1-byte entry, as in
+    /// Galicia's statements, keeps its text; a page lopdf cannot decode does
+    /// not drop the others.
+    #[test]
+    fn pdf_text_survives_loose_and_broken_font_maps() {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let mut page = |text: &str, to_unicode: &[u8]| {
+            let cmap = document.add_object(Stream::new(dictionary! {}, to_unicode.to_vec()));
+            let descendant = document.add_object(dictionary! {
+                "Type" => "Font",
+                "Subtype" => "CIDFontType2",
+                "BaseFont" => "Inter",
+                "CIDSystemInfo" => dictionary! {
+                    "Registry" => Object::string_literal("Adobe"),
+                    "Ordering" => Object::string_literal("Identity"),
+                    "Supplement" => 0,
+                },
+            });
+            let font = document.add_object(dictionary! {
+                "Type" => "Font",
+                "Subtype" => "Type0",
+                "BaseFont" => "Inter",
+                "Encoding" => "Identity-H",
+                "DescendantFonts" => vec![descendant.into()],
+                "ToUnicode" => cmap,
+            });
+            let codes = text.chars().map(|character| format!("{:04X}", character as u32)).collect::<String>();
+            let content = document.add_object(Stream::new(dictionary! {}, format!("BT /F1 12 Tf 72 720 Td <{codes}> Tj ET").into_bytes()));
+            document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => content,
+                "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            })
+        };
+        // The code space is 2 bytes but one entry maps a single byte: lopdf
+        // 0.38 rejected the whole table and the page lost its text.
+        let loose = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /TTX+0 def /CMapType 2 def\n1 begincodespacerange\n<0000><FFFF>\nendcodespacerange\n1 beginbfchar\n<40><0020>\nendbfchar\n1 beginbfrange\n<0020><007E><0020>\nendbfrange\nendcmap CMapName currentdict /CMap defineresource pop end end";
+        let first = page("Total a pagar", loose);
+        let second = page("Hoja rota", b"begincmap 1 beginbfchar <zz> endcmap");
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![first.into(), second.into()], "Count" => 2 }),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).expect("pdf");
+        let text = super::extract_pdf_text(&bytes).expect("text");
+        assert!(text.contains("Total a pagar"), "{text:?}");
+    }
 
     #[test]
     fn documents_are_pdfs_or_images_sent_as_files() {

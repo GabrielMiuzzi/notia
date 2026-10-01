@@ -133,6 +133,12 @@ enum VaultFormat {
     Legacy,
 }
 
+/// The sealed vault of a stored file. Opening the file as a note used to put
+/// a note frontmatter in front of the header; the vault is what follows it.
+fn vault_body(stored: &str) -> &str {
+    notia_backend_core::markdown_editing::without_frontmatter(stored)
+}
+
 fn vault_format(content: &str) -> Result<VaultFormat, BackendError> {
     let content = content.trim_start();
     if content.starts_with(VAULT_HEADER) {
@@ -328,7 +334,7 @@ pub(crate) async fn coldpass_status(app: AppHandle, payload: ColdPassPayload) ->
             if !adapter.exists_locator(&locator)? {
                 return Ok(ColdPassStatusDto { exists: false, needs_legacy_passkey: false });
             }
-            let format = vault_format(&adapter.read_locator(&locator)?)?;
+            let format = vault_format(vault_body(&adapter.read_locator(&locator)?))?;
             Ok(ColdPassStatusDto { exists: true, needs_legacy_passkey: format == VaultFormat::Legacy })
         })
     })
@@ -385,15 +391,24 @@ fn unlock_with_password(app: &AppHandle, payload: ColdPassPayload) -> Result<Col
             adapter.upsert_text_locator(&locator, &encrypt_vault(&markdown, &key)?)?;
             return Ok(markdown);
         }
-        let content = adapter.read_locator(&locator)?;
-        match vault_format(&content)? {
-            VaultFormat::Owner => decrypt_vault(&content, &key),
+        let stored = adapter.read_locator(&locator)?;
+        let content = vault_body(&stored);
+        match vault_format(content)? {
+            VaultFormat::Owner => {
+                let markdown = decrypt_vault(content, &key)?;
+                if content.len() != stored.len() {
+                    // Leaves the vault as it was sealed, without the note
+                    // frontmatter that broke it.
+                    adapter.upsert_text_locator(&locator, content)?;
+                }
+                Ok(markdown)
+            }
             VaultFormat::Legacy => {
                 let passkey = secret(
                     payload.legacy_passkey,
                     "Este vault todavía usa su passkey anterior: ingresala una vez para pasarlo a la contraseña del Owner.",
                 )?;
-                let markdown = decrypt_legacy_vault(&content, &passkey)?;
+                let markdown = decrypt_legacy_vault(content, &passkey)?;
                 // The same text, sealed with the Owner's key: the old
                 // passkey is not needed any more.
                 adapter.upsert_text_locator(&locator, &encrypt_vault(&markdown, &key)?)?;
@@ -609,6 +624,10 @@ mod tests {
         assert!(decrypt_vault(&encrypted, &key(2)).is_err());
         let altered = encrypted.replace("ciphertext: ", "ciphertext: AA");
         assert!(decrypt_vault(&altered, &key(1)).is_err());
+        // A note frontmatter in front of the header does not hide the vault.
+        let with_note = format!("---\ncreatedAt: 1\ncontexto: \"#Personal\"\n---\n{encrypted}");
+        assert_eq!(vault_format(vault_body(&with_note)).expect("format"), VaultFormat::Owner);
+        assert_eq!(decrypt_vault(vault_body(&with_note), &key(1)).expect("decrypt"), "| name |");
     }
 
     #[test]

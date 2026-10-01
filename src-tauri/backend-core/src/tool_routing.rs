@@ -52,10 +52,11 @@ pub enum ToolArea {
     Actions,
     Recipes,
     Health,
+    Gym,
 }
 
 impl ToolArea {
-    pub const ALL: [ToolArea; 9] = [
+    pub const ALL: [ToolArea; 10] = [
         ToolArea::Library,
         ToolArea::Tasks,
         ToolArea::Finance,
@@ -65,6 +66,7 @@ impl ToolArea {
         ToolArea::Actions,
         ToolArea::Recipes,
         ToolArea::Health,
+        ToolArea::Gym,
     ];
 
     pub fn id(self) -> &'static str {
@@ -78,6 +80,7 @@ impl ToolArea {
             Self::Actions => "acciones",
             Self::Recipes => "recetas",
             Self::Health => "salud",
+            Self::Gym => "gimnasio",
         }
     }
 
@@ -92,6 +95,7 @@ impl ToolArea {
             Self::Mail => "Gmail y Google Calendar: buscar, leer, borrar, mover, marcar y enviar correos; ver y crear eventos",
             Self::Recipes => "Recetas y comidas: cargar un plato (también desde la foto de una comida), buscar recetas, ver sus calorías, vitaminas y minerales, editarlas o borrarlas",
             Self::Health => "Salud: registrar lo que comió la persona (también desde la foto de su plato), calorías y macros del día, peso, agua, mediciones de la balanza, perfil, peso objetivo y plan de calorías",
+            Self::Gym => "Gimnasio: rutinas de entrenamiento (días, ejercicios, series, peso, descanso), entrenar ahora (empezar, marcar series, pausar, terminar), historial de entrenamientos, músculos trabajados, equipamiento disponible y las fichas de los ejercicios",
             Self::Actions => "Acciones IA: lo que la IA hace sola en un horario y te responde por Telegram (recordatorios, tareas a una hora o que se repiten, la revisión de cada hora): ver, crear, cambiar, pausar, borrar, ejecutar ahora o reintentar",
         }
     }
@@ -116,6 +120,7 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite => Some(ToolArea::Actions),
         ToolPolicy::RecipeRead | ToolPolicy::RecipeWrite => Some(ToolArea::Recipes),
         ToolPolicy::HealthRead | ToolPolicy::HealthWrite => Some(ToolArea::Health),
+        ToolPolicy::GymRead | ToolPolicy::GymWrite => Some(ToolArea::Gym),
         _ if matches!(name, "set_agent_execution_plan" | "create_agent_plan" | "update_agent_plan") => None,
         _ if name.contains("task") => Some(ToolArea::Tasks),
         _ => Some(ToolArea::Library),
@@ -334,7 +339,7 @@ pub fn fallback_areas(message: &str, offered: &[ToolArea], with_attachments: boo
     } else if crate::telegram_bot::is_finance_request(message) {
         &[ToolArea::Finance, ToolArea::Routine]
     } else {
-        &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health]
+        &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health, ToolArea::Gym]
     };
     let mut areas = home.into_iter().collect::<Vec<_>>();
     // A photo is a ticket or a dish (a recipe or what the person ate)
@@ -466,14 +471,14 @@ mod tests {
         assert_eq!(fallback_areas("pagué la cuenta de la luz", &all, false, None), vec![ToolArea::Finance, ToolArea::Routine]);
         assert_eq!(
             fallback_areas("resumí la nota de ayer", &all, false, None),
-            vec![ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health]
+            vec![ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health, ToolArea::Gym]
         );
         // Without #Confidencial, finance and mail are not offered.
         assert_eq!(fallback_areas("pagué la cuenta de la luz", &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine], false, None), vec![ToolArea::Routine]);
         // Attachments start with Finanzas; the words add the rest.
         assert_eq!(
             fallback_areas("", &all, true, None),
-            vec![ToolArea::Finance, ToolArea::Recipes, ToolArea::Health, ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions]
+            vec![ToolArea::Finance, ToolArea::Recipes, ToolArea::Health, ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Gym]
         );
         assert_eq!(
             fallback_areas("pasá esto a mi calendario", &all, true, None),

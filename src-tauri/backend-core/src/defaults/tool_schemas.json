@@ -5284,5 +5284,539 @@
         "kind"
       ]
     }
+  },
+  "get_gym_summary": {
+    "description": "Estado de Gimnasio del usuario: sus rutinas (días y cantidad de ejercicios), la próxima rutina, la racha, la semana (entrenamientos, calorías, tiempo), los músculos trabajados esta semana (fatigado, recuperándose o recuperado), el entrenamiento en curso, el equipamiento que tiene y los últimos entrenamientos.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "get_gym_routine": {
+    "description": "Una rutina completa: días, enfoque y cada ejercicio con su itemId, series (peso, repeticiones o segundos, y si está hecha en el entrenamiento en curso), descanso y el equipamiento que falta.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "id de la rutina o su nombre exacto."
+        }
+      },
+      "required": [
+        "routine"
+      ]
+    }
+  },
+  "search_gym_exercises": {
+    "description": "Busca ejercicios del catálogo de la biblioteca (Gym/exercises) por nombre o alias (también en inglés), grupo, músculo o equipamiento. Devuelve id, nombre, grupo, registro, músculos, equipamiento y lo que le falta al usuario.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Parte del nombre, un alias o un equipamiento («press banca», «mancuernas»)."
+        },
+        "group": {
+          "type": "string",
+          "enum": [
+            "pecho",
+            "espalda",
+            "piernas",
+            "hombros",
+            "brazos",
+            "core",
+            "completo",
+            "cardio",
+            "estiramiento"
+          ]
+        },
+        "muscle": {
+          "type": "string",
+          "description": "Un músculo: Pecho superior, Pecho inferior, Deltoide anterior, Deltoide medio, Deltoide posterior, Bíceps, Tríceps, Antebrazos, Abdominales, Oblicuos, Trapecio, Espalda alta, Dorsales, Lumbares, Glúteos, Abductores, Aductores, Cuádriceps, Isquiotibiales, Pantorrillas, Cuello."
+        },
+        "onlyAvailable": {
+          "type": "boolean",
+          "description": "Solo los que puede hacer con su equipamiento."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        }
+      }
+    }
+  },
+  "get_gym_exercise": {
+    "description": "La ficha de un ejercicio: grupo, registro, kcal por minuto, músculos principales y secundarios, equipamiento y si lo tiene, pasos, si tiene imagen o video, alias, el archivo y en qué rutinas está.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+        }
+      },
+      "required": [
+        "exercise"
+      ]
+    }
+  },
+  "list_gym_equipment": {
+    "description": "Todo el equipamiento de Gym/equipment con su categoría, si el usuario lo tiene, si lo agregó él y cuántos ejercicios lo usan.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "list_gym_workouts": {
+    "description": "El historial de entrenamientos, del más reciente al más viejo: fecha, rutina, minutos, calorías, series, volumen y las series de cada ejercicio.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Desde AAAA-MM-DD."
+        },
+        "to": {
+          "type": "string",
+          "description": "Hasta AAAA-MM-DD."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        }
+      }
+    }
+  },
+  "save_gym_routine": {
+    "description": "Crea una rutina (con name) o cambia una (con routine). exercises, si viene, reemplaza la lista completa en orden; cada ejercicio conserva lo que no cambies. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "id de la rutina o su nombre exacto."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "focus": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Enfoque, por ejemplo «Pecho y tríceps»."
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Días de la semana: lunes a domingo."
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "azul",
+            "violeta",
+            "oro",
+            "verde",
+            "ambar",
+            "teal",
+            "coral"
+          ]
+        },
+        "exercises": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "object",
+            "properties": {
+              "exercise": {
+                "type": "string",
+                "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+              },
+              "restSeconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 600
+              },
+              "sets": {
+                "description": "Lista de series [{weight, reps}] o la cantidad de series iguales (con reps y weight).",
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "weight": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1000,
+                          "description": "kg; omitilo en ejercicios con peso corporal."
+                        },
+                        "reps": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 10000,
+                          "description": "Repeticiones, o segundos si el ejercicio es por tiempo."
+                        }
+                      }
+                    },
+                    "maxItems": 20
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20
+                  }
+                ]
+              },
+              "reps": {
+                "type": "number",
+                "description": "Repeticiones (o segundos) de cada serie cuando sets es una cantidad."
+              },
+              "weight": {
+                "type": "number",
+                "description": "kg de cada serie cuando sets es una cantidad."
+              }
+            },
+            "required": [
+              "exercise"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "delete_gym_routine": {
+    "description": "Elimina una rutina; el historial de entrenamientos se conserva. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "id de la rutina o su nombre exacto."
+        }
+      },
+      "required": [
+        "routine"
+      ]
+    }
+  },
+  "set_gym_equipment": {
+    "description": "Marca el equipamiento con el que cuenta el usuario: un atajo (preset) o lo que suma y saca. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "enum": [
+            "gym",
+            "casa",
+            "nada"
+          ],
+          "description": "gym: gimnasio completo; casa: mancuernas, banco, barra de dominadas y rueda; nada: sin equipamiento."
+        },
+        "add": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "ids o nombres del equipamiento que tiene."
+        },
+        "remove": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "ids o nombres del equipamiento que ya no tiene."
+        }
+      }
+    }
+  },
+  "control_gym_session": {
+    "description": "Maneja el entrenamiento en curso: empezar una rutina, marcar o desmarcar una serie hecha (arranca el descanso), cambiar el peso o las repeticiones de una serie, pausar, reanudar, saltar el descanso, terminar (lo guarda en el historial) o descartarlo. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "pause",
+            "resume",
+            "finish",
+            "restart",
+            "mark_set",
+            "unmark_set",
+            "set_value",
+            "skip_rest"
+          ]
+        },
+        "routine": {
+          "type": "string",
+          "description": "Rutina (id o nombre); si falta, la del entrenamiento en curso."
+        },
+        "exercise": {
+          "type": "string",
+          "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+        },
+        "set": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de serie, desde 1."
+        },
+        "weight": {
+          "type": "number",
+          "description": "kg, para set_value."
+        },
+        "reps": {
+          "type": "number",
+          "description": "Repeticiones o segundos, para set_value."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "log_gym_workout": {
+    "description": "Registra en el historial un entrenamiento que el usuario ya hizo (hoy o antes): minutos y las series de cada ejercicio, o routine sola para usar las series planificadas. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "routine": {
+          "type": "string",
+          "description": "id de la rutina o su nombre exacto."
+        },
+        "date": {
+          "type": "string",
+          "description": "AAAA-MM-DD; hoy si falta. No puede ser futura."
+        },
+        "minutes": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "exercises": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "exercise": {
+                "type": "string",
+                "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+              },
+              "sets": {
+                "description": "Lista de series [{weight, reps}] o la cantidad de series iguales (con reps y weight).",
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "weight": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1000,
+                          "description": "kg; omitilo en ejercicios con peso corporal."
+                        },
+                        "reps": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 10000,
+                          "description": "Repeticiones, o segundos si el ejercicio es por tiempo."
+                        }
+                      }
+                    },
+                    "maxItems": 20
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20
+                  }
+                ]
+              },
+              "reps": {
+                "type": "number",
+                "description": "Repeticiones (o segundos) de cada serie cuando sets es una cantidad."
+              },
+              "weight": {
+                "type": "number",
+                "description": "kg de cada serie cuando sets es una cantidad."
+              }
+            },
+            "required": [
+              "exercise"
+            ]
+          }
+        }
+      },
+      "required": [
+        "minutes"
+      ]
+    }
+  },
+  "delete_gym_workout": {
+    "description": "Elimina un entrenamiento del historial. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "workout": {
+          "type": "string",
+          "description": "id de list_gym_workouts (o la fecha si ese día hubo uno solo)."
+        }
+      },
+      "required": [
+        "workout"
+      ]
+    }
+  },
+  "save_gym_exercise": {
+    "description": "Crea un ejercicio en Gym/exercises (con name) o cambia su ficha (con exercise). Solo cambia lo que pasás. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "group": {
+          "type": "string",
+          "enum": [
+            "pecho",
+            "espalda",
+            "piernas",
+            "hombros",
+            "brazos",
+            "core",
+            "completo",
+            "cardio",
+            "estiramiento"
+          ]
+        },
+        "weighted": {
+          "type": "boolean",
+          "description": "Se hace con peso (si no, con el peso del cuerpo)."
+        },
+        "timed": {
+          "type": "boolean",
+          "description": "Se mide en segundos en vez de repeticiones."
+        },
+        "kcalPerMinute": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 40
+        },
+        "primaryMuscles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Músculos principales: Pecho superior, Pecho inferior, Deltoide anterior, Deltoide medio, Deltoide posterior, Bíceps, Tríceps, Antebrazos, Abdominales, Oblicuos, Trapecio, Espalda alta, Dorsales, Lumbares, Glúteos, Abductores, Aductores, Cuádriceps, Isquiotibiales, Pantorrillas, Cuello."
+        },
+        "secondaryMuscles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "equipment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "ids o nombres del equipamiento que necesita (lista vacía: ninguno)."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "maxItems": 20,
+          "description": "Cómo se hace, un paso por elemento; reemplaza los pasos."
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Otros nombres para buscarlo."
+        },
+        "photoFromMessage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de la imagen del mensaje que pasa a ser su demostración."
+        }
+      }
+    }
+  },
+  "delete_gym_exercise": {
+    "description": "Borra un ejercicio de Gym/exercises y su video. En las rutinas que lo usaban queda como «Ejercicio eliminado». Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "description": "id del ejercicio (de search_gym_exercises) o su nombre exacto."
+        }
+      },
+      "required": [
+        "exercise"
+      ]
+    }
+  },
+  "save_gym_equipment": {
+    "description": "Agrega un equipamiento propio en Gym/equipment (queda marcado como disponible) o cambia uno propio. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "equipment": {
+          "type": "string",
+          "description": "id o nombre del equipamiento propio a cambiar."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "libres",
+            "estructuras",
+            "maquinas",
+            "accesorios",
+            "otros"
+          ]
+        },
+        "photoFromMessage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Número de la imagen del mensaje para la foto."
+        }
+      }
+    }
+  },
+  "delete_gym_equipment": {
+    "description": "Quita un equipamiento propio de Gym/equipment (el del catálogo solo se desmarca con set_gym_equipment). Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "equipment": {
+          "type": "string",
+          "description": "id o nombre."
+        }
+      },
+      "required": [
+        "equipment"
+      ]
+    }
   }
 }

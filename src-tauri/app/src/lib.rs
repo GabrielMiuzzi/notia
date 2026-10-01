@@ -46,6 +46,7 @@ mod device_secret;
 mod agent_autonomy;
 mod ai_actions;
 mod recipes;
+mod gym;
 mod health;
 mod app_auth;
 mod agent_history;

@@ -6,7 +6,7 @@ import type { NotiaLibrary } from '../../../types/notia'
 
 interface UseGraphWorkspaceParams {
   activeLibrary: NotiaLibrary | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'home'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'gym' | 'home'
 }
 
 export function useGraphWorkspace({

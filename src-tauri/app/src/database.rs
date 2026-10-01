@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 30;
+pub const CURRENT_SCHEMA_VERSION: i64 = 31;
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -1208,6 +1208,40 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
         transaction.execute_batch(
             "ALTER TABLE health_meals ADD COLUMN recipe_id TEXT;
              INSERT INTO notia_schema_migrations (version) VALUES (30);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 31 && target >= 31 {
+        // Rutinas, per library user: the equipment they own and the session
+        // in progress (settings), their routines and the finished workouts,
+        // each as JSON decided by backend-core::gym.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS gym_settings (
+                 owner_user_id TEXT PRIMARY KEY REFERENCES library_users(id) ON DELETE CASCADE,
+                 owned_json TEXT NOT NULL DEFAULT '[]',
+                 session_json TEXT,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS gym_routines (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 position INTEGER NOT NULL,
+                 routine_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_gym_routines_owner
+                 ON gym_routines(owner_user_id, position);
+             CREATE TABLE IF NOT EXISTS gym_workouts (
+                 id TEXT PRIMARY KEY,
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 ended_at INTEGER NOT NULL,
+                 workout_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_gym_workouts_owner_date
+                 ON gym_workouts(owner_user_id, date);
+             INSERT INTO notia_schema_migrations (version) VALUES (31);",
         )?;
         transaction.commit()?;
     }

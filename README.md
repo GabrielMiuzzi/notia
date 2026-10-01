@@ -413,6 +413,20 @@ El acceso **Salud** (ícono de un corazón con pulso) aparece debajo de **Receta
 - **Con la IA y por Telegram**: contale lo que comiste («almorcé dos empanadas de carne», «comí 500 g del guiso», «la milanesa pero con el doble de papas») o mandale la foto de tu plato, aunque no escribas nada. Busca la receta en **Recetas** (si no existe, la crea con ingredientes y pesos estimados) y la carga en tu alimentación con las calorías y macros de lo que comiste, ajustados si fue otra cantidad. También podés decirle «me pesé 82,4», «tomé un vaso de agua», pasarle los datos de la balanza, pedirle tu plan o preguntarle cuánto te queda por comer hoy. Cada cambio pide confirmación.
 - Los rangos son referencias generales para adultos y no reemplazan una consulta profesional.
 
+### Gimnasio
+
+El acceso **Gimnasio** (ícono de una mancuerna) aparece debajo de **Salud** en la barra izquierda. Armás tus rutinas, entrenás con el reloj y el descanso, y ves cómo vienen tus músculos y tus semanas. Cada usuario de la biblioteca ve solo sus rutinas y su historial.
+
+- **Panel de entrenamiento**: racha de semanas, entrenamientos de la semana contra los días que planificaste, calorías y tiempo; el cuerpo de frente y de espalda con cada músculo fatigado, recuperándose, recuperado o sin trabajar; un consejo sobre la próxima rutina; los días entrenados de las últimas 24 semanas (tocá uno para ver el detalle) y las calorías de los últimos 14 días.
+- **El cuerpo es el tuyo**: se muestra masculino o femenino según el sexo de tu perfil en **Salud**.
+- **Rutinas**: creá, renombrá, duplicá o eliminá rutinas, elegí sus días y sumá ejercicios desde la lista (buscador, grupos y **Solo con mi equipamiento**). Cada ejercicio arranca con 3 series de 10 repeticiones; ajustá el peso, las repeticiones (o los segundos), las series y el descanso.
+- **Entrenar**: marcá cada serie como hecha y arranca solo el descanso, con el reloj del entrenamiento, pausa, ±15 s y saltar. Al **Terminar** queda guardado el entrenamiento con sus series, minutos y calorías aproximadas.
+- **Equipamiento**: marcá con qué contás (o usá los atajos **Gimnasio completo**, **Casa con mancuernas** o **Sin equipamiento**) y la lista de ejercicios y tus rutinas avisan lo que te falta. Podés agregar equipamiento propio con foto.
+- **Ficha del ejercicio**: video o imagen del movimiento, los pasos, los músculos principales y secundarios en el cuerpo, el equipamiento que necesita y las calorías por minuto. Desde **Editar** podés cambiar todo, subir un video, un GIF o una imagen, o crear ejercicios nuevos.
+- **Dónde vive el catálogo**: cada ejercicio es una nota en `Gym/exercises` (con su imagen y, si tiene, el video al lado) y cada equipamiento una nota en `Gym/equipment`; el cuerpo son los SVG de `Gym/`. Las rutinas y el historial se guardan en la base de la biblioteca.
+- **Con la IA y por Telegram**: pedile que te arme una rutina («armame una rutina de pecho para los lunes con lo que tengo en casa»), que cambie series o pesos, que empiece el entrenamiento y marque las series que hacés, que registre lo que entrenaste («hoy hice 45 minutos de piernas»), que te cuente cómo vienen tus músculos o tu racha, que busque ejercicios o que cree o corrija la ficha de uno (con la foto que le mandes). Cada cambio pide confirmación.
+- Las calorías son una estimación de referencia: el gasto real cambia con tu peso, la carga y el ritmo.
+
 ### ColdPass
 
 Gestor de credenciales cifradas integrado en Notia.
@@ -608,6 +622,17 @@ Sistema completo de gestión de tareas con tableros Kanban y vista de tabla.
 | **Entradas esperadas** | Fecha de nacimiento (14 años o más), altura de 100 a 250 cm, peso de 20 a 400 kg, fechas que no sean futuras, comida con descripción de hasta 120 caracteres y calorías o macros (o la estimación de la IA), agua de hasta 20 litros por día. |
 | **Salidas / Resultado** | El panel se actualiza al instante. Lo que registra la IA desde el chat o Telegram aparece solo en la pantalla abierta. |
 | **Errores comunes** | **«La fecha no puede ser futura»**. **«El peso tiene que estar entre 20 y 400 kg»**. **«Cargá las calorías o los macros…»**: tocá **Estimar con IA** o completá algún valor. **«Fijá primero tu peso objetivo»** o **«hacen falta tu perfil y tu peso»** antes del plan. **Error de la IA**: revisá el modelo configurado, probá de nuevo o usá **Calcular sin IA**. |
+
+### Gimnasio: rutinas, entrenamiento y equipamiento
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | Arma rutinas con los ejercicios de `Gym/exercises`, cuenta el entrenamiento y los descansos, guarda el historial y muestra el estado de cada músculo, la racha y las calorías. Filtra los ejercicios según el equipamiento que tenés. |
+| **Cuándo usarlo** | Para planificar qué entrenás cada día, seguir las series en el gimnasio o en casa y ver cómo te recuperás. |
+| **Pasos para consumir** | 1. Abrir **Gimnasio** en la barra izquierda. 2. **Equipamiento**: marcar lo que tenés. 3. **Ver rutinas** → **Nueva rutina** → **Editar**: elegir los días y sumar ejercicios. 4. **Entrenar** (o **Empezar** desde el panel) y marcar cada serie. 5. **Terminar** para guardar el entrenamiento. |
+| **Entradas esperadas** | Nombre de hasta 120 caracteres, peso de 0 a 1000 kg, repeticiones de 0 a 10000, descanso de 0 a 10 minutos, hasta 40 ejercicios por rutina y 20 series por ejercicio. Videos MP4, WEBM o MOV de hasta 32 MB; GIF de hasta 6 MB; fotos PNG, JPG o WEBP. |
+| **Salidas / Resultado** | La pantalla se actualiza al instante; las fichas y el equipamiento propio se guardan como notas en `Gym/`. |
+| **Errores comunes** | **«Terminá primero el entrenamiento de …»**: hay otra rutina en curso. **«No hay ejercicios en Gym/exercises»**: la biblioteca no tiene el catálogo. **«El cuerpo se muestra masculino…»**: configurá el sexo en el perfil de **Salud**. |
 
 ### ColdPass (Credenciales Cifradas)
 
