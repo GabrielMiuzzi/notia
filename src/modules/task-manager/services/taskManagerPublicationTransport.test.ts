@@ -26,6 +26,17 @@ describe('taskManagerPublicationTransport', () => {
     expect(invokePublishedTaskManagerMutation).toHaveBeenCalledWith('task_manager_board_execute', { payload: {} })
   })
 
+  it('supports the reads its bootstrap allows and the socket mutations', () => {
+    const transport = createTaskManagerPublicationTransport('/task-manager', vi.fn(), vi.fn())
+    expect(transport.supports('task_manager_board_view')).toBe(false)
+    transport.allowCommands(['task_manager_board_view', 'task_manager_read_ticket_source'])
+    expect(transport.supports('task_manager_board_view')).toBe(true)
+    expect(transport.supports('task_manager_board_execute')).toBe(true)
+    // The editor's library reads are not published: it skips them.
+    expect(transport.supports('library_link_targets')).toBe(false)
+    expect(transport.supports('markdown_ink_load')).toBe(false)
+  })
+
   it('stops reading after the session expires', async () => {
     const onSessionExpired = vi.fn()
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(401, { error: 'Ingresá la contraseña para acceder.' }))

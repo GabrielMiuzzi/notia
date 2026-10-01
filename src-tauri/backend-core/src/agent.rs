@@ -1925,6 +1925,59 @@ mod tests {
         }
     }
 
+    /// A guest of the published boards asks with the snapshot and route the
+    /// host builds for it; the scopes of both agree and the turn answers.
+    #[test]
+    fn a_published_guest_turn_runs() {
+        use crate::chat_turn::{turn_route, workspace_snapshot, TurnMode, WorkspaceInput};
+        let workspace = WorkspaceInput {
+            snapshot_version: 1,
+            view: "task-manager".into(),
+            scope: "published".into(),
+            active_document: None,
+            open_tabs: Vec::new(),
+            selection: None,
+            captured_at: 0,
+        };
+        let (channel, scope, persistence_policy) = turn_route(TurnMode::Published, "", Some(&workspace.view));
+        let mut published = request(Vec::new());
+        published.context.actor.library_user_id = "user-guest".into();
+        published.context.channel = channel;
+        published.context.scope = scope;
+        published.context.persistence_policy = persistence_policy;
+        published.snapshot = Some(workspace_snapshot(&workspace, "library-1"));
+        let guest = AuthorizationPrincipal {
+            library_user_id: "user-guest".into(),
+            allowed_contexts: vec!["#Laboral".into()],
+            all_contexts: false,
+            ..principal()
+        };
+        let provider = Provider {
+            responses: Mutex::new(vec![ProviderResponse {
+                message: ProviderMessage {
+                    role: ProviderMessageRole::Assistant,
+                    content: "respuesta".into(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_name: None,
+                },
+            }]),
+            calls: Mutex::new(0),
+        };
+        let response = run_agent(
+            &provider,
+            &FailingExecutor,
+            &NoopAgentState,
+            &VecEventSink::default(),
+            &published,
+            &guest,
+            &RequestControl::new(None),
+            &AgentRuntimeOptions::default(),
+        )
+        .expect("published turn completes");
+        assert_eq!(response.response.markdown, "respuesta");
+    }
+
     #[test]
     fn long_streams_do_not_hit_the_event_limit() {
         struct Chatty;

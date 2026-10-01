@@ -1,4 +1,4 @@
-import { callBackend } from '../transport'
+import { backendSupports, callBackend } from '../transport'
 import type { PenColor } from '../preferences/editorPreferences'
 
 /*
@@ -37,7 +37,9 @@ interface InkStrokesResult {
   strokes: InkStroke[]
 }
 
+/** A note without ink where the backend keeps none (a published Task Manager page). */
 export async function loadInk(libraryId: string, path: string): Promise<InkStroke[]> {
+  if (!backendSupports('markdown_ink_load')) return []
   const result = await callBackend<InkStrokesResult>('markdown_ink_load', { payload: { libraryId, path } })
   return result.strokes
 }

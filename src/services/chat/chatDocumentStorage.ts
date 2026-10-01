@@ -1,4 +1,4 @@
-import { callBackend } from '../transport'
+import { backendSupports, callBackend } from '../transport'
 import type { NotiaLibrary } from '../../types/notia'
 
 /*
@@ -67,6 +67,7 @@ function chatPayload(filePath: string, document: StoredChatDocument, library: No
 
 /** Raster images attached to a chat document, capped by the backend. */
 export function loadChatImageAttachmentPreviews(source: string): Promise<ChatImageAttachmentPreview[]> {
+  if (!backendSupports('backend_chat_image_previews')) return Promise.resolve([])
   return callBackend<ChatImageAttachmentPreview[]>('backend_chat_image_previews', { payload: { source } })
 }
 

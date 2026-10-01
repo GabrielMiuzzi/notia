@@ -4,19 +4,26 @@ import {
   isTaskManagerPublicationMutationCommand,
 } from './taskManagerPublicationClient'
 
+export interface TaskManagerPublicationTransport extends BackendTransport {
+  /** The reads the publication allows, as its bootstrap lists them. */
+  allowCommands(commands: readonly string[]): void
+}
+
 /**
  * Backend of a published Task Manager page. Reads go to `<path>/invoke`;
  * mutations travel through the collaborative WebSocket of the publication
  * client, which also delivers the changes (so backend events are not used
- * here). The publication server authorizes every command by itself.
+ * here). The publication server authorizes every command by itself;
+ * `supports` only tells the interface which reads it may skip.
  */
 export function createTaskManagerPublicationTransport(
   publicationPath: string,
   fetchImpl: typeof fetch = (input, init) => fetch(input, init),
   onSessionExpired: () => void = () => window.location.assign(publicationPath),
-): BackendTransport {
+): TaskManagerPublicationTransport {
   let sessionInvalid = false
   let rateLimitedUntil = 0
+  let allowedCommands = new Set<string>()
 
   return {
     kind: 'published',
@@ -55,6 +62,9 @@ export function createTaskManagerPublicationTransport(
     },
     subscribe: (): Promise<Unsubscribe> => Promise.resolve(() => undefined),
     fileUrl: (path: string) => path,
-    supports: () => true,
+    supports: (command: string) => isTaskManagerPublicationMutationCommand(command) || allowedCommands.has(command),
+    allowCommands: (commands) => {
+      allowedCommands = new Set(commands)
+    },
   }
 }

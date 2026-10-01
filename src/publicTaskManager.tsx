@@ -20,12 +20,14 @@ declare global {
 const publicationUrl = new URL(window.location.href)
 const publicationPath = publicationUrl.pathname.replace(/\/app\/?$/, '').replace(/\/+$/, '')
 window.__NOTIA_PUBLISHED_TASK_MANAGER__ = true
-installBackendTransport(createTaskManagerPublicationTransport(publicationPath))
+const transport = createTaskManagerPublicationTransport(publicationPath)
+installBackendTransport(transport)
 
 async function bootstrap(): Promise<void> {
   const response = await fetch(`${publicationPath}/bootstrap`, { cache: 'no-store' })
   if (!response.ok) throw new Error('La publicación no está disponible.')
   const bootstrapData = await response.json() as PublishedTaskManagerBootstrap
+  transport.allowCommands(Array.isArray(bootstrapData.commands) ? bootstrapData.commands : [])
   window.__NOTIA_PUBLISHED_TASK_ROOT_AT_VAULT__ = bootstrapData.taskRootAtVault === true
   window.__NOTIA_PUBLISHED_TASK_ROOT_FOLDER__ = bootstrapData.taskRootFolder === 'task-manager'
     ? 'task-manager'

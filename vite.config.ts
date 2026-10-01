@@ -47,6 +47,15 @@ export default defineConfig(() => ({
   optimizeDeps: {
     entries: ['index.html'],
   },
+  experimental: {
+    // The published Task Manager serves the bundle under /task-manager/assets/
+    // and its session cookie only reaches that path. Lazy chunks preload their
+    // dependencies, and stylesheets their fonts, relative to the importing file
+    // instead of from /assets/ at the root.
+    renderBuiltUrl: (_filename: string, { hostType }: { hostType: 'js' | 'css' | 'html' }) => (
+      hostType === 'html' ? undefined : { relative: true }
+    ),
+  },
   build: {
     chunkSizeWarningLimit: 600,
     modulePreload: {

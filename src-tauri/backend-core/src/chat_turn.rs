@@ -337,7 +337,8 @@ pub fn turn_messages(history: &[StoredChatMessage], prompt: &str, attachments: &
 pub fn scope_of(label: &str) -> BackendScope {
     if label.contains("finance") {
         BackendScope::Finance
-    } else if label.contains("task") {
+    } else if label.contains("task") || label == "published" {
+        // The published boards are a Task Manager, as their route says.
         BackendScope::TaskManager
     } else if label.contains("graph") {
         BackendScope::Graph

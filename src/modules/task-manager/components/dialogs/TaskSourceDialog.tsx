@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState } from 'react'
+import { Component, lazy, Suspense, useRef, useState, type ReactNode } from 'react'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { useWikiLinkTargets } from '../../../../components/notia/hooks/useWikiLinkTargets'
 import type { LibraryContext } from '../../../../services/contexts/libraryContexts'
@@ -12,6 +12,24 @@ const MarkdownView = lazy(async () => {
   const module = await import('../../../../components/notia/views/MarkdownView')
   return { default: module.MarkdownView }
 })
+
+/**
+ * Shows a failed editor load (a chunk the page could not download) inside the
+ * dialog, instead of letting the error unmount the whole page.
+ */
+class EditorLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    return this.state.failed
+      ? <p className="tareas-source-dialog-status tareas-source-dialog-status--error" role="alert">No se pudo cargar el editor. Cerrá la tarea y volvé a abrirla.</p>
+      : this.props.children
+  }
+}
 
 /** The dialog loads the link targets once; there is no tree to watch. */
 const NO_TREE: NotiaFileNode[] = []
@@ -79,26 +97,28 @@ export function TaskSourceDialog({ state, libraryId, contexts, onSourceChange, o
         ) : state.loadError !== null ? (
           <p className="tareas-source-dialog-status tareas-source-dialog-status--error" role="alert">{state.loadError}</p>
         ) : (
-          <Suspense fallback={<p className="tareas-source-dialog-status" role="status">Preparando el editor…</p>}>
-            <MarkdownView
-              source={state.source}
-              documentPath={state.task.filePath}
-              libraryId={libraryId}
-              lockedContextTag={state.task.contexto || undefined}
-              contexts={contexts}
-              onSourceChange={(source) => {
-                if (!hasInteractedRef.current) setBaseline(source)
-                setNotice(null)
-                onSourceChange(source)
-              }}
-              wikiLinkTargets={wikiLinkTargets}
-              onOpenLinkedFile={openLinkedFile}
-              onSelectionChange={noop}
-              externalSourceUpdate={null}
-              zoom={zoom}
-              onZoomChange={setZoom}
-            />
-          </Suspense>
+          <EditorLoadBoundary>
+            <Suspense fallback={<p className="tareas-source-dialog-status" role="status">Preparando el editor…</p>}>
+              <MarkdownView
+                source={state.source}
+                documentPath={state.task.filePath}
+                libraryId={libraryId}
+                lockedContextTag={state.task.contexto || undefined}
+                contexts={contexts}
+                onSourceChange={(source) => {
+                  if (!hasInteractedRef.current) setBaseline(source)
+                  setNotice(null)
+                  onSourceChange(source)
+                }}
+                wikiLinkTargets={wikiLinkTargets}
+                onOpenLinkedFile={openLinkedFile}
+                onSelectionChange={noop}
+                externalSourceUpdate={null}
+                zoom={zoom}
+                onZoomChange={setZoom}
+              />
+            </Suspense>
+          </EditorLoadBoundary>
         )}
       </div>
       {notice ? <p className="tareas-source-dialog-notice" role="status">{notice}</p> : null}

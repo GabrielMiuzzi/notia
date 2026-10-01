@@ -20,6 +20,8 @@ export interface PublishedTaskManagerBootstrap {
   revision: number
   sequence: number
   settings: TaskManagerSettings
+  /** Reads the publication allows (`PUBLISHED_COMMANDS` in Rust). */
+  commands?: string[]
 }
 
 export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: PublishedTaskManagerBootstrap }) {

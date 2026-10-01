@@ -1575,6 +1575,8 @@ fn build_publication_bootstrap(
         "revision": revision,
         "sequence": sequence,
         "settings": build_publication_client_settings(publication),
+        // The reads the page may call; the editor skips the rest.
+        "commands": crate::registry::PUBLISHED_COMMANDS,
     })
 }
 
@@ -3702,6 +3704,13 @@ fn cancel_published_ai_host_requests_for_user(guard: &mut PublicationRuntime, us
         });
 }
 
+/// Events the host's bridge streams to a published chat: the reasoning, the
+/// progress of the agent, the text, the plan and the end of the turn.
+#[cfg(target_os = "windows")]
+fn is_published_ai_stream_event(event_type: &str) -> bool {
+    matches!(event_type, "thinking" | "progress" | "delta" | "plan" | "done" | "error")
+}
+
 #[cfg(target_os = "windows")]
 fn serve_publication_ai_stream<S: Write>(
     stream: &mut S,
@@ -3758,10 +3767,7 @@ fn serve_publication_ai_stream<S: Write>(
         match receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => {
                 let event_type = event.get("type").and_then(Value::as_str);
-                if !matches!(
-                    event_type,
-                    Some("thinking" | "delta" | "plan" | "done" | "error")
-                ) {
+                if !event_type.is_some_and(is_published_ai_stream_event) {
                     host_error = Some("La app host devolvió un evento de IA inválido.".to_string());
                     break;
                 }
@@ -4200,6 +4206,14 @@ mod tests {
     }
 
     #[test]
+    fn passes_the_events_the_host_bridge_streams() {
+        for event in ["thinking", "progress", "delta", "plan", "done", "error"] {
+            assert!(is_published_ai_stream_event(event), "{event}");
+        }
+        assert!(!is_published_ai_stream_event("tool-call"));
+    }
+
+    #[test]
     fn writes_ai_stream_events_as_http_chunks() {
         let mut output = Vec::new();
         write_chunked_json_line(
@@ -4248,6 +4262,7 @@ mod tests {
         );
         assert_eq!(bootstrap["settings"]["pomodoro"]["runState"], "idle");
         assert!(bootstrap.get("aiPreferences").is_none());
+        assert_eq!(bootstrap["commands"], serde_json::json!(crate::registry::PUBLISHED_COMMANDS));
     }
 
     #[test]

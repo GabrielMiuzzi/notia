@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const callBackend = vi.fn()
-vi.mock('../transport', () => ({ callBackend: (...args: unknown[]) => callBackend(...args) }))
+const backendSupports = vi.fn<(command: string) => boolean>(() => true)
+vi.mock('../transport', () => ({
+  callBackend: (...args: unknown[]) => callBackend(...args),
+  backendSupports: (command: string) => backendSupports(command),
+}))
 
 const { addInkStroke, eraseInk, loadInk, removeInkStrokes, replaceInkStrokes, restoreInkStrokes } = await import('./noteInkRuntime')
 const { exportNoteDiagram } = await import('./noteDiagramExport')
@@ -16,6 +20,12 @@ describe('noteInkRuntime', () => {
     callBackend.mockResolvedValue({ strokes: [stroke] })
     await expect(loadInk('lib', 'C:/lib/a.md')).resolves.toEqual([stroke])
     expect(callBackend).toHaveBeenCalledWith('markdown_ink_load', { payload: { libraryId: 'lib', path: 'C:/lib/a.md' } })
+  })
+
+  it('shows no ink where the backend keeps none', async () => {
+    backendSupports.mockReturnValueOnce(false)
+    await expect(loadInk('lib', 'a.md')).resolves.toEqual([])
+    expect(callBackend).not.toHaveBeenCalled()
   })
 
   it('saves strokes moved into the flow by id', async () => {
