@@ -983,10 +983,30 @@ mod tests {
             let stored = crate::library_config::read_library_config(&host, &library_id).expect("read").expect("config");
             assert_eq!(stored["panelDesplegable"]["refreshIntervalMs"], 45_000);
             assert_ne!(stored["telegram"]["enabled"], true);
+
+            // A meeting the client records on its device lives on the host.
+            let snapshot = |client| invoke(client, "meeting_snapshot", json!({ "payload": {} }));
+            assert_eq!(snapshot(&client).await.expect("no meeting"), Value::Null);
+            let begin = json!({ "payload": { "sessionId": "tablet-1", "event": {
+                "kind": "begin", "microphone": true, "system": false, "options": { "liveAnswers": false },
+            } } });
+            invoke(&client, "meeting_relay", begin).await.expect("begin");
+            let line = json!({ "payload": { "sessionId": "tablet-1", "event": {
+                "kind": "line", "span": [1_000, 2_000], "text": "Buen día a todos.",
+            } } });
+            invoke(&client, "meeting_relay", line).await.expect("line");
+            let live = snapshot(&client).await.expect("meeting");
+            assert_eq!((live["id"].as_str(), live["status"].as_str()), (Some("tablet-1"), Some("live")));
+            assert_eq!(live["lines"][0]["text"], "Buen día a todos.");
+            let mark = json!({ "payload": { "meetingId": "tablet-1", "atMs": 1_500 } });
+            assert_eq!(invoke(&client, "meeting_add_mark", mark).await.expect("mark")["atMs"], 1_500);
+            let discard = json!({ "payload": { "sessionId": "tablet-1", "event": { "kind": "discarded" } } });
+            invoke(&client, "meeting_relay", discard).await.expect("discard");
+            assert_eq!(snapshot(&client).await.expect("discarded"), Value::Null);
         });
 
         // What only works on the device running Notia is not offered.
-        let refused = crate::registry::dispatch_app_invoke(&client, "main", &json!({ "command": "start_speech_session" }));
+        let refused = crate::registry::dispatch_app_invoke(&client, "main", &json!({ "command": "library_pick_directory" }));
         assert!(matches!(refused, Dispatch::Ready(Err(error)) if error["code"] == "unsupported"));
 
         // Events of the host reach the client's interface.

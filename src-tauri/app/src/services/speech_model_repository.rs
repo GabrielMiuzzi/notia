@@ -12,6 +12,9 @@ use crate::host::{AppHandle, Manager};
 
 const MODEL_MANIFEST_JSON: &str = include_str!("../../../resources/speech/model-manifest.json");
 const MODEL_DIRECTORY_NAME: &str = "speech-models";
+/// Marks a profile Android extracted from the APK and verified once.
+#[cfg(target_os = "android")]
+const ANDROID_VERIFIED_STAMP: &str = ".notia-verified";
 const PARAKEET_PROFILE_ID: &str = "es-parakeet-tdt-v3";
 static MODEL_HASH_CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedModelHash>>> =
     OnceLock::new();
@@ -181,15 +184,56 @@ fn parse_manifest() -> Result<SpeechModelManifest, String> {
 /// Directory of an ASR profile whose files pass the size and SHA-256 check.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 fn verified_profile_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<PathBuf, String> {
+    let models_root = ready_models_root(app, profile)?.ok_or_else(|| {
+        format!("El modelo ASR {} no esta instalado o no supera su verificacion.", profile.profile_id)
+    })?;
+    Ok(models_root.join(&profile.profile_id))
+}
+
+/// The models root holding every file of `profile` verified by size and
+/// SHA-256, or `None` when no root does.
+#[cfg(target_os = "windows")]
+fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Option<PathBuf>, String> {
     let roots = model_roots(app)?;
     let models_root = profile_models_root(&roots, profile);
-    if !inspect_profile(models_root, profile)?.ready {
-        return Err(format!(
-            "El modelo ASR {} no esta instalado o no supera su verificacion.",
-            profile.profile_id
-        ));
+    Ok(inspect_profile(models_root, profile)?.ready.then(|| models_root.to_path_buf()))
+}
+
+/// Android packs the models inside the APK, where the native recognizer
+/// cannot open them: the first time a profile is needed, its files are
+/// copied to the app's private models folder (`speech-models`) and checked
+/// once by size and SHA-256. A stamp then spares the hashing (hundreds of
+/// megabytes) on later loads while every size still matches; a file that
+/// changed size is copied again.
+#[cfg(target_os = "android")]
+fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Option<PathBuf>, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("No se pudo resolver el directorio privado de modelos: {error}"))?
+        .join(MODEL_DIRECTORY_NAME);
+    let directory = root.join(&profile.profile_id);
+    let stamp = directory.join(ANDROID_VERIFIED_STAMP);
+    let size_matches = |file: &SpeechModelFile| {
+        directory.join(&file.relative_path).metadata().is_ok_and(|metadata| metadata.len() == file.bytes)
+    };
+    if stamp.is_file() && profile.files.iter().all(size_matches) {
+        return Ok(inspect_profile_with_hashes(&root, profile, false)?.ready.then_some(root));
     }
-    Ok(models_root.join(&profile.profile_id))
+    let _ = fs::remove_file(&stamp);
+    let state = app.state::<crate::mobile_speech_permission::AndroidSpeechPermissionState>();
+    for file in profile.files.iter().filter(|file| !size_matches(file)) {
+        let asset = format!("resources/speech/models/{}/{}", profile.profile_id, file.relative_path);
+        let copied = crate::mobile_speech_permission::extract_asset(&state, &asset, &directory.join(&file.relative_path))?;
+        if copied != file.bytes {
+            return Err("Un modelo de voz del paquete no tiene el tamaño esperado.".to_string());
+        }
+    }
+    if !inspect_profile_with_hashes(&root, profile, true)?.ready {
+        return Err("Los modelos de voz del paquete no superan su verificacion.".to_string());
+    }
+    fs::write(&stamp, b"").map_err(|_| "No se pudo marcar los modelos de voz como verificados.".to_string())?;
+    Ok(Some(root))
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -203,11 +247,8 @@ pub fn resolve_diarization_model(
         .iter()
         .find(|profile| profile.diarization.is_some())
         .ok_or_else(|| format!("No hay un modelo de diarizacion para el idioma {language}."))?;
-    let roots = model_roots(app)?;
-    let models_root = profile_models_root(&roots, profile);
-    if !inspect_profile(models_root, profile)?.ready {
-        return Err("El perfil de diarizacion no supera su verificacion.".to_string());
-    }
+    let models_root = ready_models_root(app, profile)?
+        .ok_or_else(|| "El perfil de diarizacion no supera su verificacion.".to_string())?;
     let (segmentation, embedding) = match profile.diarization.as_ref() {
         Some(SpeechDiarizationConfig::Pyannote {
             segmentation,
@@ -390,6 +431,8 @@ fn validate_relative_path(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Android loads only the profiles it extracted and verified itself.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn inspect_profile(
     root: &Path,
     profile: &SpeechModelProfile,

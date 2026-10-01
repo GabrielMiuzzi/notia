@@ -159,8 +159,10 @@ pub fn normalize_connection(settings: ConnectionSettings) -> ConnectionSettings 
 }
 
 /// Commands a client runs on its own device even while it uses a host:
-/// its sign-in with the host, its connection settings and the preferences
-/// of the device itself. Everything else goes to the host.
+/// its sign-in with the host, its connection settings, the preferences of
+/// the device itself and the Meeting recording (microphone, recognizer and
+/// speakers of this device; the meeting itself lives on the host).
+/// Everything else goes to the host.
 pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "app_auth_status",
     "app_auth_login",
@@ -185,6 +187,30 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "coldpass_enable_biometric",
     "coldpass_disable_biometric",
     "coldpass_unlock_biometric",
+    // Meeting records and recognizes on the device the person holds, so a
+    // tablet can transcribe a meeting in the room.
+    "get_speech_capabilities",
+    "probe_speech_audio_input",
+    "probe_sherpa_runtime",
+    "prepare_device_speech_model",
+    "start_speech_session",
+    "pause_speech_session",
+    "resume_speech_session",
+    "consume_speech_turn",
+    "stop_speech_session",
+    "cancel_speech_session",
+    "skip_speech_diarization",
+    "speech_session_state",
+    "start_audio_monitor",
+    "stop_audio_monitor",
+    "meeting_media_begin",
+    "meeting_media_chunk",
+    "meeting_media_finish",
+    "meeting_media_discard",
+    "meeting_start_file_session",
+    // The position comes from this device's recording; the mark is kept on
+    // the host, with the meeting.
+    "meeting_add_mark",
 ];
 
 pub fn is_client_local_command(command: &str) -> bool {
@@ -232,5 +258,6 @@ mod tests {
         let parsed: ConnectionSettings = serde_json::from_str("{}").expect("defaults");
         assert_eq!(parsed, ConnectionSettings::default());
         assert!(is_client_local_command("app_auth_login") && !is_client_local_command("finance_overview"));
+        assert!(is_client_local_command("start_speech_session") && !is_client_local_command("meeting_snapshot"));
     }
 }

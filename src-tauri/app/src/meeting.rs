@@ -10,6 +10,10 @@
 //! `meeting://answer`. The record lives in
 //! memory until the person discards it, starts another recording or saves
 //! it as a library note.
+//!
+//! A client in Host mode records on its own device, but its meeting lives
+//! on the host: the speech hooks below send each change there
+//! (`meeting_relay`), and the host applies it with `meeting_relay`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -48,6 +52,17 @@ pub(crate) struct MeetingState {
 struct MeetingInner {
     record: Option<MeetingRecord>,
     live: LiveAnswers,
+    /// When a client last reported the record it records (Host mode);
+    /// `None` for a meeting recorded on this device.
+    relayed_at: Option<Instant>,
+}
+
+/// A relayed meeting without news for this long lost its client.
+const RELAY_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// Whether this device sends its meeting to its host instead of keeping it.
+fn relays(app: &AppHandle) -> bool {
+    crate::host_client::uses_host(app)
 }
 
 #[derive(Default)]
@@ -123,9 +138,14 @@ fn start_labels() -> MeetingStart {
 /// A Meeting session is starting: its record replaces the previous one.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, options: &MeetingSessionOptions) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::begin(sources, options));
+        return;
+    }
     let settings = options.settings.as_ref().map(AiSettingsInput::normalize);
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
+    inner.relayed_at = None;
     inner.record = Some(MeetingRecord::new(
         session_id,
         start_labels(),
@@ -142,8 +162,13 @@ pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, 
 /// capture and no live answers.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceFile) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::BeginFile { name: file.name });
+        return;
+    }
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
+    inner.relayed_at = None;
     inner.record = Some(MeetingRecord::from_file(session_id, start_labels(), file));
     inner.live.settings = None;
     drop(inner);
@@ -154,6 +179,10 @@ pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceF
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)>, text: &str) {
     if text.trim().is_empty() {
+        return;
+    }
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Line { span, text: text.to_string() });
         return;
     }
     let job = {
@@ -184,6 +213,10 @@ pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)
 /// The recording stopped and its speakers are being separated.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_processing(app: &AppHandle, session_id: &str, duration_ms: u64) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Processing { duration_ms });
+        return;
+    }
     let changed = with_record(app, session_id, |record| {
         record.begin_processing(duration_ms);
         Ok(())
@@ -198,6 +231,10 @@ pub(crate) fn on_processing(app: &AppHandle, session_id: &str, duration_ms: u64)
 
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_completed(app: &AppHandle, session_id: &str, transcript: &DiarizedTranscriptDto, duration_ms: u64) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::completed(transcript, duration_ms));
+        return;
+    }
     let segments = transcript
         .segments
         .iter()
@@ -221,6 +258,10 @@ pub(crate) fn on_completed(app: &AppHandle, session_id: &str, transcript: &Diari
 /// The session failed: what was recognized stays as the transcript.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_interrupted(app: &AppHandle, session_id: &str) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Interrupted);
+        return;
+    }
     let changed = with_record(app, session_id, |record| {
         if record.status != MeetingStatus::Completed {
             let duration_ms = record.duration_ms;
@@ -235,6 +276,10 @@ pub(crate) fn on_interrupted(app: &AppHandle, session_id: &str) {
 
 /// The session was cancelled or could not start: its record goes away.
 pub(crate) fn discard_session(app: &AppHandle, session_id: &str) {
+    if relays(app) {
+        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Discarded);
+        return;
+    }
     let Ok(mut inner) = lock(app) else { return };
     if inner.record.as_ref().is_some_and(|record| record.id == session_id) {
         inner.live.cancel();
@@ -337,12 +382,19 @@ fn settle_orphaned_record(app: &AppHandle, inner: &mut MeetingInner) {
     if record.status == MeetingStatus::Completed {
         return;
     }
-    let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-    let idle = speech
-        .phase
-        .lock()
-        .is_ok_and(|phase| *phase == crate::services::speech_service::SpeechPhase::Idle);
-    if idle {
+    // A meeting a client records is orphaned when its client stopped
+    // reporting (it sends a heartbeat every minute), not by this device.
+    let orphaned = match inner.relayed_at {
+        Some(reported) => reported.elapsed() >= RELAY_STALE_AFTER,
+        None => {
+            let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
+            speech
+                .phase
+                .lock()
+                .is_ok_and(|phase| *phase == crate::services::speech_service::SpeechPhase::Idle)
+        }
+    };
+    if orphaned {
         log::error!("[notia:meeting] the recording's speech session ended without reporting it; the meeting keeps its lines");
         let duration_ms = record.duration_ms;
         record.complete(Vec::new(), duration_ms);
@@ -396,13 +448,82 @@ pub(crate) fn meeting_discard(app: AppHandle, payload: MeetingIdPayload) -> Resu
 }
 
 /// Marks the current moment of the recording.
-pub(crate) fn meeting_add_mark(app: AppHandle, payload: MeetingIdPayload) -> Result<MeetingMark, BackendError> {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingAddMarkPayload {
+    meeting_id: String,
+    /// Position of the recording, sent by the client that records a meeting
+    /// kept on this host.
+    #[serde(default)]
+    at_ms: Option<u64>,
+}
+
+/// Marks the current moment of the recording. On a client in Host mode the
+/// position comes from this device's recording and the mark is kept on the
+/// host, with the meeting.
+pub(crate) async fn meeting_add_mark(app: AppHandle, payload: MeetingAddMarkPayload) -> Result<MeetingMark, BackendError> {
     let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-    let at_ms = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id)
-        .map_err(BackendError::invalid_input)?;
+    let position = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id);
+    if relays(&app) {
+        let at_ms = position.map_err(BackendError::invalid_input)?;
+        return crate::host_client::call_host(
+            &app,
+            "meeting_add_mark",
+            json!({ "payload": { "meetingId": payload.meeting_id, "atMs": at_ms } }),
+        )
+        .await;
+    }
+    let at_ms = match (payload.at_ms, position) {
+        (Some(at_ms), _) if lock(&app)?.relayed_at.is_some() => at_ms,
+        (_, position) => position.map_err(BackendError::invalid_input)?,
+    };
     let mark = with_record(&app, &payload.meeting_id, |record| record.add_mark(at_ms))?;
     announce(&app, &payload.meeting_id);
     Ok(mark)
+}
+
+/// Applies a change of the meeting a client in Host mode records on its
+/// own device (see `meeting_relay`). A new meeting replaces the current one,
+/// unless this device is recording or processing its own.
+pub(crate) fn meeting_relay(app: AppHandle, payload: crate::meeting_relay::RelayPayload) -> Result<(), BackendError> {
+    use crate::meeting_relay::RelayEvent;
+    let session_id = payload.session_id.as_str();
+    match payload.event {
+        RelayEvent::Begin { microphone, system, options } => {
+            refuse_while_recording_here(&app)?;
+            let options = serde_json::from_value::<MeetingSessionOptions>(options)
+                .map_err(|_| BackendError::invalid_input("Las opciones de la reunión no son válidas."))?;
+            begin(&app, session_id, CaptureSources { microphone, system }, &options);
+        }
+        RelayEvent::BeginFile { name } => {
+            refuse_while_recording_here(&app)?;
+            begin_file(&app, session_id, MeetingSourceFile::from_name(&name).map_err(BackendError::invalid_input)?);
+        }
+        RelayEvent::Line { span, text } => on_line(&app, session_id, span, &text),
+        RelayEvent::Processing { duration_ms } => on_processing(&app, session_id, duration_ms),
+        RelayEvent::Completed { text, speaker_count, segments, duration_ms } => {
+            let transcript = crate::meeting_relay::transcript_of(text, speaker_count, segments);
+            on_completed(&app, session_id, &transcript, duration_ms);
+        }
+        RelayEvent::Interrupted => on_interrupted(&app, session_id),
+        RelayEvent::Discarded => discard_session(&app, session_id),
+        RelayEvent::Heartbeat => {}
+    }
+    let mut inner = lock(&app)?;
+    if inner.record.as_ref().is_some_and(|record| record.id == session_id) {
+        inner.relayed_at = Some(Instant::now());
+    }
+    Ok(())
+}
+
+/// A client cannot replace the meeting this device is recording.
+fn refuse_while_recording_here(app: &AppHandle) -> Result<(), BackendError> {
+    let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
+    let busy = speech.phase.lock().is_ok_and(|phase| *phase != crate::services::speech_service::SpeechPhase::Idle);
+    if busy {
+        return Err(BackendError::invalid_input("El host está grabando o procesando su propia reunión. Probá cuando termine."));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

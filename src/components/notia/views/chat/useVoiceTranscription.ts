@@ -118,7 +118,7 @@ function useLocalVoiceTranscription({
       return () => { current = false }
     }
 
-    void prepareSpeechModel(speechRecognition).then(() => {
+    void prepareSpeechModel(speechRecognition, 'device').then(() => {
       if (!current) return
       setIsModelReady(true)
       setModelPreparationError(null)
@@ -280,7 +280,7 @@ function useLocalVoiceTranscription({
     }
     setState({ status: 'preparing' })
     try {
-      await prepareSpeechModel(speechRecognition)
+      await prepareSpeechModel(speechRecognition, 'device')
       setIsModelReady(true)
       setModelPreparationError(null)
     } catch (error) {
@@ -483,3 +483,11 @@ function useLocalVoiceTranscription({
 export const useVoiceTranscription: typeof useLocalVoiceTranscription = backendKind() === 'remote'
   ? useRemoteVoiceTranscription
   : useLocalVoiceTranscription
+
+/**
+ * Recording on the device that runs this interface, also when it is a
+ * client of a host: Meeting records and recognizes here (a tablet can
+ * transcribe a meeting in the room) while the meeting itself lives on the
+ * host. Only offered where the backend supports `start_speech_session`.
+ */
+export const useDeviceVoiceTranscription = useLocalVoiceTranscription

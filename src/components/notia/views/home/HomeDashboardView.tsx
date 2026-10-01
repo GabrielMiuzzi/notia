@@ -13,6 +13,7 @@ import { useHomeWeather } from './useHomeWeather'
 import { HomeWeatherChip } from './HomeWeatherChip'
 import { HomeAskBox } from './HomeAskBox'
 import { HomeRecordButton } from './HomeRecordButton'
+import { backendSupports } from '../../../../services/transport'
 import { HomeAgendaCard } from './HomeAgendaCard'
 import { HomeTasksCard } from './HomeTasksCard'
 import { HomeFinanceCard } from './HomeFinanceCard'
@@ -97,7 +98,9 @@ export function HomeDashboardView({ library }: { library: NotiaLibrary }) {
                 <FilePlus size={15} strokeWidth={1.75} aria-hidden="true" />
                 Nueva nota
               </button>
-              <HomeRecordButton onOpenMeeting={() => railActionClick('meeting')} />
+              {backendSupports('start_speech_session') ? (
+                <HomeRecordButton onOpenMeeting={() => railActionClick('meeting')} />
+              ) : null}
             </div>
           </div>
         </header>

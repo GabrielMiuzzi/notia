@@ -45,7 +45,7 @@ fn default_true() -> bool {
 }
 
 /// Provider preferences as the settings screen edits them.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSettingsInput {
     #[serde(default)]

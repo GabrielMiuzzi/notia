@@ -828,6 +828,34 @@ pub fn cancel_platform_audio(state: &SpeechRuntimeState) -> Result<(), String> {
     Ok(())
 }
 
+/// Ends `session_id` here, without a result, when its meeting cannot be
+/// kept (the host refused it): the recording stops and the interface gets
+/// `message` as the session's error.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub(crate) fn abort_session(app: &AppHandle, session_id: &str, message: &str) {
+    let state = app.state::<SpeechRuntimeState>();
+    let session = state.active_session.lock().ok().and_then(|mut slot| {
+        if slot.as_ref().is_some_and(|session| session.session_id == session_id) {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    let Some(session) = session else { return };
+    let _ = session.worker.cancel();
+    let _ = session.worker.join();
+    if let Ok(mut phase) = state.phase.lock() {
+        *phase = SpeechPhase::Idle;
+    }
+    set_finalizing_session(&state, None);
+    #[cfg(target_os = "android")]
+    crate::mobile_continuity::end_android_work(app.state::<crate::mobile_continuity::ContinuityState>().inner());
+    emit_error(app, session_id, "internal", message);
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "android")))]
+pub(crate) fn abort_session(_app: &AppHandle, _session_id: &str, _message: &str) {}
+
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub fn stop_platform_session(state: &SpeechRuntimeState) -> Result<(), String> {
     let session = state

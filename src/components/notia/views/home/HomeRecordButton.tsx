@@ -5,7 +5,7 @@ import { useAppSelector } from '../../../../store/hooks'
 import { selectAiSettings } from '../../../../features/preferences/preferencesSelectors'
 import { meetingAiSettings } from '../../../../services/meeting/meetingService'
 import type { MeetingFilter } from '../../../../services/meeting/meetingTypes'
-import { useVoiceTranscription } from '../chat/useVoiceTranscription'
+import { useDeviceVoiceTranscription } from '../chat/useVoiceTranscription'
 import { useMeetingSnapshot } from '../meeting/useMeetingSnapshot'
 import { useFollowMeetingSession } from '../meeting/useFollowMeetingSession'
 import { formatClock } from '../meeting/meetingDisplay'
@@ -29,7 +29,7 @@ interface HomeRecordButtonProps {
 export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const meetingOptions = useMemo(() => ({ liveAnswers: false, settings: meetingAiSettings(aiPreferences) }), [aiPreferences])
-  const voice = useVoiceTranscription({
+  const voice = useDeviceVoiceTranscription({
     draft: NO_DRAFT,
     setDraft: ignoreDraft,
     maxDurationSeconds: MEETING_MAX_DURATION_SECONDS,

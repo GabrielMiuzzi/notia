@@ -167,15 +167,24 @@ export async function getSpeechCapabilities(): Promise<SpeechCapabilities> {
   return parseSpeechCapabilities(await callBackend<unknown>('get_speech_capabilities'))
 }
 
-export async function prepareSpeechModel(preferences: SpeechRecognitionPreferences): Promise<void> {
-  const key = preferences.language.trim().toLowerCase()
+/**
+ * Loads the recognizer. `device` is the one of this device, which records
+ * Meeting and local dictation; `backend` is the one that recognizes the
+ * audio a remote interface sends (the host of a client, or a server).
+ * Without a host both are the same.
+ */
+export async function prepareSpeechModel(
+  preferences: SpeechRecognitionPreferences,
+  target: 'device' | 'backend' = 'backend',
+): Promise<void> {
+  const key = `${target}:${preferences.language.trim().toLowerCase()}`
   if (preparedModelKey === key) return
   if (pendingModelPreparation) {
     if (pendingModelKey === key) return pendingModelPreparation
     await pendingModelPreparation.catch(() => undefined)
-    return prepareSpeechModel(preferences)
+    return prepareSpeechModel(preferences, target)
   }
-  const preparation = callBackend<void>('prepare_speech_model', {
+  const preparation = callBackend<void>(target === 'device' ? 'prepare_device_speech_model' : 'prepare_speech_model', {
     payload: {
       language: preferences.language,
     },

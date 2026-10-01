@@ -5970,7 +5970,7 @@ La integración incorpora contratos TypeScript validados, coordinación React y 
 
 La captura nativa usa `cpal`. El único motor de reconocimiento es Parakeet TDT 0.6B v3 int8 sobre la C API de sherpa-onnx 1.13.4, que también ejecuta Silero VAD y la diarización. Qwen3-ASR se eliminó por completo el 2026-09-24: su adapter, el bridge C sobre `llama.cpp`/`libmtmd`, el submódulo `vendor/llama.cpp`, los scripts de build e instalación, los perfiles y modelos GGUF, la copia de `.so` a `jniLibs` y la opción de dispositivo CPU/GPU. El mismo servicio Rust opera en Windows y Android. Android agrega un plugin Kotlin mínimo que declara y solicita `RECORD_AUDIO` sólo desde la acción explícita del usuario.
 
-Cada perfil de modelos se resuelve de forma independiente desde la primera carpeta que contiene todos sus archivos declarados: en debug, primero los recursos del checkout; después `app_data_dir/speech-models`, y por último los recursos empaquetados, contra los que se informan los archivos faltantes. Así, una instalación privada incompleta o de otro perfil no oculta un perfil empaquetado completo. El manifiesto declara el perfil `es-parakeet-tdt-v3` (`offlineNemoTransducer`: encoder, decoder, joiner, tokens y Silero VAD), el único tipo de ASR que acepta `speech_model_repository`, y los modelos independientes de diarización. `build.rs` falla si faltan los archivos de Parakeet o de la diarización; Parakeet no se versiona en Git y se instala con `bash scripts/install-speech.sh parakeet`, que verifica los SHA-256 del manifiesto. Android empaqueta sólo los cinco archivos del perfil Parakeet. Las rutas, tamaños y SHA-256 se verifican antes de cargar.
+Cada perfil de modelos se resuelve de forma independiente desde la primera carpeta que contiene todos sus archivos declarados: en debug, primero los recursos del checkout; después `app_data_dir/speech-models`, y por último los recursos empaquetados, contra los que se informan los archivos faltantes. Así, una instalación privada incompleta o de otro perfil no oculta un perfil empaquetado completo. El manifiesto declara el perfil `es-parakeet-tdt-v3` (`offlineNemoTransducer`: encoder, decoder, joiner, tokens y Silero VAD), el único tipo de ASR que acepta `speech_model_repository`, y los modelos independientes de diarización. `build.rs` falla si faltan los archivos de Parakeet o de la diarización; Parakeet no se versiona en Git y se instala con `bash scripts/install-speech.sh parakeet`, que verifica los SHA-256 del manifiesto. Android empaqueta los cinco archivos del perfil Parakeet y la diarización, y los copia del APK a `app_data_dir/speech-models` la primera vez (ver «Meeting en Android y en un cliente del modo Host»). Las rutas, tamaños y SHA-256 se verifican antes de cargar.
 
 La preferencia de dispositivo `speechRecognition` es `{ enabled, language }`. `backend_core::device_preferences::normalize_device_preferences` lee la sección antigua `qwen3Asr` cuando `speechRecognition` no existe y descarta sus campos `model` y `device`; como el guardado normaliza el archivo completo, el siguiente `backend_save_device_preferences` escribe sólo `speechRecognition`. La migración desde el `localStorage` de versiones anteriores conserva la clave `notia:qwen3-asr:v1` únicamente para leerla y borrarla. `prepare_speech_model` recibe `{ language }` (`deny_unknown_fields`, por lo que rechaza los antiguos `model`/`device`) y `start_speech_session` recibe `{ language, diarizationEnabled, maxDurationSeconds, captureSystemAudio? }` (ignora campos extra). `speech_model_repository::resolve_asr_model(app, language)` devuelve la `OfflineNemoTransducerConfig` verificada del perfil Parakeet (sólo CPU, hasta 4 threads). Las instalaciones privadas previas en `app_data_dir/speech-models/qwen3-asr-*` ya no se leen porque el manifiesto no las declara; pueden borrarse a mano.
 
@@ -9060,6 +9060,66 @@ Todos son asíncronos; la derivación de la clave tarda un momento.
   - el Task Manager publicado desde otro equipo;
   - el navegador de un servidor headless;
   - build Linux (WSL).
+
+## Meeting en Android y en un cliente del modo Host (2026-09-30)
+
+Objetivo: que una tablet Android grabe y transcriba una reunión presencial. Antes no funcionaba por dos motivos:
+
+1. **Los modelos no se podían abrir en Android.** El APK empaqueta Parakeet y la diarización en `assets/resources/speech/models/…`, pero en Android `resource_dir()` apunta a `asset://`, que no es una carpeta: sherpa-onnx necesita rutas reales. Ningún perfil quedaba listo, así que fallaba todo reconocimiento local (Meeting y dictado), también sin el modo cliente.
+2. **En modo cliente, Meeting estaba deshabilitado.** Los comandos de grabación y de reunión son «solo locales» y el cliente no los ejecutaba en el dispositivo ni los mandaba al host, así que `NotiaSidebar` ocultaba Meeting (`backendSupports('start_speech_session')` era falso). La vista además usaba el hook de dictado remoto, que no crea la reunión.
+
+### Modelos de voz en Android
+
+- `SpeechPermissionPlugin.kt` agrega `extractAsset { asset, destination }`. Copia un archivo de `assets/` (solo bajo `resources/speech/models/`, sin `..`) a un destino dentro de `applicationInfo.dataDir`, en su propio hilo, primero a `<archivo>.partial` y después lo renombra. Nunca registra rutas ni mensajes de excepción.
+- `mobile_speech_permission::extract_asset` lo llama con `run_mobile_plugin`.
+- `speech_model_repository::ready_models_root` (Android) asegura el perfil en `app_data_dir/speech-models/<perfil>`:
+  1. copia los archivos que faltan o tienen otro tamaño;
+  2. verifica una vez tamaño y SHA-256 del manifiesto;
+  3. deja la marca `.notia-verified`.
+
+  Con la marca y los tamaños correctos, las cargas siguientes no vuelven a calcular los hashes (unos 700 MB). Lo usan `resolve_asr_model` y `resolve_diarization_model`, así que la primera preparación del modelo en el dispositivo tarda más (copia de ~700 MB). En Windows nada cambia.
+
+### Meeting en un cliente
+
+La grabación y el reconocimiento corren en el dispositivo; la reunión vive en el host, con la biblioteca.
+
+- **En el dispositivo** (`CLIENT_LOCAL_COMMANDS` de `backend-core/src/connection.rs`):
+  - `get_speech_capabilities`, `probe_speech_audio_input`, `probe_sherpa_runtime` y `prepare_device_speech_model` (el mismo handler que `prepare_speech_model`, pero siempre local);
+  - `start/pause/resume/stop/cancel_speech_session`, `consume_speech_turn`, `skip_speech_diarization` y `speech_session_state`;
+  - `start/stop_audio_monitor`, `meeting_media_*` y `meeting_start_file_session`;
+  - `meeting_add_mark`.
+
+  El micrófono, Parakeet y la separación de hablantes son los de la tablet, y funcionan aunque se corte la red.
+- **Canal al host** (`app/src/meeting_relay.rs`): en un cliente (`host_client::uses_host`), los ganchos de `meeting.rs` que usa `speech_service` (`begin`, `begin_file`, `on_line`, `on_processing`, `on_completed`, `on_interrupted`, `discard_session`) no tocan una reunión local. Encolan un `RelayEvent` (`begin`, `beginFile`, `line`, `processing`, `completed`, `interrupted`, `discarded`, `heartbeat`) en una cola ordenada por dispositivo.
+  - Un hilo los manda con `call_host("meeting_relay", { payload: { sessionId, event } })`. Un error reintentable se repite cada 3 s.
+  - Un rechazo definitivo se descarta. Si es el inicio (por ejemplo, el host está grabando su propia reunión), `speech_service::abort_session` termina la grabación del dispositivo y le muestra el motivo.
+  - Con la reunión viva y sin otros eventos, manda un `heartbeat` por minuto. Con el host caído guarda hasta 20.000 eventos y descarta primero las líneas más viejas.
+- **En el host**:
+  - `meeting::meeting_relay` aplica cada evento con las mismas funciones de una reunión local y anota `relayed_at`.
+  - `settle_orphaned_record` cierra una reunión relevada solo si pasan 5 minutos sin noticias de su cliente (no por la fase de voz del host).
+  - `meeting_add_mark` recibe `atMs`: el cliente toma la posición de su grabación y la marca queda en el host.
+- **Permisos**: `registry::HOST_CLIENT_COMMANDS` (`meeting_relay` y los `meeting_*` de la reunión) siguen en `LOCAL_ONLY_COMMANDS`. El servidor del modo Host, al que solo entra el Owner, los acepta de sus clientes (`server/api.rs`); el servidor headless, abierto a otros usuarios, no. El cliente los reenvía (`client_dispatch`) y `connection.rs` ya no los informa como `hostOnlyCommands`, así que Meeting aparece en el cliente.
+- **Interfaz**:
+  - `useDeviceVoiceTranscription` (el hook local) graba en el dispositivo en Meeting y en el botón Grabar de Inicio, también en un cliente. El dictado del chat sigue mandando el audio al host.
+  - El hook local prepara el modelo con `prepareSpeechModel(…, 'device')`.
+  - Las líneas, marcas y respuestas llegan por los eventos del host, que el cliente ya retransmite.
+  - En un navegador sobre el servidor headless, Meeting y el botón Grabar siguen ocultos.
+- **Copia sin conexión**: sin host (`uses_host` falso), la reunión es local, como en un equipo independiente.
+
+### Validación
+
+- `cargo test --offline -p notia-app --features bluetooth`: 459 + 4 ignoradas. Incluye tests del formato del canal y de la cola, y el test de extremo a extremo cliente-host en 127.0.0.1 con `begin`, una línea, el snapshot, una marca con `atMs` y el descarte por el canal.
+- `cargo test --offline -p notia-backend-core`: 482.
+- `cargo check --target aarch64-linux-android`: sin errores, 59 warnings como antes.
+- Vitest 422, `tsc` y ESLint.
+- El `cargo check` del crate raíz de escritorio no pudo correr porque la app abierta bloqueaba los modelos que copia `build.rs`; el crate raíz sí compiló en el check de Android.
+- Pendiente en la tablet:
+  - instalar un APK nuevo y ver la primera preparación (copia de los modelos);
+  - grabar una reunión presencial como cliente y en una copia sin conexión;
+  - el rendimiento de Parakeet en vivo en ese CPU;
+  - la separación de hablantes al finalizar;
+  - guardar la nota y exportar desde la tablet;
+  - un corte de red durante la reunión.
 
 ## Modo Host y Cliente (2026-09-28)
 

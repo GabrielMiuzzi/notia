@@ -411,7 +411,9 @@ fn invoke(body: &[u8], server: &ApiServer) -> Vec<u8> {
         return error_body("400 Bad Request", "Solicitud inválida.");
     };
     let command = request.get("command").and_then(Value::as_str).unwrap_or_default();
-    if !is_remote_command(command) {
+    // A host also keeps the meeting its clients record on their devices.
+    let host_client = server.kind == ServerKind::Host && crate::registry::is_host_client_command(command);
+    if !is_remote_command(command) && !host_client {
         return error_body("403 Forbidden", "Esta operación solo está disponible en el equipo que ejecuta Notia.");
     }
     // The clients of a host act with their own label: some settings belong

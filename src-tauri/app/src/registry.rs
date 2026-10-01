@@ -169,6 +169,7 @@ fn route(command: &str) -> Option<Route> {
         "finance_dollar_quotes" => finance_dollar_quotes,
         "get_speech_capabilities" => get_speech_capabilities,
         "prepare_speech_model" => prepare_speech_model,
+        "prepare_device_speech_model" => prepare_speech_model,
         "get_speech_model_status" => get_speech_model_status,
         "probe_speech_audio_input" => probe_speech_audio_input,
         "probe_sherpa_runtime" => probe_sherpa_runtime,
@@ -210,6 +211,7 @@ fn route(command: &str) -> Option<Route> {
         "meeting_export" => meeting_export,
         "meeting_task_boards" => meeting_task_boards,
         "meeting_send_tasks" => meeting_send_tasks,
+        "meeting_relay" => meeting_relay,
         "get_qwen3_tts_status" => get_qwen3_tts_status,
         "reload_qwen3_tts" => reload_qwen3_tts,
         "synthesize_qwen3_tts_speech" => synthesize_qwen3_tts_speech,
@@ -428,6 +430,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "finance_dollar_quotes",
     "get_speech_capabilities",
     "prepare_speech_model",
+    "prepare_device_speech_model",
     "get_speech_model_status",
     "probe_speech_audio_input",
     "probe_sherpa_runtime",
@@ -469,6 +472,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_export",
     "meeting_task_boards",
     "meeting_send_tasks",
+    "meeting_relay",
     "get_qwen3_tts_status",
     "reload_qwen3_tts",
     "synthesize_qwen3_tts_speech",
@@ -535,6 +539,8 @@ pub const COMMAND_NAMES: &[&str] = &[
 /// may call them; remote clients of the headless server cannot.
 pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "probe_speech_audio_input",
+    // The recognizer of this device (a client records on its own device).
+    "prepare_device_speech_model",
     "start_speech_session",
     "pause_speech_session",
     "resume_speech_session",
@@ -566,6 +572,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_export",
     "meeting_task_boards",
     "meeting_send_tasks",
+    "meeting_relay",
     "coldpass_bluetooth_status",
     "coldpass_bluetooth_connect",
     "coldpass_bluetooth_submit_pin",
@@ -599,6 +606,35 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
 /// Whether a remote client (headless server) may call `command`.
 pub fn is_remote_command(command: &str) -> bool {
     route(command).is_some() && !LOCAL_ONLY_COMMANDS.contains(&command)
+}
+
+/// Local-only commands a host also runs for its clients (Host mode, always
+/// the library's Owner): a client records a Meeting on its own device, but
+/// the meeting lives on the host with the library, so the client sends its
+/// changes (`meeting_relay`) and works on it from there. The headless
+/// server, open to other library users, never runs them.
+pub const HOST_CLIENT_COMMANDS: &[&str] = &[
+    "meeting_relay",
+    "meeting_snapshot",
+    "meeting_context",
+    "meeting_discard",
+    "meeting_add_mark",
+    "meeting_remove_mark",
+    "meeting_set_notes",
+    "meeting_set_live_answers",
+    "meeting_regenerate_answer",
+    "meeting_pin_answer",
+    "meeting_rename_speaker",
+    "meeting_merge_speakers",
+    "meeting_generate_insights",
+    "meeting_save_note",
+    "meeting_export",
+    "meeting_task_boards",
+    "meeting_send_tasks",
+];
+
+pub fn is_host_client_command(command: &str) -> bool {
+    HOST_CLIENT_COMMANDS.contains(&command)
 }
 
 /// A library user on a published Task Manager: every command runs as that
@@ -691,7 +727,7 @@ fn client_dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Dispa
     if !crate::host_client::uses_host(app) || crate::backend::connection::is_client_local_command(command) {
         return None;
     }
-    if is_remote_command(command) {
+    if is_remote_command(command) || is_host_client_command(command) {
         return Some(crate::host_client::forward(app, command, args.clone()));
     }
     route(command)?;
@@ -1386,7 +1422,13 @@ fn meeting_discard(app: &AppHandle, _window_label: &str, command: &str, args: &V
 }
 
 fn meeting_add_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_add_mark(app.clone(), arg(command, args, "payload")?))))
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_add_mark(arg0, arg1).await) })))
+}
+
+fn meeting_relay(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_relay(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn meeting_remove_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1922,6 +1964,10 @@ mod tests {
         }
         assert!(is_remote_command("task_manager_board_view"));
         assert!(!is_remote_command("window_control"));
+        for command in HOST_CLIENT_COMMANDS {
+            assert!(LOCAL_ONLY_COMMANDS.contains(command), "{command}");
+        }
+        assert!(!is_host_client_command("start_speech_session"));
     }
 
     #[test]

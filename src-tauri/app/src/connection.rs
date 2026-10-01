@@ -157,7 +157,10 @@ fn view(app: &AppHandle) -> ConnectionView {
         host_only_commands: crate::registry::LOCAL_ONLY_COMMANDS
             .iter()
             .copied()
-            .filter(|command| !crate::backend::connection::is_client_local_command(command))
+            .filter(|command| {
+                !crate::backend::connection::is_client_local_command(command)
+                    && !crate::registry::is_host_client_command(command)
+            })
             .collect(),
         can_keep_copy: true,
         copy_needs_folder: cfg!(target_os = "android"),

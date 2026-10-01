@@ -77,6 +77,7 @@ mod library_users;
 mod local_time;
 mod meeting;
 mod meeting_media;
+mod meeting_relay;
 mod home;
 mod weather;
 mod recent_documents;
