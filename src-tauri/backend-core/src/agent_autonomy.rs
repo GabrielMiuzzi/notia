@@ -52,12 +52,18 @@ pub fn is_silent(answer: &str) -> bool {
 }
 
 /// Tools an autonomous run keeps: those that read and, of the agent files,
-/// only its thoughts. Nobody asked for the run, so there is no instruction
-/// or personal fact to save, and a mail could otherwise dictate one.
+/// only its thoughts. Nobody asked for the run, so there is no instruction,
+/// personal fact, part of the biography or way of talking to save, and a
+/// mail could otherwise dictate one.
 pub fn autonomous_tools(tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
     restrict_tool_access(tools, ToolAccess::ReadOnly, true)
         .into_iter()
-        .filter(|tool| !matches!(tool.name.as_str(), "add_agent_rule" | "add_agent_memory"))
+        .filter(|tool| {
+            !matches!(
+                tool.name.as_str(),
+                "add_agent_rule" | "add_agent_memory" | "add_agent_biography" | "add_agent_talk"
+            )
+        })
         .collect()
 }
 
@@ -197,7 +203,15 @@ mod tests {
         for kept in ["add_agent_thought", "list_agenda", "list_gmail_messages", "request_user_clarification"] {
             assert!(names.iter().any(|name| name == kept), "{kept}");
         }
-        for dropped in ["add_agent_rule", "add_agent_memory", "create_agenda_event", "send_gmail_message", "create_library_note"] {
+        for dropped in [
+            "add_agent_rule",
+            "add_agent_memory",
+            "add_agent_biography",
+            "add_agent_talk",
+            "create_agenda_event",
+            "send_gmail_message",
+            "create_library_note",
+        ] {
             assert!(!names.iter().any(|name| name == dropped), "{dropped}");
         }
     }

@@ -189,7 +189,7 @@ export function useRemoteVoiceTranscription({ draft, setDraft, onCompleted }: Us
     stop,
     cancel,
     // Meeting, the only session that outlives its view, is not offered remotely.
-    attach: async () => undefined,
+    attach: async () => false,
     dismissError: () => setState(INITIAL_STATE),
   }
 }

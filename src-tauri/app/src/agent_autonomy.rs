@@ -1,9 +1,11 @@
 //! The autonomous agent's clock. Every minute, for the selected library,
-//! `thoughts.md` is created again when it is missing. When the library's
-//! Telegram bot runs on this device with the autonomous agent on, the
-//! Gmail accounts are checked every two minutes for new mail in
-//! Recibidos, all of it in one run. The hourly review is an AI action
-//! now (`ai_actions`).
+//! `thoughts.md`, `biography.md` and `talk.md` are created again when they
+//! are missing, and once a day the agent files are reviewed (format
+//! repaired, duplicates merged, sizes kept; see
+//! `agent_knowledge::review_agent_files`). When the library's Telegram bot
+//! runs on this device with the autonomous agent on, the Gmail accounts
+//! are checked every two minutes for new mail in Recibidos, all of it in
+//! one run. The hourly review is an AI action now (`ai_actions`).
 //!
 //! The runs go through the Telegram worker (`enqueue_autonomous`), so they
 //! only happen where the bot runs and only reach the Owner. Each account's
@@ -32,6 +34,8 @@ const FIRST_TICK_DELAY: Duration = Duration::from_secs(60);
 /// minutes is left for the hourly review.
 const MAX_HISTORY_PAGES: usize = 5;
 const STATE_DIRECTORY: &str = "agent-autonomy";
+/// Time between two reviews of the agent files of a library.
+const KNOWLEDGE_REVIEW_INTERVAL_MS: u64 = 24 * 60 * 60 * 1_000;
 
 pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
     crate::host::plugin::Builder::new("agent-autonomy")
@@ -53,9 +57,9 @@ pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
 /// What the clock remembers between ticks, in memory only.
 #[derive(Default)]
 struct Clock {
-    /// Whether the last check of `thoughts.md` failed, so a lasting failure
-    /// is logged once.
-    thoughts_failing: bool,
+    /// Whether the last check of the agent list files failed, so a lasting
+    /// failure is logged once.
+    files_failing: bool,
     last_mail_poll: Option<Instant>,
 }
 
@@ -66,6 +70,21 @@ struct AutonomyState {
     /// Gmail history id reached per account address.
     #[serde(default)]
     gmail: HashMap<String, String>,
+    /// When the agent files were last reviewed (ms since the epoch).
+    #[serde(default)]
+    knowledge_review_ms: Option<u64>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+/// Whether the agent files are due for a review: never reviewed on this
+/// device, a day passed, or the clock went back.
+fn review_due(last_ms: Option<u64>, now_ms: u64) -> bool {
+    last_ms.is_none_or(|last| now_ms < last || now_ms - last >= KNOWLEDGE_REVIEW_INTERVAL_MS)
 }
 
 fn tick(app: &AppHandle, clock: &mut Clock) {
@@ -79,25 +98,32 @@ fn tick(app: &AppHandle, clock: &mut Clock) {
     if app.state::<crate::library_registry::LibraryBindingRegistry>().lookup(&library.id).is_err() {
         return;
     }
-    match crate::agent_workspace::ensure_thoughts_file(app, &library.id) {
-        Ok(_) => clock.thoughts_failing = false,
+    match crate::agent_workspace::ensure_agent_list_files(app, &library.id) {
+        Ok(_) => clock.files_failing = false,
         Err(error) => {
-            if !clock.thoughts_failing {
-                log::error!("[notia:autonomy] no se pudo recrear thoughts.md: {:?}", error.code);
+            if !clock.files_failing {
+                log::error!("[notia:autonomy] no se pudieron recrear los archivos del agente: {:?}", error.code);
             }
-            clock.thoughts_failing = true;
+            clock.files_failing = true;
         }
+    }
+    let before = read_state(app, &library.id);
+    let mut state = before.clone();
+    // The review keeps the agent files usable whether or not Telegram runs
+    // here; its organizations run in the background.
+    let now = now_ms();
+    if review_due(state.knowledge_review_ms, now) {
+        state.knowledge_review_ms = Some(now);
+        crate::agent_knowledge::review_agent_files(app, &library.id);
     }
     let enabled = crate::library_config::read_library_config(app, &library.id)
         .ok()
         .flatten()
         .is_some_and(|config| crate::backend::library_config::autonomous_agent_enabled(&config));
-    if !enabled || !crate::telegram_worker::bot_runs_for(app, &library.id) {
-        return;
-    }
-    let before = read_state(app, &library.id);
-    let mut state = before.clone();
-    if clock.last_mail_poll.is_none_or(|last| last.elapsed() >= Duration::from_millis(MAIL_POLL_INTERVAL_MS as u64)) {
+    if enabled
+        && crate::telegram_worker::bot_runs_for(app, &library.id)
+        && clock.last_mail_poll.is_none_or(|last| last.elapsed() >= Duration::from_millis(MAIL_POLL_INTERVAL_MS as u64))
+    {
         clock.last_mail_poll = Some(Instant::now());
         watch_mail(app, &library.id, &mut state);
     }
@@ -242,5 +268,19 @@ mod tests {
         // Files from before the hourly review became an AI action.
         let old = serde_json::from_str::<AutonomyState>(r#"{"lastReviewMs":42,"gmail":{"ana@gmail.com":"901"}}"#).expect("old");
         assert_eq!(old, state);
+        state.knowledge_review_ms = Some(7);
+        let text = serde_json::to_string(&state).expect("json");
+        assert!(text.contains("\"knowledgeReviewMs\":7"));
+        assert_eq!(serde_json::from_str::<AutonomyState>(&text).expect("state"), state);
+    }
+
+    #[test]
+    fn the_agent_files_are_reviewed_once_a_day() {
+        let day = KNOWLEDGE_REVIEW_INTERVAL_MS;
+        assert!(review_due(None, 1_000));
+        assert!(!review_due(Some(1_000), 1_000 + day - 1));
+        assert!(review_due(Some(1_000), 1_000 + day));
+        // A clock set back does not postpone the review for days.
+        assert!(review_due(Some(10 * day), day));
     }
 }

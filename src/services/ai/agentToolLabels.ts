@@ -58,6 +58,8 @@ const TOOL_LABELS: Record<string, string> = {
   list_agenda: 'consultando tu agenda',
   get_weather: 'consultando el clima',
   add_agent_thought: 'anotando un pensamiento',
+  add_agent_biography: 'sumando a tu biografía',
+  add_agent_talk: 'anotando cómo hablás',
   create_agenda_event: 'agendando el evento',
   delete_agenda_event: 'preparando la eliminación del evento',
   add_agenda_note: 'anotando el pendiente',

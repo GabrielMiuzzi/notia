@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { shallowEqual } from 'react-redux'
 import { Mic, Square } from 'lucide-react'
 import { useAppSelector } from '../../../../store/hooks'
@@ -7,6 +7,7 @@ import { meetingAiSettings } from '../../../../services/meeting/meetingService'
 import type { MeetingFilter } from '../../../../services/meeting/meetingTypes'
 import { useVoiceTranscription } from '../chat/useVoiceTranscription'
 import { useMeetingSnapshot } from '../meeting/useMeetingSnapshot'
+import { useFollowMeetingSession } from '../meeting/useFollowMeetingSession'
 import { formatClock } from '../meeting/meetingDisplay'
 
 const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
@@ -37,18 +38,12 @@ export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
     expectedSpeakers: null,
     meeting: meetingOptions,
   })
-  const { snapshot } = useMeetingSnapshot(NO_FILTER)
+  const { snapshot, refresh: refreshSnapshot } = useMeetingSnapshot(NO_FILTER)
   const status = voice.state.status
 
   // A meeting that is recording elsewhere is followed here too.
-  const attachVoice = voice.attach
-  const attachedIdRef = useRef<string | null>(null)
   const liveId = snapshot?.status === 'live' ? snapshot.id : null
-  useEffect(() => {
-    if (!liveId || status !== 'idle' || attachedIdRef.current === liveId) return
-    attachedIdRef.current = liveId
-    void attachVoice(liveId)
-  }, [attachVoice, liveId, status])
+  useFollowMeetingSession(voice.attach, liveId, status, refreshSnapshot)
 
   const isRecording = status === 'recording' || status === 'paused'
   const hasUnsavedMeeting = snapshot?.status === 'completed' && !snapshot.savedNotePath

@@ -40,15 +40,25 @@ const MIN_PARTIAL_INTERVAL: Duration = Duration::from_millis(400);
 // that start inside that context are discarded by their timestamp. Longer
 // chunks carry enough speech to pick the language themselves, and with the
 // context the model dropped English sentences actually spoken inside them.
+// Half a second of silence separates the context from the chunk and the cut
+// falls in its middle: Parakeet stamps a word up to ~0.25 s before it is
+// heard, and cutting right at the join dropped the first word of the chunk
+// ("y", "que") in one of every four chunks.
 const LANGUAGE_CONTEXT_SAMPLES: usize = SAMPLE_RATE * 3;
 const LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES: usize = SAMPLE_RATE * 4;
-const CONTEXT_CUTOFF_TOLERANCE_SECONDS: f32 = 0.04;
+const CONTEXT_GAP_SAMPLES: usize = SAMPLE_RATE / 2;
 // A long Spanish chunk with an English word sometimes comes out entirely in
 // English. It is decoded again in pieces short enough to carry the context,
 // each cut at the quietest 20 ms after its first two seconds.
 const RETRY_PIECE_MIN_SAMPLES: usize = SAMPLE_RATE * 2;
 const QUIET_FRAME_SAMPLES: usize = SAMPLE_RATE / 50;
 const MIN_PARTIAL_SAMPLES: usize = SAMPLE_RATE / 2;
+// Every chunk is decoded at a steady level between two stretches of silence
+// (see `decoder_input`). -20 dBFS for the loud frames, up to +30 dB.
+const DECODE_PADDING_SAMPLES: usize = SAMPLE_RATE / 2;
+const DECODE_LEVEL: f32 = 0.1;
+const DECODE_MAX_GAIN: f32 = 31.6;
+const DECODE_MAX_PEAK: f32 = 0.95;
 pub const MAX_ASR_THREADS: i32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,13 +453,13 @@ impl OfflineVadRecognizer {
         self.live_partials = true;
     }
 
-    /// Transcribes a chunk: short ones after the language context, long ones
-    /// on their own and, when they come out in English while the configured
-    /// language is Spanish, again in pieces. The pieces are kept only if they
-    /// are no longer English; otherwise English was really spoken.
+    /// Transcribes a chunk: short ones alone and after the language context,
+    /// long ones on their own and, when they come out in English while the
+    /// configured language is Spanish, again in pieces. The pieces are kept
+    /// only if they are no longer English; otherwise English was really spoken.
     fn transcribe(&self, samples: &[f32]) -> Result<String, String> {
         if samples.len() <= LANGUAGE_CONTEXT_MAX_CHUNK_SAMPLES {
-            return Ok(self.normalize(self.decode_after_context(samples)?));
+            return Ok(self.normalize(self.decode_short(samples)?));
         }
         let text = self.decode(samples)?.text;
         if self.in_configured_language(&text) {
@@ -473,17 +483,32 @@ impl OfflineVadRecognizer {
         self.config.language != "es" || !looks_english(text)
     }
 
+    /// The context keeps the language of a short chunk, but after it the
+    /// model sometimes skips a whole short answer, above all in another voice
+    /// ("Hola.", "Sí.", "Claro."). The chunk is also decoded alone and the
+    /// version with more words wins; a tie keeps the context.
+    fn decode_short(&self, samples: &[f32]) -> Result<String, String> {
+        let alone = self.decode(samples)?.text;
+        if self.language_context.is_empty() {
+            return Ok(alone);
+        }
+        let with_context = self.decode_after_context(samples)?;
+        Ok(if word_count(&alone) > word_count(&with_context) { alone } else { with_context })
+    }
+
     /// Decodes a chunk after the language context and keeps only the text
     /// spoken inside the chunk.
     fn decode_after_context(&self, samples: &[f32]) -> Result<String, String> {
         if self.language_context.is_empty() {
             return Ok(self.decode(samples)?.text);
         }
-        let mut audio = Vec::with_capacity(self.language_context.len() + samples.len());
+        let mut audio =
+            Vec::with_capacity(self.language_context.len() + CONTEXT_GAP_SAMPLES + samples.len());
         audio.extend(self.language_context.iter().copied());
+        audio.resize(audio.len() + CONTEXT_GAP_SAMPLES, 0.0);
         audio.extend_from_slice(samples);
-        let cutoff = self.language_context.len() as f32 / SAMPLE_RATE as f32
-            - CONTEXT_CUTOFF_TOLERANCE_SECONDS;
+        let cutoff = (self.language_context.len() + CONTEXT_GAP_SAMPLES / 2) as f32
+            / SAMPLE_RATE as f32;
         match self.decode(&audio)?.tokens {
             Some(tokens) => Ok(text_after(&tokens, cutoff)),
             // Without timestamps the context text cannot be removed.
@@ -502,7 +527,20 @@ impl OfflineVadRecognizer {
         self.language_context.drain(..overflow);
     }
 
+    /// Decodes a chunk brought to a steady level and surrounded by silence;
+    /// token timestamps stay relative to the start of `samples`.
     fn decode(&self, samples: &[f32]) -> Result<Decoded, String> {
+        let mut decoded = self.decode_raw(&decoder_input(samples))?;
+        if let Some(tokens) = decoded.tokens.as_mut() {
+            let padding = DECODE_PADDING_SAMPLES as f32 / SAMPLE_RATE as f32;
+            for (_, start) in tokens {
+                *start -= padding;
+            }
+        }
+        Ok(decoded)
+    }
+
+    fn decode_raw(&self, samples: &[f32]) -> Result<Decoded, String> {
         let n = i32::try_from(samples.len())
             .map_err(|_| "El segmento de voz es demasiado grande.".to_string())?;
         unsafe {
@@ -769,6 +807,39 @@ fn text_after(tokens: &[(String, f32)], cutoff: f32) -> String {
         .join(" ")
 }
 
+/// The audio the model decodes for `samples`: scaled so its loud frames sit
+/// at `DECODE_LEVEL` and wrapped in silence. The quantized Parakeet returns
+/// nothing for whole 20-second chunks of quiet speech and truncates chunks
+/// whose speech starts or ends right at the edge; both behave once the level
+/// is steady and the words have silence around them.
+fn decoder_input(samples: &[f32]) -> Vec<f32> {
+    let gain = speech_gain(samples);
+    let mut audio = Vec::with_capacity(samples.len() + 2 * DECODE_PADDING_SAMPLES);
+    audio.resize(DECODE_PADDING_SAMPLES, 0.0);
+    audio.extend(samples.iter().map(|sample| sample * gain));
+    audio.resize(audio.len() + DECODE_PADDING_SAMPLES, 0.0);
+    audio
+}
+
+/// Gain that brings the 90th percentile of the 20 ms frame levels of
+/// `samples` to `DECODE_LEVEL`, up to `DECODE_MAX_GAIN` and never clipping.
+fn speech_gain(samples: &[f32]) -> f32 {
+    let mut levels = samples
+        .chunks_exact(QUIET_FRAME_SAMPLES)
+        .map(|frame| (frame.iter().map(|sample| sample * sample).sum::<f32>() / frame.len() as f32).sqrt())
+        .collect::<Vec<_>>();
+    if levels.is_empty() {
+        return 1.0;
+    }
+    levels.sort_by(f32::total_cmp);
+    let level = levels[levels.len() * 9 / 10];
+    let peak = samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    if level <= f32::EPSILON || peak <= f32::EPSILON {
+        return 1.0;
+    }
+    (DECODE_LEVEL / level).min(DECODE_MAX_GAIN).min(DECODE_MAX_PEAK / peak)
+}
+
 /// Waits at least twice the last decoding cost so previews never take more
 /// than half of the CPU time available to the worker.
 fn partial_interval(last_decode_cost: Duration) -> Duration {
@@ -856,8 +927,9 @@ unsafe fn symbol<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_history_range, partial_interval, quiet_pieces, text_after, MIN_PARTIAL_INTERVAL,
-        SAMPLE_RATE,
+        collect_history_range, decoder_input, partial_interval, quiet_pieces, speech_gain,
+        text_after, DECODE_MAX_GAIN, DECODE_MAX_PEAK, DECODE_PADDING_SAMPLES,
+        MIN_PARTIAL_INTERVAL, SAMPLE_RATE,
     };
     use std::collections::VecDeque;
     use std::time::Duration;
@@ -941,6 +1013,37 @@ mod tests {
     }
 
     #[test]
+    fn chunks_are_decoded_at_a_steady_level_between_silences() {
+        // Quiet speech (-40 dBFS) with a pause: its loud frames reach -20 dBFS.
+        let quiet = (0..SAMPLE_RATE * 2)
+            .map(|index| {
+                if index < SAMPLE_RATE / 2 {
+                    0.0
+                } else {
+                    0.01 * (index as f32 * 0.3).sin().signum()
+                }
+            })
+            .collect::<Vec<_>>();
+        let gain = speech_gain(&quiet);
+        assert!((gain - 10.0).abs() < 0.01, "gain {gain}");
+        let audio = decoder_input(&quiet);
+        assert_eq!(audio.len(), quiet.len() + 2 * DECODE_PADDING_SAMPLES);
+        let (lead, rest) = audio.split_at(DECODE_PADDING_SAMPLES);
+        let trail = &rest[rest.len() - DECODE_PADDING_SAMPLES..];
+        assert!(lead.iter().chain(trail).all(|sample| *sample == 0.0));
+        assert!((audio[DECODE_PADDING_SAMPLES + SAMPLE_RATE].abs() - 0.1).abs() < 1e-4);
+        // Near silence is raised at most 30 dB, loud audio is lowered, and
+        // no chunk is pushed into clipping.
+        assert_eq!(speech_gain(&[1e-5; 3_200]), DECODE_MAX_GAIN);
+        assert!((speech_gain(&[0.5; 3_200]) - 0.2).abs() < 1e-4);
+        let mut spiky = vec![0.001; 3_200];
+        spiky[100] = 0.9;
+        assert!(speech_gain(&spiky) * 0.9 <= DECODE_MAX_PEAK + 1e-4);
+        assert_eq!(speech_gain(&[0.0; 3_200]), 1.0);
+        assert_eq!(speech_gain(&[0.2; 10]), 1.0);
+    }
+
+    #[test]
     fn partial_previews_back_off_when_decoding_is_slow() {
         assert_eq!(partial_interval(Duration::ZERO), MIN_PARTIAL_INTERVAL);
         assert_eq!(
@@ -982,5 +1085,68 @@ mod native_smoke_tests {
         assert!(update.text.is_empty());
         assert!(recognizer.finish().expect("finish").text.is_empty());
         recognizer.reset_session().expect("reset");
+    }
+
+    /// Transcribes every 16 kHz mono WAV of `NOTIA_ASR_PROBE_DIR` as a live
+    /// session does, in 200 ms batches, and writes the confirmed lines next
+    /// to it as `<name>.out.txt` (`start_ms end_ms text` per line).
+    #[test]
+    #[ignore = "requires NOTIA_ASR_PROBE_DIR and loads the full Parakeet model"]
+    fn transcribes_probe_recordings() {
+        let Ok(dir) = std::env::var("NOTIA_ASR_PROBE_DIR") else {
+            return;
+        };
+        let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+        let models = root.join("resources/speech/models/es-parakeet-tdt-v3");
+        let mut recognizer = OfflineVadRecognizer::load(
+            &root.join("resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll"),
+            &OfflineNemoTransducerConfig {
+                encoder: models.join("encoder.onnx"),
+                decoder: models.join("decoder.onnx"),
+                joiner: models.join("joiner.onnx"),
+                tokens: models.join("tokens.txt"),
+                vad: models.join("silero_vad.onnx"),
+                num_threads: 4,
+                language: "es".to_string(),
+            },
+        )
+        .expect("load packaged Parakeet and Silero models");
+        let mut wavs = std::fs::read_dir(&dir)
+            .expect("read probe dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "wav"))
+            .collect::<Vec<_>>();
+        wavs.sort();
+        for wav in wavs {
+            let samples = hound::WavReader::open(&wav)
+                .expect("open probe wav")
+                .into_samples::<i16>()
+                .map(|sample| f32::from(sample.expect("probe sample")) / f32::from(i16::MAX))
+                .collect::<Vec<_>>();
+            let started_at = std::time::Instant::now();
+            let mut lines = Vec::new();
+            let mut keep = |update: crate::services::speech_worker::RecognitionUpdate| {
+                if update.endpoint_detected || !update.text.is_empty() {
+                    let (start, end) = update.span.map_or((0, 0), |span| (span.start_ms(), span.end_ms()));
+                    lines.push(format!("{start} {end} {}", update.text));
+                }
+            };
+            for batch in samples.chunks(3_200) {
+                let update = recognizer.accept_waveform(batch).expect("accept probe audio");
+                if update.endpoint_detected {
+                    keep(update);
+                }
+            }
+            keep(recognizer.finish().expect("finish probe"));
+            recognizer.reset_session().expect("reset probe");
+            std::fs::write(wav.with_extension("out.txt"), lines.join("\n")).expect("write probe output");
+            eprintln!(
+                "{}: {} lines, {:.1} s audio in {:.1} s",
+                wav.display(),
+                lines.len(),
+                samples.len() as f32 / 16_000.0,
+                started_at.elapsed().as_secs_f32()
+            );
+        }
     }
 }

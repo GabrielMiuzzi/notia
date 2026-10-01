@@ -1,7 +1,8 @@
 //! Content rules of the library's `.agent` workspace: the managed default
 //! rules block, rules added by the agent, persistent memories, the agent's
-//! own thoughts, the confidential context of every agent file and prompt
-//! names. The adapter only reads and writes the files.
+//! own thoughts, the person's biography and way of talking, the
+//! confidential context of every agent file and prompt names. The adapter
+//! only reads and writes the files.
 
 use crate::prompt::{strip_frontmatter, DEFAULT_AGENT_RULES};
 
@@ -19,6 +20,10 @@ pub const RULES_PATH: &str = ".agent/memory/rules.md";
 pub const MEMORY_PATH: &str = ".agent/memory/memory.md";
 /// The agent's own working notes: what it noticed, told, asked or proposed.
 pub const THOUGHTS_PATH: &str = ".agent/memory/thoughts.md";
+/// The person's biography, built by the agent from what they tell it.
+pub const BIOGRAPHY_PATH: &str = ".agent/memory/biography.md";
+/// How the person talks, so the agent talks alike.
+pub const TALK_PATH: &str = ".agent/memory/talk.md";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const DEFAULT_PROMPT_PATH: &str = ".agent/promps/default.md";
 pub const MAX_MEMORIES: usize = 1_000;
@@ -35,6 +40,149 @@ pub const MAX_THOUGHT_CHARS: usize = 1_000;
 pub const THOUGHTS_LIMIT: ItemBudget = ItemBudget { items: 500, chars: 100_000 };
 /// What every reorganization of the thoughts keeps them within.
 pub const THOUGHTS_TARGET: ItemBudget = ItemBudget { items: 400, chars: 80_000 };
+/// Rules the agent added (the managed default block is not counted):
+/// reaching the limit forces a rewrite, like the memory.
+pub const RULES_LIMIT: ItemBudget = ItemBudget { items: 300, chars: 40_000 };
+/// What a full rules block is rewritten down to.
+pub const RULES_TARGET: ItemBudget = ItemBudget { items: 240, chars: 32_000 };
+
+/// A list file of the agent kept like the memory: one item per line, a
+/// version marker, a hard limit that forces a rewrite and the size every
+/// review brings it back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentListFile {
+    pub path: &'static str,
+    marker: &'static str,
+    pub limit: ItemBudget,
+    pub target: ItemBudget,
+    /// Longest single item.
+    pub max_item_chars: usize,
+}
+
+impl AgentListFile {
+    /// File body for `items`, without duplicates.
+    pub fn render(&self, items: &[String]) -> String {
+        render_list(self.marker, &dedupe_items(items.iter().cloned()))
+    }
+}
+
+/// Longest story the biography may hold: a longer one is rewritten.
+pub const BIOGRAPHY_STORY_LIMIT: usize = 80_000;
+/// What a biography grown past its limit is rewritten down to.
+pub const BIOGRAPHY_STORY_TARGET: usize = 64_000;
+/// Facts waiting to be told in the story.
+pub const BIOGRAPHY_NOTES_LIMIT: ItemBudget = ItemBudget { items: 200, chars: 30_000 };
+/// Longest single fact the agent may add.
+pub const MAX_BIOGRAPHY_NOTE_CHARS: usize = 1_000;
+const BIOGRAPHY_MARKER: &str = "<!-- NOTIA_AGENT_BIOGRAPHY_VERSION:2 -->";
+/// The first biographies were a plain list of facts.
+const BIOGRAPHY_LIST_MARKER: &str = "<!-- NOTIA_AGENT_BIOGRAPHY_VERSION:1 -->";
+const BIOGRAPHY_NOTES_START: &str = "<!-- NOTIA_BIOGRAPHY_NOTES_START -->";
+const BIOGRAPHY_NOTES_END: &str = "<!-- NOTIA_BIOGRAPHY_NOTES_END -->";
+const BIOGRAPHY_NOTES_HEADING: &str = "### Datos por incorporar";
+
+/// The person's biography, told like a book: a Markdown story with a title
+/// and a chapter per stage of their life, and the facts learned since the
+/// story was last written, which the model weaves in afterwards.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Biography {
+    pub story: String,
+    pub notes: Vec<String>,
+}
+
+/// Result of adding one fact to the biography.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BiographyAppend {
+    Added(Biography),
+    /// Empty or already waiting.
+    Unchanged,
+    /// No room for more facts: the story must be written first.
+    Full,
+}
+
+impl Biography {
+    /// The biography of a file body. A list from the first version becomes
+    /// facts to tell; text outside the facts block is the story.
+    pub fn parse(body: &str) -> Self {
+        let body = body.replace("\r\n", "\n");
+        if body.contains(BIOGRAPHY_LIST_MARKER) {
+            return Self { story: String::new(), notes: dedupe_items(parse_memory_items(&body)) };
+        }
+        let (story, notes) = match (body.find(BIOGRAPHY_NOTES_START), body.find(BIOGRAPHY_NOTES_END)) {
+            (Some(start), Some(end)) if end > start => (
+                format!("{}\n{}", &body[..start], &body[end + BIOGRAPHY_NOTES_END.len()..]),
+                parse_memory_items(&body[start + BIOGRAPHY_NOTES_START.len()..end]),
+            ),
+            _ => (body.clone(), Vec::new()),
+        };
+        let story = story
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("<!-- NOTIA_"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self { story: collapse_blank_lines(story.trim()), notes: dedupe_items(notes) }
+    }
+
+    /// File body: the version marker, the story and, when there are any,
+    /// the facts still to tell.
+    pub fn render(&self) -> String {
+        let mut parts = vec![BIOGRAPHY_MARKER.to_string()];
+        let story = collapse_blank_lines(self.story.trim());
+        if !story.is_empty() {
+            parts.push(story);
+        }
+        let notes = dedupe_items(self.notes.iter().cloned());
+        if !notes.is_empty() {
+            let mut block = vec![BIOGRAPHY_NOTES_START.to_string(), BIOGRAPHY_NOTES_HEADING.to_string(), String::new()];
+            block.extend(notes.iter().map(|note| format!("- {note}")));
+            block.push(BIOGRAPHY_NOTES_END.to_string());
+            parts.push(block.join("\n"));
+        }
+        format!("{}\n", parts.join("\n\n"))
+    }
+
+    /// The biography with one more fact to tell.
+    pub fn with_note(&self, note: &str) -> BiographyAppend {
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        if note.is_empty() || self.notes.iter().any(|known| known.eq_ignore_ascii_case(&note)) {
+            return BiographyAppend::Unchanged;
+        }
+        if !BIOGRAPHY_NOTES_LIMIT.fits_one_more(&self.notes, &note) {
+            return BiographyAppend::Full;
+        }
+        let mut next = self.clone();
+        next.notes.push(note);
+        BiographyAppend::Added(next)
+    }
+
+    /// Whether the story must be written again: facts are waiting, or it
+    /// grew past its target.
+    pub fn needs_writing(&self) -> bool {
+        !self.notes.is_empty() || self.story.chars().count() > BIOGRAPHY_STORY_TARGET
+    }
+}
+
+/// Text with runs of blank lines collapsed to one.
+fn collapse_blank_lines(text: &str) -> String {
+    let mut lines = Vec::<&str>::new();
+    for line in text.lines().map(str::trim_end) {
+        if line.is_empty() && lines.last().is_some_and(|last| last.is_empty()) {
+            continue;
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// How the person talks: short observations of their style. Small on
+/// purpose: it steers every answer.
+pub const TALK: AgentListFile = AgentListFile {
+    path: TALK_PATH,
+    marker: "<!-- NOTIA_AGENT_TALK_VERSION:1 -->",
+    limit: ItemBudget { items: 60, chars: 8_000 },
+    target: ItemBudget { items: 40, chars: 6_000 },
+    max_item_chars: 400,
+};
 
 const RULES_START: &str = "<!-- NOTIA_DEFAULT_RULES_START -->";
 const RULES_END: &str = "<!-- NOTIA_DEFAULT_RULES_END -->";
@@ -146,15 +294,35 @@ pub fn replace_ia_rules(content: &str, rules: &[String]) -> String {
     with_ia_rules(&ensure_default_rules(content), &unique)
 }
 
-/// Adds one rule; `None` when it is empty or already present.
-pub fn append_rule(content: &str, rule: &str) -> Option<String> {
+/// Result of adding one rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleAppend {
+    /// The rules body with the rule added.
+    Added(String),
+    /// Empty or already present.
+    Unchanged,
+    /// The rules block has no room: it must be rewritten first.
+    Full,
+}
+
+/// Adds one rule within `RULES_LIMIT`.
+pub fn append_rule(content: &str, rule: &str) -> RuleAppend {
     let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut rules = ia_rules(content);
     if rule.is_empty() || rules.iter().any(|known| known.eq_ignore_ascii_case(&rule)) {
-        return None;
+        return RuleAppend::Unchanged;
+    }
+    if !RULES_LIMIT.fits_one_more(&rules, &rule) {
+        return RuleAppend::Full;
     }
     rules.push(rule);
-    Some(with_ia_rules(&ensure_default_rules(content), &rules))
+    RuleAppend::Added(with_ia_rules(&ensure_default_rules(content), &rules))
+}
+
+/// The rules body in its canonical form: the current managed block and the
+/// agent rules one per line, without empty or repeated rules.
+pub fn canonical_rules(content: &str) -> String {
+    replace_ia_rules(content, &ia_rules(content))
 }
 
 fn starts_with_word(text: &str, prefix: &str) -> bool {
@@ -362,16 +530,82 @@ pub fn prompt_file_names(names: impl IntoIterator<Item = String>) -> Vec<String>
 mod tests {
     use super::*;
 
+    fn added(append: RuleAppend) -> String {
+        match append {
+            RuleAppend::Added(body) => body,
+            other => panic!("rule not added: {other:?}"),
+        }
+    }
+
     #[test]
     fn rules_keep_the_managed_block_and_agent_rules() {
-        let first = append_rule("", "Cuando pida un resumen, usá viñetas.").expect("added");
+        let first = added(append_rule("", "Cuando pida un resumen, usá viñetas."));
         assert!(first.contains(RULES_START) && first.contains(IA_RULES_START));
-        assert_eq!(append_rule(&first, "cuando pida un resumen, usá viñetas."), None);
+        assert_eq!(append_rule(&first, "cuando pida un resumen, usá viñetas."), RuleAppend::Unchanged);
         assert_eq!(ia_rules(&first), vec!["Cuando pida un resumen, usá viñetas.".to_string()]);
         let stale = first.replace(DEFAULT_AGENT_RULES.trim(), &format!("{RULES_START}\nvieja\n{RULES_END}"));
         assert_eq!(ensure_default_rules(&stale), ensure_default_rules(&first));
         let replaced = replace_ia_rules(&first, &["a".into(), "A".into(), " ".into()]);
         assert_eq!(ia_rules(&replaced), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn a_full_rules_block_asks_for_a_rewrite_and_rules_have_a_canonical_form() {
+        let rules = (0..RULES_LIMIT.items).map(|index| format!("Regla {index}")).collect::<Vec<_>>();
+        let full = replace_ia_rules("", &rules);
+        assert_eq!(append_rule(&full, "Una más"), RuleAppend::Full);
+        assert_eq!(append_rule(&full, "regla 3"), RuleAppend::Unchanged);
+        let messy = format!("{}\n\n{IA_RULES_START}\n* uno\n\n- UNO\n-dos\n{IA_RULES_END}", DEFAULT_AGENT_RULES.trim());
+        let canonical = canonical_rules(&messy);
+        assert_eq!(ia_rules(&canonical), vec!["uno".to_string(), "dos".to_string()]);
+        assert_eq!(canonical_rules(&canonical), canonical);
+    }
+
+    #[test]
+    fn talk_is_a_bounded_list_like_the_memory() {
+        let items = vec!["Usa voseo.".to_string(), "usa voseo.".to_string(), "Escribe sin tildes.".to_string()];
+        let rendered = TALK.render(&items);
+        assert!(rendered.starts_with("<!-- NOTIA_AGENT_TALK_VERSION:1 -->"));
+        assert_eq!(parse_memory_items(&rendered), vec!["usa voseo.".to_string(), "Escribe sin tildes.".to_string()]);
+        assert!(TALK.target.items < TALK.limit.items && TALK.target.chars < TALK.limit.chars);
+        assert!(TALK.max_item_chars <= MAX_RULE_CHARS);
+        assert!(RULES_TARGET.items < RULES_LIMIT.items && RULES_TARGET.chars < RULES_LIMIT.chars);
+        assert!(BIOGRAPHY_STORY_TARGET < BIOGRAPHY_STORY_LIMIT);
+    }
+
+    #[test]
+    fn the_biography_is_a_story_with_facts_waiting_to_be_told() {
+        let empty = Biography::default();
+        assert_eq!(empty.render(), format!("{BIOGRAPHY_MARKER}\n"));
+        assert_eq!(Biography::parse(&empty.render()), empty);
+        assert!(!empty.needs_writing());
+
+        let BiographyAppend::Added(noted) = empty.with_note("  Nació en   Salta. ") else { panic!("added") };
+        assert_eq!(noted.notes, vec!["Nació en Salta.".to_string()]);
+        assert!(noted.needs_writing());
+        assert_eq!(noted.with_note("nació en salta."), BiographyAppend::Unchanged);
+        assert_eq!(noted.with_note(" "), BiographyAppend::Unchanged);
+
+        let told = Biography {
+            story: "# La vida de Ana\n\n## Origen\n\n\n\nAna nació en Salta, en 1990.".into(),
+            notes: vec!["Estudió en la UNSa.".into()],
+        };
+        let rendered = told.render();
+        assert!(rendered.contains("## Origen\n\nAna nació") && rendered.contains("### Datos por incorporar\n\n- Estudió en la UNSa."));
+        let parsed = Biography::parse(&rendered);
+        assert_eq!(parsed.notes, told.notes);
+        assert_eq!(parsed.story, "# La vida de Ana\n\n## Origen\n\nAna nació en Salta, en 1990.");
+        assert_eq!(Biography::parse(&parsed.render()), parsed);
+
+        // A list from the first version becomes facts to tell.
+        let old = format!("{BIOGRAPHY_LIST_MARKER}\n\n- Nació en Salta.\n- Estudió en la UNSa.\n");
+        assert_eq!(Biography::parse(&old), Biography { story: String::new(), notes: vec!["Nació en Salta.".into(), "Estudió en la UNSa.".into()] });
+        // A hand-written text without markers is the story.
+        assert_eq!(Biography::parse("Ana nació en Salta.").story, "Ana nació en Salta.");
+
+        let full = Biography { story: String::new(), notes: (0..BIOGRAPHY_NOTES_LIMIT.items).map(|index| format!("Dato {index}")).collect() };
+        assert_eq!(full.with_note("Uno más"), BiographyAppend::Full);
+        assert!(Biography { story: "x".repeat(BIOGRAPHY_STORY_TARGET + 1), notes: Vec::new() }.needs_writing());
     }
 
     #[test]

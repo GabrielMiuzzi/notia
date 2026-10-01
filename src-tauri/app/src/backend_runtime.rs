@@ -758,8 +758,9 @@ const CANCELLED_TURN_ENDING: &str = "La persona canceló el pedido antes de que 
 /// Maximum number of skill files loaded into one system prompt.
 const MAX_AGENT_SKILLS: usize = 16;
 /// Maximum characters read from one agent file (prompt, rules, memory,
-/// thoughts, skill). The configured models have long contexts, so the memory
-/// and the thoughts may grow large (their own limits sit below this one).
+/// thoughts, biography, talk, skill). The configured models have long
+/// contexts, so the memory, the thoughts and the biography may grow large
+/// (their own limits sit below this one).
 const MAX_AGENT_FILE_CHARS: usize = 250_000;
 /// Maximum characters of the composed system prompt (about 150k tokens).
 const MAX_SYSTEM_PROMPT_CHARS: usize = 600_000;
@@ -822,6 +823,18 @@ impl notia_backend_core::AgentStateRepository for TauriAgentStateRepository {
         // Asked for under the same owner and persistence checks as memory;
         // the agent writes them only with the `add_agent_thought` tool.
         self.read_optional(library_id, notia_backend_core::agent_workspace::THOUGHTS_PATH)
+    }
+
+    fn load_biography(&self, library_id: &str) -> Result<Option<String>, BackendError> {
+        // Same owner and persistence checks as memory; written with the
+        // `add_agent_biography` tool and the reflection after each turn.
+        self.read_optional(library_id, notia_backend_core::agent_workspace::BIOGRAPHY_PATH)
+    }
+
+    fn load_talk(&self, library_id: &str) -> Result<Option<String>, BackendError> {
+        // Same owner and persistence checks as memory; written with the
+        // `add_agent_talk` tool and the reflection after each turn.
+        self.read_optional(library_id, notia_backend_core::agent_workspace::TALK_PATH)
     }
 
     fn load_skills(&self, library_id: &str) -> Result<Vec<notia_backend_core::AgentSkill>, BackendError> {
@@ -1065,6 +1078,8 @@ impl TauriBackendToolExecutor {
             "add_agent_memory",
             "add_agent_rule",
             "add_agent_thought",
+            "add_agent_biography",
+            "add_agent_talk",
             "read_library_documents",
             "search_library_documents",
             "search_library_context",
@@ -2346,15 +2361,18 @@ impl TauriBackendToolExecutor {
         }
         let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
         // A parallel call without tools and without memory context
-        // organizes memory.md or thoughts.md; the turn does not wait for it.
-        match kind {
-            crate::agent_workspace::AgentItem::Memory if changed => {
-                crate::agent_knowledge::schedule_memory_organization(&self.app, &context.library_id)
+        // organizes the file that changed; the turn does not wait for it.
+        if changed {
+            let library_id = &context.library_id;
+            match kind {
+                crate::agent_workspace::AgentItem::Rule => crate::agent_knowledge::schedule_rules_organization(&self.app, library_id),
+                crate::agent_workspace::AgentItem::Memory => crate::agent_knowledge::schedule_memory_organization(&self.app, library_id),
+                crate::agent_workspace::AgentItem::Thought => crate::agent_knowledge::schedule_thoughts_organization(&self.app, library_id),
+                crate::agent_workspace::AgentItem::Biography => {
+                    crate::agent_knowledge::schedule_biography_organization(&self.app, library_id)
+                }
+                crate::agent_workspace::AgentItem::Talk => crate::agent_knowledge::schedule_talk_organization(&self.app, library_id),
             }
-            crate::agent_workspace::AgentItem::Thought if changed => {
-                crate::agent_knowledge::schedule_thoughts_organization(&self.app, &context.library_id)
-            }
-            _ => {}
         }
         Ok(json!({ "changed": changed }))
     }
@@ -3268,6 +3286,16 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 crate::agent_workspace::AgentItem::Thought,
                 &Self::first_text(&call.arguments, "thought", "content"),
             )?,
+            "add_agent_biography" => self.append_agent_file(
+                context,
+                crate::agent_workspace::AgentItem::Biography,
+                &Self::first_text(&call.arguments, "entry", "content"),
+            )?,
+            "add_agent_talk" => self.append_agent_file(
+                context,
+                crate::agent_workspace::AgentItem::Talk,
+                &Self::first_text(&call.arguments, "observation", "content"),
+            )?,
             "get_finance_record" => {
                 let entity = Self::text(&call.arguments, "entity");
                 if !entity.is_empty() && entity != "movements" {
@@ -4116,6 +4144,8 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "add_agent_memory"
                     | "add_agent_rule"
                     | "add_agent_thought"
+                    | "add_agent_biography"
+                    | "add_agent_talk"
                     | "save_finance_account"
                     | "save_finance_category"
                     | "save_finance_transaction"
@@ -4327,11 +4357,11 @@ pub(crate) fn execute_backend_request(
     if request.autonomous {
         request.tools = notia_backend_core::agent_autonomy::autonomous_tools(std::mem::take(&mut request.tools));
     }
-    // `thoughts.md` is always present for the runs that read it, even when
-    // it was deleted during the session.
+    // `thoughts.md`, `biography.md` and `talk.md` are always present for
+    // the runs that read them, even when deleted during the session.
     if request.context.persistence_policy.allows_memory() && request.context.actor.is_library_owner() {
-        if let Err(error) = crate::agent_workspace::ensure_thoughts_file(app, &request.context.library_id) {
-            log::error!("[notia:memory] no se pudo recrear thoughts.md: {:?}", error.code);
+        if let Err(error) = crate::agent_workspace::ensure_agent_list_files(app, &request.context.library_id) {
+            log::error!("[notia:memory] no se pudieron recrear los archivos del agente: {:?}", error.code);
         }
     }
     // Every chat with more than one area is routed: the turn keeps every

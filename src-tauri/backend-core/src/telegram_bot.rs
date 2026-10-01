@@ -268,6 +268,8 @@ pub fn tool_label(tool: &str) -> &'static str {
         "search_web" => "consultando fuentes públicas",
         "get_weather" => "consultando el clima",
         "add_agent_thought" => "anotando un pensamiento",
+        "add_agent_biography" => "sumando a tu biografía",
+        "add_agent_talk" => "anotando cómo hablás",
         "list_gmail_messages" | "read_gmail_message" | "list_gmail_labels" => "revisando tu correo",
         "send_gmail_message" => "preparando el correo",
         "trash_gmail_messages" | "move_gmail_messages" | "mark_gmail_spam" | "mark_gmail_read" => "preparando el cambio en tu correo",

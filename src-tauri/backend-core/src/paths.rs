@@ -9,6 +9,8 @@ pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const RULES_FILE: &str = "rules.md";
 pub const MEMORY_FILE: &str = "memory.md";
 pub const THOUGHTS_FILE: &str = "thoughts.md";
+pub const BIOGRAPHY_FILE: &str = "biography.md";
+pub const TALK_FILE: &str = "talk.md";
 
 const MAX_LOGICAL_PATH_CHARS: usize = 4096;
 const MAX_PATH_SEGMENT_CHARS: usize = 255;
@@ -33,6 +35,10 @@ pub enum AgentPathKind {
     Memory,
     /// The agent's own thoughts: as private as the memory.
     Thoughts,
+    /// The person's biography, built by the agent: as private as the memory.
+    Biography,
+    /// How the person talks, so the agent talks alike: as private as the memory.
+    Talk,
     Skill,
 }
 
@@ -133,6 +139,8 @@ pub fn validate_agent_path(path: &str) -> Result<AgentPath, BackendError> {
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, RULES_FILE] => (AgentPathKind::Rules, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, MEMORY_FILE] => (AgentPathKind::Memory, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, THOUGHTS_FILE] => (AgentPathKind::Thoughts, true),
+        [AGENT_DIRECTORY, MEMORY_DIRECTORY, BIOGRAPHY_FILE] => (AgentPathKind::Biography, true),
+        [AGENT_DIRECTORY, MEMORY_DIRECTORY, TALK_FILE] => (AgentPathKind::Talk, true),
         [AGENT_DIRECTORY, SKILLS_DIRECTORY, skill, rest @ ..]
             if !skill.is_empty()
                 && (rest.is_empty() || !rest.iter().any(|value| value.is_empty())) =>
@@ -202,7 +210,10 @@ pub fn authorize_agent_path_for(
         ));
     }
     let path = validate_agent_path(path)?;
-    if matches!(path.kind, AgentPathKind::Memory | AgentPathKind::Thoughts)
+    if matches!(
+        path.kind,
+        AgentPathKind::Memory | AgentPathKind::Thoughts | AgentPathKind::Biography | AgentPathKind::Talk
+    )
         && (!context.persistence_policy.allows_memory()
             || !context.actor.is_library_owner())
     {
@@ -339,6 +350,16 @@ mod tests {
         assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-owner"), thoughts).is_ok());
         assert!(authorize_agent_path(&context(PersistencePolicy::EphemeralNoMemory, "user-owner"), thoughts).is_err());
         assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-other"), thoughts).is_err());
+        for (path, kind) in [
+            (".agent/memory/biography.md", AgentPathKind::Biography),
+            (".agent/memory/talk.md", AgentPathKind::Talk),
+        ] {
+            assert_eq!(validate_agent_path(path).ok().map(|path| path.kind()), Some(kind));
+            assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-owner"), path).is_ok());
+            assert!(authorize_agent_path(&context(PersistencePolicy::EphemeralNoMemory, "user-owner"), path).is_err());
+            assert!(authorize_agent_path(&context(PersistencePolicy::PublishedNoMemory, "user-owner"), path).is_err());
+            assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-other"), path).is_err());
+        }
         assert!(authorize_agent_path(
             &context(PersistencePolicy::PublishedNoMemory, "user-owner"),
             ".agent/memory/rules.md"

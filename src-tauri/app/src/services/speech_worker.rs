@@ -584,7 +584,8 @@ fn take_ready_chunk(buffer: &SharedPcmBuffer, queue: &mut QueueWatch) -> Result<
         .map_err(|_| "No se pudo bloquear la cola PCM del worker.".to_string())?;
     let stats = buffer.stats();
     if stats.dropped_samples > queue.dropped_samples {
-        log::warn!(
+        // Error level: the logger hides warnings, and this audio is lost.
+        log::error!(
             "[notia:speech] recognition fell behind; the capture queue discarded {} ms of audio",
             (stats.dropped_samples - queue.dropped_samples).saturating_mul(1_000)
                 / u64::from(SPEECH_SAMPLE_RATE),

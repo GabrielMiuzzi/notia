@@ -81,7 +81,7 @@ describe('voice sessions that outlive their view', () => {
     const view = renderVoice(MEETING)
     await waitFor(() => expect(speech.stateListener).not.toBeNull())
 
-    let attaching: Promise<void> = Promise.resolve()
+    let attaching: Promise<boolean> = Promise.resolve(false)
     act(() => { attaching = view.result.current.attach('meeting-1') })
     act(() => speech.stateListener?.({ sessionId: 'meeting-1', state: { status: 'finalizing', progress: 0.5 } }))
     await act(async () => {
@@ -97,9 +97,38 @@ describe('voice sessions that outlive their view', () => {
     const view = renderVoice(MEETING)
     await waitFor(() => expect(speech.stateListener).not.toBeNull())
 
-    await act(() => view.result.current.attach('meeting-1'))
+    let followed = true
+    await act(async () => { followed = await view.result.current.attach('meeting-1') })
     act(() => speech.stateListener?.({ sessionId: 'meeting-1', state: { status: 'recording', elapsedMs: 0, hasSpeech: true } }))
 
+    expect(followed).toBe(false)
     expect(view.result.current.state).toEqual({ status: 'idle' })
+  })
+
+  it('reads the state again of the session it still follows after a dismissed error', async () => {
+    speech.getSpeechSessionState.mockResolvedValue({ status: 'recording', elapsedMs: 3_300_000, hasSpeech: true })
+    const view = renderVoice(MEETING)
+    await act(() => view.result.current.attach('meeting-1'))
+    act(() => view.result.current.dismissError())
+    expect(view.result.current.state).toEqual({ status: 'idle' })
+
+    speech.getSpeechSessionState.mockResolvedValue({ status: 'recording', elapsedMs: 3_320_000, hasSpeech: true })
+    let followed = false
+    await act(async () => { followed = await view.result.current.attach('meeting-1') })
+
+    expect(followed).toBe(true)
+    expect(view.result.current.state).toEqual({ status: 'recording', elapsedMs: 3_320_000, hasSpeech: true })
+  })
+
+  it('does not follow a second session over the one it follows', async () => {
+    speech.getSpeechSessionState.mockResolvedValue({ status: 'recording', elapsedMs: 0, hasSpeech: true })
+    const view = renderVoice(MEETING)
+    await act(() => view.result.current.attach('meeting-1'))
+
+    let followed = true
+    await act(async () => { followed = await view.result.current.attach('meeting-2') })
+
+    expect(followed).toBe(false)
+    expect(speech.getSpeechSessionState).toHaveBeenCalledTimes(1)
   })
 })

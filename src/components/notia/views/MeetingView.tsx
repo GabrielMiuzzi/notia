@@ -32,6 +32,7 @@ import { MeetingRecordingPanel } from './meeting/MeetingRecordingPanel'
 import { MeetingProcessingPanel } from './meeting/MeetingProcessingPanel'
 import { MeetingCompletedPanel } from './meeting/MeetingCompletedPanel'
 import { useMeetingSnapshot } from './meeting/useMeetingSnapshot'
+import { useFollowMeetingSession } from './meeting/useFollowMeetingSession'
 import { useSpeechLevels } from './meeting/useSpeechLevels'
 import { formatClock } from './meeting/meetingDisplay'
 
@@ -97,7 +98,7 @@ function MeetingViewComponent() {
     () => ({ microphone: sources.microphone, system: sources.system && systemAudioSupported }),
     [sources, systemAudioSupported],
   )
-  const { snapshot, error: snapshotError } = useMeetingSnapshot(filter)
+  const { snapshot, error: snapshotError, refresh: refreshSnapshot } = useMeetingSnapshot(filter)
 
   const status = voice.state.status
   // A meeting that kept recording while the view was closed shows as
@@ -109,13 +110,12 @@ function MeetingViewComponent() {
         : 'ready'
 
   const attachVoice = voice.attach
-  const attachedIdRef = useRef<string | null>(null)
   const runningId = snapshot && (snapshot.status === 'live' || snapshot.status === 'processing') ? snapshot.id : null
-  useEffect(() => {
-    if (!runningId || status !== 'idle' || attachedIdRef.current === runningId) return
-    attachedIdRef.current = runningId
-    void attachVoice(runningId)
-  }, [attachVoice, runningId, status])
+  const ensureFollowing = useFollowMeetingSession(attachVoice, runningId, status, refreshSnapshot)
+  // The recording actions follow the session first when the view lost it.
+  const onSession = (action: () => Promise<unknown>) => async () => {
+    if (await ensureFollowing()) await action()
+  }
   const levels = useSpeechLevels(stage === 'recording' ? snapshot?.id ?? null : monitorId, LEVEL_HISTORY)
 
   const contextMeetingId = snapshot?.id ?? null
@@ -255,7 +255,6 @@ function MeetingViewComponent() {
       // The session owns the file now; the view follows it as a meeting.
       readyMediaIdRef.current = null
       setFileState({ status: 'empty' })
-      attachedIdRef.current = sessionId
       await attachVoice(sessionId)
     } catch (error) {
       setActionError(errorText(error, 'No se pudo empezar a transcribir el archivo.'))
@@ -421,18 +420,18 @@ function MeetingViewComponent() {
                 <Flag size={14} aria-hidden="true" /> Marcar momento
               </button>
               {status === 'paused' ? (
-                <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.resume()}>
+                <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.resume().catch(() => undefined)}>
                   <Play size={14} aria-hidden="true" /> Reanudar
                 </button>
               ) : (
-                <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.pause()}>
+                <button type="button" className="notia-meeting-secondary-button" onClick={() => void onSession(voice.pause)()}>
                   <Pause size={14} aria-hidden="true" /> Pausar
                 </button>
               )}
-              <button type="button" className="notia-meeting-primary-button" onClick={() => void voice.stop()}>
+              <button type="button" className="notia-meeting-primary-button" onClick={() => void onSession(voice.stop)()}>
                 <CircleStop size={14} aria-hidden="true" /> Finalizar
               </button>
-              <button type="button" className="notia-meeting-ghost-button" onClick={() => void voice.cancel()}>
+              <button type="button" className="notia-meeting-ghost-button" onClick={() => void onSession(voice.cancel)()}>
                 <RotateCcw size={14} aria-hidden="true" /> Cancelar
               </button>
             </div>

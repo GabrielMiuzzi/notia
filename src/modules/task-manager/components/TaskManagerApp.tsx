@@ -14,9 +14,8 @@ import { GroupDialog } from './dialogs/GroupDialog'
 import { TaskDialog } from './dialogs/TaskDialog'
 import { PomodoroPanel } from './pomodoro/PomodoroPanel'
 import '../styles/taskManager.css'
+import { CANCELLED_TAB_ID, FINISHED_TAB_ID, archivedPanels } from './archivedPanels'
 
-const FINISHED_TAB_ID = '__finished__'
-const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
 
 export type { TaskManagerChatContext } from '../types/taskManagerTypes'
@@ -131,22 +130,11 @@ function TaskManagerAppComponent({
     [activeBoard, deferredGroups],
   )
 
-  const finishedPaths = useMemo(() => new Set(panelPaths[FINISHED_TAB_ID] ?? []), [panelPaths])
-  const cancelledPaths = useMemo(() => new Set(panelPaths[CANCELLED_TAB_ID] ?? []), [panelPaths])
-  const isArchived = useCallback(
-    (taskPath: string) => finishedPaths.has(taskPath) || cancelledPaths.has(taskPath),
-    [cancelledPaths, finishedPaths],
-  )
-
-  const finishedTasks = useMemo(
-    () => visibleTasks.filter((task) => finishedPaths.has(task.filePath)),
-    [finishedPaths, visibleTasks],
-  )
-
-  const cancelledTasks = useMemo(
-    () => visibleTasks.filter((task) => cancelledPaths.has(task.filePath)),
-    [cancelledPaths, visibleTasks],
-  )
+  const {
+    finished: finishedTasks,
+    cancelled: cancelledTasks,
+    isArchived,
+  } = useMemo(() => archivedPanels(visibleTasks, panelPaths), [panelPaths, visibleTasks])
 
   const activeBoardTasks = useMemo(
     () => visibleTasks.filter((task) => task.board === activeBoard),
@@ -154,12 +142,12 @@ function TaskManagerAppComponent({
   )
 
   const activeBoardTasksCount = useMemo(
-    () => activeBoardTasks.filter((task) => !isArchived(task.filePath)).length,
+    () => activeBoardTasks.filter((task) => !isArchived(task)).length,
     [activeBoardTasks, isArchived],
   )
 
   const activePomodoroTasks = useMemo(
-    () => visibleTasks.filter((task) => !isArchived(task.filePath)),
+    () => visibleTasks.filter((task) => !isArchived(task)),
     [isArchived, visibleTasks],
   )
 

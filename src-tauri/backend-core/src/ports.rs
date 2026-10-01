@@ -81,6 +81,18 @@ pub trait AgentStateRepository: Send + Sync {
         Ok(None)
     }
 
+    /// The person's biography (`.agent/memory/biography.md`), stored once
+    /// per library like the memory.
+    fn load_biography(&self, _library_id: &str) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
+
+    /// How the person talks (`.agent/memory/talk.md`), stored once per
+    /// library like the memory.
+    fn load_talk(&self, _library_id: &str) -> Result<Option<String>, BackendError> {
+        Ok(None)
+    }
+
     fn load_skills(&self, _library_id: &str) -> Result<Vec<AgentSkill>, BackendError> {
         Ok(Vec::new())
     }
@@ -155,6 +167,24 @@ pub fn load_thoughts_for_context(
     let authorized = authorize_agent_path(context, ".agent/memory/thoughts.md")?;
     debug_assert_eq!(authorized.path().kind(), AgentPathKind::Thoughts);
     state.load_thoughts(authorized.library_id())
+}
+
+pub fn load_biography_for_context(
+    state: &dyn AgentStateRepository,
+    context: &BackendRequestContext,
+) -> Result<Option<String>, BackendError> {
+    let authorized = authorize_agent_path(context, ".agent/memory/biography.md")?;
+    debug_assert_eq!(authorized.path().kind(), AgentPathKind::Biography);
+    state.load_biography(authorized.library_id())
+}
+
+pub fn load_talk_for_context(
+    state: &dyn AgentStateRepository,
+    context: &BackendRequestContext,
+) -> Result<Option<String>, BackendError> {
+    let authorized = authorize_agent_path(context, ".agent/memory/talk.md")?;
+    debug_assert_eq!(authorized.path().kind(), AgentPathKind::Talk);
+    state.load_talk(authorized.library_id())
 }
 
 pub fn save_memory_for_context(

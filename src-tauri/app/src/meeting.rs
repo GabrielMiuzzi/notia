@@ -326,16 +326,42 @@ pub(crate) struct MeetingSnapshotPayload {
     filter: MeetingFilter,
 }
 
+/// A meeting still recording or processing while no speech session runs
+/// (a worker that ended without reporting it, such as a stop that failed)
+/// keeps the lines it has and finishes, so the interface never shows a
+/// recording that cannot be paused or finished. Every session that owns a
+/// meeting keeps the speech phase away from idle until it has reported its
+/// end.
+fn settle_orphaned_record(app: &AppHandle, inner: &mut MeetingInner) {
+    let Some(record) = inner.record.as_mut() else { return };
+    if record.status == MeetingStatus::Completed {
+        return;
+    }
+    let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
+    let idle = speech
+        .phase
+        .lock()
+        .is_ok_and(|phase| *phase == crate::services::speech_service::SpeechPhase::Idle);
+    if idle {
+        log::error!("[notia:meeting] the recording's speech session ended without reporting it; the meeting keeps its lines");
+        let duration_ms = record.duration_ms;
+        record.complete(Vec::new(), duration_ms);
+        inner.live.cancel();
+    }
+}
+
 /// The current meeting, unfiltered, and when it started (ms since the
 /// epoch); `None` without one.
 pub(crate) fn current_meeting(app: &AppHandle) -> Option<(MeetingSnapshotDto, u64)> {
-    let inner = lock(app).ok()?;
+    let mut inner = lock(app).ok()?;
+    settle_orphaned_record(app, &mut inner);
     inner.record.as_ref().map(|record| (record.snapshot(&MeetingFilter::default()), record.start.unix_ms))
 }
 
 /// The current meeting with its turns filtered; `None` without one.
 pub(crate) fn meeting_snapshot(app: AppHandle, payload: MeetingSnapshotPayload) -> Result<Option<MeetingSnapshotDto>, BackendError> {
-    let inner = lock(&app)?;
+    let mut inner = lock(&app)?;
+    settle_orphaned_record(&app, &mut inner);
     Ok(inner
         .record
         .as_ref()

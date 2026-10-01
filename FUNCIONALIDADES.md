@@ -35,7 +35,10 @@
 - Memoria persistente del agente para el usuario Owner y Telegram vinculado al Owner, con reglas operativas por biblioteca, guardado de datos personales en el mismo turno, organización automática de memory.md en segundo plano y reescritura cuando se llena; Meeting, Graph View, publicación y Telegram de otros usuarios sin memoria global.
 - Pensamientos propios del agente en `.agent/memory/thoughts.md` (qué notó, avisó, preguntó o propuso, con fecha), siempre presente, con límite, reorganizados en cada guardado y usados como contexto en todos los chats del Owner.
 - Confirmaciones y planes con Confirmar, Confirmar todos (sin volver a preguntar en ese pedido), Proponer otra cosa y Cancelar, en el chat y en Telegram; en Telegram el progreso sigue en un mensaje nuevo después de cada respuesta.
-- Reflexión al terminar cada pedido del Owner (también si falló o se canceló): memorias y pensamientos nuevos guardados solos.
+- Biografía del Owner en `.agent/memory/biography.md`, escrita como un libro (capítulos por etapa, en prosa) con lo que cuenta y con alguna pregunta ocasional, usada como contexto en los chats del Owner.
+- Forma de hablar del Owner en `.agent/memory/talk.md`: el agente anota cómo escribe y le habla parecido.
+- Revisión diaria de `rules.md`, `memory.md`, `thoughts.md`, `biography.md` y `talk.md`: sin duplicados, con formato correcto y dentro de su tamaño.
+- Reflexión al terminar cada pedido del Owner (también si falló o se canceló): memorias, pensamientos, biografía y forma de hablar nuevos guardados solos.
 - Agente autónomo por Telegram (solo al Owner): al llegar mails nuevos a Gmail los revisa y, si vale la pena, recuerda, pregunta o propone mejoras sin repetirse; solo lee y se apaga desde Configuraciones → Telegram (la revisión de cada hora es una acción de Acciones IA).
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
 - Meeting: transcripción de archivos de audio (MP3, WAV, M4A, OGG, FLAC) y video (MP4, MOV, MKV, WEBM) elegidos o arrastrados, con duración, onda, progreso y cancelación; después, separación de hablantes y todo lo de una reunión grabada.
