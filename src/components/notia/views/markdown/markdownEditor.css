@@ -34,6 +34,12 @@
   .notia-markdown-host {
     --notia-editor-gutter: 64px;
     --notia-editor-control: 44px;
+    /*
+     * One finger scrolls; two fingers zoom the note (useMarkdownZoom). The
+     * WebView keeps no pinch of its own, so the gesture always reaches the
+     * editor and can be cancelled there.
+     */
+    touch-action: pan-x pan-y;
   }
 }
 

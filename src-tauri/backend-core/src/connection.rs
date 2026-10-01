@@ -160,9 +160,10 @@ pub fn normalize_connection(settings: ConnectionSettings) -> ConnectionSettings 
 
 /// Commands a client runs on its own device even while it uses a host:
 /// its sign-in with the host, its connection settings, the preferences of
-/// the device itself and the Meeting recording (microphone, recognizer and
-/// speakers of this device; the meeting itself lives on the host).
-/// Everything else goes to the host.
+/// the device itself and its speech: dictation and the whole Meeting
+/// (microphone, recognizer, speakers and the meeting itself; the meeting
+/// note, its tasks and the AI run on the host). Everything else goes to the
+/// host.
 pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "app_auth_status",
     "app_auth_login",
@@ -187,8 +188,8 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "coldpass_enable_biometric",
     "coldpass_disable_biometric",
     "coldpass_unlock_biometric",
-    // Meeting records and recognizes on the device the person holds, so a
-    // tablet can transcribe a meeting in the room.
+    // Speech runs on the device the person holds: a tablet dictates and
+    // transcribes a meeting in the room, also without the network.
     "get_speech_capabilities",
     "probe_speech_audio_input",
     "probe_sherpa_runtime",
@@ -208,9 +209,21 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "meeting_media_finish",
     "meeting_media_discard",
     "meeting_start_file_session",
-    // The position comes from this device's recording; the mark is kept on
-    // the host, with the meeting.
+    "meeting_snapshot",
+    "meeting_context",
+    "meeting_discard",
     "meeting_add_mark",
+    "meeting_remove_mark",
+    "meeting_set_notes",
+    "meeting_set_live_answers",
+    "meeting_regenerate_answer",
+    "meeting_pin_answer",
+    "meeting_rename_speaker",
+    "meeting_merge_speakers",
+    "meeting_generate_insights",
+    "meeting_save_note",
+    "meeting_export",
+    "meeting_send_tasks",
 ];
 
 pub fn is_client_local_command(command: &str) -> bool {
@@ -258,6 +271,7 @@ mod tests {
         let parsed: ConnectionSettings = serde_json::from_str("{}").expect("defaults");
         assert_eq!(parsed, ConnectionSettings::default());
         assert!(is_client_local_command("app_auth_login") && !is_client_local_command("finance_overview"));
-        assert!(is_client_local_command("start_speech_session") && !is_client_local_command("meeting_snapshot"));
+        assert!(is_client_local_command("start_speech_session") && is_client_local_command("meeting_snapshot"));
+        assert!(!is_client_local_command("meeting_task_boards"));
     }
 }

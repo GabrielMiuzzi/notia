@@ -211,7 +211,9 @@ fn route(command: &str) -> Option<Route> {
         "meeting_export" => meeting_export,
         "meeting_task_boards" => meeting_task_boards,
         "meeting_send_tasks" => meeting_send_tasks,
-        "meeting_relay" => meeting_relay,
+        "meeting_store_note" => meeting_store_note,
+        "meeting_store_tasks" => meeting_store_tasks,
+        "meeting_ai_complete" => meeting_ai_complete,
         "get_qwen3_tts_status" => get_qwen3_tts_status,
         "reload_qwen3_tts" => reload_qwen3_tts,
         "synthesize_qwen3_tts_speech" => synthesize_qwen3_tts_speech,
@@ -472,7 +474,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_export",
     "meeting_task_boards",
     "meeting_send_tasks",
-    "meeting_relay",
+    "meeting_store_note",
+    "meeting_store_tasks",
+    "meeting_ai_complete",
     "get_qwen3_tts_status",
     "reload_qwen3_tts",
     "synthesize_qwen3_tts_speech",
@@ -572,7 +576,9 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_export",
     "meeting_task_boards",
     "meeting_send_tasks",
-    "meeting_relay",
+    "meeting_store_note",
+    "meeting_store_tasks",
+    "meeting_ai_complete",
     "coldpass_bluetooth_status",
     "coldpass_bluetooth_connect",
     "coldpass_bluetooth_submit_pin",
@@ -609,28 +615,15 @@ pub fn is_remote_command(command: &str) -> bool {
 }
 
 /// Local-only commands a host also runs for its clients (Host mode, always
-/// the library's Owner): a client records a Meeting on its own device, but
-/// the meeting lives on the host with the library, so the client sends its
-/// changes (`meeting_relay`) and works on it from there. The headless
-/// server, open to other library users, never runs them.
+/// the library's Owner). A client records and keeps its Meeting on its own
+/// device; what touches the library or the AI provider of the host runs
+/// there: the note and its export, the tasks, the boards and the AI. The
+/// headless server, open to other library users, never runs them.
 pub const HOST_CLIENT_COMMANDS: &[&str] = &[
-    "meeting_relay",
-    "meeting_snapshot",
-    "meeting_context",
-    "meeting_discard",
-    "meeting_add_mark",
-    "meeting_remove_mark",
-    "meeting_set_notes",
-    "meeting_set_live_answers",
-    "meeting_regenerate_answer",
-    "meeting_pin_answer",
-    "meeting_rename_speaker",
-    "meeting_merge_speakers",
-    "meeting_generate_insights",
-    "meeting_save_note",
-    "meeting_export",
     "meeting_task_boards",
-    "meeting_send_tasks",
+    "meeting_store_note",
+    "meeting_store_tasks",
+    "meeting_ai_complete",
 ];
 
 pub fn is_host_client_command(command: &str) -> bool {
@@ -1422,13 +1415,25 @@ fn meeting_discard(app: &AppHandle, _window_label: &str, command: &str, args: &V
 }
 
 fn meeting_add_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    let arg0 = app.clone();
-    let arg1 = arg(command, args, "payload")?;
-    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_add_mark(arg0, arg1).await) })))
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_add_mark(app.clone(), arg(command, args, "payload")?))))
 }
 
-fn meeting_relay(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_relay(app.clone(), arg(command, args, "payload")?))))
+fn meeting_store_note(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_store_note(arg0, arg1).await) })))
+}
+
+fn meeting_store_tasks(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_store_tasks(arg0, arg1).await) })))
+}
+
+fn meeting_ai_complete(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_ai_complete(arg0, arg1).await) })))
 }
 
 fn meeting_remove_mark(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

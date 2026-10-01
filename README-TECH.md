@@ -9066,7 +9066,7 @@ Todos son asíncronos; la derivación de la clave tarda un momento.
 Objetivo: que una tablet Android grabe y transcriba una reunión presencial. Antes no funcionaba por dos motivos:
 
 1. **Los modelos no se podían abrir en Android.** El APK empaqueta Parakeet y la diarización en `assets/resources/speech/models/…`, pero en Android `resource_dir()` apunta a `asset://`, que no es una carpeta: sherpa-onnx necesita rutas reales. Ningún perfil quedaba listo, así que fallaba todo reconocimiento local (Meeting y dictado), también sin el modo cliente.
-2. **En modo cliente, Meeting estaba deshabilitado.** Los comandos de grabación y de reunión son «solo locales» y el cliente no los ejecutaba en el dispositivo ni los mandaba al host, así que `NotiaSidebar` ocultaba Meeting (`backendSupports('start_speech_session')` era falso). La vista además usaba el hook de dictado remoto, que no crea la reunión.
+2. **En modo cliente, Meeting estaba deshabilitado.** Los comandos de grabación y de reunión son «solo locales» y el cliente no los ejecutaba en el dispositivo ni los mandaba al host, así que `NotiaSidebar` ocultaba Meeting (`backendSupports('start_speech_session')` era falso). La vista además usaba el hook de dictado remoto, que no crea la reunión, y el dictado del chat mandaba el audio al host.
 
 ### Modelos de voz en Android
 
@@ -9079,47 +9079,43 @@ Objetivo: que una tablet Android grabe y transcriba una reunión presencial. Ant
 
   Con la marca y los tamaños correctos, las cargas siguientes no vuelven a calcular los hashes (unos 700 MB). Lo usan `resolve_asr_model` y `resolve_diarization_model`, así que la primera preparación del modelo en el dispositivo tarda más (copia de ~700 MB). En Windows nada cambia.
 
-### Meeting en un cliente
+### Meeting y dictado en un cliente
 
-La grabación y el reconocimiento corren en el dispositivo; la reunión vive en el host, con la biblioteca.
+Desde el 2026-09-30 (pedido de la persona), un cliente con copia o sin copia transcribe en su propio dispositivo: el modelo es chico y una tablet tiene que poder transcribir una reunión presencial aunque se corte la red. La reunión también queda en el dispositivo. Al host solo va lo que toca su biblioteca o su proveedor de IA. Durante unas horas del mismo día hubo una versión en la que la reunión vivía en el host y el cliente le mandaba cada línea (`meeting_relay`); se reemplazó por esta.
 
 - **En el dispositivo** (`CLIENT_LOCAL_COMMANDS` de `backend-core/src/connection.rs`):
   - `get_speech_capabilities`, `probe_speech_audio_input`, `probe_sherpa_runtime` y `prepare_device_speech_model` (el mismo handler que `prepare_speech_model`, pero siempre local);
   - `start/pause/resume/stop/cancel_speech_session`, `consume_speech_turn`, `skip_speech_diarization` y `speech_session_state`;
   - `start/stop_audio_monitor`, `meeting_media_*` y `meeting_start_file_session`;
-  - `meeting_add_mark`.
+  - todos los `meeting_*` de la reunión salvo `meeting_task_boards`.
 
-  El micrófono, Parakeet y la separación de hablantes son los de la tablet, y funcionan aunque se corte la red.
-- **Canal al host** (`app/src/meeting_relay.rs`): en un cliente (`host_client::uses_host`), los ganchos de `meeting.rs` que usa `speech_service` (`begin`, `begin_file`, `on_line`, `on_processing`, `on_completed`, `on_interrupted`, `discard_session`) no tocan una reunión local. Encolan un `RelayEvent` (`begin`, `beginFile`, `line`, `processing`, `completed`, `interrupted`, `discarded`, `heartbeat`) en una cola ordenada por dispositivo.
-  - Un hilo los manda con `call_host("meeting_relay", { payload: { sessionId, event } })`. Un error reintentable se repite cada 3 s.
-  - Un rechazo definitivo se descarta. Si es el inicio (por ejemplo, el host está grabando su propia reunión), `speech_service::abort_session` termina la grabación del dispositivo y le muestra el motivo.
-  - Con la reunión viva y sin otros eventos, manda un `heartbeat` por minuto. Con el host caído guarda hasta 20.000 eventos y descarta primero las líneas más viejas.
-- **En el host**:
-  - `meeting::meeting_relay` aplica cada evento con las mismas funciones de una reunión local y anota `relayed_at`.
-  - `settle_orphaned_record` cierra una reunión relevada solo si pasan 5 minutos sin noticias de su cliente (no por la fase de voz del host).
-  - `meeting_add_mark` recibe `atMs`: el cliente toma la posición de su grabación y la marca queda en el host.
-- **Permisos**: `registry::HOST_CLIENT_COMMANDS` (`meeting_relay` y los `meeting_*` de la reunión) siguen en `LOCAL_ONLY_COMMANDS`. El servidor del modo Host, al que solo entra el Owner, los acepta de sus clientes (`server/api.rs`); el servidor headless, abierto a otros usuarios, no. El cliente los reenvía (`client_dispatch`) y `connection.rs` ya no los informa como `hostOnlyCommands`, así que Meeting aparece en el cliente.
-- **Interfaz**:
-  - `useDeviceVoiceTranscription` (el hook local) graba en el dispositivo en Meeting y en el botón Grabar de Inicio, también en un cliente. El dictado del chat sigue mandando el audio al host.
-  - El hook local prepara el modelo con `prepareSpeechModel(…, 'device')`.
-  - Las líneas, marcas y respuestas llegan por los eventos del host, que el cliente ya retransmite.
-  - En un navegador sobre el servidor headless, Meeting y el botón Grabar siguen ocultos.
-- **Copia sin conexión**: sin host (`uses_host` falso), la reunión es local, como en un equipo independiente.
+  El micrófono, Parakeet, la separación de hablantes, las líneas, las marcas, las notas rápidas y las respuestas fijadas son del dispositivo. `preload_at_startup` ahora también precarga el modelo en un cliente.
+- **En el host**, desde la reunión del dispositivo (`meeting.rs`, cuando `host_client::uses_host`):
+  - **Nota y exportación**: `save_note` arma el Markdown en el dispositivo y lo escribe con `meeting_store_note` `{ libraryId, folder, fileName, content, previous?, export? }`. El host lo escribe con `write_note_here`, igual que una reunión propia: sobre la nota anterior si no cambió, o con un nombre libre. Si se pide, la exporta a PDF o Word y devuelve `{ logicalPath, visiblePath, revision, exportPath? }`. El dispositivo guarda esa nota en su reunión.
+  - **Tareas**: `meeting_send_tasks` elige las tareas pendientes en el dispositivo y las crea con `meeting_store_tasks` `{ libraryId, board, tasks }`; `meeting_task_boards` se reenvía tal cual.
+  - **IA**: la corrección, «Pasar por IA» y las respuestas en vivo usan `meeting_ai_complete` `{ settings, kind: correction | insights | liveAnswer, prompt }`. La configuración de IA de la biblioteca apunta al proveedor del host (por ejemplo, `localhost` del host), que el dispositivo no alcanza. Las respuestas en vivo de un cliente llegan completas, sin streaming.
+  - Las llamadas usan `host_client::call_host_blocking`, que corre `call_host` en su propio hilo para poder llamarse desde tareas bloqueantes.
+- **Permisos**: `registry::HOST_CLIENT_COMMANDS` (`meeting_task_boards`, `meeting_store_note`, `meeting_store_tasks`, `meeting_ai_complete`) siguen en `LOCAL_ONLY_COMMANDS`. El servidor del modo Host, al que solo entra el Owner, los acepta de sus clientes (`server/api.rs`); el servidor headless, abierto a otros usuarios, no. El cliente los reenvía (`client_dispatch`) y `connection.rs` no los informa como `hostOnlyCommands`.
+- **Interfaz**: `useVoiceTranscription` elige el hook local cuando el backend ofrece `start_speech_session`, también en un cliente: el dictado del chat y Meeting graban y transcriben en el dispositivo, con texto en vivo. El hook remoto queda para un navegador sobre el servidor headless, donde Meeting y el botón Grabar de Inicio siguen ocultos. El hook local prepara el modelo con `prepareSpeechModel(…, 'device')`. El chat lateral lee la transcripción con `meeting_context` (local) y la manda como texto.
+- **Copia sin conexión**: sin host (`uses_host` falso), la nota, las tareas y la IA usan la copia y el proveedor configurado en el dispositivo, como un equipo independiente.
 
 ### Validación
 
-- `cargo test --offline -p notia-app --features bluetooth`: 459 + 4 ignoradas. Incluye tests del formato del canal y de la cola, y el test de extremo a extremo cliente-host en 127.0.0.1 con `begin`, una línea, el snapshot, una marca con `atMs` y el descarte por el canal.
+- `cargo test --offline -p notia-app --features bluetooth`: 456 + 4 ignoradas. El test cliente-host en 127.0.0.1 comprueba que el host:
+  - rechaza `meeting_snapshot` de un cliente;
+  - guarda la nota de una reunión del cliente con `meeting_store_note`, la reescribe con `previous` y usa un nombre libre sin él;
+  - rechaza una carpeta fuera de la biblioteca.
 - `cargo test --offline -p notia-backend-core`: 482.
 - `cargo check --target aarch64-linux-android`: sin errores, 59 warnings como antes.
 - Vitest 422, `tsc` y ESLint.
-- El `cargo check` del crate raíz de escritorio no pudo correr porque la app abierta bloqueaba los modelos que copia `build.rs`; el crate raíz sí compiló en el check de Android.
 - Pendiente en la tablet:
   - instalar un APK nuevo y ver la primera preparación (copia de los modelos);
-  - grabar una reunión presencial como cliente y en una copia sin conexión;
+  - grabar una reunión presencial como cliente, con copia y sin copia;
+  - dictar en el chat;
   - el rendimiento de Parakeet en vivo en ese CPU;
-  - la separación de hablantes al finalizar;
-  - guardar la nota y exportar desde la tablet;
-  - un corte de red durante la reunión.
+  - la separación de hablantes;
+  - guardar la nota, exportar, enviar tareas y «Pasar por IA» a través del host;
+  - un corte de red durante una reunión.
 
 ## Modo Host y Cliente (2026-09-28)
 
@@ -9536,7 +9532,7 @@ El campo `passkey` de las entradas se reemplazó por `password`.
 
   Las fechas relativas («Cambiada hace 14 meses») y absolutas («Reemplazada el 25 sep 2026») se escriben en la interfaz desde las marcas de Rust. Es un size container (`coldpass`) con estos cortes:
   - hasta 1180 px la lista mide 340 px;
-  - hasta 820 px la página se desplaza y la lista y el detalle se alternan, con **Credenciales** para volver;
+  - hasta 820 px la página se desplaza y la lista y el detalle se alternan, con **Credenciales** para volver. La que se desplaza es `.cp-wrap` (alto del 100 % y `overflow-y: auto`). Hasta el 2026-09-30 el desplazamiento estaba en `.cp-view`, dentro de `@container coldpass`, pero una container query no puede darle estilos a su propio contenedor: la regla nunca se aplicaba y en un celular la lista no se podía deslizar con el dedo (se verificó con Chrome headless a 390 px; a 1300 px sigue desplazándose `.cp-rows`);
   - hasta 520 px el encabezado del detalle y los campos se apilan.
 
   El detalle es otro container (`coldpass-detail`) que apila sus tarjetas por debajo de 720 px. Con puntero táctil los objetivos miden 44 px.
@@ -10435,6 +10431,13 @@ Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos d
 - La hoja de una nota sin modo página se pinta igual que las páginas: el mismo fondo, el mismo borde y la misma sombra (`.notia-markdown-page-sheet.is-continuous`). Queda abierta abajo: sin borde inferior, y el contenido del zoom no deja margen al pie. Así llega hasta el borde del editor y crece con la nota y con el trazo más bajo. El texto usa los mismos márgenes que las páginas, también el de arriba.
 - Como la hoja continua ahora tiene el color del papel, los paneles de los elementos y de los bloques GitBook suben un escalón de color también en ese modo (`.is-sheet`, antes solo `.is-paged`).
 - Un A3 mide 1123 px de ancho: en ventanas más angostas la hoja se achica para entrar (`pageFit`), igual que antes.
+- **Zoom sobre la hoja ajustada** (2026-10-01): `pageFit` sale de `sheetFitScale(anchoDelEditor, margenDeEscritorio, anchoDeLaHoja)` (`useMarkdownZoom.ts`), calculado sobre el ancho sin zoom. La escala en pantalla es `zoom × pageFit`, así que el zoom (pellizco con dos dedos o Ctrl + rueda) agranda la hoja desde el tamaño ajustado y, al pasarse del ancho, el editor se desplaza en horizontal. Antes se dividía el ancho por el zoom: la escala quedaba en `(ancho − 2·margen·zoom) / ancho de la hoja`, el ajuste anulaba el zoom y en un teléfono o una tablet (donde el A3 nunca entra) no se podía agrandar. Con puntero táctil, `.notia-markdown-host` tiene `touch-action: pan-x pan-y`: un dedo desplaza y el WebView no se reserva el gesto de dos dedos, que siempre llega cancelable a `useMarkdownZoom`. Con una herramienta de dibujo activa, los toques sobre la hoja siguen siendo de la tinta.
+- **Escritura a mano del sistema con el lápiz** (Android, 2026-10-01): las tablets como la Lenovo Yoga Tab convierten en texto lo que se escribe con el lápiz sobre un campo editable, también dentro del WebView. El lápiz igual manda eventos de puntero y de mouse de compatibilidad a la página, así que el editor tomaba el trazo como un arrastre:
+  - el marco de bloques seleccionaba bloques enteros;
+  - ProseMirror seleccionaba un tramo de texto;
+  - el texto reconocido reemplazaba esa selección.
+
+  `markdown/stylusWriting.ts` deja el lápiz al sistema en Android con la herramienta de selección: `attachBlockMarquee` no arranca con el lápiz (`isSystemStylusPress`) y `leaveStylusToSystem` corta en el host el `mousedown` de compatibilidad de ese toque, sin cancelarlo, para que ProseMirror no arme su selección por arrastre. El toque igual ubica el cursor, que ProseMirror lee de la selección del documento. Con lápiz o borrador activos, el lápiz sigue siendo de la tinta; en Windows el lápiz no cambia. Android se detecta por el `userAgent` del WebView porque es un dato del dispositivo, no del backend (un cliente informa la plataforma del host). El `touch-action: pan-x pan-y` del editor no apaga esa escritura: Android solo la desactiva cuando el `touch-action` no admite el paneo. Pendiente: confirmarlo en la tablet; si sigue fallando, reproducir el caso y mirar los gestos de escritura del sistema (rodear para seleccionar, tachar para borrar).
 
 **Validación.** `cargo test -p notia-backend-core` 476 y `-p notia-app --features bluetooth` 450, con las pruebas de `page_setup` y `device_preferences` pasadas a A3; `vitest` de `src/components/notia` 189; `tsc`. Revisión visual con el arnés: hoja continua corta en oscuro (llega abajo) y páginas A3 en claro.
 

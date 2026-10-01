@@ -11,9 +11,12 @@
 //! memory until the person discards it, starts another recording or saves
 //! it as a library note.
 //!
-//! A client in Host mode records on its own device, but its meeting lives
-//! on the host: the speech hooks below send each change there
-//! (`meeting_relay`), and the host applies it with `meeting_relay`.
+//! On a client in Host mode the meeting is the device's own: it records,
+//! recognizes and keeps the meeting here (a tablet in the room works even
+//! without the network). Only what touches the host goes there: the note
+//! and its export (`meeting_store_note`), the tasks (`meeting_store_tasks`)
+//! and the AI (`meeting_ai_complete`), because the AI settings of the
+//! library point to the host's provider.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -52,17 +55,6 @@ pub(crate) struct MeetingState {
 struct MeetingInner {
     record: Option<MeetingRecord>,
     live: LiveAnswers,
-    /// When a client last reported the record it records (Host mode);
-    /// `None` for a meeting recorded on this device.
-    relayed_at: Option<Instant>,
-}
-
-/// A relayed meeting without news for this long lost its client.
-const RELAY_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
-
-/// Whether this device sends its meeting to its host instead of keeping it.
-fn relays(app: &AppHandle) -> bool {
-    crate::host_client::uses_host(app)
 }
 
 #[derive(Default)]
@@ -107,6 +99,55 @@ fn announce(app: &AppHandle, meeting_id: &str) {
     let _ = app.emit(CHANGED_EVENT, json!({ "meetingId": meeting_id }));
 }
 
+/// Whether this device is a client working on its host: the library and
+/// the AI provider are the host's.
+fn uses_host(app: &AppHandle) -> bool {
+    crate::host_client::uses_host(app)
+}
+
+/// Which AI request of a meeting; the system prompt follows from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum MeetingAiKind {
+    Correction,
+    Insights,
+    LiveAnswer,
+}
+
+impl MeetingAiKind {
+    fn system_prompt(self) -> &'static str {
+        match self {
+            Self::Correction => meeting::CORRECTION_SYSTEM_PROMPT,
+            Self::Insights => meeting::INSIGHTS_SYSTEM_PROMPT,
+            Self::LiveAnswer => meeting::LIVE_ANSWER_SYSTEM_PROMPT,
+        }
+    }
+}
+
+/// The provider preferences as they travel to the host.
+fn settings_input(settings: &AiSettings) -> AiSettingsInput {
+    AiSettingsInput {
+        ollama_url: settings.ollama_url.clone(),
+        api_key: settings.api_key.clone(),
+        selected_model: settings.selected_model.clone(),
+        thinking_enabled: settings.thinking_enabled,
+        thinking_level: settings.thinking_level,
+    }
+}
+
+/// Completes an AI request of a meeting: on this device, or on the host
+/// for a client (its library's provider is the host's).
+fn complete_text(app: &AppHandle, settings: &AiSettings, kind: MeetingAiKind, prompt: &str) -> Result<String, BackendError> {
+    if uses_host(app) {
+        return crate::host_client::call_host_blocking(
+            app,
+            "meeting_ai_complete",
+            json!({ "payload": { "settings": settings_input(settings), "kind": kind, "prompt": prompt } }),
+        );
+    }
+    crate::ai_tasks::complete(app, settings, kind.system_prompt(), prompt, Vec::new())
+}
+
 fn missing() -> BackendError {
     BackendError::new(BackendErrorCode::NotFound, "La reunión ya no está disponible.", false)
 }
@@ -138,14 +179,9 @@ fn start_labels() -> MeetingStart {
 /// A Meeting session is starting: its record replaces the previous one.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, options: &MeetingSessionOptions) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::begin(sources, options));
-        return;
-    }
     let settings = options.settings.as_ref().map(AiSettingsInput::normalize);
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
-    inner.relayed_at = None;
     inner.record = Some(MeetingRecord::new(
         session_id,
         start_labels(),
@@ -162,13 +198,8 @@ pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, 
 /// capture and no live answers.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceFile) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::BeginFile { name: file.name });
-        return;
-    }
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
-    inner.relayed_at = None;
     inner.record = Some(MeetingRecord::from_file(session_id, start_labels(), file));
     inner.live.settings = None;
     drop(inner);
@@ -179,10 +210,6 @@ pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceF
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)>, text: &str) {
     if text.trim().is_empty() {
-        return;
-    }
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Line { span, text: text.to_string() });
         return;
     }
     let job = {
@@ -213,10 +240,6 @@ pub(crate) fn on_line(app: &AppHandle, session_id: &str, span: Option<(u64, u64)
 /// The recording stopped and its speakers are being separated.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_processing(app: &AppHandle, session_id: &str, duration_ms: u64) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Processing { duration_ms });
-        return;
-    }
     let changed = with_record(app, session_id, |record| {
         record.begin_processing(duration_ms);
         Ok(())
@@ -231,10 +254,6 @@ pub(crate) fn on_processing(app: &AppHandle, session_id: &str, duration_ms: u64)
 
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_completed(app: &AppHandle, session_id: &str, transcript: &DiarizedTranscriptDto, duration_ms: u64) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::completed(transcript, duration_ms));
-        return;
-    }
     let segments = transcript
         .segments
         .iter()
@@ -258,10 +277,6 @@ pub(crate) fn on_completed(app: &AppHandle, session_id: &str, transcript: &Diari
 /// The session failed: what was recognized stays as the transcript.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
 pub(crate) fn on_interrupted(app: &AppHandle, session_id: &str) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Interrupted);
-        return;
-    }
     let changed = with_record(app, session_id, |record| {
         if record.status != MeetingStatus::Completed {
             let duration_ms = record.duration_ms;
@@ -276,10 +291,6 @@ pub(crate) fn on_interrupted(app: &AppHandle, session_id: &str) {
 
 /// The session was cancelled or could not start: its record goes away.
 pub(crate) fn discard_session(app: &AppHandle, session_id: &str) {
-    if relays(app) {
-        crate::meeting_relay::send(app, session_id, crate::meeting_relay::RelayEvent::Discarded);
-        return;
-    }
     let Ok(mut inner) = lock(app) else { return };
     if inner.record.as_ref().is_some_and(|record| record.id == session_id) {
         inner.live.cancel();
@@ -323,27 +334,31 @@ fn spawn_answer(app: AppHandle, job: AnswerJob) {
 /// answer next.
 fn run_answer(app: &AppHandle, job: AnswerJob) -> Option<AnswerJob> {
     let mut last_event = Instant::now() - ANSWER_EVENT_INTERVAL;
-    let result = crate::ai_tasks::stream_complete(
-        app,
-        &job.settings,
-        meeting::LIVE_ANSWER_SYSTEM_PROMPT,
-        &job.prompt,
-        &job.control,
-        &mut |text| {
-            if last_event.elapsed() < ANSWER_EVENT_INTERVAL {
-                return;
-            }
-            last_event = Instant::now();
-            let _ = with_record(app, &job.meeting_id, |record| {
-                record.set_answer_text(&job.answer_id, text);
-                Ok(())
-            });
-            let _ = app.emit(
-                ANSWER_EVENT,
-                json!({ "meetingId": job.meeting_id, "answerId": job.answer_id, "text": text }),
-            );
-        },
-    );
+    let show = |text: &str| {
+        let _ = with_record(app, &job.meeting_id, |record| {
+            record.set_answer_text(&job.answer_id, text);
+            Ok(())
+        });
+        let _ = app.emit(ANSWER_EVENT, json!({ "meetingId": job.meeting_id, "answerId": job.answer_id, "text": text }));
+    };
+    // A client asks its host, which answers at once instead of streaming.
+    let result = if uses_host(app) {
+        complete_text(app, &job.settings, MeetingAiKind::LiveAnswer, &job.prompt).inspect(|text| show(text))
+    } else {
+        crate::ai_tasks::stream_complete(
+            app,
+            &job.settings,
+            meeting::LIVE_ANSWER_SYSTEM_PROMPT,
+            &job.prompt,
+            &job.control,
+            &mut |text| {
+                if last_event.elapsed() >= ANSWER_EVENT_INTERVAL {
+                    last_event = Instant::now();
+                    show(text);
+                }
+            },
+        )
+    };
     let next = {
         let Ok(mut guard) = lock(app) else { return None };
         let inner = &mut *guard;
@@ -382,19 +397,12 @@ fn settle_orphaned_record(app: &AppHandle, inner: &mut MeetingInner) {
     if record.status == MeetingStatus::Completed {
         return;
     }
-    // A meeting a client records is orphaned when its client stopped
-    // reporting (it sends a heartbeat every minute), not by this device.
-    let orphaned = match inner.relayed_at {
-        Some(reported) => reported.elapsed() >= RELAY_STALE_AFTER,
-        None => {
-            let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-            speech
-                .phase
-                .lock()
-                .is_ok_and(|phase| *phase == crate::services::speech_service::SpeechPhase::Idle)
-        }
-    };
-    if orphaned {
+    let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
+    let idle = speech
+        .phase
+        .lock()
+        .is_ok_and(|phase| *phase == crate::services::speech_service::SpeechPhase::Idle);
+    if idle {
         log::error!("[notia:meeting] the recording's speech session ended without reporting it; the meeting keeps its lines");
         let duration_ms = record.duration_ms;
         record.complete(Vec::new(), duration_ms);
@@ -448,82 +456,13 @@ pub(crate) fn meeting_discard(app: AppHandle, payload: MeetingIdPayload) -> Resu
 }
 
 /// Marks the current moment of the recording.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MeetingAddMarkPayload {
-    meeting_id: String,
-    /// Position of the recording, sent by the client that records a meeting
-    /// kept on this host.
-    #[serde(default)]
-    at_ms: Option<u64>,
-}
-
-/// Marks the current moment of the recording. On a client in Host mode the
-/// position comes from this device's recording and the mark is kept on the
-/// host, with the meeting.
-pub(crate) async fn meeting_add_mark(app: AppHandle, payload: MeetingAddMarkPayload) -> Result<MeetingMark, BackendError> {
+pub(crate) fn meeting_add_mark(app: AppHandle, payload: MeetingIdPayload) -> Result<MeetingMark, BackendError> {
     let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-    let position = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id);
-    if relays(&app) {
-        let at_ms = position.map_err(BackendError::invalid_input)?;
-        return crate::host_client::call_host(
-            &app,
-            "meeting_add_mark",
-            json!({ "payload": { "meetingId": payload.meeting_id, "atMs": at_ms } }),
-        )
-        .await;
-    }
-    let at_ms = match (payload.at_ms, position) {
-        (Some(at_ms), _) if lock(&app)?.relayed_at.is_some() => at_ms,
-        (_, position) => position.map_err(BackendError::invalid_input)?,
-    };
+    let at_ms = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id)
+        .map_err(BackendError::invalid_input)?;
     let mark = with_record(&app, &payload.meeting_id, |record| record.add_mark(at_ms))?;
     announce(&app, &payload.meeting_id);
     Ok(mark)
-}
-
-/// Applies a change of the meeting a client in Host mode records on its
-/// own device (see `meeting_relay`). A new meeting replaces the current one,
-/// unless this device is recording or processing its own.
-pub(crate) fn meeting_relay(app: AppHandle, payload: crate::meeting_relay::RelayPayload) -> Result<(), BackendError> {
-    use crate::meeting_relay::RelayEvent;
-    let session_id = payload.session_id.as_str();
-    match payload.event {
-        RelayEvent::Begin { microphone, system, options } => {
-            refuse_while_recording_here(&app)?;
-            let options = serde_json::from_value::<MeetingSessionOptions>(options)
-                .map_err(|_| BackendError::invalid_input("Las opciones de la reunión no son válidas."))?;
-            begin(&app, session_id, CaptureSources { microphone, system }, &options);
-        }
-        RelayEvent::BeginFile { name } => {
-            refuse_while_recording_here(&app)?;
-            begin_file(&app, session_id, MeetingSourceFile::from_name(&name).map_err(BackendError::invalid_input)?);
-        }
-        RelayEvent::Line { span, text } => on_line(&app, session_id, span, &text),
-        RelayEvent::Processing { duration_ms } => on_processing(&app, session_id, duration_ms),
-        RelayEvent::Completed { text, speaker_count, segments, duration_ms } => {
-            let transcript = crate::meeting_relay::transcript_of(text, speaker_count, segments);
-            on_completed(&app, session_id, &transcript, duration_ms);
-        }
-        RelayEvent::Interrupted => on_interrupted(&app, session_id),
-        RelayEvent::Discarded => discard_session(&app, session_id),
-        RelayEvent::Heartbeat => {}
-    }
-    let mut inner = lock(&app)?;
-    if inner.record.as_ref().is_some_and(|record| record.id == session_id) {
-        inner.relayed_at = Some(Instant::now());
-    }
-    Ok(())
-}
-
-/// A client cannot replace the meeting this device is recording.
-fn refuse_while_recording_here(app: &AppHandle) -> Result<(), BackendError> {
-    let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-    let busy = speech.phase.lock().is_ok_and(|phase| *phase != crate::services::speech_service::SpeechPhase::Idle);
-    if busy {
-        return Err(BackendError::invalid_input("El host está grabando o procesando su propia reunión. Probá cuando termine."));
-    }
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -707,7 +646,7 @@ pub(crate) async fn meeting_generate_insights(app: AppHandle, payload: MeetingIn
         if request.correct {
             let mut corrections = std::collections::HashMap::new();
             for batch in record.correction_batches() {
-                let answer = crate::ai_tasks::complete(&app, &settings, meeting::CORRECTION_SYSTEM_PROMPT, &batch.prompt, Vec::new())?;
+                let answer = complete_text(&app, &settings, MeetingAiKind::Correction, &batch.prompt)?;
                 corrections.extend(meeting::parse_corrections(&answer, &batch));
             }
             with_record(&app, &payload.meeting_id, |record| {
@@ -719,7 +658,7 @@ pub(crate) async fn meeting_generate_insights(app: AppHandle, payload: MeetingIn
         if request.wants_insights() {
             let context = with_record(&app, &payload.meeting_id, |record| Ok(record.context_text()))?;
             let prompt = meeting::insights_prompt(&context, request)?;
-            let answer = crate::ai_tasks::complete(&app, &settings, meeting::INSIGHTS_SYSTEM_PROMPT, &prompt, Vec::new())?;
+            let answer = complete_text(&app, &settings, MeetingAiKind::Insights, &prompt)?;
             let parsed = meeting::parse_insights(&answer, request)?;
             with_record(&app, &payload.meeting_id, |record| {
                 record.apply_insights(parsed);
@@ -773,25 +712,42 @@ fn in_folder(folder: &str, name: &str) -> String {
     if folder.is_empty() { name.to_string() } else { format!("{folder}/{name}") }
 }
 
-/// Writes the meeting note, over the one saved before when it is still in
-/// the same folder and unchanged. Returns its logical path.
-fn save_note(app: &AppHandle, meeting_id: &str, library_id: &str, folder: &str) -> Result<String, BackendError> {
-    let folder = note_folder(folder)?;
-    let record = with_record(app, meeting_id, |record| {
-        if record.status != MeetingStatus::Completed {
-            return Err(BackendError::invalid_input("La reunión todavía no terminó de procesarse."));
-        }
-        Ok(record.clone())
-    })?;
-    let body = record.note_markdown();
-    let content = notia_backend_core::markdown_editing::ensure_markdown_defaults(&body, record.start.unix_ms).unwrap_or(body);
-    let previous = record.saved_note.clone().filter(|saved| {
-        saved.logical_path.rsplit_once('/').map_or("", |(parent, _)| parent) == folder
-    });
+/// The note saved before, to write over while it did not change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreviousNote {
+    logical_path: String,
+    revision: String,
+}
+
+/// A meeting note written in the library, and its export when asked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredNote {
+    logical_path: String,
+    visible_path: String,
+    revision: String,
+    #[serde(default)]
+    export_path: Option<String>,
+}
+
+/// Writes `content` as the meeting note in `folder` of the library, over
+/// `previous` when it is still there and unchanged, or under a free name
+/// from `file_name`, and exports it to `export` when asked. Runs where the
+/// library is: this device, or the host for a client.
+fn write_note_here(
+    app: &AppHandle,
+    library_id: &str,
+    folder: &str,
+    file_name: &str,
+    content: &str,
+    previous: Option<&PreviousNote>,
+    export: Option<ExportFormat>,
+) -> Result<StoredNote, BackendError> {
     let logical_path = crate::library_documents::with_documents(app, library_id, |documents| {
-        if let Some(previous) = &previous {
+        if let Some(previous) = previous {
             let locator = documents.locator(&previous.logical_path)?;
-            match documents.adapter.write_locator(&locator, &content, Some(previous.revision.as_str())) {
+            match documents.adapter.write_locator(&locator, content, Some(previous.revision.as_str())) {
                 Ok(()) => return Ok(previous.logical_path.clone()),
                 Err(error) if error.code == BackendErrorCode::NotFound => {}
                 Err(error) if error.code == BackendErrorCode::Conflict => {
@@ -804,34 +760,95 @@ fn save_note(app: &AppHandle, meeting_id: &str, library_id: &str, folder: &str) 
                 Err(error) => return Err(error),
             }
         }
-        let file_name = record.note_file_name();
         for number in 1..=MAX_NOTE_NAME_ATTEMPTS {
-            let path = in_folder(&folder, &meeting::numbered_file_name(&file_name, number));
+            let path = in_folder(folder, &meeting::numbered_file_name(file_name, number));
             if documents.read(&path)?.is_none() {
-                documents.write(&path, None, &content)?;
+                documents.write(&path, None, content)?;
                 return Ok(path);
             }
         }
         Err(BackendError::invalid_input("Ya hay demasiadas notas de reunión con este nombre en la carpeta."))
     })?;
+    let export_path = match export {
+        Some(format) => {
+            let receipt = crate::filesystem::adapter::export_library_document(
+                app.state::<crate::library_registry::LibraryBindingRegistry>().inner(),
+                app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>().inner(),
+                library_id,
+                &logical_path,
+                format,
+                &crate::device_preferences::page_geometry(app),
+            )?;
+            Some(crate::library_session::visible_path(app, library_id, &receipt.destination_logical_path))
+        }
+        None => None,
+    };
+    crate::library_session::reindex_in_background(app, library_id);
+    Ok(StoredNote {
+        visible_path: crate::library_session::visible_path(app, library_id, &logical_path),
+        logical_path,
+        revision: crate::filesystem::types::content_revision(content),
+        export_path,
+    })
+}
+
+/// Saves the meeting note (and its export), over the one saved before when
+/// it is still in the same folder and unchanged.
+fn save_note(
+    app: &AppHandle,
+    meeting_id: &str,
+    library_id: &str,
+    folder: &str,
+    export: Option<ExportFormat>,
+) -> Result<StoredNote, BackendError> {
+    let folder = note_folder(folder)?;
+    let record = with_record(app, meeting_id, |record| {
+        if record.status != MeetingStatus::Completed {
+            return Err(BackendError::invalid_input("La reunión todavía no terminó de procesarse."));
+        }
+        Ok(record.clone())
+    })?;
+    let body = record.note_markdown();
+    let content = notia_backend_core::markdown_editing::ensure_markdown_defaults(&body, record.start.unix_ms).unwrap_or(body);
+    let previous = record
+        .saved_note
+        .clone()
+        .filter(|saved| saved.logical_path.rsplit_once('/').map_or("", |(parent, _)| parent) == folder)
+        .map(|saved| PreviousNote { logical_path: saved.logical_path, revision: saved.revision });
+    let file_name = record.note_file_name();
+    let stored = if uses_host(app) {
+        crate::host_client::call_host_blocking::<StoredNote>(
+            app,
+            "meeting_store_note",
+            json!({ "payload": {
+                "libraryId": library_id,
+                "folder": folder,
+                "fileName": file_name,
+                "content": content,
+                "previous": previous,
+                "export": export,
+            } }),
+        )?
+    } else {
+        write_note_here(app, library_id, &folder, &file_name, &content, previous.as_ref(), export)?
+    };
     with_record(app, meeting_id, |record| {
         record.saved_note = Some(SavedMeetingNote {
-            logical_path: logical_path.clone(),
-            visible_path: crate::library_session::visible_path(app, library_id, &logical_path),
-            revision: crate::filesystem::types::content_revision(&content),
+            logical_path: stored.logical_path.clone(),
+            visible_path: stored.visible_path.clone(),
+            revision: stored.revision.clone(),
         });
         Ok(())
     })?;
-    crate::library_session::reindex_in_background(app, library_id);
     announce(app, meeting_id);
-    Ok(logical_path)
+    Ok(stored)
 }
 
 /// "Guardar como nota": the meeting as a Markdown note of the library.
 pub(crate) async fn meeting_save_note(app: AppHandle, payload: MeetingSavePayload) -> Result<MeetingSavedNoteDto, BackendError> {
     crate::host::async_runtime::spawn_blocking(move || {
-        let logical_path = save_note(&app, &payload.meeting_id, &payload.library_id, &payload.folder)?;
-        Ok(MeetingSavedNoteDto { path: crate::library_session::visible_path(&app, &payload.library_id, &logical_path) })
+        let stored = save_note(&app, &payload.meeting_id, &payload.library_id, &payload.folder, None)?;
+        Ok(MeetingSavedNoteDto { path: stored.visible_path })
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo guardar la reunión.", true))?
@@ -865,23 +882,68 @@ pub(crate) async fn meeting_export(app: AppHandle, payload: MeetingExportPayload
         _ => return Err(BackendError::invalid_input("Formato de exportación no válido.")),
     };
     crate::host::async_runtime::spawn_blocking(move || {
-        let note = save_note(&app, &payload.meeting_id, &payload.library_id, &payload.folder)?;
-        let receipt = crate::filesystem::adapter::export_library_document(
-            app.state::<crate::library_registry::LibraryBindingRegistry>().inner(),
-            app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>().inner(),
-            &payload.library_id,
-            &note,
-            format,
-            &crate::device_preferences::page_geometry(&app),
-        )?;
-        crate::library_session::reindex_in_background(&app, &payload.library_id);
+        let stored = save_note(&app, &payload.meeting_id, &payload.library_id, &payload.folder, Some(format))?;
         Ok(MeetingExportDto {
-            path: crate::library_session::visible_path(&app, &payload.library_id, &receipt.destination_logical_path),
-            note_path: crate::library_session::visible_path(&app, &payload.library_id, &note),
+            path: stored.export_path.unwrap_or_default(),
+            note_path: stored.visible_path,
         })
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo exportar la reunión.", true))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingStoreNotePayload {
+    library_id: String,
+    folder: String,
+    file_name: String,
+    content: String,
+    #[serde(default)]
+    previous: Option<PreviousNote>,
+    #[serde(default)]
+    export: Option<ExportFormat>,
+}
+
+/// Writes in this host's library the note of a meeting a client recorded
+/// and keeps on its device (and exports it when asked).
+pub(crate) async fn meeting_store_note(app: AppHandle, payload: MeetingStoreNotePayload) -> Result<StoredNote, BackendError> {
+    let folder = note_folder(&payload.folder)?;
+    let file_name = payload.file_name.trim().to_string();
+    if file_name.is_empty() || file_name.contains(['/', '\\']) || !file_name.to_ascii_lowercase().ends_with(".md") {
+        return Err(BackendError::invalid_input("El nombre de la nota de la reunión no es válido."));
+    }
+    crate::host::async_runtime::spawn_blocking(move || {
+        write_note_here(
+            &app,
+            &payload.library_id,
+            &folder,
+            &file_name,
+            &payload.content,
+            payload.previous.as_ref(),
+            payload.export,
+        )
+    })
+    .await
+    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo guardar la reunión.", true))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingAiCompletePayload {
+    settings: AiSettingsInput,
+    kind: MeetingAiKind,
+    prompt: String,
+}
+
+/// Completes on this host an AI request of a meeting a client keeps on its
+/// device: the library's AI settings point to this host's provider.
+pub(crate) async fn meeting_ai_complete(app: AppHandle, payload: MeetingAiCompletePayload) -> Result<String, BackendError> {
+    crate::host::async_runtime::spawn_blocking(move || {
+        crate::ai_tasks::complete(&app, &payload.settings.normalize(), payload.kind.system_prompt(), &payload.prompt, Vec::new())
+    })
+    .await
+    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "La operación de IA se interrumpió.", true))?
 }
 
 #[derive(Debug, Deserialize)]
@@ -925,7 +987,15 @@ pub(crate) async fn meeting_send_tasks(app: AppHandle, payload: MeetingSendTasks
             return Err(BackendError::invalid_input("No hay tareas nuevas para enviar."));
         }
         let tasks = pending.iter().map(|task| (task.title.clone(), task.detail.clone())).collect::<Vec<_>>();
-        let created = crate::task_manager_commands::create_owner_tasks(&app, &payload.library_id, &payload.board, &tasks)?;
+        let created = if uses_host(&app) {
+            crate::host_client::call_host_blocking::<usize>(
+                &app,
+                "meeting_store_tasks",
+                json!({ "payload": { "libraryId": payload.library_id, "board": payload.board, "tasks": tasks } }),
+            )?
+        } else {
+            crate::task_manager_commands::create_owner_tasks(&app, &payload.library_id, &payload.board, &tasks)?
+        };
         let sent = pending.into_iter().map(|task| task.id).collect::<Vec<_>>();
         with_record(&app, &payload.meeting_id, |record| {
             record.mark_tasks_sent(&sent);
@@ -933,6 +1003,28 @@ pub(crate) async fn meeting_send_tasks(app: AppHandle, payload: MeetingSendTasks
         })?;
         announce(&app, &payload.meeting_id);
         Ok(MeetingSentTasksDto { created })
+    })
+    .await
+    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron crear las tareas.", true))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingStoreTasksPayload {
+    library_id: String,
+    board: String,
+    /// Title and detail of each task.
+    tasks: Vec<(String, String)>,
+}
+
+/// Creates in this host's Task Manager the tasks of a meeting a client
+/// keeps on its device. Returns how many it created.
+pub(crate) async fn meeting_store_tasks(app: AppHandle, payload: MeetingStoreTasksPayload) -> Result<usize, BackendError> {
+    if payload.board.trim().is_empty() || payload.tasks.is_empty() {
+        return Err(BackendError::invalid_input("Elegí un tablero y al menos una tarea."));
+    }
+    crate::host::async_runtime::spawn_blocking(move || {
+        crate::task_manager_commands::create_owner_tasks(&app, &payload.library_id, &payload.board, &payload.tasks)
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron crear las tareas.", true))?

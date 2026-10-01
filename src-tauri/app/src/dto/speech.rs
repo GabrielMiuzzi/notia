@@ -36,7 +36,7 @@ pub struct StartSpeechSessionPayload {
     pub meeting: Option<MeetingSessionOptions>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSessionOptions {
     #[serde(default)]

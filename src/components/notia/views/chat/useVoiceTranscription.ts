@@ -18,7 +18,7 @@ import {
   stopSpeechSession,
 } from '../../../../services/speech/speechService'
 import { mergeVoiceTextIntoDraft } from '../../../../services/speech/speechTranscript'
-import { backendKind } from '../../../../services/transport'
+import { backendKind, backendSupports } from '../../../../services/transport'
 import { useRemoteVoiceTranscription } from './useRemoteVoiceTranscription'
 import type {
   MeetingSessionOptions,
@@ -475,19 +475,14 @@ function useLocalVoiceTranscription({
 }
 
 /**
- * Dictation hook of this interface. The app records through the native
- * speech session of its own backend; a browser connected to a Notia server
- * records here and sends the audio. The transport is installed before the
- * interface loads and never changes, so the choice is fixed per page.
+ * Dictation hook of this interface. The app records and recognizes through
+ * the native speech session of its own device, also as a client of a host
+ * (a tablet dictates and transcribes its meetings itself). A browser
+ * connected to a Notia server, whose backend cannot record, records here and
+ * sends the audio. The transport is installed before the interface loads
+ * and never changes, so the choice is fixed per page.
  */
-export const useVoiceTranscription: typeof useLocalVoiceTranscription = backendKind() === 'remote'
-  ? useRemoteVoiceTranscription
-  : useLocalVoiceTranscription
-
-/**
- * Recording on the device that runs this interface, also when it is a
- * client of a host: Meeting records and recognizes here (a tablet can
- * transcribe a meeting in the room) while the meeting itself lives on the
- * host. Only offered where the backend supports `start_speech_session`.
- */
-export const useDeviceVoiceTranscription = useLocalVoiceTranscription
+export const useVoiceTranscription: typeof useLocalVoiceTranscription =
+  backendKind() === 'remote' && !backendSupports('start_speech_session')
+    ? useRemoteVoiceTranscription
+    : useLocalVoiceTranscription

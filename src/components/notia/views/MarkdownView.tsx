@@ -43,7 +43,8 @@ import {
   type WikiLinkSuggestionMenuState,
 } from './markdown/WikiLinkSuggestionMenu'
 import { configureWikiLinkSerializer, createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
-import { useMarkdownZoom } from './markdown/useMarkdownZoom'
+import { sheetFitScale, useMarkdownZoom } from './markdown/useMarkdownZoom'
+import { leaveStylusToSystem } from './markdown/stylusWriting'
 import { createCollabBlocksPlugin } from './markdown/collab/collabBlocksPlugin'
 import { startMarkdownCollab, type MarkdownCollabSession } from './markdown/collab/markdownCollab'
 import { collaborationSettings } from '../../../services/collab/collabRuntime'
@@ -459,10 +460,9 @@ function MarkdownViewInner({
   const pagePixels = pageLayout?.paged ? sheetPixels : null
   const [hostWidth, setHostWidth] = useState(0)
   const deskPadding = hostWidth > 0 && hostWidth < NARROW_EDITOR_PX ? NARROW_DESK_PADDING_PX : DESK_PADDING_PX
-  // A sheet wider than the editor (a phone, a narrow window) is scaled down to fit.
-  const pageFit = sheetPixels && hostWidth > 0
-    ? Math.min(1, Math.max(0.1, (hostWidth / zoom - 2 * deskPadding) / sheetPixels.width))
-    : 1
+  // A sheet wider than the editor (a phone, a narrow window) is scaled down
+  // to fit at 100 %; the person's zoom applies on top.
+  const pageFit = sheetPixels ? sheetFitScale(hostWidth, deskPadding, sheetPixels.width) : 1
   // Handwriting over the sheet: the tool of the pen bar and the note's strokes.
   const [penTool, setPenTool] = useState<PenBarTool>('selector')
   // The rectangle selection of blocks only works with the selector.
@@ -1178,6 +1178,7 @@ function MarkdownViewInner({
         clickBelowContent(event)
       }
       host?.addEventListener('mousedown', onHostMouseDown, true)
+      const detachStylusWriting = host ? leaveStylusToSystem(host, () => penToolRef.current === 'selector') : () => {}
       const detachMarquee = host
         ? attachBlockMarquee(host, {
           isEnabled: () => penToolRef.current === 'selector',
@@ -1195,6 +1196,7 @@ function MarkdownViewInner({
         stopHidingHandle()
         stopTrackingPointerRow()
         host?.removeEventListener('mousedown', onHostMouseDown, true)
+        detachStylusWriting()
         detachMarquee()
       }
       notifySelectionChange()

@@ -517,6 +517,20 @@ pub(crate) async fn call_host<T: serde::de::DeserializeOwned>(app: &AppHandle, c
     }
 }
 
+/// [`call_host`] for synchronous code. Runs on its own thread, so it also
+/// works from a blocking task of the async runtime.
+pub(crate) fn call_host_blocking<T: serde::de::DeserializeOwned + Send + 'static>(
+    app: &AppHandle,
+    command: &str,
+    args: Value,
+) -> Result<T, BackendError> {
+    let app = app.clone();
+    let command = command.to_string();
+    std::thread::spawn(move || crate::host::async_runtime::block_on(call_host::<T>(&app, &command, args)))
+        .join()
+        .map_err(|_| internal("El host no pudo completar la operación."))?
+}
+
 async fn invoke(app: &AppHandle, command: &str, args: Value) -> Reply {
     let body = json!({ "command": command, "args": args });
     let reply = authenticated(app, Method::POST, "/api/invoke", Some(&body), INVOKE_TIMEOUT)
@@ -984,25 +998,28 @@ mod tests {
             assert_eq!(stored["panelDesplegable"]["refreshIntervalMs"], 45_000);
             assert_ne!(stored["telegram"]["enabled"], true);
 
-            // A meeting the client records on its device lives on the host.
-            let snapshot = |client| invoke(client, "meeting_snapshot", json!({ "payload": {} }));
-            assert_eq!(snapshot(&client).await.expect("no meeting"), Value::Null);
-            let begin = json!({ "payload": { "sessionId": "tablet-1", "event": {
-                "kind": "begin", "microphone": true, "system": false, "options": { "liveAnswers": false },
-            } } });
-            invoke(&client, "meeting_relay", begin).await.expect("begin");
-            let line = json!({ "payload": { "sessionId": "tablet-1", "event": {
-                "kind": "line", "span": [1_000, 2_000], "text": "Buen día a todos.",
-            } } });
-            invoke(&client, "meeting_relay", line).await.expect("line");
-            let live = snapshot(&client).await.expect("meeting");
-            assert_eq!((live["id"].as_str(), live["status"].as_str()), (Some("tablet-1"), Some("live")));
-            assert_eq!(live["lines"][0]["text"], "Buen día a todos.");
-            let mark = json!({ "payload": { "meetingId": "tablet-1", "atMs": 1_500 } });
-            assert_eq!(invoke(&client, "meeting_add_mark", mark).await.expect("mark")["atMs"], 1_500);
-            let discard = json!({ "payload": { "sessionId": "tablet-1", "event": { "kind": "discarded" } } });
-            invoke(&client, "meeting_relay", discard).await.expect("discard");
-            assert_eq!(snapshot(&client).await.expect("discarded"), Value::Null);
+            // A client keeps its meeting on its device: the host never shows
+            // one, but stores the note of a meeting the client recorded.
+            assert!(invoke(&client, "meeting_snapshot", json!({ "payload": {} })).await.is_err());
+            let note = json!({ "payload": {
+                "libraryId": library_id,
+                "folder": "",
+                "fileName": "Reunión de equipo.md",
+                "content": "# Reunión de equipo\n\nBuen día a todos.\n",
+            } });
+            let stored = invoke(&client, "meeting_store_note", note.clone()).await.expect("note");
+            assert_eq!(stored["logicalPath"], "Reunión de equipo.md");
+            // Over the note saved before while it did not change.
+            let mut again = note.clone();
+            again["payload"]["previous"] = json!({ "logicalPath": stored["logicalPath"], "revision": stored["revision"] });
+            again["payload"]["content"] = json!("# Reunión de equipo\n\nBuen día.\n");
+            let rewritten = invoke(&client, "meeting_store_note", again).await.expect("rewrite");
+            assert_eq!(rewritten["logicalPath"], stored["logicalPath"]);
+            // Without it, a second note gets a free name.
+            let second = invoke(&client, "meeting_store_note", note).await.expect("second");
+            assert_ne!(second["logicalPath"], stored["logicalPath"]);
+            let bad = json!({ "payload": { "libraryId": library_id, "folder": "../x", "fileName": "a.md", "content": "x" } });
+            assert!(invoke(&client, "meeting_store_note", bad).await.is_err());
         });
 
         // What only works on the device running Notia is not offered.

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { shallowEqual } from 'react-redux'
 import { Check, ChevronDown, CircleStop, Download, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, X } from 'lucide-react'
-import { useDeviceVoiceTranscription } from './chat/useVoiceTranscription'
+import { useVoiceTranscription } from './chat/useVoiceTranscription'
 import { useAppDispatch, useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectSpeechRecognitionSettings } from '../../../features/preferences/preferencesSelectors'
 import { setSpeechRecognitionSettings } from '../../../features/preferences/preferencesSlice'
@@ -84,7 +84,7 @@ function MeetingViewComponent() {
     () => ({ liveAnswers, settings: meetingAiSettings(aiPreferences) }),
     [aiPreferences, liveAnswers],
   )
-  const voice = useDeviceVoiceTranscription({
+  const voice = useVoiceTranscription({
     draft: NO_DRAFT,
     setDraft: ignoreDraft,
     maxDurationSeconds: MEETING_MAX_DURATION_SECONDS,

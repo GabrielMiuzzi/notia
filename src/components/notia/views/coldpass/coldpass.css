@@ -407,10 +407,12 @@ a.cp-site:hover { color: var(--cp-text); }
   .cp-list { width: 340px; }
 }
 
-/* Narrow: the page scrolls, and the list and the detail take turns. */
+/* Narrow: the page scrolls, and the list and the detail take turns. The
+   page is `.cp-wrap`: a container query cannot style its own container
+   (`.cp-view`), so a scroll set there never applied and phones could not
+   slide the list. */
 @container coldpass (max-width: 820px) {
-  .cp-view { overflow-y: auto; -webkit-overflow-scrolling: touch; }
-  .cp-wrap { height: auto; min-height: 100%; padding: 20px 16px 88px; gap: 16px; }
+  .cp-wrap { overflow-y: auto; overscroll-behavior: contain; padding: 20px 16px 88px; gap: 16px; }
   .cp-header { flex-wrap: wrap; }
   .cp-header__intro,
   .cp-search { flex-basis: 100%; width: 100%; }

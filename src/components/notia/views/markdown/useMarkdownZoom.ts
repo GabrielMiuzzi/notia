@@ -9,6 +9,19 @@ export function clampMarkdownZoom(zoom: number): number {
   return Math.min(MAX_MARKDOWN_ZOOM, Math.max(MIN_MARKDOWN_ZOOM, zoom))
 }
 
+/**
+ * Scale that fits a sheet `sheetWidth` wide, with `deskPadding` on each
+ * side, in an editor `hostWidth` wide, at 100 % zoom: at most 1, so a sheet
+ * that fits keeps its size. The person's zoom applies on top of it, so a
+ * phone, where the A3 sheet never fits, can still zoom in. It is computed
+ * on the width without zoom: dividing it by the zoom, as before, cancelled
+ * the zoom whenever the sheet did not fit.
+ */
+export function sheetFitScale(hostWidth: number, deskPadding: number, sheetWidth: number): number {
+  if (hostWidth <= 0 || sheetWidth <= 0) return 1
+  return Math.min(1, Math.max(0.1, (hostWidth - 2 * deskPadding) / sheetWidth))
+}
+
 export function calculatePinchZoom(
   initialZoom: number,
   initialDistance: number,
