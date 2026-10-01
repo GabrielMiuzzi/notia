@@ -14,6 +14,11 @@ export function writesWithStylus(userAgent: string = typeof navigator === 'undef
   return /Android/i.test(userAgent)
 }
 
+/** A press the block marquee takes: a mouse, or a stylus where the system does not write with it. */
+export function marqueeTakesPress(event: Pick<PointerEvent, 'pointerType'>, android: boolean = writesWithStylus()): boolean {
+  return event.pointerType !== 'touch' && !isSystemStylusPress(event, android)
+}
+
 /** A press of the stylus the system may turn into handwriting. */
 export function isSystemStylusPress(event: Pick<PointerEvent, 'pointerType'>, android: boolean = writesWithStylus()): boolean {
   return android && event.pointerType === 'pen'
@@ -21,11 +26,19 @@ export function isSystemStylusPress(event: Pick<PointerEvent, 'pointerType'>, an
 
 /**
  * Keeps ProseMirror from starting its own drag selection under a stylus
- * press while `isEnabled` (the selector is the tool). The compatibility
- * `mousedown` of that press stops at `host`; its default action still
- * places the caret, which ProseMirror reads from the document selection.
+ * press while `isEnabled` (the selector is the tool). `host` watches the
+ * press; the compatibility `mousedown` stops at `editor` (ProseMirror's
+ * element), in the capture phase, so the editor's other capture listeners
+ * on it (the line under a block) still run while ProseMirror's own handler
+ * does not. Its default action still places the caret, which ProseMirror
+ * reads from the document selection.
  */
-export function leaveStylusToSystem(host: HTMLElement, isEnabled: () => boolean, android: boolean = writesWithStylus()): () => void {
+export function leaveStylusToSystem(
+  host: HTMLElement,
+  editor: HTMLElement,
+  isEnabled: () => boolean,
+  android: boolean = writesWithStylus(),
+): () => void {
   if (!android) return () => {}
   let stylusDown = false
   const onPointerDown = (event: PointerEvent) => {
@@ -38,12 +51,12 @@ export function leaveStylusToSystem(host: HTMLElement, isEnabled: () => boolean,
     if (event.pointerType === 'pen') stylusDown = false
   }
   host.addEventListener('pointerdown', onPointerDown, true)
-  host.addEventListener('mousedown', onMouseDown, true)
+  editor.addEventListener('mousedown', onMouseDown, true)
   host.addEventListener('pointerup', onPointerEnd, true)
   host.addEventListener('pointercancel', onPointerEnd, true)
   return () => {
     host.removeEventListener('pointerdown', onPointerDown, true)
-    host.removeEventListener('mousedown', onMouseDown, true)
+    editor.removeEventListener('mousedown', onMouseDown, true)
     host.removeEventListener('pointerup', onPointerEnd, true)
     host.removeEventListener('pointercancel', onPointerEnd, true)
   }

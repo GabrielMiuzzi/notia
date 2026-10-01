@@ -44,7 +44,7 @@ import {
 } from './markdown/WikiLinkSuggestionMenu'
 import { configureWikiLinkSerializer, createWikiLinkPlugin, type WikiLinkMenuContext } from './markdown/wikiLinkPlugin'
 import { sheetFitScale, useMarkdownZoom } from './markdown/useMarkdownZoom'
-import { leaveStylusToSystem } from './markdown/stylusWriting'
+import { leaveStylusToSystem, marqueeTakesPress } from './markdown/stylusWriting'
 import { createCollabBlocksPlugin } from './markdown/collab/collabBlocksPlugin'
 import { startMarkdownCollab, type MarkdownCollabSession } from './markdown/collab/markdownCollab'
 import { collaborationSettings } from '../../../services/collab/collabRuntime'
@@ -463,6 +463,14 @@ function MarkdownViewInner({
   // A sheet wider than the editor (a phone, a narrow window) is scaled down
   // to fit at 100 %; the person's zoom applies on top.
   const pageFit = sheetPixels ? sheetFitScale(hostWidth, deskPadding, sheetPixels.width) : 1
+  // The sheet is drawn at `zoom × pageFit` with a transform, never with CSS
+  // `zoom`: under `zoom` Chromium misplaced the caret and the selection, and
+  // the Android keyboard (stylus writing too) wrote somewhere else, worse the
+  // more it was zoomed. A transform keeps them on the text.
+  const sheetScale = sheetPixels ? zoom * pageFit : 1
+  const [hostHeight, setHostHeight] = useState(0)
+  // Height of the sheet before scaling, for the frame that holds its scaled size.
+  const [pagesHeight, setPagesHeight] = useState(0)
   // Handwriting over the sheet: the tool of the pen bar and the note's strokes.
   const [penTool, setPenTool] = useState<PenBarTool>('selector')
   // The rectangle selection of blocks only works with the selector.
@@ -527,13 +535,25 @@ function MarkdownViewInner({
   const mermaidPreviewBlockIndexRef = useRef(0)
   const gitbookResolverRef = useRef<GitbookResolver | null>(null)
 
-  useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange)
+  useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange, !sheetPixels)
 
   useEffect(() => {
     const host = viewportRef.current
     if (!host || typeof ResizeObserver !== 'function') return
-    const observer = new ResizeObserver(([entry]) => setHostWidth(entry?.contentRect.width ?? 0))
+    const observer = new ResizeObserver(([entry]) => {
+      setHostWidth(entry?.contentRect.width ?? 0)
+      setHostHeight(entry?.contentRect.height ?? 0)
+    })
     observer.observe(host)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const pages = pagesRef.current
+    if (!pages || typeof ResizeObserver !== 'function') return
+    // A transform does not change the layout height the observer reports.
+    const observer = new ResizeObserver(() => setPagesHeight(pages.offsetHeight))
+    observer.observe(pages)
     return () => observer.disconnect()
   }, [])
 
@@ -545,13 +565,13 @@ function MarkdownViewInner({
         pageGap: PAGE_GAP_PX,
         margin: pagePixels.margin,
         numberBand: pagePixels.pageNumbers ? PAGE_NUMBER_BAND_PX : 0,
-        zoom: zoom * pageFit,
+        zoom: sheetScale,
       }
       : null
     const crepe = crepeRef.current
     if (!crepe || !isEditorReady) return
     requestPagination(crepe.editor.action((ctx) => ctx.get(editorViewCtx)))
-  }, [isEditorReady, pageFit, pagePixels, zoom])
+  }, [isEditorReady, pagePixels, sheetScale])
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -645,7 +665,9 @@ function MarkdownViewInner({
         [Crepe.Feature.BlockEdit]: true,
       },
       featureConfigs: {
-        [Crepe.Feature.Cursor]: { width: DROP_INDICATOR_WIDTH },
+        // The native caret: the virtual one measures in screen pixels inside
+        // the scaled sheet, so it drifted right and down with the zoom.
+        [Crepe.Feature.Cursor]: { width: DROP_INDICATOR_WIDTH, virtual: false },
         // The bar of the code blocks speaks Spanish, as in the canvas.
         [Crepe.Feature.CodeMirror]: {
           copyText: 'Copiar',
@@ -1172,13 +1194,22 @@ function MarkdownViewInner({
         if (pages && isOnPage) handleClickBelowContent(editorView, event, pages.getBoundingClientRect())
       }
       // With the selector, an empty place is the marquee's: a press there is
-      // a click when it does not drag, and the marquee reports it.
+      // a click when it does not drag, and the marquee reports it. A finger,
+      // or the stylus on Android, never starts the marquee, so its tap is
+      // handled here (it is what adds the line under the last block).
+      let marqueeTakesLastPress = true
+      const onHostPointerDown = (event: PointerEvent) => {
+        marqueeTakesLastPress = marqueeTakesPress(event)
+      }
       const onHostMouseDown = (event: MouseEvent) => {
-        if (host && penToolRef.current === 'selector' && isMarqueeTarget(event.target, host)) return
+        if (host && marqueeTakesLastPress && penToolRef.current === 'selector' && isMarqueeTarget(event.target, host)) return
         clickBelowContent(event)
       }
+      host?.addEventListener('pointerdown', onHostPointerDown, true)
       host?.addEventListener('mousedown', onHostMouseDown, true)
-      const detachStylusWriting = host ? leaveStylusToSystem(host, () => penToolRef.current === 'selector') : () => {}
+      const detachStylusWriting = host
+        ? leaveStylusToSystem(host, editorView.dom, () => penToolRef.current === 'selector')
+        : () => {}
       const detachMarquee = host
         ? attachBlockMarquee(host, {
           isEnabled: () => penToolRef.current === 'selector',
@@ -1195,6 +1226,7 @@ function MarkdownViewInner({
         detachDragGhost()
         stopHidingHandle()
         stopTrackingPointerRow()
+        host?.removeEventListener('pointerdown', onHostPointerDown, true)
         host?.removeEventListener('mousedown', onHostMouseDown, true)
         detachStylusWriting()
         detachMarquee()
@@ -1434,12 +1466,19 @@ function MarkdownViewInner({
       '--notia-page-height': `${sheetPixels.height}px`,
       '--notia-page-margin': `${sheetPixels.margin}px`,
       '--notia-page-number-bottom': `${Math.max(10, Math.round(sheetPixels.margin / 2 - 8))}px`,
-      // The continuous sheet reaches its lowest stroke, with room below to keep writing.
+      // The continuous sheet reaches its lowest stroke, with room below to
+      // keep writing, and at least the bottom of the editor.
       minHeight: pagePixels
         ? sheetCount * pagePixels.height + (sheetCount - 1) * PAGE_GAP_PX
-        : Math.ceil(inkBottom(ink.strokes)) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
-      zoom: pageFit < 1 ? pageFit : undefined,
+        : Math.max(
+          Math.ceil(inkBottom(ink.strokes)) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
+          Math.max(0, hostHeight - deskPadding) / sheetScale,
+        ),
+      transform: sheetScale === 1 ? undefined : `scale(${sheetScale})`,
     } as CSSProperties
+    : undefined
+  const frameStyle = sheetPixels
+    ? { width: sheetPixels.width * sheetScale, height: pagesHeight * sheetScale } as CSSProperties
     : undefined
   const hostMode = pagePixels ? ' is-sheet is-paged' : sheetPixels ? ' is-sheet is-continuous' : ''
 
@@ -1465,6 +1504,7 @@ function MarkdownViewInner({
       ) : null}
       <div ref={zoomContentRef} className="notia-markdown-zoom-content">
         {/* The structure is the same in both modes, so switching never remounts the editor. */}
+        <div className="notia-markdown-pages-frame" style={frameStyle}>
         <div ref={pagesRef} className="notia-markdown-pages" style={pagesStyle}>
           {pagePixels ? (
             <div className="notia-markdown-page-sheets" aria-hidden="true">
@@ -1512,6 +1552,7 @@ function MarkdownViewInner({
               onRemove={ink.remove}
             />
           ) : null}
+        </div>
         </div>
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />

@@ -10438,6 +10438,24 @@ Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos d
   - el texto reconocido reemplazaba esa selección.
 
   `markdown/stylusWriting.ts` deja el lápiz al sistema en Android con la herramienta de selección: `attachBlockMarquee` no arranca con el lápiz (`isSystemStylusPress`) y `leaveStylusToSystem` corta en el host el `mousedown` de compatibilidad de ese toque, sin cancelarlo, para que ProseMirror no arme su selección por arrastre. El toque igual ubica el cursor, que ProseMirror lee de la selección del documento. Con lápiz o borrador activos, el lápiz sigue siendo de la tinta; en Windows el lápiz no cambia. Android se detecta por el `userAgent` del WebView porque es un dato del dispositivo, no del backend (un cliente informa la plataforma del host). El `touch-action: pan-x pan-y` del editor no apaga esa escritura: Android solo la desactiva cuando el `touch-action` no admite el paneo. Pendiente: confirmarlo en la tablet; si sigue fallando, reproducir el caso y mirar los gestos de escritura del sistema (rodear para seleccionar, tachar para borrar).
+- **Hoja escalada con `transform`, no con `zoom`** (2026-10-01): en Android el cursor se dibujaba lejos de donde se escribía (al escribir al final de un párrafo aparecía a mitad), y peor con zoom. La hoja A3 nunca entra en una tablet o un teléfono y se mostraba con CSS `zoom` (`pageFit`, más el `zoom` del pellizco en `.notia-markdown-zoom-content`). Bajo `zoom`, el WebView de Android ubica mal el cursor, la selección y la posición que le pasa al teclado o a la escritura con lápiz. Ahora:
+  - **Escala única:** el modo con hoja usa `sheetScale = zoom × pageFit` como `transform: scale()` de `.notia-markdown-pages` (origen arriba a la izquierda).
+  - **Marco:** `.notia-markdown-pages-frame` toma el tamaño ya escalado (ancho de la hoja × escala, y alto medido con `ResizeObserver` × escala), así el editor centra y se desplaza por él.
+  - **Hoja continua:** llega al fondo del editor con un `min-height` calculado en lugar de `flex`.
+  - **Sin `zoom` en el modo con hoja:** `useMarkdownZoom(…, zoomsContent)` ya no aplica `zoom` ahí. El editor sin hoja (la tarea en Task Manager) lo sigue usando.
+  - **Coordenadas:** la paginación recibe `sheetScale`. La tinta y el marco de bloques convierten con rectángulos de pantalla, así que siguen funcionando.
+
+  Verificado con Chrome headless a 400 px, con zoom 1 y 1,5:
+  - escala sin `zoom` y marco igual a la hoja escalada;
+  - desplazamiento horizontal al agrandar;
+  - un toque al final de un párrafo deja el cursor a 0 px de ese punto, y lo escrito entra ahí.
+
+- **Cursor nativo, sin el cursor virtual de Crepe** (2026-10-01): con la hoja escalada, la barra del cursor seguía apareciendo más a la derecha y una línea más abajo, aunque el asa de Android y lo escrito estaban en el lugar correcto. Esa barra era el cursor virtual de Crepe (`prosemirror-virtual-cursor`): oculta el cursor nativo (`caret-color: transparent`) y ubica un `div` con `left`/`top` en píxeles de pantalla (rect del cursor menos rect del editor) dentro de la hoja ya escalada, así que la distancia se multiplicaba otra vez por la escala. `featureConfigs[Crepe.Feature.Cursor]` lleva `virtual: false` y el editor usa el cursor nativo en Windows y Android. Se pierde solo la pista visual de en qué lado de un borde de marca queda el cursor.
+
+  Diagnóstico en la tablet (build depurable, DevTools por adb): la selección medía x = 520 px, el asa estaba ahí y la barra virtual en x = 687 px (`left: 754,7px` dentro de una hoja a escala 1,22). Al ocultarla, el cursor visible quedó bajo el asa.
+
+  El desfase del cursor no se reproduce en el Chrome de escritorio, ni siquiera con el código anterior: hay que confirmarlo en la tablet.
+- **Toque debajo de los bloques** (2026-10-01): con el selector, un toque en un lugar vacío quedaba para el marco de bloques, que no toma el dedo ni el lápiz en Android, así que nadie lo atendía. Tocar debajo del último bloque no creaba la línea (se reprodujo con un toque emulado: el cursor no llegaba a la línea de abajo). Ahora `MarkdownView` anota en `pointerdown` si el marco toma ese toque (`marqueeTakesPress`); si no, el `mousedown` llega a `clickBelowContent`. Además, `leaveStylusToSystem` corta el `mousedown` del lápiz en el elemento de ProseMirror y no en el host: antes también cortaba la línea bajo un bloque de código, tabla o imagen (`blockGapPlugin`, que escucha en captura sobre ese elemento).
 
 **Validación.** `cargo test -p notia-backend-core` 476 y `-p notia-app --features bluetooth` 450, con las pruebas de `page_setup` y `device_preferences` pasadas a A3; `vitest` de `src/components/notia` 189; `tsc`. Revisión visual con el arnés: hoja continua corta en oscuro (llega abajo) y páginas A3 en claro.
 

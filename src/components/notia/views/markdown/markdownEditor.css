@@ -1230,16 +1230,22 @@
   padding-bottom: 0;
 }
 
+/*
+ * The frame takes the sheet's size on screen (scaled), so the editor scrolls
+ * and centers by it; the sheet inside keeps its real size and is scaled from
+ * its top left corner (see `sheetScale` in MarkdownView).
+ */
+.notia-markdown-host.is-sheet .notia-markdown-pages-frame {
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 auto;
+}
+
 .notia-markdown-host.is-sheet .notia-markdown-pages {
   position: relative;
   box-sizing: border-box;
   width: var(--notia-page-width);
-  margin: 0 auto;
-}
-
-/* The continuous sheet reaches at least the bottom of the editor. */
-.notia-markdown-host.is-continuous .notia-markdown-pages {
-  flex: 1 0 auto;
+  transform-origin: 0 0;
 }
 
 .notia-markdown-page-sheets {

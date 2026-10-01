@@ -1,6 +1,6 @@
 import { NodeSelection, Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
-import { isSystemStylusPress } from './stylusWriting'
+import { marqueeTakesPress } from './stylusWriting'
 
 /*
  * With the selector, dragging from an empty place (the margins, under the
@@ -185,8 +185,8 @@ export function attachBlockMarquee(host: HTMLElement, options: MarqueeOptions): 
   }
 
   const onPointerDown = (event: PointerEvent) => {
-    // On Android the stylus writes text (see stylusWriting.ts).
-    if (!options.isEnabled() || event.button !== 0 || event.pointerType === 'touch' || isSystemStylusPress(event)) return
+    // Fingers scroll, and on Android the stylus writes text (see stylusWriting.ts).
+    if (!options.isEnabled() || event.button !== 0 || !marqueeTakesPress(event)) return
     if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
     const target = event.target
     if (!(target instanceof Element) || !host.contains(target) || target.closest(NOT_EMPTY)) return

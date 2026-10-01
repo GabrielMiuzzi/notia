@@ -49,25 +49,35 @@ interface PinchState {
   zoom: number
 }
 
+/**
+ * Pinch and Ctrl + wheel zoom of the editor. With `zoomsContent` the content
+ * is scaled with CSS `zoom` (the editor without a sheet); without it the
+ * caller scales the sheet itself (`MarkdownView` uses a transform, because
+ * Chromium misplaces the caret, the selection and the position it gives the
+ * Android keyboard under CSS `zoom`).
+ */
 export function useMarkdownZoom(
   viewportRef: RefObject<HTMLDivElement | null>,
   contentRef: RefObject<HTMLDivElement | null>,
   zoom: number,
   onZoomChange: (zoom: number) => void,
+  zoomsContent = true,
 ): void {
   const zoomRef = useRef(zoom)
   const onZoomChangeRef = useRef(onZoomChange)
+  const zoomsContentRef = useRef(zoomsContent)
 
   useEffect(() => {
     zoomRef.current = zoom
     onZoomChangeRef.current = onZoomChange
+    zoomsContentRef.current = zoomsContent
 
     const content = contentRef.current
     if (content) {
-      content.style.zoom = String(zoom)
-      content.style.width = `${100 / zoom}%`
+      content.style.zoom = zoomsContent ? String(zoom) : ''
+      content.style.width = zoomsContent ? `${100 / zoom}%` : ''
     }
-  }, [contentRef, onZoomChange, zoom])
+  }, [contentRef, onZoomChange, zoom, zoomsContent])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -81,8 +91,10 @@ export function useMarkdownZoom(
     const applyZoom = (nextZoom: number) => {
       const normalizedZoom = Math.round(clampMarkdownZoom(nextZoom) * 100) / 100
       zoomRef.current = normalizedZoom
-      content.style.zoom = String(normalizedZoom)
-      content.style.width = `${100 / normalizedZoom}%`
+      if (zoomsContentRef.current) {
+        content.style.zoom = String(normalizedZoom)
+        content.style.width = `${100 / normalizedZoom}%`
+      }
       onZoomChangeRef.current(normalizedZoom)
     }
 
