@@ -2,6 +2,8 @@ import { createXGraphDocument, type XGraphTheme } from '../../engines/markdown/x
 import jsxGraphRuntimeUrl from '../../../node_modules/jsxgraph/distrib/jsxgraphcore.js?url'
 import jsxGraphStylesheetUrl from '../../../node_modules/jsxgraph/distrib/jsxgraph.css?url'
 
+const XGRAPH_HOST_SELECTOR = '.notia-xgraph-host'
+
 /** The board's colors, read from the theme tokens around the block. */
 function boardTheme(host: HTMLElement): XGraphTheme | undefined {
   const style = getComputedStyle(host)
@@ -56,22 +58,37 @@ export function observeXGraphPreviews(root: HTMLElement): () => void {
       mount(entry.target)
     }
   }, { rootMargin: '200px' })
-  const sync = () => {
+  const forgetRemoved = () => {
     for (const [host, dispose] of mounted) {
       if (root.contains(host)) continue
       visible.unobserve(host)
       dispose()
       mounted.delete(host)
     }
-    root.querySelectorAll<HTMLElement>('.notia-xgraph-host').forEach((host) => {
-      if (mounted.has(host)) return
-      mounted.set(host, () => {})
-      visible.observe(host)
-    })
   }
-  const observer = new MutationObserver(sync)
+  const watch = (host: HTMLElement) => {
+    if (mounted.has(host)) return
+    mounted.set(host, () => {})
+    visible.observe(host)
+  }
+  const watchWithin = (element: HTMLElement) => {
+    if (element.matches(XGRAPH_HOST_SELECTOR)) watch(element)
+    element.querySelectorAll<HTMLElement>(XGRAPH_HOST_SELECTOR).forEach(watch)
+  }
+  // Only what each change brings or takes is looked at: typing a line does
+  // not search the whole note for boards.
+  const observer = new MutationObserver((records) => {
+    let removed = false
+    for (const record of records) {
+      if (record.removedNodes.length > 0) removed = true
+      record.addedNodes.forEach((node) => {
+        if (node instanceof HTMLElement) watchWithin(node)
+      })
+    }
+    if (removed && mounted.size > 0) forgetRemoved()
+  })
   observer.observe(root, { childList: true, subtree: true })
-  sync()
+  root.querySelectorAll<HTMLElement>(XGRAPH_HOST_SELECTOR).forEach(watch)
   return () => {
     observer.disconnect()
     visible.disconnect()

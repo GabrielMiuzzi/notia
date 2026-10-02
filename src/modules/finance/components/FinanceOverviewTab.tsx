@@ -18,6 +18,7 @@ import { movementAmount, movementMeta, movementTone } from '../engines/financeMo
 import type { FinanceOverview, SalarySegmentKey, SalaryUse, ServiceStatus, StatementRow } from '../types/financeScreen'
 import { FinanceReviewSection } from './FinanceReviewSection'
 import { FinanceStatus } from './FinanceStatus'
+import { PhoneOverview } from './phone/PhoneOverview'
 
 interface Props {
   library: NotiaLibrary
@@ -26,23 +27,30 @@ interface Props {
   officialSell: number | null
   onOpenChat: (prompt: string | null) => void
   onShowMovements: () => void
+  /** The phone board of the canvas. */
+  phone: boolean
 }
 
-export function FinanceOverviewTab({ library, month, officialSell, onOpenChat, onShowMovements }: Props) {
+export function FinanceOverviewTab({ library, month, officialSell, onOpenChat, onShowMovements, phone }: Props) {
   const load = useCallback(() => getFinanceOverview(library, month), [library, month])
   const { data, error, isLoading, reload } = useFinanceResource(load, 'No se pudo cargar el resumen de Finanzas.')
   if (!data) return <FinanceStatus isLoading={isLoading} error={error} onRetry={reload} />
+  if (phone) {
+    return <>
+      {error && <FinanceStatus isLoading={false} error={error} onRetry={reload} />}
+      <PhoneOverview data={data} month={month} onOpenChat={onOpenChat} onShowMovements={onShowMovements} />
+    </>
+  }
   return <div className="finance-overview">
     {error && <FinanceStatus isLoading={false} error={error} onRetry={reload} />}
     {data.review.length > 0 && <FinanceReviewSection cards={data.review} onOpenChat={onOpenChat} />}
     <div className="finance-overview__grid">
       <SalaryUseCard salary={data.salary} month={month} />
-      <div className="finance-overview__side finance-only-wide">
+      <div className="finance-overview__side">
         <ExpensesCard data={data} />
         <SavedCard data={data} officialSell={officialSell} />
       </div>
-      <MonthTiles data={data} />
-      <CategoriesCard data={data} month={month} onOpenChat={onOpenChat} />
+      <CategoriesCard data={data} month={month} />
       <CardsPaidCard data={data} month={month} />
       <ServicesCard data={data} month={month} />
       <LatestCard data={data} month={month} onShowMovements={onShowMovements} />
@@ -53,11 +61,11 @@ export function FinanceOverviewTab({ library, month, officialSell, onOpenChat, o
 // ---------------------------------------------------------------------------
 // Salary
 
-const SEGMENT_LABELS: Record<SalarySegmentKey, { wide: string; narrow: string }> = {
-  cards: { wide: 'Tarjetas pagadas', narrow: 'Tarjetas' },
-  savings: { wide: 'Ahorro', narrow: 'Ahorro' },
-  services: { wide: 'Servicios aparte', narrow: 'Servicios' },
-  unregistered: { wide: 'Sin registrar', narrow: 'Sin registrar' },
+const SEGMENT_LABELS: Record<SalarySegmentKey, string> = {
+  cards: 'Tarjetas pagadas',
+  savings: 'Ahorro',
+  services: 'Servicios aparte',
+  unregistered: 'Sin registrar',
 }
 
 function segmentCaption(key: SalarySegmentKey, amount: number, percent: number | null): string {
@@ -77,7 +85,7 @@ function SalaryUseCard({ salary, month }: { salary: SalaryUse | null; month: str
   const net = { amount: salary.net, currency: salary.currency }
   const bought = formatMoneyList(salary.savingsBought, 0)
   return <section className="finance-card finance-salary-use" aria-labelledby="finance-salary-use-title">
-    <div className="finance-card__head finance-only-wide">
+    <div className="finance-card__head">
       <div>
         <h2 id="finance-salary-use-title">¿A dónde fue el sueldo de {formatMonthName(salary.period)}?</h2>
         <p className="finance-card__sub">Con el sueldo cobrado {salary.paymentDate ? `el ${formatShortDate(salary.paymentDate)}` : `en ${formatMonthName(salary.period)}`} se paga lo que vence en {formatMonthName(month)}.</p>
@@ -87,11 +95,7 @@ function SalaryUseCard({ salary, month }: { salary: SalaryUse | null; month: str
         <div className="finance-card__sub">neto{salary.employers.length > 0 ? ` · ${salary.employers.join(' y ')}` : ''}</div>
       </div>
     </div>
-    <div className="finance-salary-use__narrow-head finance-only-narrow">
-      <span className="finance-card__sub">Sueldo de {formatMonthName(salary.period)}</span>
-      <span className="finance-figure finance-figure--md">{formatMoney(net)}</span>
-    </div>
-    <div className="finance-stack" role="img" aria-label={salary.segments.map((segment) => `${SEGMENT_LABELS[segment.key].narrow} ${formatPercent(segment.percent)}`).join(', ')}>
+    <div className="finance-stack" role="img" aria-label={salary.segments.map((segment) => `${SEGMENT_LABELS[segment.key]} ${formatPercent(segment.percent)}`).join(', ')}>
       {salary.segments.filter((segment) => Number(segment.amount) > 0).map((segment) => (
         segment.key === 'unregistered'
           ? <div key={segment.key} className="finance-stack__rest" />
@@ -102,14 +106,11 @@ function SalaryUseCard({ salary, month }: { salary: SalaryUse | null; month: str
     <div className="finance-salary-use__legend">
       {salary.segments.map((segment) => {
         const amount = Number(segment.amount)
-        const label = segment.key === 'savings' && bought !== '—' ? `Ahorro (${bought})` : SEGMENT_LABELS[segment.key].wide
+        const label = segment.key === 'savings' && bought !== '—' ? `Ahorro (${bought})` : SEGMENT_LABELS[segment.key]
         return <div key={segment.key} className={`finance-legend-item${segment.key === 'services' && amount === 0 ? ' finance-legend-item--empty' : ''}`}>
-          <span className="finance-legend-item__label"><i className={`finance-swatch finance-swatch--${segment.key}`} aria-hidden="true" /><span className="finance-only-wide">{label}</span><span className="finance-only-narrow">{SEGMENT_LABELS[segment.key].narrow}</span></span>
-          <strong className="finance-legend-item__amount">
-            <span className="finance-only-wide">{segment.key === 'services' && amount === 0 ? '—' : formatAmount(segment.amount, salary.currency)}</span>
-            <span className="finance-only-narrow">{formatAmount(segment.amount, salary.currency, 0)}</span>
-          </strong>
-          <span className="finance-legend-item__caption"><span className="finance-only-wide">{segmentCaption(segment.key, amount, segment.percent)}</span><span className="finance-only-narrow">{formatPercent(segment.percent)}</span></span>
+          <span className="finance-legend-item__label"><i className={`finance-swatch finance-swatch--${segment.key}`} aria-hidden="true" />{label}</span>
+          <strong className="finance-legend-item__amount">{segment.key === 'services' && amount === 0 ? '—' : formatAmount(segment.amount, salary.currency)}</strong>
+          <span className="finance-legend-item__caption">{segmentCaption(segment.key, amount, segment.percent)}</span>
         </div>
       })}
     </div>
@@ -162,45 +163,30 @@ function SavedCard({ data, officialSell }: { data: FinanceOverview; officialSell
   </section>
 }
 
-/** Phone: the four month figures as tiles. */
-function MonthTiles({ data }: { data: FinanceOverview }) {
-  const { expenses, saved, services } = data
-  const bought = saved.contributions[0]
-  const reserve = saved.reserves.find((item) => item.currency === bought?.currency) ?? saved.reserves[0]
-  const pending = services.rows.filter((row) => row.status === 'pending')
-  return <div className="finance-tiles finance-only-narrow">
-    <section className="finance-tile"><span>Gastos del mes</span><strong>{formatMoneyList(expenses.totals, 0)}</strong><small>{plural(expenses.count, 'gasto')}</small></section>
-    <section className="finance-tile"><span>Ahorrado</span><strong className={bought ? 'finance-figure--teal' : undefined}>{bought ? `+ ${formatMoney(bought, 0)}` : '—'}</strong><small>{reserve ? `reserva ${formatAmount(reserve.balance, reserve.currency, 0)}` : 'sin reservas'}</small></section>
-    <section className="finance-tile"><span>En tarjeta, a pagar</span><strong>{expenses.cardUnpaidCount === 0 ? 'Nada' : formatMoneyList(expenses.cardUnpaid, 0)}</strong><small>{expenses.cardUnpaidCount === 0 ? 'sin gastos esperando' : `${plural(expenses.cardUnpaidCount, 'gasto')} esperando`}</small></section>
-    <section className="finance-tile"><span>Servicios</span><strong className={pending.length > 0 ? 'finance-warn-text' : undefined}>{services.rows.length === 0 ? '—' : pending.length > 0 ? `${pending.length} ${pending.length === 1 ? 'pendiente' : 'pendientes'}` : 'Al día'}</strong><small>{pending.length > 0 ? pending.map((row) => row.name).join(', ') : services.rows.length === 0 ? 'sin servicios' : 'todos pagados'}</small></section>
-  </div>
-}
-
 // ---------------------------------------------------------------------------
 // Categories
 
-function CategoriesCard({ data, month, onOpenChat }: { data: FinanceOverview; month: string; onOpenChat: (prompt: string) => void }) {
+function CategoriesCard({ data, month }: { data: FinanceOverview; month: string }) {
   const { categories, largest } = data
   const previous = formatMonthName(categories.previousMonth)
   return <section className="finance-card finance-categories" aria-labelledby="finance-categories-title">
     <div className="finance-card__head finance-card__head--baseline">
       <h2 id="finance-categories-title">En qué se gastó</h2>
-      {!categories.hasPrevious && categories.rows.length > 0 && <span className="finance-card__sub finance-only-wide">{capitalize(previous)} sin datos para comparar</span>}
+      {!categories.hasPrevious && categories.rows.length > 0 && <span className="finance-card__sub">{capitalize(previous)} sin datos para comparar</span>}
     </div>
     {categories.rows.length === 0 && <p className="finance-empty">No hay gastos en {formatMonthName(month)}.</p>}
     {categories.rows.map((row) => <div key={`${row.filter}-${row.currency}`} className="finance-bar-row">
       <div className="finance-bar-row__head">
-        <span>{row.name}<span className="finance-muted finance-only-wide"> · {plural(row.count, 'gasto')}{categories.hasPrevious && row.variation !== null && ` · ${formatSignedPercent(row.variation)} contra ${previous}`}</span></span>
+        <span>{row.name}<span className="finance-muted"> · {plural(row.count, 'gasto')}{categories.hasPrevious && row.variation !== null && ` · ${formatSignedPercent(row.variation)} contra ${previous}`}</span></span>
         <span className="finance-bar-row__value">
-          <span className="finance-only-wide">{formatAmount(row.amount, row.currency)}</span><span className="finance-only-narrow">{formatAmount(row.amount, row.currency, 0)}</span>
+          {formatAmount(row.amount, row.currency)}
           <span className="finance-muted"> {formatPercent(row.percent, 0)}</span>
         </span>
       </div>
       <div className="finance-bar"><div className={`finance-bar__fill${row.uncategorized ? ' finance-bar__fill--hatch' : ''}`} style={{ width: `${row.percent ?? 0}%` }} /></div>
-      {row.description && <span className="finance-bar-row__note finance-only-wide">{row.description}</span>}
+      {row.description && <span className="finance-bar-row__note">{row.description}</span>}
     </div>)}
-    {categories.categorizePrompt && <button type="button" className="finance-button finance-button--outline finance-only-narrow" onClick={() => onOpenChat(categories.categorizePrompt!)}>Categorizar {plural(categories.uncategorizedCount, 'gasto')} en el chat</button>}
-    {largest.length > 0 && <div className="finance-largest finance-only-wide">
+    {largest.length > 0 && <div className="finance-largest">
       <span className="finance-mono-label">Los más grandes</span>
       {largest.map((row) => <div key={row.id} className="finance-split-row finance-split-row--padded">
         <span>{row.description}<span className="finance-muted"> · {row.accountName}</span></span>
@@ -217,16 +203,13 @@ function capitalize(text: string): string {
 // ---------------------------------------------------------------------------
 // Cards paid
 
-function statementStatus(statement: StatementRow, narrow: boolean): { text: string; warn: boolean; check: boolean } {
-  const difference = formatAmount(statement.difference, statement.currency, narrow ? 0 : 2)
-  if (statement.check === 'missing') return { text: narrow ? `faltan ${difference} en líneas` : `Faltan ${difference} en líneas cargadas`, warn: true, check: false }
-  if (statement.check === 'extra') return { text: narrow ? `sobran ${difference} en líneas` : `Las líneas suman ${difference} más que el total`, warn: true, check: false }
+function statementStatus(statement: StatementRow): { text: string; warn: boolean; check: boolean } {
+  const difference = formatAmount(statement.difference, statement.currency)
+  if (statement.check === 'missing') return { text: `Faltan ${difference} en líneas cargadas`, warn: true, check: false }
+  if (statement.check === 'extra') return { text: `Las líneas suman ${difference} más que el total`, warn: true, check: false }
   if (statement.discarded.length > 0) {
-    return narrow
-      ? { text: `incluye ${plural(statement.discardedDescriptions.length, 'descartado')} · vence ${formatShortDate(statement.dueDate)}`, warn: false, check: false }
-      : { text: `Incluye ${formatMoneyList(statement.discarded, 0)} descartado (${statement.discardedDescriptions.join(', ')})`, warn: false, check: false }
+    return { text: `Incluye ${formatMoneyList(statement.discarded, 0)} descartado (${statement.discardedDescriptions.join(', ')})`, warn: false, check: false }
   }
-  if (narrow) return { text: `cuadra · vence ${formatShortDate(statement.dueDate)}`, warn: false, check: false }
   return { text: statement.lineCount === 1 ? 'Cuadra con su línea' : `Cuadra con sus ${statement.lineCount} líneas`, warn: false, check: true }
 }
 
@@ -236,28 +219,26 @@ function CardsPaidCard({ data, month }: { data: FinanceOverview; month: string }
   return <section className="finance-card finance-cards-paid" aria-labelledby="finance-cards-title">
     <div className="finance-card__head finance-card__head--baseline">
       <h2 id="finance-cards-title">Tarjetas pagadas</h2>
-      <span className="finance-strong">{formatMoneyList(cards.totals)}<span className="finance-card__sub finance-only-wide"> · {plural(cards.statements.length, 'resumen', 'resúmenes')}</span></span>
+      <span className="finance-strong">{formatMoneyList(cards.totals)}<span className="finance-card__sub"> · {plural(cards.statements.length, 'resumen', 'resúmenes')}</span></span>
     </div>
     {cards.statements.length === 0 && <p className="finance-empty">No vence ningún resumen de tarjeta en {formatMonthName(month)}.</p>}
     <div className="finance-list">
       {cards.statements.map((statement) => {
-        const wide = statementStatus(statement, false)
-        const narrow = statementStatus(statement, true)
+        const status = statementStatus(statement)
         return <div key={statement.id} className="finance-statement">
-          <span className="finance-badge finance-only-wide">{statement.badge}</span>
+          <span className="finance-badge">{statement.badge}</span>
           <span className="finance-statement__main">
             <span className="finance-statement__name">{statement.name}</span>
-            <span className={`finance-only-wide finance-statement__status${wide.warn ? ' finance-warn-text' : ''}`}>{wide.check && <Check size={14} aria-hidden="true" className="finance-teal" />}{wide.text}</span>
-            <span className={`finance-only-narrow finance-statement__status${narrow.warn ? ' finance-warn-text' : ''}`}>{narrow.text}</span>
+            <span className={`finance-statement__status${status.warn ? ' finance-warn-text' : ''}`}>{status.check && <Check size={14} aria-hidden="true" className="finance-teal" />}{status.text}</span>
           </span>
           <span className="finance-statement__amount">
-            <strong><span className="finance-only-wide">{formatAmount(statement.amount, statement.currency)}</span><span className="finance-only-narrow">{formatAmount(statement.amount, statement.currency, 0)}</span></strong>
-            <span className="finance-card__sub finance-only-wide">vence {formatShortDate(statement.dueDate)}</span>
+            <strong>{formatAmount(statement.amount, statement.currency)}</strong>
+            <span className="finance-card__sub">vence {formatShortDate(statement.dueDate)}</span>
           </span>
         </div>
       })}
     </div>
-    <p className="finance-card__sub finance-only-wide">
+    <p className="finance-card__sub">
       {installments.pendingCount === 0
         ? 'Cuotas: ninguna pendiente registrada.'
         : `Cuotas: ${installments.pendingCount} ${installments.pendingCount === 1 ? 'pendiente' : 'pendientes'} por ${formatMoneyList(installments.remaining, 0)}${installments.nextDueDate ? ` · la próxima vence el ${formatShortDate(installments.nextDueDate)}` : ''}.`}
@@ -274,7 +255,7 @@ const HISTORY_STATUS: Record<ServiceStatus | 'missing', string> = { ...SERVICE_S
 function ServicesCard({ data, month }: { data: FinanceOverview; month: string }) {
   const { services } = data
   const [showHistory, setShowHistory] = useState(false)
-  return <section className="finance-card finance-services finance-only-wide" aria-labelledby="finance-services-title">
+  return <section className="finance-card finance-services" aria-labelledby="finance-services-title">
     <div className="finance-card__head finance-card__head--baseline">
       <h2 id="finance-services-title">Servicios de {formatMonthName(month)}</h2>
       {services.rows.length > 0 && <span className={services.pendingCount > 0 ? 'finance-warn-text finance-small' : 'finance-card__sub'}>{services.pendingCount > 0 ? `${services.pendingCount} sin pago` : 'Todos pagados'}</span>}
@@ -308,7 +289,7 @@ function ServicesCard({ data, month }: { data: FinanceOverview; month: string })
 // Latest movements
 
 function LatestCard({ data, month, onShowMovements }: { data: FinanceOverview; month: string; onShowMovements: () => void }) {
-  return <section className="finance-card finance-latest finance-only-wide" aria-labelledby="finance-latest-title">
+  return <section className="finance-card finance-latest" aria-labelledby="finance-latest-title">
     <div className="finance-card__head finance-card__head--baseline">
       <h2 id="finance-latest-title">Últimos movimientos</h2>
       {data.movementCount > 0 && <button type="button" className="finance-link-button" onClick={onShowMovements}>Ver {data.movementCount === 1 ? 'el movimiento' : `los ${data.movementCount}`} →</button>}

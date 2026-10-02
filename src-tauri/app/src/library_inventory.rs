@@ -37,13 +37,59 @@ impl IndexedEntry {
 }
 
 pub(crate) fn reindex_library(app: &AppHandle, library_id: &str) -> Result<(usize, i64), BackendError> {
+    reindex(app, library_id).map(|(count, generation, _)| (count, generation))
+}
+
+/// Reindexes and tells whether the inventory changed.
+pub(crate) fn reindex_library_if_changed(app: &AppHandle, library_id: &str) -> Result<bool, BackendError> {
+    reindex(app, library_id).map(|(_, _, changed)| changed)
+}
+
+fn reindex(app: &AppHandle, library_id: &str) -> Result<(usize, i64, bool), BackendError> {
     let _guard = REINDEX_LOCK.lock().map_err(|_| storage("El índice de la biblioteca no está disponible."))?;
     let binding = app.state::<LibraryBindingRegistry>().lookup(library_id)?;
     let entries = collect_entries(app, &binding)?;
     let mut connection = open_connection(app, &binding)?;
+    // The same library keeps its generation: nothing is written, and on
+    // Android the database is not copied back to the library.
+    if let Some(generation) = published_unchanged(&connection, &entries) {
+        return Ok((entries.len(), generation, false));
+    }
     let generation = publish_snapshot(&mut connection, &entries)?;
     sync_connection(app, &binding)?;
-    Ok((entries.len(), generation))
+    Ok((entries.len(), generation, true))
+}
+
+/// The generation of the published inventory when it already lists
+/// exactly `entries`.
+fn published_unchanged(connection: &Connection, entries: &[IndexedEntry]) -> Option<i64> {
+    let generation = connection
+        .query_row("SELECT active_generation FROM library_inventory_state WHERE id=1", [], |row| row.get::<_, i64>(0))
+        .ok()
+        .filter(|generation| *generation > 0)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT path, entry_type, name, size_bytes, modified_at FROM library_inventory
+             WHERE generation=?1 ORDER BY path",
+        )
+        .ok()?;
+    let mut published = statement
+        .query_map(params![generation], |row| {
+            Ok(IndexedEntry {
+                logical_path: row.get(0)?,
+                is_folder: row.get::<_, String>(1)? == "folder",
+                name: row.get(2)?,
+                size_bytes: row.get(3)?,
+                modified_at: row.get(4)?,
+            })
+        })
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let mut current: Vec<&IndexedEntry> = entries.iter().collect();
+    current.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    published.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    (published.len() == current.len() && published.iter().zip(current).all(|(left, right)| left == right)).then_some(generation)
 }
 
 /// Folders at the root of the published inventory, by name.
@@ -368,6 +414,23 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("collect");
         assert_eq!(rows, vec![("b.md".to_string(), None, second)]);
+    }
+
+    #[test]
+    fn the_same_library_keeps_its_generation() {
+        let mut connection = connection();
+        let entry = |path: &str, size| IndexedEntry {
+            logical_path: path.to_string(),
+            is_folder: false,
+            name: path.to_string(),
+            size_bytes: Some(size),
+            modified_at: Some(10),
+        };
+        assert_eq!(published_unchanged(&connection, &[]), None, "nothing published yet");
+        let generation = publish_snapshot(&mut connection, &[entry("b.md", 1), entry("a.md", 2)]).expect("publish");
+        assert_eq!(published_unchanged(&connection, &[entry("a.md", 2), entry("b.md", 1)]), Some(generation));
+        assert_eq!(published_unchanged(&connection, &[entry("a.md", 3), entry("b.md", 1)]), None, "a file changed");
+        assert_eq!(published_unchanged(&connection, &[entry("a.md", 2)]), None, "a file went away");
     }
 
     #[test]

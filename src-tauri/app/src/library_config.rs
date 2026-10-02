@@ -193,6 +193,19 @@ impl<'a> LibraryConfigStore<'a> {
 
 /// Normalized configuration of a library for other backend modules (context
 /// catalog, provider settings). `None` when the library has none.
+/// Changes when Notia writes a library's configuration or a library is
+/// locked or unlocked: what keeps a decision taken from a configuration
+/// (the Telegram supervisor) takes it again.
+static CONFIG_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn config_changed() {
+    CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn config_generation() -> u64 {
+    CONFIG_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub(crate) fn read_library_config(app: &AppHandle, library_id: &str) -> Result<Option<Value>, BackendError> {
     LibraryConfigStore::open(app, library_id)?.read()
 }

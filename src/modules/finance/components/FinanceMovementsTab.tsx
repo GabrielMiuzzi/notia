@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Search, X } from 'lucide-react'
+import { Search } from 'lucide-react'
 import type { NotiaLibrary } from '../../../types/notia'
 import { getFinanceMovements } from '../services/financeService'
 import { useFinanceResource } from '../hooks/useFinanceResource'
@@ -7,6 +7,7 @@ import { formatAmount, formatLongDate, formatMoney, formatMoneyList, formatShort
 import { movementAmount, movementKindLabel, movementMeta, movementStatusLabel, movementTone } from '../engines/financeMovementText'
 import type { FinanceMovements, MovementGroup, MovementRow } from '../types/financeScreen'
 import { FinanceStatus } from './FinanceStatus'
+import { PhoneMovements } from './phone/PhoneMovements'
 
 const SEARCH_DELAY_MS = 250
 
@@ -14,14 +15,15 @@ interface Props {
   library: NotiaLibrary
   month: string
   onOpenChat: (prompt: string) => void
+  /** The phone board of the canvas. */
+  phone: boolean
 }
 
-export function FinanceMovementsTab({ library, month, onOpenChat }: Props) {
+export function FinanceMovementsTab({ library, month, onOpenChat, phone }: Props) {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [isSheetOpen, setIsSheetOpen] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setAppliedSearch(search), SEARCH_DELAY_MS)
@@ -32,17 +34,20 @@ export function FinanceMovementsTab({ library, month, onOpenChat }: Props) {
   const { data, error, isLoading, reload } = useFinanceResource(load, 'No se pudieron cargar los movimientos.')
   const rows = data?.groups.flatMap((group) => group.rows) ?? []
   const selected = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null
+  const filtered = appliedSearch.trim() !== '' || (data?.filter ?? filter) !== 'all'
 
-  useEffect(() => {
-    if (!isSheetOpen) return undefined
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setIsSheetOpen(false) }
-    window.addEventListener('keydown', close)
-    return () => window.removeEventListener('keydown', close)
-  }, [isSheetOpen])
-
-  const pick = (id: string) => {
-    setSelectedId(id)
-    setIsSheetOpen(true)
+  if (phone) {
+    return <PhoneMovements
+      data={data}
+      filter={data?.filter ?? filter}
+      search={search}
+      filtered={filtered}
+      status={!data || error ? <FinanceStatus isLoading={isLoading && !data} error={error} onRetry={reload} /> : null}
+      summary={data ? summary(data) : ''}
+      onSearch={setSearch}
+      onFilter={setFilter}
+      onOpenChat={onOpenChat}
+    />
   }
 
   return <div className="finance-movements">
@@ -60,14 +65,13 @@ export function FinanceMovementsTab({ library, month, onOpenChat }: Props) {
       {!data ? <FinanceStatus isLoading={isLoading} error={error} onRetry={reload} /> : <>
         {error && <FinanceStatus isLoading={false} error={error} onRetry={reload} />}
         <p className="finance-card__sub" aria-live="polite">{summary(data)}</p>
-        {data.groups.map((group) => <MovementGroupCard key={group.accountId} group={group} selectedId={selected?.id ?? null} onPick={pick} />)}
-        {data.groups.length === 0 && <p className="finance-empty finance-empty--boxed">{appliedSearch.trim() || data.filter !== 'all' ? 'No hay movimientos con ese filtro.' : 'No hay movimientos en este mes.'}</p>}
+        {data.groups.map((group) => <MovementGroupCard key={group.accountId} group={group} selectedId={selected?.id ?? null} onPick={setSelectedId} />)}
+        {data.groups.length === 0 && <p className="finance-empty finance-empty--boxed">{filtered ? 'No hay movimientos con ese filtro.' : 'No hay movimientos en este mes.'}</p>}
       </>}
     </section>
-    <aside className={`finance-detail${isSheetOpen && selected ? ' is-open' : ''}`} aria-label="Detalle del movimiento">
-      {selected ? <MovementDetail row={selected} prompt={data?.changePrompts[selected.id] ?? null} onOpenChat={onOpenChat} onClose={() => setIsSheetOpen(false)} /> : <p className="finance-card__sub">Elegí un movimiento para ver su detalle.</p>}
+    <aside className="finance-detail" aria-label="Detalle del movimiento">
+      {selected ? <MovementDetail row={selected} prompt={data?.changePrompts[selected.id] ?? null} onOpenChat={onOpenChat} /> : <p className="finance-card__sub">Elegí un movimiento para ver su detalle.</p>}
     </aside>
-    {isSheetOpen && selected && <button type="button" className="finance-sheet-backdrop" aria-label="Cerrar el detalle" onClick={() => setIsSheetOpen(false)} />}
   </div>
 }
 
@@ -106,7 +110,7 @@ function MovementGroupCard({ group, selectedId, onPick }: { group: MovementGroup
   </div>
 }
 
-function MovementDetail({ row, prompt, onOpenChat, onClose }: { row: MovementRow; prompt: string | null; onOpenChat: (prompt: string) => void; onClose: () => void }) {
+function MovementDetail({ row, prompt, onOpenChat }: { row: MovementRow; prompt: string | null; onOpenChat: (prompt: string) => void }) {
   const secondary = row.exchange
     ? `Pagaste ${formatAmount(row.amount, row.currency)}${row.exchange.rate ? ` · ${formatAmount(row.exchange.rate, row.currency, 0)} por ${row.exchange.currency === 'USD' ? 'dólar' : row.exchange.currency}` : ''}`
     : `${movementKindLabel(row.kind)} en ${row.currency === 'ARS' ? 'pesos' : 'dólares'}`
@@ -114,7 +118,6 @@ function MovementDetail({ row, prompt, onOpenChat, onClose }: { row: MovementRow
   return <>
     <div className="finance-detail__top">
       <span className="finance-mono-label">Detalle</span>
-      <button type="button" className="finance-icon-button finance-only-narrow" aria-label="Cerrar el detalle" onClick={onClose}><X size={18} /></button>
     </div>
     <div className="finance-detail__head">
       <span className="finance-detail__desc">{row.description || movementKindLabel(row.kind)}</span>

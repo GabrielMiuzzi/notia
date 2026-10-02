@@ -32,7 +32,8 @@ function FileViewFallback() {
 
 interface FileViewHostProps {
   document: OpenFileDocument
-  onTextSourceChange: (nextSource: string) => void
+  /** New source; the Markdown editor names its note (`documentPath`), the others write the active tab. */
+  onTextSourceChange: (nextSource: string, documentPath?: string) => void
   /** A shared note changed and another editor saves it. */
   onSharedTextSourceChange?: (path: string, nextSource: string) => void
   wikiLinkTargets: MarkdownWikiLinkTarget[]

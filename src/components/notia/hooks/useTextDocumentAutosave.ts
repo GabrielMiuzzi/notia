@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { useAppSelector } from '../../../store/hooks'
-import { selectOpenTabs } from '../../../features/documents/documentsSelectors'
+import { useAppStore } from '../../../store/hooks'
 import { isTextFileDocument, type OpenTextFileDocument, type OpenMermaidFileDocument } from '../../../types/views/fileDocument'
 import type { OpenDocumentTab } from '../../../features/documents/documentsTypes'
 
@@ -40,7 +39,7 @@ interface UseTextDocumentAutosaveReturn {
 export function useTextDocumentAutosave(
   actions: UseTextDocumentAutosaveActions,
 ): UseTextDocumentAutosaveReturn {
-  const openTabs = useAppSelector(selectOpenTabs)
+  const store = useAppStore()
   const { persistTextDocumentSource } = actions
   const pendingTextSaveByPathRef = useRef<Map<string, PendingTextSaveJob>>(new Map())
 
@@ -61,76 +60,89 @@ export function useTextDocumentAutosave(
     pendingTextSaveByPathRef.current.clear()
   }, [])
 
-  // Autosave effect
+  // Autosave: follows the open tabs in the store without drawing the shell
+  // again each time the text of a note changes.
   useEffect(() => {
-    const dirtySourceByPath = new Map<string, string>()
-
-    for (const tab of openTabs) {
-      if (!isOpenTextDocumentTab(tab)) {
-        continue
+    let previousTabs: OpenDocumentTab[] | null = null
+    const syncPendingSaves = () => {
+      const openTabs = store.getState().documents.openTabs
+      if (openTabs === previousTabs) {
+        return
       }
+      previousTabs = openTabs
 
-      if (tab.saveStatus === 'error') {
-        continue
-      }
+      const dirtySourceByPath = new Map<string, string>()
 
-      if (tab.document.source === tab.latestSavedSource) {
-        continue
-      }
-
-      dirtySourceByPath.set(tab.document.path, tab.document.source)
-    }
-
-    for (const [path, pendingSave] of pendingTextSaveByPathRef.current) {
-      const dirtySource = dirtySourceByPath.get(path)
-      if (dirtySource && dirtySource === pendingSave.source) {
-        continue
-      }
-
-      window.clearTimeout(pendingSave.timeoutId)
-      pendingTextSaveByPathRef.current.delete(path)
-    }
-
-    for (const tab of openTabs) {
-      if (!isOpenTextDocumentTab(tab)) {
-        continue
-      }
-
-      if (tab.saveStatus === 'error') {
-        continue
-      }
-
-      if (tab.document.source === tab.latestSavedSource) {
-        continue
-      }
-
-      const targetPath = tab.document.path
-      const targetSource = tab.document.source
-      const pendingSave = pendingTextSaveByPathRef.current.get(targetPath)
-      if (pendingSave && pendingSave.source === targetSource) {
-        continue
-      }
-
-      if (pendingSave) {
-        window.clearTimeout(pendingSave.timeoutId)
-      }
-
-      const timeoutId = window.setTimeout(() => {
-        const queuedSave = pendingTextSaveByPathRef.current.get(targetPath)
-        if (!queuedSave || queuedSave.source !== targetSource) {
-          return
+      for (const tab of openTabs) {
+        if (!isOpenTextDocumentTab(tab)) {
+          continue
         }
 
-        pendingTextSaveByPathRef.current.delete(targetPath)
-        void persistTextDocumentSource(targetPath, targetSource)
-      }, resolveTextAutosaveDebounceMs(tab.document))
+        if (tab.saveStatus === 'error') {
+          continue
+        }
 
-      pendingTextSaveByPathRef.current.set(targetPath, {
-        source: targetSource,
-        timeoutId,
-      })
+        if (tab.document.source === tab.latestSavedSource) {
+          continue
+        }
+
+        dirtySourceByPath.set(tab.document.path, tab.document.source)
+      }
+
+      for (const [path, pendingSave] of pendingTextSaveByPathRef.current) {
+        const dirtySource = dirtySourceByPath.get(path)
+        if (dirtySource && dirtySource === pendingSave.source) {
+          continue
+        }
+
+        window.clearTimeout(pendingSave.timeoutId)
+        pendingTextSaveByPathRef.current.delete(path)
+      }
+
+      for (const tab of openTabs) {
+        if (!isOpenTextDocumentTab(tab)) {
+          continue
+        }
+
+        if (tab.saveStatus === 'error') {
+          continue
+        }
+
+        if (tab.document.source === tab.latestSavedSource) {
+          continue
+        }
+
+        const targetPath = tab.document.path
+        const targetSource = tab.document.source
+        const pendingSave = pendingTextSaveByPathRef.current.get(targetPath)
+        if (pendingSave && pendingSave.source === targetSource) {
+          continue
+        }
+
+        if (pendingSave) {
+          window.clearTimeout(pendingSave.timeoutId)
+        }
+
+        const timeoutId = window.setTimeout(() => {
+          const queuedSave = pendingTextSaveByPathRef.current.get(targetPath)
+          if (!queuedSave || queuedSave.source !== targetSource) {
+            return
+          }
+
+          pendingTextSaveByPathRef.current.delete(targetPath)
+          void persistTextDocumentSource(targetPath, targetSource)
+        }, resolveTextAutosaveDebounceMs(tab.document))
+
+        pendingTextSaveByPathRef.current.set(targetPath, {
+          source: targetSource,
+          timeoutId,
+        })
+      }
     }
-  }, [openTabs, persistTextDocumentSource])
+
+    syncPendingSaves()
+    return store.subscribe(syncPendingSaves)
+  }, [persistTextDocumentSource, store])
 
   // Cleanup on unmount
   useEffect(() => {

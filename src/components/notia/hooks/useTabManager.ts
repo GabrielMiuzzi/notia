@@ -34,6 +34,7 @@ import {
   type NotiaDocumentSaveStatus,
 } from '../../../types/views/fileDocument'
 import { getDirtyOpenTextDocumentPaths } from '../../../engines/documents/documentSaveEngine'
+import { flushPendingEditorChanges } from '../../../services/markdown/pendingEditorChanges'
 
 interface OpenDocumentTab {
   document: OpenFileDocument
@@ -202,6 +203,8 @@ export function useTabManager({
 
   const persistOpenTabBeforeClose = useCallback(
     async (tabPath: string): Promise<boolean> => {
+      // The open editor hands over the text it still holds before the tab is read.
+      flushPendingEditorChanges()
       clearPendingTextSaveByPath(tabPath)
 
       while (true) {
@@ -342,6 +345,8 @@ export function useTabManager({
   }, [dispatch])
 
   const persistDirtyTextDocuments = useCallback(async (): Promise<boolean> => {
+    // A note whose only change is still in the editor counts as dirty too.
+    flushPendingEditorChanges()
     const dirtyTabPaths = getDirtyOpenTextDocumentPaths(store.getState().documents.openTabs)
 
     for (const tabPath of dirtyTabPaths) {
@@ -385,6 +390,8 @@ export function useTabManager({
   }, [clearPendingTextSaveByPath, dispatch, persistOpenTabBeforeClose])
 
   const renameOpenTabPath = useCallback((path: string, nextPath: string, name: string) => {
+    // The editor of the old path closes with the rename: its text goes to the tab first.
+    flushPendingEditorChanges()
     clearPendingTextSaveByPath(path)
     dispatch(renameTabPath({ oldPath: path, newPath: nextPath, name }))
     if (selectActiveTabPath(store.getState()) === path) { dispatch(setActiveTabPath(nextPath)) }
@@ -434,8 +441,9 @@ export function useTabManager({
     dispatch(setActiveTabPath(tabPath))
   }, [dispatch])
 
-  const handleTextDocumentChange = useCallback((nextSource: string) => {
-    const targetPath = selectActiveTabPath(store.getState())
+  /** A text editor's new source; the Markdown editor names its note, which may no longer be the active tab. */
+  const handleTextDocumentChange = useCallback((nextSource: string, documentPath?: string) => {
+    const targetPath = documentPath ?? selectActiveTabPath(store.getState())
     if (!targetPath) { return }
     dispatch(updateTabSource({ path: targetPath, source: nextSource }))
   }, [dispatch])

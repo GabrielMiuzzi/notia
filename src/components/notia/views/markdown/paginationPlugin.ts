@@ -138,17 +138,70 @@ export function layoutPages(blocks: MeasuredBlock[], geometry: PaginationGeometr
 /** Lists can move to the next page item by item; other blocks move whole. */
 const SPLITTABLE_NODES = new Set(['bullet_list', 'ordered_list'])
 
-/** Positions where a page can start: top-level blocks, and the items of top-level lists. */
-function breakCandidates(doc: ProseMirrorNode): number[] {
-  const positions: number[] = []
-  doc.forEach((node, offset) => {
-    if (SPLITTABLE_NODES.has(node.type.name) && node.childCount > 0) {
-      node.forEach((_item, itemOffset) => positions.push(offset + 1 + itemOffset))
+/** What ProseMirror keeps on the DOM element of each node it draws (its view of the node). */
+interface NodeViewDescription {
+  node?: ProseMirrorNode | null
+  nodeDOM?: Node | null
+  contentDOM?: HTMLElement | null
+}
+
+function descriptionOf(element: Element): NodeViewDescription | undefined {
+  return (element as Element & { pmViewDesc?: NodeViewDescription }).pmViewDesc
+}
+
+/**
+ * The description of each child of `parent`, in one pass over the elements
+ * of `container` (widgets such as the page spacers are skipped), or `null`
+ * where the pass cannot tell.
+ */
+function childDescriptions(container: Element | null | undefined, parent: ProseMirrorNode): Array<NodeViewDescription | null> {
+  const descriptions: Array<NodeViewDescription | null> = []
+  let element = container?.firstElementChild ?? null
+  parent.forEach((child) => {
+    let candidate = element
+    while (candidate && descriptionOf(candidate)?.node !== child) candidate = candidate.nextElementSibling
+    if (!candidate) {
+      descriptions.push(null)
       return
     }
-    positions.push(offset)
+    descriptions.push(descriptionOf(candidate) ?? null)
+    element = candidate.nextElementSibling
   })
-  return positions
+  return descriptions
+}
+
+export interface BreakCandidate {
+  /** Document position of the block or list item. */
+  pos: number
+  node: ProseMirrorNode
+  /** What `view.nodeDOM(pos)` gives. */
+  dom: Node | null
+}
+
+/**
+ * Where a page can start: top-level blocks, and the items of top-level
+ * lists, with their DOM. One walk over the document and the editor's
+ * elements: `view.nodeDOM` searched from the start for each block, which
+ * grew with the square of the note. Where the walk cannot tell, `nodeDOM`
+ * answers.
+ */
+export function breakCandidates(view: EditorView): BreakCandidate[] {
+  const { doc } = view.state
+  const candidates: BreakCandidate[] = []
+  const blocks = childDescriptions(view.dom, doc)
+  doc.forEach((node, offset, index) => {
+    const block = blocks[index] ?? null
+    if (SPLITTABLE_NODES.has(node.type.name) && node.childCount > 0) {
+      const items = childDescriptions(block?.contentDOM, node)
+      node.forEach((item, itemOffset, itemIndex) => {
+        const pos = offset + 1 + itemOffset
+        candidates.push({ pos, node: item, dom: items[itemIndex]?.nodeDOM ?? view.nodeDOM(pos) })
+      })
+      return
+    }
+    candidates.push({ pos: offset, node, dom: block?.nodeDOM ?? view.nodeDOM(offset) })
+  })
+  return candidates
 }
 
 /** Measures the places a page can start as if there were no page breaks. */
@@ -156,15 +209,21 @@ function measureBlocks(view: EditorView, container: HTMLElement, breaks: PageBre
   const origin = container.getBoundingClientRect().top
   const blocks: MeasuredBlock[] = []
   let lastBottom = 0
-  breakCandidates(view.state.doc).forEach((pos) => {
-    const dom = view.nodeDOM(pos)
-    if (!(dom instanceof HTMLElement)) return
-    const before = breaks.reduce((sum, pageBreak) => (pageBreak.pos <= pos ? sum + pageBreak.height : sum), 0)
+  // The space before a block is every break up to it: added as the blocks
+  // go, in document order, instead of summed again for each block.
+  const ordered = [...breaks].sort((left, right) => left.pos - right.pos)
+  let nextBreak = 0
+  let before = 0
+  for (const { pos, node, dom } of breakCandidates(view)) {
+    while (nextBreak < ordered.length && ordered[nextBreak]!.pos <= pos) {
+      before += ordered[nextBreak]!.height
+      nextBreak += 1
+    }
+    if (!(dom instanceof HTMLElement)) continue
     const rect = dom.getBoundingClientRect()
-    const keepWithNext = view.state.doc.nodeAt(pos)?.type.name === 'heading'
-    blocks.push({ pos, top: (rect.top - origin) / zoom - before, height: 0, keepWithNext })
+    blocks.push({ pos, top: (rect.top - origin) / zoom - before, height: 0, keepWithNext: node.type.name === 'heading' })
     lastBottom = Math.max(lastBottom, (rect.bottom - origin) / zoom - before)
-  })
+  }
   blocks.forEach((block, index) => {
     const next = blocks[index + 1]
     block.height = (next ? next.top : lastBottom) - block.top
@@ -204,6 +263,12 @@ export function createPaginationPlugin({ getGeometry, getContainer, onPageCountC
       let frame = 0
       let lastCount = 0
       let lastFlow = ''
+      /** Sizes of the editor and the sheets when the pages were last laid out. */
+      let laidOutSizes = ''
+      const sizes = () => {
+        const container = getContainer()
+        return `${view.dom.offsetWidth}x${view.dom.offsetHeight} ${container?.offsetWidth ?? 0}x${container?.offsetHeight ?? 0}`
+      }
       const paginate = () => {
         const current = paginationKey.getState(view.state)?.breaks ?? []
         const geometry = getGeometry()
@@ -216,8 +281,12 @@ export function createPaginationPlugin({ getGeometry, getContainer, onPageCountC
           const layout = layoutPages(blocks, geometry)
           next = layout.breaks
           pageCount = layout.pageCount
+          const topOf = new Map<number, number>()
+          blocks.forEach((block) => {
+            if (!topOf.has(block.pos)) topOf.set(block.pos, block.top)
+          })
           flow = next.map((pageBreak) => ({
-            flowTop: blocks.find((block) => block.pos === pageBreak.pos)?.top ?? 0,
+            flowTop: topOf.get(pageBreak.pos) ?? 0,
             height: pageBreak.height,
           }))
         }
@@ -234,6 +303,8 @@ export function createPaginationPlugin({ getGeometry, getContainer, onPageCountC
           lastCount = pageCount
           onPageCountChange(pageCount)
         }
+        // The layout was just measured, so reading the sizes is cheap.
+        laidOutSizes = geometry && container ? sizes() : ''
       }
       const schedule = () => {
         window.cancelAnimationFrame(frame)
@@ -241,7 +312,13 @@ export function createPaginationPlugin({ getGeometry, getContainer, onPageCountC
           if (!view.isDestroyed) paginate()
         })
       }
-      const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null
+      // A size the pages were already laid out with (the new line that was
+      // just measured) does not lay them out a second time.
+      const onResize = () => {
+        if (laidOutSizes && sizes() === laidOutSizes) return
+        schedule()
+      }
+      const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(onResize) : null
       observer?.observe(view.dom)
       const container = getContainer()
       if (container) observer?.observe(container)

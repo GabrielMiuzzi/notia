@@ -1,4 +1,4 @@
-import { memo, Suspense, useCallback, useMemo, lazy } from 'react'
+import { memo, Suspense, useCallback, useMemo, lazy, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector } from '../../store/hooks'
 import { selectIsHeavyWorkspaceView } from '../../features/ui/uiSelectors'
@@ -9,15 +9,6 @@ import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
 import { MainView } from './MainView'
 import { PerformanceProfiler } from './PerformanceProfiler'
 import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
-import { ColdPassView } from './views/ColdPassView'
-import { MeetingView } from './views/MeetingView'
-import { FinanceView } from './views/FinanceView'
-import { AgendaView } from './views/AgendaView'
-import { RoutineView } from './views/RoutineView'
-import { AiActionsView } from './views/AiActionsView'
-import { RecipesView } from './views/RecipesView'
-import { HealthView } from './views/HealthView'
-import { GymView } from './views/GymView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntryView } from '../../types/coldpass'
@@ -37,6 +28,17 @@ const TaskManagerApp = lazy(async () => {
   const module = await import('../../modules/task-manager/components/TaskManagerApp')
   return { default: module.TaskManagerApp }
 })
+// The modules load when opened: the start of the app parses less code,
+// which on Android delays the first screen.
+const ColdPassView = lazy(async () => ({ default: (await import('./views/ColdPassView')).ColdPassView }))
+const MeetingView = lazy(async () => ({ default: (await import('./views/MeetingView')).MeetingView }))
+const FinanceView = lazy(async () => ({ default: (await import('./views/FinanceView')).FinanceView }))
+const AgendaView = lazy(async () => ({ default: (await import('./views/AgendaView')).AgendaView }))
+const RoutineView = lazy(async () => ({ default: (await import('./views/RoutineView')).RoutineView }))
+const AiActionsView = lazy(async () => ({ default: (await import('./views/AiActionsView')).AiActionsView }))
+const RecipesView = lazy(async () => ({ default: (await import('./views/RecipesView')).RecipesView }))
+const HealthView = lazy(async () => ({ default: (await import('./views/HealthView')).HealthView }))
+const GymView = lazy(async () => ({ default: (await import('./views/GymView')).GymView }))
 
 interface NotiaWorkspaceProps {
   mountedHeavyWorkspaceView: string
@@ -56,6 +58,11 @@ interface NotiaWorkspaceProps {
   isImportingVault: boolean
   onMarkdownSelectionChange: (selection: MarkdownSelectionContext | null) => void
   markdownExternalUpdate: MarkdownDocumentUpdate | null
+}
+
+/** A module loaded on demand, with the waiting card while it arrives. */
+function ModuleView({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<WorkspaceFallback label="Abriendo el módulo" />}>{children}</Suspense>
 }
 
 function WorkspaceFallback({ label }: { label: string }) {
@@ -218,28 +225,30 @@ function NotiaWorkspaceComponent({
 
   if (activeWorkspaceView === 'coldpass') {
     return (
-      <ColdPassView
-        entries={coldPassEntries}
-        isUnlocked={Boolean(coldPassSession)}
-        isImportingVault={isImportingVault}
-        onCreateCredential={handleOpenColdPassCredentialModal}
-        onImportVault={handleColdPassImportVault}
-        onEditCredential={handleColdPassEditCredential}
-        onDeleteCredential={handleColdPassDeleteCredential}
-      />
+      <ModuleView>
+        <ColdPassView
+          entries={coldPassEntries}
+          isUnlocked={Boolean(coldPassSession)}
+          isImportingVault={isImportingVault}
+          onCreateCredential={handleOpenColdPassCredentialModal}
+          onImportVault={handleColdPassImportVault}
+          onEditCredential={handleColdPassEditCredential}
+          onDeleteCredential={handleColdPassDeleteCredential}
+        />
+      </ModuleView>
     )
   }
 
   if (activeWorkspaceView === 'meeting') {
-    return <MeetingView />
+    return <ModuleView><MeetingView /></ModuleView>
   }
 
   if (activeWorkspaceView === 'finance') {
-    return <FinanceView library={activeLibrary} />
+    return <ModuleView><FinanceView library={activeLibrary} /></ModuleView>
   }
 
   if (activeWorkspaceView === 'agenda') {
-    return <AgendaView library={activeLibrary} />
+    return <ModuleView><AgendaView library={activeLibrary} /></ModuleView>
   }
 
   if (activeWorkspaceView === 'home') {
@@ -247,19 +256,19 @@ function NotiaWorkspaceComponent({
   }
 
   if (activeWorkspaceView === 'routine') {
-    return <RoutineView library={activeLibrary} />
+    return <ModuleView><RoutineView library={activeLibrary} /></ModuleView>
   }
   if (activeWorkspaceView === 'ai-actions') {
-    return <AiActionsView library={activeLibrary} />
+    return <ModuleView><AiActionsView library={activeLibrary} /></ModuleView>
   }
   if (activeWorkspaceView === 'recipes') {
-    return <RecipesView library={activeLibrary} />
+    return <ModuleView><RecipesView library={activeLibrary} /></ModuleView>
   }
   if (activeWorkspaceView === 'health') {
-    return <HealthView library={activeLibrary} />
+    return <ModuleView><HealthView library={activeLibrary} /></ModuleView>
   }
   if (activeWorkspaceView === 'gym') {
-    return <GymView library={activeLibrary} />
+    return <ModuleView><GymView library={activeLibrary} /></ModuleView>
   }
 
   return (

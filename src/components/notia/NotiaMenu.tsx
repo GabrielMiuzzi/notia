@@ -27,7 +27,8 @@ import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
-import { useAppDispatch, useAppSelector } from '../../store/hooks'
+import { useResumeWorkout } from '../../modules/gym/hooks/useResumeWorkout'
+import { useAppDispatch, useAppSelector, type RootState } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
 import { selectIsRightChatPanelOpen } from '../../features/ui/uiSelectors'
 import { toggleTheme, setAiSettings, setInkMathPreferences, setExplorerRefreshIntervalMs, setTelegramSettings, setTaskManagerPublicationPreferences } from '../../features/preferences/preferencesSlice'
@@ -46,6 +47,15 @@ import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/co
 import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID } from '../../modules/task-manager/types/taskManagerTypes'
 import { PerformanceProfiler } from './PerformanceProfiler'
 
+/**
+ * What the shell reads of the active document: its text changes on every
+ * pause in typing and must not draw the whole shell again.
+ */
+function selectActiveDocumentIdentity(state: RootState) {
+  const document = selectActiveDocument(state)
+  return document ? { path: document.path, name: document.name, viewKind: document.viewKind } : null
+}
+
 function NotiaMenuComponent() {
   const dispatch = useAppDispatch()
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
@@ -57,9 +67,10 @@ function NotiaMenuComponent() {
   const taskManagerPublicationPreferences = useAppSelector(selectTaskManagerPublicationPreferences, shallowEqual)
   const activeLibraryId = useAppSelector(selectSelectedLibraryId)
   const activeLibrary = useAppSelector(selectActiveLibrary)
+  useResumeWorkout(activeLibrary)
   const treeNodes = useAppSelector(selectTreeNodes)
   const flatFileList = useAppSelector(selectFlatFileList)
-  const activeDocument = useAppSelector(selectActiveDocument)
+  const activeDocument = useAppSelector(selectActiveDocumentIdentity, shallowEqual)
   const activeWorkspaceView = useAppSelector(selectActiveWorkspaceView)
   // The catalog is loaded and saved by `AppAuthGate`, around the menu.
   useDevicePreferencesPersistence()
@@ -306,6 +317,10 @@ function NotiaMenuComponent() {
   )
   const handleTelegramPreferencesChange = useCallback<(value: Parameters<typeof setTelegramSettings>[0]) => void>(
     (next) => dispatch(setTelegramSettings(next)), [dispatch],
+  )
+  // Stable, so the modals (memoized) are not drawn again with the shell.
+  const handleTaskManagerPublicationPreferencesChange = useCallback<(value: Parameters<typeof setTaskManagerPublicationPreferences>[0]) => void>(
+    (next) => dispatch(setTaskManagerPublicationPreferences(next)), [dispatch],
   )
 
   useLibraryConfigSync({
@@ -582,7 +597,7 @@ function NotiaMenuComponent() {
           onContextsChange={setLibraryContexts}
         onTelegramPreferencesChange={handleTelegramPreferencesChange}
         taskManagerPublicationPreferences={taskManagerPublicationPreferences}
-        onTaskManagerPublicationPreferencesChange={(value) => dispatch(setTaskManagerPublicationPreferences(value))}
+        onTaskManagerPublicationPreferencesChange={handleTaskManagerPublicationPreferencesChange}
           coldPassPromptState={coldPassPromptState}
           coldPassDeletePromptState={coldPassDeletePromptState}
           coldPassImportPromptState={coldPassImportPromptState}

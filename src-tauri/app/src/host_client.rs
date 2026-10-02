@@ -13,7 +13,8 @@
 //! - **Events** of the host arrive over its WebSocket and are emitted here,
 //!   so the interface listens to them as if they were local.
 //! - **The monitor** checks `/api/health` and emits `notia:host-link` when
-//!   the host stops or starts answering.
+//!   the host stops or starts answering. A «Con copia» client syncs its copy
+//!   in the background as soon as a session opens and then on every check.
 
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -42,6 +43,10 @@ const SESSION_COOKIE: &str = "notia_session";
 /// session ends.
 pub(crate) const LINK_EVENT: &str = "notia:host-link";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the monitor, and a client with a ready copy at start, wait for
+/// `/api/health`: the same for both, so a host the monitor sees answering
+/// also answers at start.
+pub(crate) const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 const SHORT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Commands such as preparing a speech model or exporting run long.
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -152,11 +157,11 @@ pub(crate) struct ServerView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LinkView {
-    state: LinkState,
-    library: Option<String>,
+    pub(crate) state: LinkState,
+    pub(crate) library: Option<String>,
     platform: Option<String>,
-    signed_in: bool,
-    message: Option<String>,
+    pub(crate) signed_in: bool,
+    pub(crate) message: Option<String>,
 }
 
 pub(crate) fn link_view(app: &AppHandle) -> LinkView {
@@ -172,6 +177,7 @@ pub(crate) fn link_view(app: &AppHandle) -> LinkView {
 
 fn emit_link(app: &AppHandle) {
     let _ = app.emit(LINK_EVENT, link_view(app));
+    crate::client_status::refresh(app);
 }
 
 /// Whether the commands of this device run on its host: a client does,
@@ -497,6 +503,8 @@ async fn open_session(app: &AppHandle, username: &str, password: &str) -> Result
     });
     emit_link(app);
     start_events(app);
+    // The copy takes what changed meanwhile without holding the window.
+    crate::host_mirror::sync_in_background(app);
     Ok(())
 }
 
@@ -699,21 +707,26 @@ pub(crate) async fn auth_logout(app: &AppHandle, library_id: Option<&str>) -> Re
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostProbe {
-    ok: bool,
+    pub(crate) ok: bool,
     library: Option<String>,
     latency_ms: u64,
-    message: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 /// Asks `address` for its health, trusting `pin` (or any certificate the
 /// first time, pinned when the address is the saved host).
 pub(crate) async fn probe(app: &AppHandle, address: &HostAddress, pin: Option<String>) -> HostProbe {
+    probe_within(app, address, pin, SHORT_TIMEOUT).await
+}
+
+/// [`probe`] waiting at most `timeout` for the answer.
+pub(crate) async fn probe_within(app: &AppHandle, address: &HostAddress, pin: Option<String>, timeout: Duration) -> HostProbe {
     let started = Instant::now();
     let failed = |message: &str| HostProbe { ok: false, library: None, latency_ms: 0, message: Some(message.to_string()) };
     let Ok(http) = build_http(address.clone(), pin) else {
         return failed("No se pudo preparar la conexión con el host.");
     };
-    let response = match send(&http, Method::GET, "/api/health", None, None, SHORT_TIMEOUT).await {
+    let response = match send(&http, Method::GET, "/api/health", None, None, timeout).await {
         Ok(response) => response,
         Err(failure) => return failed(&failure.error().message),
     };
@@ -742,12 +755,9 @@ fn monitor(app: AppHandle, generation: u64) {
         let online = crate::host::async_runtime::block_on(check_health(&app));
         if online && with_link(&app, |link| link.session.is_some()).unwrap_or(false) {
             start_events(&app);
-            // The copy follows the host while there is connection.
-            if crate::host_mirror::keeps_copy(&app) && !crate::host_mirror::is_offline(&app) {
-                if let Err(error) = crate::host::async_runtime::block_on(crate::host_mirror::sync(&app)) {
-                    log::warn!("[notia:client] the copy did not sync: {}", error.message);
-                }
-            }
+            // The copy follows the host while there is connection, on its
+            // own thread: the checks go on during a long sync.
+            crate::host_mirror::sync_in_background(&app);
         }
         let wait = if online { MONITOR_ONLINE_INTERVAL } else { MONITOR_OFFLINE_INTERVAL };
         let until = Instant::now() + wait;
@@ -758,7 +768,7 @@ fn monitor(app: AppHandle, generation: u64) {
 }
 
 async fn check_health(app: &AppHandle) -> bool {
-    match request_json(app, Method::GET, "/api/health", None, CONNECT_TIMEOUT).await {
+    match request_json(app, Method::GET, "/api/health", None, HEALTH_TIMEOUT).await {
         Ok(reply) if reply.status == 200 => {
             let platform = reply.body.get("platform").and_then(Value::as_str).map(str::to_owned);
             with_link(app, |link| link.platform = platform);

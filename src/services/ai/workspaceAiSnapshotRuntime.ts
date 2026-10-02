@@ -121,3 +121,15 @@ export function buildWorkspaceAiSnapshot({
     capturedAt,
   }
 }
+
+/**
+ * The snapshot with another selection, captured now: the revisions of the
+ * tabs (a hash of each text) stay as they were.
+ */
+export function withWorkspaceSelection(
+  snapshot: WorkspaceAiSnapshot,
+  selection: WorkspaceAiSnapshot['selection'],
+  capturedAt = Date.now(),
+): WorkspaceAiSnapshot {
+  return { ...snapshot, selection, capturedAt }
+}

@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Plus, X } from 'lucide-react'
 import type { NotiaLibrary } from '../../../types/notia'
 import { useGymView } from '../hooks/useGymView'
+import { usePhoneLayout } from '../hooks/usePhoneLayout'
 import { applyCatalogMutation, asGymError } from '../services/gymService'
+import type { GymMutation } from '../types/gymTypes'
 import { EquipmentScreen } from './EquipmentScreen'
 import { ExerciseCard } from './ExerciseCard'
+import { PhoneRoutineList, PhoneTabBar, type PhoneTab } from './GymPhone'
 import { PanelScreen } from './PanelScreen'
 import { RoutinesScreen } from './RoutinesScreen'
 import { TrainingScreen } from './TrainingScreen'
@@ -15,12 +18,21 @@ interface CardState {
   editable: boolean
 }
 
-/** Gimnasio: el panel, las rutinas, el entrenamiento y el equipamiento. */
+/**
+ * Gimnasio: el panel, las rutinas, el entrenamiento y el equipamiento. Con
+ * el espacio de un celular sigue la versión celular del diseño: secciones
+ * abajo, la lista de rutinas como pantalla y las hojas que suben.
+ */
 export function GymDashboardView({ library }: { library: NotiaLibrary }) {
   const gym = useGymView(library)
   const { view, query, updateQuery, apply, notice, setNotice } = gym
   const [card, setCard] = useState<CardState | null>(null)
   const [clockOffset, setClockOffset] = useState(0)
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = usePhoneLayout(root)
+  // Celular: la lista de rutinas (antes de abrir una) y la hoja de ejercicios.
+  const [listing, setListing] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
 
   // El reloj de la sesión usa la hora de Rust (el host, si es un cliente).
   const serverNow = view?.nowMs
@@ -30,32 +42,69 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
 
   const screen = query.screen
   const selectedRoutine = view?.routineId ?? null
+  // Estables, para que la lista de ejercicios no se vuelva a dibujar con cada cambio de pantalla.
   const actions = useMemo(() => ({
-    toPanel: () => updateQuery({ screen: 'panel' }),
+    toPanel: () => {
+      setListing(false)
+      updateQuery({ screen: 'panel' })
+    },
     toRoutines: () => updateQuery({ screen: 'rutinas' }),
-    toEquipment: () => updateQuery({ screen: 'equipo' }),
-    train: (routineId: string) => updateQuery({ screen: 'entrenar', routineId }),
-  }), [updateQuery])
+    toRoutineList: () => {
+      setListing(true)
+      updateQuery({ screen: 'rutinas' })
+    },
+    toEquipment: () => {
+      setListing(false)
+      setLibraryOpen(false)
+      updateQuery({ screen: 'equipo' })
+    },
+    openRoutine: (routineId: string) => {
+      setListing(false)
+      updateQuery({ screen: 'rutinas', routineId })
+    },
+    train: (routineId: string) => {
+      setListing(false)
+      updateQuery({ screen: 'entrenar', routineId })
+    },
+    apply: (mutation: GymMutation) => { void apply(mutation) },
+    // Una rutina nueva se abre para editarla.
+    createRoutine: () => {
+      void apply({ type: 'create-routine' }).then((routineId) => {
+        if (!routineId) return
+        setListing(false)
+        updateQuery({ screen: 'editar', routineId })
+      })
+    },
+    search: (search: string) => updateQuery({ search }),
+    group: (group: string | null) => updateQuery({ group }),
+    onlyMine: (onlyMine: boolean) => updateQuery({ onlyMine }),
+    openExercise: (exerciseId: string, editable: boolean) => setCard({ exerciseId, editable }),
+  }), [apply, updateQuery])
 
-  const createExercise = async () => {
-    try {
-      const result = await applyCatalogMutation(library, { type: 'create-exercise', group: query.group })
-      if (result.exercise) setCard({ exerciseId: result.exercise.id, editable: true })
-    } catch (reason) {
-      setNotice(asGymError(reason).message)
-    }
-  }
+  const currentGroup = query.group
+  const createExercise = useCallback(() => {
+    void applyCatalogMutation(library, { type: 'create-exercise', group: currentGroup })
+      .then((result) => {
+        if (result.exercise) setCard({ exerciseId: result.exercise.id, editable: true })
+      })
+      .catch((reason: unknown) => setNotice(asGymError(reason).message))
+  }, [library, currentGroup, setNotice])
 
   if (!view) {
     return (
-      <main className="notia-main gym-view gym-view--state" role={gym.status === 'error' ? 'alert' : 'status'}>
+      <main ref={setRoot} className="notia-main gym-view gym-view--state" role={gym.status === 'error' ? 'alert' : 'status'}>
         {gym.status === 'error' ? gym.loadError : 'Cargando Gimnasio…'}
       </main>
     )
   }
 
+  const showList = phone && listing && screen === 'rutinas'
+  const tab: PhoneTab | null = phone
+    ? screen === 'panel' ? 'panel' : screen === 'equipo' ? 'equipo' : screen === 'rutinas' ? 'rutinas' : null
+    : null
+
   return (
-    <div className="notia-main gym-view" data-screen={screen}>
+    <div ref={setRoot} className="notia-main gym-view" data-screen={screen} data-layout={phone ? 'phone' : undefined}>
       {view.exerciseTotal === 0 ? (
         <p className="gym-banner" role="status">No hay ejercicios en Gym/exercises de esta biblioteca. Cargá el catálogo o creá ejercicios desde Editar.</p>
       ) : null}
@@ -79,10 +128,13 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
           onRoutines={actions.toRoutines}
           onStart={actions.train}
           onPickDay={(day) => updateQuery({ day })}
+          phone={phone}
         />
       ) : null}
 
-      {(screen === 'rutinas' || screen === 'editar') ? (
+      {showList ? <PhoneRoutineList routines={view.routines} onCreate={actions.createRoutine} onOpen={actions.openRoutine} /> : null}
+
+      {(screen === 'rutinas' || screen === 'editar') && !showList ? (
         <RoutinesScreen
           editing={screen === 'editar'}
           routines={view.routines}
@@ -93,18 +145,25 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
           search={query.search}
           group={query.group}
           onlyMine={query.onlyMine}
-          apply={(mutation) => void apply(mutation)}
+          apply={actions.apply}
           onPanel={actions.toPanel}
           onSelect={(routineId) => updateQuery({ routineId })}
           onEdit={() => updateQuery({ screen: 'editar', routineId: selectedRoutine })}
-          onView={() => updateQuery({ screen: 'rutinas', routineId: selectedRoutine })}
+          onView={() => {
+            setLibraryOpen(false)
+            updateQuery({ screen: 'rutinas', routineId: selectedRoutine })
+          }}
           onTrain={() => selectedRoutine && actions.train(selectedRoutine)}
           onEquipment={actions.toEquipment}
-          onSearch={(search) => updateQuery({ search })}
-          onGroup={(group) => updateQuery({ group })}
-          onOnlyMine={(onlyMine) => updateQuery({ onlyMine })}
-          onOpenExercise={(exerciseId, editable) => setCard({ exerciseId, editable })}
-          onCreateExercise={() => void createExercise()}
+          onSearch={actions.search}
+          onGroup={actions.group}
+          onOnlyMine={actions.onlyMine}
+          onOpenExercise={actions.openExercise}
+          onCreateExercise={createExercise}
+          phone={phone}
+          onBackToList={actions.toRoutineList}
+          libraryOpen={libraryOpen}
+          onCloseLibrary={() => setLibraryOpen(false)}
         />
       ) : null}
 
@@ -113,9 +172,11 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
           <TrainingScreen
             training={view.training}
             clockOffsetMs={clockOffset}
-            apply={(mutation) => void apply(mutation)}
+            apply={actions.apply}
+            applying={gym.applying}
             onBack={() => updateQuery({ screen: 'rutinas', routineId: view.training?.routineId ?? selectedRoutine })}
             onOpenExercise={(exerciseId) => setCard({ exerciseId, editable: false })}
+            phone={phone}
           />
         ) : (
           <main className="gym-main"><div className="gym-empty">Creá una rutina para entrenar.</div></main>
@@ -123,8 +184,17 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
       ) : null}
 
       {screen === 'equipo' && view.equipment ? (
-        <EquipmentScreen library={library} equipment={view.equipment} apply={(mutation) => void apply(mutation)} onBack={actions.toPanel} onNotice={setNotice} />
+        <EquipmentScreen library={library} equipment={view.equipment} apply={actions.apply} onBack={actions.toPanel} onNotice={setNotice} phone={phone} />
       ) : null}
+
+      {phone && screen === 'editar' && view.routine ? (
+        <div className="gym-phone-bar">
+          <button type="button" className="gym-button gym-button--primary gym-button--big gym-button--wide" onClick={() => setLibraryOpen(true)}>
+            <Plus size={18} aria-hidden="true" />Agregar ejercicio
+          </button>
+        </div>
+      ) : null}
+      {tab ? <PhoneTabBar current={tab} onPanel={actions.toPanel} onRoutines={actions.toRoutineList} onEquipment={actions.toEquipment} /> : null}
 
       {card ? (
         <ExerciseCard
@@ -140,6 +210,7 @@ export function GymDashboardView({ library }: { library: NotiaLibrary }) {
             setCard({ ...card, editable: true })
           }}
           onNotice={setNotice}
+          phone={phone}
         />
       ) : null}
     </div>

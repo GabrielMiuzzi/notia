@@ -161,7 +161,7 @@ fn android_file_name(path: &str) -> Option<String> {
 }
 
 #[cfg(any(target_os = "android", test))]
-fn android_relative_segments(path: &str, root_tree_uri: &str) -> Option<Vec<String>> {
+pub(crate) fn android_relative_segments(path: &str, root_tree_uri: &str) -> Option<Vec<String>> {
     let normalized_path = normalize_android_path(path);
     let normalized_root = normalize_android_path(root_tree_uri);
     if !is_android_tree_uri(&normalized_root) {
@@ -256,6 +256,20 @@ fn resolve_entry_uri(
         .map(str::trim)
         .filter(|v| is_android_tree_uri(v))
     {
+        // Walk from the deepest known folder: a few shallow listings
+        // instead of the whole tree, and a definite answer when the entry
+        // does not exist (an optional file, an existence check).
+        if let Some(segments) = android_relative_segments(path, tree_uri) {
+            match mobile_directory_picker::resolve_android_path_by_walking(state, tree_uri, &segments) {
+                Some(Some(uri)) => {
+                    mobile_directory_picker::put_android_path_lru(state, path.to_string(), uri.clone());
+                    return Some(uri);
+                }
+                Some(None) => return None,
+                None => {}
+            }
+        }
+
         // Lazy cache refresh: if the cache is stale and we can't resolve
         // the path, try refreshing the cache once via a full readTree,
         // then retry the resolution.

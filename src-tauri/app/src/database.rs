@@ -1309,6 +1309,14 @@ pub(crate) fn load_backend_operation_record(
         .optional()
 }
 
+/// Saved operations each person keeps: the last ones, for a run that
+/// continues, a repeated request or undoing the latest change. Older ones
+/// only made the database grow (each can hold a whole run).
+const MAX_SAVED_OPERATIONS_PER_USER: i64 = 48;
+const SAVED_OPERATIONS_MAX_AGE: &str = "-7 days";
+/// Free pages (4 KiB) from which the database is compacted after pruning.
+const COMPACT_FROM_FREE_PAGES: i64 = 2048;
+
 pub(crate) fn save_backend_operation_record(
     connection: &Connection,
     library_user_id: &str,
@@ -1321,6 +1329,33 @@ pub(crate) fn save_backend_operation_record(
          ON CONFLICT(library_user_id,idempotency_key) DO UPDATE SET record_json=excluded.record_json,updated_at=CURRENT_TIMESTAMP",
         params![library_user_id, idempotency_key, record_json],
     )?;
+    prune_backend_operation_records(connection, library_user_id)?;
+    Ok(())
+}
+
+/// Drops the saved operations of `library_user_id` older than a week or
+/// beyond the last ones, and compacts the file when that freed much space
+/// (on Android every change copies the whole file back to the library).
+fn prune_backend_operation_records(connection: &Connection, library_user_id: &str) -> Result<(), rusqlite::Error> {
+    let removed = connection.execute(
+        "DELETE FROM backend_operation_journal
+         WHERE library_user_id=?1
+           AND (updated_at < datetime('now', ?2)
+                OR idempotency_key NOT IN (
+                    SELECT idempotency_key FROM backend_operation_journal
+                    WHERE library_user_id=?1
+                    ORDER BY updated_at DESC, rowid DESC
+                    LIMIT ?3))",
+        params![library_user_id, SAVED_OPERATIONS_MAX_AGE, MAX_SAVED_OPERATIONS_PER_USER],
+    )?;
+    if removed == 0 {
+        return Ok(());
+    }
+    let free_pages: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+    if free_pages >= COMPACT_FROM_FREE_PAGES && connection.is_autocommit() {
+        // Another connection writing makes it fail: the next pruning retries.
+        let _ = connection.execute_batch("VACUUM");
+    }
     Ok(())
 }
 
@@ -1490,6 +1525,49 @@ pub(crate) fn sync_user_data_connection(
 mod tests {
     use super::{migrate, migrate_to, CURRENT_SCHEMA_VERSION};
     use rusqlite::Connection;
+
+    #[test]
+    fn saved_operations_keep_only_the_recent_ones_and_compact_the_file() {
+        let path = std::env::temp_dir().join(format!("notia-journal-{}.db", uuid::Uuid::new_v4()));
+        let connection = Connection::open(&path).expect("SQLite");
+        migrate(&connection).expect("migration");
+        let big = "x".repeat(64 * 1024);
+        for index in 0..10 {
+            super::save_backend_operation_record(&connection, "otra", &format!("o{index}"), "{}").expect("other user");
+        }
+        // Old rows, as the journal grew before pruning existed.
+        for index in 0..200 {
+            connection
+                .execute(
+                    "INSERT INTO backend_operation_journal (library_user_id,idempotency_key,record_json,updated_at)
+                     VALUES ('owner', ?1, ?2, datetime('now', '-30 days'))",
+                    rusqlite::params![format!("viejo{index}"), big],
+                )
+                .expect("old row");
+        }
+        for index in 0..60 {
+            super::save_backend_operation_record(&connection, "owner", &format!("k{index}"), &big).expect("save");
+        }
+        let keys: Vec<String> = connection
+            .prepare("SELECT idempotency_key FROM backend_operation_journal WHERE library_user_id='owner'")
+            .expect("query")
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("keys");
+        assert_eq!(keys.len(), super::MAX_SAVED_OPERATIONS_PER_USER as usize);
+        assert!(keys.iter().all(|key| key.starts_with('k')), "old rows are gone");
+        assert!(keys.contains(&"k59".to_string()), "the latest stays");
+        assert!(super::load_backend_operation_record(&connection, "owner", "k59").expect("load").is_some());
+        let others: i64 = connection
+            .query_row("SELECT COUNT(*) FROM backend_operation_journal WHERE library_user_id='otra'", [], |row| row.get(0))
+            .expect("others");
+        assert_eq!(others, 10, "other people keep theirs");
+        let free_pages: i64 = connection.query_row("PRAGMA freelist_count", [], |row| row.get(0)).expect("free");
+        assert!(free_pages < super::COMPACT_FROM_FREE_PAGES, "the file was compacted");
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn migration_is_idempotent() {

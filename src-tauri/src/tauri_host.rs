@@ -352,6 +352,41 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(decoded).ok().filter(|path| !path.is_empty())
 }
 
+type Command = Box<dyn FnOnce() + Send>;
+
+/// Runs the commands of the interface on their own thread, in the order
+/// they arrive. The thread that delivers them is the WebView's: on Android
+/// the page waits for it (`postMessage` of the JavaScript bridge), and on
+/// Windows it is the window's. A command that reads or writes the library
+/// would freeze typing and scrolling while it runs. One thread keeps the
+/// order the commands had (shared notes and recording chunks rely on it);
+/// a command that returns a task still runs that task on the async runtime.
+fn run_in_order(command: impl FnOnce() + Send + 'static) {
+    static COMMANDS: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Command>>> = std::sync::OnceLock::new();
+    let sender = COMMANDS.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Command>();
+        let spawned = std::thread::Builder::new().name("notia-commands".into()).spawn(move || {
+            for command in receiver {
+                // A command that panics answers nothing; the next ones still run.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(command));
+            }
+        });
+        if spawned.is_err() {
+            log::error!("[notia:host] the command thread did not start");
+        }
+        std::sync::Mutex::new(sender)
+    });
+    let command: Command = Box::new(command);
+    let rejected = match sender.lock() {
+        Ok(sender) => sender.send(command).err().map(|error| error.0),
+        Err(_) => Some(command),
+    };
+    // Without the thread the command runs here, as it did before.
+    if let Some(command) = rejected {
+        command();
+    }
+}
+
 fn invoke_body(body: &InvokeBody) -> serde_json::Value {
     match body {
         InvokeBody::Json(value) => value.clone(),
@@ -399,12 +434,12 @@ pub fn run() {
             };
             let body = invoke_body(invoke.message.payload());
             let label = webview.window().label().to_string();
-            match dispatch_app_invoke(app.inner(), &label, &body) {
-                Dispatch::Ready(reply) => invoke.resolver.respond(reply.map_err(InvokeError)),
-                Dispatch::Pending(task) => invoke
-                    .resolver
-                    .respond_async(async move { task.await.map_err(InvokeError) }),
-            }
+            let app = app.inner().clone();
+            let resolver = invoke.resolver;
+            run_in_order(move || match dispatch_app_invoke(&app, &label, &body) {
+                Dispatch::Ready(reply) => resolver.respond(reply.map_err(InvokeError)),
+                Dispatch::Pending(task) => resolver.respond_async(async move { task.await.map_err(InvokeError) }),
+            });
             true
         })
         .run(tauri::generate_context!())

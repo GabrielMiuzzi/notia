@@ -64,6 +64,17 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         })
     }
 
+    /// A document is about to change: what was read from it before is
+    /// read again (the link cache's sources, decisions taken from the
+    /// library's configuration).
+    fn changing(&self, locator: &DocumentLocatorDto) {
+        let path = locator.logical_path.as_str();
+        crate::library_graph::forget_source(&self.library_id, path);
+        if path == notia_backend_core::library_config::LIBRARY_CONFIG_LOGICAL_PATH {
+            crate::library_config::config_changed();
+        }
+    }
+
     fn binding(&self) -> Result<crate::library_registry::LibraryBinding, BackendError> {
         let binding = self.registry.lookup(&self.library_id)?;
         if binding.generation != self.binding_generation {
@@ -311,6 +322,7 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         content: &str,
         expected_revision: Option<&str>,
     ) -> Result<(), BackendError> {
+        self.changing(locator);
         if content.chars().count()
             > notia_backend_core::library_tools::max_write_document_chars(locator.logical_path.as_str())
         {
@@ -403,6 +415,7 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         locator: &DocumentLocatorDto,
         content: &str,
     ) -> Result<(), BackendError> {
+        self.changing(locator);
         validate_document_locator(locator, &self.library_id)?;
         if content.chars().count()
             > notia_backend_core::library_tools::max_write_document_chars(locator.logical_path.as_str())
@@ -534,6 +547,7 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         locator: &DocumentLocatorDto,
     ) -> Result<(), BackendError> {
         validate_document_locator(locator, &self.library_id)?;
+        self.changing(locator);
 
         #[cfg(not(target_os = "android"))]
         {
@@ -600,6 +614,7 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         data: &[u8],
     ) -> Result<(), BackendError> {
         validate_document_locator(locator, &self.library_id)?;
+        self.changing(locator);
         if data.is_empty() || data.len() > notia_backend_core::MAX_EXPORT_OUTPUT_BYTES {
             return Err(BackendError::invalid_input(
                 "La salida binaria supera los límites permitidos.",

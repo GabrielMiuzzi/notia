@@ -28,7 +28,8 @@ export interface NotiaActions {
   moveNode: (sourcePath: string, targetDirectoryPath: string) => void
   libraryAdded: (library: NotiaLibrary) => Promise<void>
   libraryRemoved: (library: NotiaLibrary) => Promise<void>
-  textDocumentChange: (nextSource: string) => void
+  /** New source of a text editor; without `documentPath` it belongs to the active tab. */
+  textDocumentChange: (nextSource: string, documentPath?: string) => void
   /** A shared note changed and another editor saves it (nothing left to save here). */
   sharedTextDocumentChange: (path: string, nextSource: string) => void
   chatWorkspaceTreeChanged: (pathHint?: string) => void

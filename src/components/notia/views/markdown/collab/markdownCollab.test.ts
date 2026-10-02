@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyUpdate, Doc, encodeStateAsUpdate } from 'yjs'
+import { Awareness, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { Crepe } from '@milkdown/crepe'
 import type { CollabMessage, CollabPeers } from '../../../../../services/collab/collabRuntime'
 
@@ -41,7 +42,7 @@ function fakeEditor(markdown: string) {
     getMarkdown: () => markdown,
     editor: { action: (run: (context: typeof ctx) => unknown) => run(ctx) },
   } as unknown as Crepe
-  return { crepe, service }
+  return { crepe, service, view }
 }
 
 let handlers: { update: (message: CollabMessage) => void; awareness: (message: CollabMessage) => void; peers: (peers: CollabPeers) => void }
@@ -107,6 +108,23 @@ describe('startMarkdownCollab', () => {
 
     handlers.peers({ room: 'r', peers: [], saver: 'b' })
     expect(onSaverChange).toHaveBeenLastCalledWith(true)
+    session.destroy()
+  })
+
+  it('redraws the marks of the blocks only when another editor moves', async () => {
+    runtime.joinCollab.mockResolvedValue({ room: 'r', peerId: 'a', color: '#4FD1C5', initializer: false, saver: true, updates: [], peers: [] })
+    const { crepe, view } = fakeEditor('')
+    const session = await startMarkdownCollab({ crepe, libraryId: 'lib', path: 'C:/n.md', deviceName: 'NOTEBOOK', onSaverChange: vi.fn(), onLost: vi.fn() })
+
+    // This editor's own cursor moves with every keystroke.
+    session.awareness.setLocalStateField('cursor', { head: 1 })
+    expect(view.dispatch).not.toHaveBeenCalled()
+
+    const other = new Awareness(new Doc())
+    other.setLocalStateField('user', { name: 'Android', color: '#6C8EFF' })
+    handlers.awareness({ room: 'r', from: 'b', update: bytesToBase64(encodeAwarenessUpdate(other, [other.clientID])) })
+    expect(view.dispatch).toHaveBeenCalledTimes(1)
+    other.destroy()
     session.destroy()
   })
 })

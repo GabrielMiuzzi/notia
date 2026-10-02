@@ -262,6 +262,34 @@ export function parseFrontmatterDocument(source: string): FrontmatterDocument {
   }
 }
 
+/**
+ * The frontmatter at the top of a note, up to and including its closing
+ * `---` line, or `''` without one: what `parseFrontmatterDocument` reads the
+ * properties from, found without splitting the whole note. While the body is
+ * typed it stays the same string, so what depends only on the properties is
+ * not worked out again.
+ */
+export function leadingFrontmatterBlock(source: string): string {
+  if (!source.startsWith('---\n') && !source.startsWith('---\r\n')) {
+    return ''
+  }
+
+  let lineStart = source.indexOf('\n') + 1
+  while (lineStart < source.length) {
+    const lineEnd = source.indexOf('\n', lineStart)
+    const end = lineEnd < 0 ? source.length : lineEnd
+    if (source.slice(lineStart, end).trim() === '---') {
+      return source.slice(0, lineEnd < 0 ? source.length : lineEnd + 1)
+    }
+    if (lineEnd < 0) {
+      return ''
+    }
+    lineStart = lineEnd + 1
+  }
+
+  return ''
+}
+
 export function serializeFrontmatterDocument(document: FrontmatterDocument): string {
   const { frontmatter, hasFrontmatter } = document
   const normalizedBody = normalizeLineBreaks(document.body)

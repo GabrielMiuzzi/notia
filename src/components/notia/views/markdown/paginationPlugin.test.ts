@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
-import { layoutPages, type MeasuredBlock, type PaginationGeometry } from './paginationPlugin'
+// @vitest-environment happy-dom
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Editor, defaultValueCtx, editorViewCtx, rootCtx } from '@milkdown/kit/core'
+import { commonmark } from '@milkdown/kit/preset/commonmark'
+import { gfm } from '@milkdown/kit/preset/gfm'
+import { $prose } from '@milkdown/kit/utils'
+import { Plugin, TextSelection } from '@milkdown/kit/prose/state'
+import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
+import { breakCandidates, layoutPages, type MeasuredBlock, type PaginationGeometry } from './paginationPlugin'
 
 /** Sheets of 1000px, 32px apart, with 100px margins and the number band. */
 const GEOMETRY: PaginationGeometry = { pageHeight: 1000, pageGap: 32, margin: 100, numberBand: 18, zoom: 1 }
@@ -59,5 +66,56 @@ describe('layoutPages', () => {
     const blocks = stack([300, 300, 190])
     expect(layoutPages(blocks, GEOMETRY).breaks).toHaveLength(1)
     expect(layoutPages(blocks, { ...GEOMETRY, numberBand: 0 }).breaks).toEqual([])
+  })
+})
+
+describe('breakCandidates', () => {
+  let editor: Editor | null = null
+
+  afterEach(async () => {
+    await editor?.destroy()
+    editor = null
+  })
+
+  it('finds the same elements as nodeDOM, in one walk past the widgets', async () => {
+    // Widgets between the blocks, as the page spacers are.
+    const spacers = new Plugin({
+      props: {
+        decorations: (state) => DecorationSet.create(state.doc, [3, 20, 40].map((pos) => {
+          const at = Math.min(pos, state.doc.content.size)
+          return Decoration.widget(TextSelection.near(state.doc.resolve(at)).$from.before(1), () => document.createElement('div'), { side: -1 })
+        })),
+      },
+    })
+    editor = await Editor.make()
+      .config((ctx) => {
+        ctx.set(rootCtx, document.createElement('div'))
+        ctx.set(defaultValueCtx, ['# Título', '', 'Un párrafo.', '', '- uno', '- dos', '- tres', '', '```', 'código', '```', '', '1. primero', '2. segundo', '', '---', '', 'Fin.'].join('\n'))
+      })
+      .use(commonmark)
+      .use(gfm)
+      .use($prose(() => spacers))
+      .create()
+    const view = editor.action((ctx) => ctx.get(editorViewCtx))
+
+    // The walk alone finds every element; nodeDOM is only what it is checked against.
+    const nodeDOM = vi.spyOn(view, 'nodeDOM')
+    const candidates = breakCandidates(view)
+    expect(nodeDOM).not.toHaveBeenCalled()
+    nodeDOM.mockRestore()
+    const expected: number[] = []
+    view.state.doc.forEach((node, offset) => {
+      if ((node.type.name === 'bullet_list' || node.type.name === 'ordered_list') && node.childCount > 0) {
+        node.forEach((_item, itemOffset) => expected.push(offset + 1 + itemOffset))
+        return
+      }
+      expected.push(offset)
+    })
+    expect(candidates.map((candidate) => candidate.pos)).toEqual(expected)
+    for (const candidate of candidates) {
+      expect(candidate.dom).not.toBeNull()
+      expect(candidate.dom).toBe(view.nodeDOM(candidate.pos))
+      expect(candidate.node).toBe(view.state.doc.nodeAt(candidate.pos))
+    }
   })
 })

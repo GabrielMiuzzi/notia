@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { InkStroke } from '../../../../../services/markdown/noteInkRuntime'
-import { estimatedBreaks, flowToPage, pageToFlow, strokeInFlow, strokeOnPages } from './inkFlow'
+import { createStrokesOnPages, estimatedBreaks, flowToPage, pageToFlow, strokeInFlow, strokeOnPages } from './inkFlow'
 
 // Two breaks: a 150px blank where the flow reaches 1000, and another at 2000.
 const breaks = [{ flowTop: 1000, height: 150 }, { flowTop: 2000, height: 120 }]
@@ -42,5 +42,24 @@ describe('inkFlow', () => {
       { flowTop: 1664, height: 250 },
     ])
     expect(estimatedBreaks(1, { pageHeight: 1000, pageGap: 32, margin: 100, numberBand: 18 })).toEqual([])
+  })
+})
+
+describe('createStrokesOnPages', () => {
+  it('keeps the same stroke while the breaks above it stay, and places it as strokeOnPages', () => {
+    const place = createStrokesOnPages()
+    const high = stroke([[10, 500, 0.5]])
+    const low = stroke([[10, 2500, 0.5]])
+    const first = [place(high, breaks), place(low, breaks)]
+    expect(first.map((shown) => shown.points)).toEqual([strokeOnPages(high, breaks).points, strokeOnPages(low, breaks).points])
+
+    // A new line moves the second break: the stroke above it keeps its object.
+    const moved = [breaks[0]!, { flowTop: 2030, height: 90 }]
+    expect(place(high, moved)).toBe(first[0])
+    const lowAgain = place(low, moved)
+    expect(lowAgain).not.toBe(first[1])
+    expect(lowAgain.points).toEqual(strokeOnPages(low, moved).points)
+    // The same breaks again, in new objects: nothing moves.
+    expect(place(low, moved.map((pageBreak) => ({ ...pageBreak })))).toBe(lowAgain)
   })
 })

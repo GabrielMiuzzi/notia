@@ -35,6 +35,7 @@ mod coldpass;
 mod secret_clipboard;
 mod collab;
 mod config_crypto;
+mod client_status;
 mod connection;
 mod host_client;
 mod host_mirror;

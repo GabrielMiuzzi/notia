@@ -65,6 +65,30 @@ export function buildMarkdownSelectionContext(
   }
 }
 
+function isSameSelectionBlock(left: MarkdownSelectionBlock, right: MarkdownSelectionBlock | undefined): boolean {
+  return Boolean(right)
+    && left.index === right?.index
+    && left.type === right.type
+    && left.text === right.text
+    && left.from === right.from
+    && left.to === right.to
+}
+
+/** Whether two selections show the same, so nobody needs to hear of the second. */
+export function isSameMarkdownSelection(
+  left: MarkdownSelectionContext | null,
+  right: MarkdownSelectionContext | null,
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.documentPath === right.documentPath
+    && left.from === right.from
+    && left.to === right.to
+    && left.selectedText === right.selectedText
+    && left.blocks.length === right.blocks.length
+    && left.blocks.every((block, index) => isSameSelectionBlock(block, right.blocks[index]))
+}
+
 export function markdownNodeLabel(node: ProseMirrorNode): string {
   switch (node.type.name) {
     case 'heading':

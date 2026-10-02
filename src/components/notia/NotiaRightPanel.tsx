@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
 import { Sparkles, X } from 'lucide-react'
 import { shallowEqual } from 'react-redux'
-import { useAppSelector } from '../../store/hooks'
+import { useAppSelector, type RootState } from '../../store/hooks'
 import { selectIsRightChatPanelOpen, selectIsRightPanelChatMounted } from '../../features/ui/uiSelectors'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
 import { selectActiveDocument } from '../../features/documents/documentsSelectors'
@@ -40,6 +40,12 @@ interface NotiaRightPanelProps {
   onActiveMarkdownDocumentChanged: (documentPath: string, source: string, revision?: string) => void | Promise<void>
 }
 
+/** The open note's text for the side chat; a save or a status change does not draw the panel again. */
+function selectActiveMarkdownSource(state: RootState): string | null {
+  const activeDocument = selectActiveDocument(state)
+  return activeDocument?.viewKind === 'markdown' ? activeDocument.source : null
+}
+
 function NotiaRightPanelComponent({
   isMeetingContext,
   agentCorpusPaths,
@@ -64,7 +70,7 @@ function NotiaRightPanelComponent({
   const isRightChatPanelOpen = useAppSelector(selectIsRightChatPanelOpen)
   const isRightPanelChatMounted = useAppSelector(selectIsRightPanelChatMounted)
   const activeLibrary = useAppSelector(selectActiveLibrary)
-  const activeDocument = useAppSelector(selectActiveDocument)
+  const activeMarkdownSource = useAppSelector(selectActiveMarkdownSource)
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const [panelWidth, setPanelWidth] = useState(() => loadRightPanelWidth(window.innerWidth))
   const [isResizing, setIsResizing] = useState(false)
@@ -200,7 +206,7 @@ function NotiaRightPanelComponent({
                 onChatCreated={chatCallbacks.onChatCreated}
                 onChatDeleted={chatCallbacks.onChatDeleted}
                 markdownSelection={markdownSelection}
-                activeMarkdownSource={activeDocument?.viewKind === 'markdown' ? activeDocument.source : null}
+                activeMarkdownSource={activeMarkdownSource}
                 onActiveMarkdownDocumentChanged={onActiveMarkdownDocumentChanged}
               />
             </PerformanceProfiler>

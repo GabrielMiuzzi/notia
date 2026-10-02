@@ -16,6 +16,8 @@ import app.tauri.plugin.Plugin
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Android SAF boundary used by Rust through `run_mobile_plugin`.
@@ -40,7 +42,25 @@ import java.io.IOException
  * Tree URIs are normalized to document URIs before any stream access and
  * every command checks read/write permissions explicitly, so a revoked
  * grant surfaces as a recoverable rejection instead of a crash.
+ *
+ * Tauri delivers every command on the main thread. The storage work runs on
+ * one background thread instead (`runSaf`), in the order it arrives, so a
+ * slow provider never freezes touch, scrolling or the WebView. Only the
+ * folder picker stays on the main thread.
  */
+/**
+ * The thread of every SAF and database command (this plugin and
+ * `LibraryDatabasePlugin`). One thread keeps them in the order they arrive,
+ * as when they ran on the main thread, so a listing never runs while the
+ * database is copied into the same folder. It outlives the activity, which
+ * Android may recreate.
+ */
+internal object NotiaStorageThread {
+    val work: ExecutorService = Executors.newSingleThreadExecutor { work ->
+        Thread(work, "notia-storage").apply { isDaemon = true }
+    }
+}
+
 @TauriPlugin
 class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
 
@@ -339,15 +359,18 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
 
     // ── Execution wrapper ───────────────────────────────────────────────
 
-    private inline fun runSaf(invoke: Invoke, fallbackMessage: String, block: (JSONObject) -> JSObject) {
-        try {
-            invoke.resolve(block(invoke.getArgs()))
-        } catch (error: SecurityException) {
-            invoke.reject("El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca.")
-        } catch (error: IOException) {
-            invoke.reject(error.message ?: fallbackMessage)
-        } catch (error: Exception) {
-            invoke.reject(error.message ?: fallbackMessage)
+    /** Runs [block] on the storage thread and answers from there. */
+    private fun runSaf(invoke: Invoke, fallbackMessage: String, block: (JSONObject) -> JSObject) {
+        NotiaStorageThread.work.execute {
+            try {
+                invoke.resolve(block(invoke.getArgs()))
+            } catch (error: SecurityException) {
+                invoke.reject("El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca.")
+            } catch (error: IOException) {
+                invoke.reject(error.message ?: fallbackMessage)
+            } catch (error: Exception) {
+                invoke.reject(error.message ?: fallbackMessage)
+            }
         }
     }
 

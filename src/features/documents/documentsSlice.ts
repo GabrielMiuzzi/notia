@@ -141,6 +141,9 @@ const documentsSlice = createSlice({
       state.searchQuery = action.payload
     },
     setSearchMatchedPaths(state, action: PayloadAction<string[]>) {
+      // Without a search every save clears it again: an empty result keeps
+      // the same array, so the explorer is not drawn again.
+      if (state.searchMatchedPaths.length === 0 && action.payload.length === 0) return
       state.searchMatchedPaths = action.payload
     },
     setIsSearchLoading(state, action: PayloadAction<boolean>) {

@@ -13,9 +13,13 @@ export function ChatAttachmentImages({ source }: ChatAttachmentImagesProps) {
     let isCurrent = true
     // Edits change the source on every keystroke; parse once typing pauses.
     const timer = window.setTimeout(() => {
+      // A note without images stays without them: no new empty list, nothing drawn again.
+      const show = (next: ChatImageAttachmentPreview[]) => {
+        if (isCurrent) setPreviews((current) => (current.length === 0 && next.length === 0 ? current : next))
+      }
       void loadChatImageAttachmentPreviews(source)
-        .then((next) => { if (isCurrent) setPreviews(next) })
-        .catch(() => { if (isCurrent) setPreviews([]) })
+        .then(show)
+        .catch(() => show([]))
     }, PREVIEW_DEBOUNCE_MS)
     return () => {
       isCurrent = false

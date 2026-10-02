@@ -73,6 +73,16 @@ export interface SavedConnection {
   reload: boolean
 }
 
+/** Where the window of a client opens (`client_open`). */
+export type ClientOpening = 'host' | 'copy' | 'offline'
+
+export interface OpenedClient {
+  opening: ClientOpening
+  /** Why the host is not used, when it is not. */
+  message: string | null
+  connection: ConnectionView
+}
+
 export interface HostProbe {
   ok: boolean
   library: string | null
@@ -102,6 +112,14 @@ export function saveConnection(input: {
 /** «Probar conexión»: the saved host, or `hostAddress` before saving it. */
 export function testHostConnection(hostAddress?: string): Promise<HostProbe> {
   return callBackend<HostProbe>('test_host_connection', { payload: hostAddress ? { hostAddress } : {} })
+}
+
+/**
+ * Opens the window of a client: the host when it answers; otherwise its
+ * copy, at once when the copy is ready. The copy syncs in the background.
+ */
+export function openClient(): Promise<OpenedClient> {
+  return callBackend<OpenedClient>('client_open')
 }
 
 /** Android: picks the folder of the copy (empty, or an earlier copy). */

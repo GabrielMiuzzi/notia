@@ -27,19 +27,32 @@ import java.io.IOException
  *   cleared cache surfaces as an explicit recoverable error instead of an
  *   empty database overwriting the real one.
  * - Revoked SAF grants surface as `ok:false` with an explicit message.
+ *
+ * Tauri delivers the commands on the main thread; their work runs on the
+ * storage thread shared with the SAF plugin (`NotiaStorageThread`), so
+ * copying a large database never freezes the interface.
  */
 @TauriPlugin
 class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
     private val temporaryDatabases = mutableMapOf<String, File>()
 
     @Command
-    fun initializeDatabase(invoke: Invoke) = prepare(invoke)
+    fun initializeDatabase(invoke: Invoke) = onStorageThread { prepare(invoke) }
 
     @Command
-    fun prepareDatabase(invoke: Invoke) = prepare(invoke)
+    fun prepareDatabase(invoke: Invoke) = onStorageThread { prepare(invoke) }
 
     @Command
-    fun syncDatabase(invoke: Invoke) {
+    fun syncDatabase(invoke: Invoke) = onStorageThread { sync(invoke) }
+
+    @Command
+    fun cleanupDatabases(invoke: Invoke) = onStorageThread { cleanup(invoke) }
+
+    private fun onStorageThread(work: () -> Unit) {
+        NotiaStorageThread.work.execute { work() }
+    }
+
+    private fun sync(invoke: Invoke) {
         val libraryUri = libraryUri(invoke) ?: return
         try {
             val temporary = temporaryDatabases[libraryUri] ?: error("La copia temporal no está preparada")
@@ -58,8 +71,7 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    @Command
-    fun cleanupDatabases(invoke: Invoke) {
+    private fun cleanup(invoke: Invoke) {
         try {
             var removed = 0
             synchronized(temporaryDatabases) {

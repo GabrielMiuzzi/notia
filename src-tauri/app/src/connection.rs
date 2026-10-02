@@ -111,6 +111,7 @@ pub(crate) fn start(app: &AppHandle) {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     crate::host_server::reconfigure(app);
     crate::host_client::reconfigure(app);
+    crate::client_status::refresh(app);
 }
 
 // ---------- Commands ----------
@@ -284,6 +285,60 @@ pub(crate) async fn test_host_connection(app: AppHandle, payload: TestHostPayloa
     // The pin applies only to the saved host.
     let pin = saved.host_certificate.clone().filter(|_| address.display() == saved.host_address);
     Ok(crate::host_client::probe(&app, &address, pin).await)
+}
+
+/// Where the window of a client opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ClientOpening {
+    /// The host answers: its sign-in, then the app on the host.
+    Host,
+    /// The host does not answer and the copy opened as a library of this
+    /// device.
+    Copy,
+    /// The host does not answer and there is no copy to open.
+    Offline,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OpenedClient {
+    opening: ClientOpening,
+    /// Why the host is not used, when it is not.
+    message: Option<String>,
+    connection: ConnectionView,
+}
+
+/// Opens the window of a client. A «Con copia» client whose copy is ready
+/// does not wait for a slow host: it opens the copy when the host does not
+/// answer within the monitor's own time, and the monitor brings the window
+/// back to the host when it answers. Coming back to the host, the copy
+/// syncs in the background once the session opens.
+pub(crate) async fn client_open(app: AppHandle) -> Result<OpenedClient, BackendError> {
+    let saved = settings(&app);
+    let address = parse_host_address(&saved.host_address)?;
+    let copy_ready = crate::host_mirror::copy_ready(&app);
+    let probe = if copy_ready {
+        crate::host_client::probe_within(&app, &address, saved.host_certificate.clone(), crate::host_client::HEALTH_TIMEOUT).await
+    } else {
+        crate::host_client::probe(&app, &address, saved.host_certificate.clone()).await
+    };
+    let (opening, message) = if probe.ok {
+        crate::host_mirror::leave_offline_copy(&app)?;
+        (ClientOpening::Host, None)
+    } else {
+        let message = probe.message.unwrap_or_else(|| format!("El host {} no responde.", saved.host_address));
+        if crate::host_mirror::keeps_copy(&app) {
+            match crate::host_mirror::enter_offline_copy(&app) {
+                Ok(_) => (ClientOpening::Copy, Some(message)),
+                Err(error) => (ClientOpening::Offline, Some(format!("{message} {}", error.message))),
+            }
+        } else {
+            (ClientOpening::Offline, Some(message))
+        }
+    };
+    crate::client_status::refresh(&app);
+    Ok(OpenedClient { opening, message, connection: view(&app) })
 }
 
 #[cfg(test)]

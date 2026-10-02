@@ -7,9 +7,7 @@
 //! keeps the inventory up to date and decides whether a refresh needs a new
 //! read. Every node comes out normalized and in explorer order.
 
-#[cfg(not(target_os = "android"))]
 use std::collections::HashMap;
-#[cfg(not(target_os = "android"))]
 use std::sync::Mutex;
 
 use notia_backend_core::library_tree::{normalize_tree, shallow_listing, LibraryTreeNodeDto};
@@ -20,11 +18,11 @@ use crate::backend::{BackendError, BackendErrorCode};
 use crate::library_catalog::CatalogLibrary;
 use crate::library_registry::LibraryBindingRegistry;
 
-/// Last tree signature seen per library, to skip desktop reads when nothing
-/// moved (Android has no cheap signature and re-reads).
+/// Last tree signature seen per library: desktop skips the read when
+/// nothing moved; Android, without a cheap signature, reads the tree but
+/// does not send it nor index it again when it is the same.
 #[derive(Default)]
 pub(crate) struct LibrarySessionState {
-    #[cfg(not(target_os = "android"))]
     signatures: Mutex<HashMap<String, String>>,
 }
 
@@ -184,14 +182,24 @@ pub(crate) fn reindex_in_background(app: &AppHandle, library_id: &str) {
     let app = app.clone();
     let library_id = library_id.to_string();
     crate::host::async_runtime::spawn_blocking(move || {
-        match crate::library_inventory::reindex_library(&app, &library_id) {
-            Ok(_) => crate::library_graph::schedule_link_cache_rebuild(&app, &library_id),
+        match crate::library_inventory::reindex_library_if_changed(&app, &library_id) {
+            // Saved notes schedule their own rebuild.
+            Ok(true) => crate::library_graph::schedule_link_cache_rebuild(&app, &library_id),
+            Ok(false) => {}
             Err(error) => log::warn!("[notia:library] no se pudo reindexar: {}", error.message),
         }
     });
 }
 
-#[cfg(not(target_os = "android"))]
+/// A short fingerprint of a tree read on Android.
+#[cfg(target_os = "android")]
+fn tree_signature(nodes: &[LibraryTreeNodeDto]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(nodes).unwrap_or_default().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn remember_signature(app: &AppHandle, library_id: &str, signature: String) -> bool {
     let state = app.state::<LibrarySessionState>();
     let Ok(mut signatures) = state.signatures.lock() else {
@@ -271,8 +279,12 @@ pub(crate) async fn library_refresh(app: AppHandle, payload: LibraryRefreshPaylo
 
     #[cfg(target_os = "android")]
     let nodes = {
-        let _ = payload.force;
-        normalize_tree(android_read(&app, &library, library.path.clone(), true).await?)
+        let nodes = normalize_tree(android_read(&app, &library, library.path.clone(), true).await?);
+        let changed = remember_signature(&app, &library.id, tree_signature(&nodes));
+        if !changed && !payload.force {
+            return Ok(LibraryRefreshDto { changed: false, nodes: None });
+        }
+        nodes
     };
     #[cfg(not(target_os = "android"))]
     let nodes = {

@@ -5,6 +5,17 @@ export interface GymContext {
   actorLibraryUserId: string
 }
 
+/** El contexto de un cambio de la pantalla, con la marca de la vista que lo pide. */
+export interface GymApplyContext extends GymContext {
+  origin: string
+}
+
+/** El aviso de Rust: la biblioteca y, si el cambio lo pidió una vista, su marca. */
+export interface GymChangedEvent {
+  libraryId: string
+  origin: string | null
+}
+
 export type GymScreen = 'panel' | 'rutinas' | 'editar' | 'entrenar' | 'equipo'
 
 export interface GymQuery {
@@ -14,6 +25,8 @@ export interface GymQuery {
   search: string
   group: string | null
   onlyMine: boolean
+  /** Al abrir: Rust arma Entrenar si hay un entrenamiento en curso. */
+  resume?: boolean
 }
 
 export interface Choice {
@@ -231,6 +244,8 @@ export interface EquipmentView {
 }
 
 export interface GymView {
+  /** La pantalla que Rust armó: la pedida, o Entrenar al retomar. */
+  screen: GymScreen
   sex: 'masculino' | 'femenino'
   sexFromProfile: boolean
   routines: RoutineRow[]

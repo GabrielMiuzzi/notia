@@ -5,6 +5,7 @@ import { selectActiveTab, selectActiveWorkspaceView, selectOpenTabs } from '../.
 import type { ChatAgentScope } from '../../../services/chat/chatAgentTypes'
 import {
   buildWorkspaceAiSnapshot,
+  withWorkspaceSelection,
   type WorkspaceAiDocumentInput,
 } from '../../../services/ai/workspaceAiSnapshotRuntime'
 import type { WorkspaceAiScope, WorkspaceAiSnapshot } from '../../../types/ai/agentContracts'
@@ -48,7 +49,9 @@ export function useWorkspaceAiSnapshot({
   const activeTab = useAppSelector(selectActiveTab)
   const openTabs = useAppSelector(selectOpenTabs)
 
-  return useMemo(() => {
+  // The revisions hash the text of every open tab: they are worked out again
+  // when the tabs change, not when only the selection moves.
+  const snapshotWithoutSelection = useMemo(() => {
     if (!library) {
       return null
     }
@@ -64,8 +67,14 @@ export function useWorkspaceAiSnapshot({
       library,
       activeDocument,
       openTabs: openTabs.map(toDocumentInput),
-      selection: scope === 'document' ? markdownSelection : null,
+      selection: null,
       includeActiveSource: scope === 'document',
     })
-  }, [activeMarkdownSource, activeTab, activeWorkspaceView, library, markdownSelection, openTabs, scope])
+  }, [activeMarkdownSource, activeTab, activeWorkspaceView, library, openTabs, scope])
+
+  return useMemo(() => (
+    snapshotWithoutSelection
+      ? withWorkspaceSelection(snapshotWithoutSelection, scope === 'document' ? markdownSelection : null)
+      : null
+  ), [markdownSelection, scope, snapshotWithoutSelection])
 }

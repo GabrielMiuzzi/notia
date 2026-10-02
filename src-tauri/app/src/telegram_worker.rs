@@ -136,9 +136,43 @@ pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
         .build()
 }
 
+/// What the supervisor decided last, and from what. Reading the
+/// configuration means opening and decrypting a file, through the slow
+/// storage of Android; the decision is taken again when Notia writes a
+/// configuration, a library is locked or unlocked, the selected library
+/// changes, or after [`DECISION_TTL`] (a change made outside Notia).
+struct Decision {
+    generation: u64,
+    library: Option<String>,
+    client: bool,
+    at: std::time::Instant,
+    worker: Option<(WorkerKey, CatalogLibrary)>,
+}
+
+const DECISION_TTL: Duration = Duration::from_secs(60);
+static DECISION: Mutex<Option<Decision>> = Mutex::new(None);
+
 fn desired_worker(app: &AppHandle) -> Option<(WorkerKey, CatalogLibrary)> {
+    let generation = crate::library_config::config_generation();
+    let library = crate::library_catalog::selected_library_id(app);
+    let client = crate::connection::is_client(app);
+    if let Ok(last) = DECISION.lock() {
+        if let Some(last) = last.as_ref().filter(|last| {
+            last.generation == generation && last.library == library && last.client == client && last.at.elapsed() < DECISION_TTL
+        }) {
+            return last.worker.clone();
+        }
+    }
+    let worker = read_desired_worker(app, client);
+    if let Ok(mut last) = DECISION.lock() {
+        *last = Some(Decision { generation, library, client, at: std::time::Instant::now(), worker: worker.clone() });
+    }
+    worker
+}
+
+fn read_desired_worker(app: &AppHandle, client: bool) -> Option<(WorkerKey, CatalogLibrary)> {
     // A client never answers Telegram: its host does.
-    if crate::connection::is_client(app) {
+    if client {
         return None;
     }
     let library = crate::library_catalog::selected_library(app)?;

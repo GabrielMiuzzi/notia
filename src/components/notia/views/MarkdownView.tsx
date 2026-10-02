@@ -1,12 +1,13 @@
 import { backendFileUrl, callBackend } from '../../../services/transport'
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { useAppDispatch, useAppSelector } from '../../../store/hooks'
 import { setRightChatPanelOpen } from '../../../features/ui/uiSlice'
 import { requestChatPanel } from '../../../services/chat/chatComposerRequests'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
-import { editorViewCtx } from '@milkdown/kit/core'
+import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
+import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { replaceAll } from '@milkdown/kit/utils'
 import { gfm } from '@milkdown/preset-gfm'
@@ -26,6 +27,7 @@ import {
 } from '@milkdown/kit/preset/commonmark'
 import { tableCellSchema, tableHeaderSchema } from '@milkdown/preset-gfm'
 import {
+  leadingFrontmatterBlock,
   parseFrontmatterDocument,
   serializeFrontmatterDocument,
   type FrontmatterEntry,
@@ -117,6 +119,9 @@ import { isPageStroke, strokeInFlow } from './markdown/ink/inkFlow'
 import { useEditorPreferences } from '../hooks/useEditorPreferences'
 import { WikiLinkPreviewCard } from './markdown/WikiLinkPreviewCard'
 import { codeHighlight } from './markdown/codeHighlight'
+import { createMarkdownChangeBuffer, createMarkdownChangePlugin } from './markdown/markdownChangeBuffer'
+import { createSelectionNotifier, type SelectionNotifier } from './markdown/selectionNotifier'
+import { registerPendingEditorChanges } from '../../../services/markdown/pendingEditorChanges'
 
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
@@ -136,7 +141,12 @@ interface MarkdownViewProps {
   /** Context the note keeps because it lives in a Task Manager board. */
   lockedContextTag?: string
   libraryId?: string
-  onSourceChange: (nextSource: string) => void
+  /**
+   * The note's new Markdown, with the path of the note it belongs to: the
+   * editor writes it once typing pauses, and on closing, after another tab
+   * may already be the active one.
+   */
+  onSourceChange: (nextSource: string, documentPath: string) => void
   /**
    * The note is shared with other windows of the host and another editor
    * saves it: the source changes without leaving anything to save. Without
@@ -177,6 +187,23 @@ const NARROW_EDITOR_PX = 600
 /** Room below the lowest stroke of the continuous sheet; more while drawing, to keep writing. */
 const INK_TAIL_PX = 120
 const INK_DRAWING_TAIL_PX = 480
+const NO_CONTEXTS: readonly LibraryContext[] = []
+/** Elements whose chrome the editor adds: code blocks and the inline LaTeX editor. */
+const CHROME_HOST_SELECTOR = `.milkdown-code-block, ${INLINE_LATEX_TOOLTIP_SELECTOR}`
+
+/**
+ * Whether a change of the editor's DOM may need chrome: it happens in a code
+ * block or the inline LaTeX editor, or brings one. Typing in a paragraph
+ * does not.
+ */
+function touchesEditorChrome(record: MutationRecord): boolean {
+  const target = record.target instanceof Element ? record.target : record.target.parentElement
+  if (target?.closest(CHROME_HOST_SELECTOR)) return true
+  for (const node of Array.from(record.addedNodes)) {
+    if (node instanceof Element && (node.matches(CHROME_HOST_SELECTOR) || node.querySelector(CHROME_HOST_SELECTOR))) return true
+  }
+  return false
+}
 
 interface PagePixels {
   width: number
@@ -192,6 +219,35 @@ function toPagePixels(layout: MarkdownPageLayout): PagePixels {
     margin: Math.round(layout.marginMm * PX_PER_MM),
     pageNumbers: layout.pageNumbers,
   }
+}
+
+interface SheetFrameProps {
+  pagesRef: RefObject<HTMLDivElement | null>
+  /** Width of the sheet before scaling; `null` without a sheet. */
+  sheetWidth: number | null
+  scale: number
+  children: ReactNode
+}
+
+/**
+ * Holds the scaled sheet with its scaled size. It follows the height of the
+ * sheet on its own, so a new line draws this frame again, not the editor.
+ */
+function SheetFrame({ pagesRef, sheetWidth, scale, children }: SheetFrameProps) {
+  // Height of the sheet before scaling.
+  const [pagesHeight, setPagesHeight] = useState(0)
+  useEffect(() => {
+    const pages = pagesRef.current
+    if (!pages || typeof ResizeObserver !== 'function') return
+    // A transform does not change the layout height the observer reports.
+    const observer = new ResizeObserver(() => setPagesHeight(pages.offsetHeight))
+    observer.observe(pages)
+    return () => observer.disconnect()
+  }, [pagesRef])
+  const style = sheetWidth === null
+    ? undefined
+    : { width: sheetWidth * scale, height: pagesHeight * scale } as CSSProperties
+  return <div className="notia-markdown-pages-frame" style={style}>{children}</div>
 }
 
 function clampWikiLinkMenuLeft(left: number): number {
@@ -440,11 +496,15 @@ function MarkdownViewInner({
   externalSourceUpdate,
   zoom,
   onZoomChange,
-  contexts = [],
+  contexts = NO_CONTEXTS,
   onCreateLinkedNote,
   pageLayout = null,
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
+  // The properties panel reads only the frontmatter: typing in the body keeps
+  // the same block, so the panel keeps the same entries and is not drawn again.
+  const frontmatterBlock = useMemo(() => leadingFrontmatterBlock(source), [source])
+  const frontmatterEntries = useMemo(() => parseFrontmatterDocument(frontmatterBlock).frontmatter, [frontmatterBlock])
   const wikiLinkLookup = useMemo(() => buildWikiLinkLookup(wikiLinkTargets), [wikiLinkTargets])
 
   const [wikiLinkMenuState, setWikiLinkMenuState] = useState<WikiLinkSuggestionMenuState | null>(null)
@@ -469,8 +529,6 @@ function MarkdownViewInner({
   // more it was zoomed. A transform keeps them on the text.
   const sheetScale = sheetPixels ? zoom * pageFit : 1
   const [hostHeight, setHostHeight] = useState(0)
-  // Height of the sheet before scaling, for the frame that holds its scaled size.
-  const [pagesHeight, setPagesHeight] = useState(0)
   // Handwriting over the sheet: the tool of the pen bar and the note's strokes.
   const [penTool, setPenTool] = useState<PenBarTool>('selector')
   // The rectangle selection of blocks only works with the selector.
@@ -497,6 +555,8 @@ function MarkdownViewInner({
   // it the first time the pages are laid out; then both modes show them.
   const movedStrokesRef = useRef(new Set<string>())
   const { strokes: inkStrokes, replace: replaceInkStrokes } = ink
+  // Read over every point: only again when the strokes change, not per keystroke.
+  const lowestInk = useMemo(() => inkBottom(inkStrokes), [inkStrokes])
   useEffect(() => {
     if (!pagePixels || !pagesLaidOut) return
     const onPages = inkStrokes.filter((stroke) => isPageStroke(stroke) && !movedStrokesRef.current.has(stroke.id))
@@ -531,6 +591,9 @@ function MarkdownViewInner({
   const isWikiLinkMenuOpenRef = useRef(false)
   const onOpenLinkedFileRef = useRef(onOpenLinkedFile)
   const onSelectionChangeRef = useRef(onSelectionChange)
+  const selectionNotifierRef = useRef<SelectionNotifier | null>(null)
+  // Writes the Markdown the editor still holds (typing waits for a pause).
+  const flushEditorChangesRef = useRef<() => void>(() => {})
   const selectionCleanupRef = useRef<(() => void) | null>(null)
   const mermaidPreviewBlockIndexRef = useRef(0)
   const gitbookResolverRef = useRef<GitbookResolver | null>(null)
@@ -545,15 +608,6 @@ function MarkdownViewInner({
       setHostHeight(entry?.contentRect.height ?? 0)
     })
     observer.observe(host)
-    return () => observer.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const pages = pagesRef.current
-    if (!pages || typeof ResizeObserver !== 'function') return
-    // A transform does not change the layout height the observer reports.
-    const observer = new ResizeObserver(() => setPagesHeight(pages.offsetHeight))
-    observer.observe(pages)
     return () => observer.disconnect()
   }, [])
 
@@ -890,10 +944,18 @@ function MarkdownViewInner({
         return exportNoteDiagram(currentLibraryId, documentPathRef.current, format, data)
       },
     }
-    const codeBlockObserver = new MutationObserver(() => {
+    // Chrome is added once per frame, and only after changes that may need it.
+    let chromeFrame: number | null = null
+    const addEditorChrome = () => {
+      chromeFrame = null
+      if (!isMounted) return
       addMathOcrButtons()
       addInlineLatexInkMathButtons()
       if (rootRef.current) decorateCodeBlocks(rootRef.current, codeBlockChrome)
+    }
+    const codeBlockObserver = new MutationObserver((records) => {
+      if (chromeFrame !== null || !records.some(touchesEditorChrome)) return
+      chromeFrame = window.requestAnimationFrame(addEditorChrome)
     })
     codeBlockObserver.observe(rootRef.current, { childList: true, characterData: true, subtree: true })
 
@@ -1084,39 +1146,48 @@ function MarkdownViewInner({
     crepe.editor.use(collab)
     crepe.editor.use($prose(() => createCollabBlocksPlugin(() => collabAwarenessRef.current)))
 
-    crepeRef.current = crepe
+    const handleEditorMarkdown = (markdown: string) => {
+      if (!isMounted || isApplyingExternalUpdateRef.current) {
+        return
+      }
 
-    crepe.on((listener) => {
-      listener.markdownUpdated((_ctx, markdown) => {
-        if (!isMounted || isApplyingExternalUpdateRef.current) {
-          return
-        }
+      if (markdown === latestBodyRef.current) {
+        return
+      }
 
-        if (markdown === latestBodyRef.current) {
-          return
-        }
+      latestBodyRef.current = markdown
 
-        latestBodyRef.current = markdown
-
-        const nextSource = serializeFrontmatterDocument({
-          hasFrontmatter: hasFrontmatterRef.current,
-          frontmatter: frontmatterRef.current,
-          body: markdown,
-        })
-
-        if (nextSource === latestComposedSourceRef.current) {
-          return
-        }
-
-        latestComposedSourceRef.current = nextSource
-        const onShared = onSharedSourceChangeRef.current
-        if (isCollabFollowerRef.current && onShared) {
-          onShared(nextSource)
-        } else {
-          onSourceChangeRef.current(nextSource)
-        }
+      const nextSource = serializeFrontmatterDocument({
+        hasFrontmatter: hasFrontmatterRef.current,
+        frontmatter: frontmatterRef.current,
+        body: markdown,
       })
+
+      if (nextSource === latestComposedSourceRef.current) {
+        return
+      }
+
+      latestComposedSourceRef.current = nextSource
+      const onShared = onSharedSourceChangeRef.current
+      if (isCollabFollowerRef.current && onShared) {
+        onShared(nextSource)
+      } else {
+        onSourceChangeRef.current(nextSource, documentPathRef.current)
+      }
+    }
+
+    // The note's Markdown is written once typing pauses, not per keystroke.
+    const markdownChanges = createMarkdownChangeBuffer<ProseNode>({
+      isSame: (left, right) => left === right || left.eq(right),
+      serialize: (doc) => crepe.editor.action((ctx) => ctx.get(serializerCtx)(doc)),
+      emit: handleEditorMarkdown,
     })
+    crepe.editor.use($prose(() => createMarkdownChangePlugin(markdownChanges)))
+    flushEditorChangesRef.current = markdownChanges.flush
+    // Closing a tab, saving before leaving the library or the app: what is pending goes first.
+    const unregisterPendingChanges = registerPendingEditorChanges(markdownChanges.flush)
+
+    crepeRef.current = crepe
 
     const endCollaboration = () => {
       collabSessionRef.current?.destroy()
@@ -1164,9 +1235,12 @@ function MarkdownViewInner({
       addMathOcrButtons()
       addInlineLatexInkMathButtons()
       const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
-      const notifySelectionChange = () => {
-        onSelectionChangeRef.current(buildMarkdownSelectionContext(editorView.state, documentPathRef.current))
-      }
+      const selectionNotifier = createSelectionNotifier({
+        read: () => buildMarkdownSelectionContext(editorView.state, documentPathRef.current),
+        emit: (selection) => onSelectionChangeRef.current(selection),
+      })
+      selectionNotifierRef.current = selectionNotifier
+      const notifySelectionChange = selectionNotifier.schedule
       editorView.dom.addEventListener('keyup', notifySelectionChange)
       editorView.dom.addEventListener('mouseup', notifySelectionChange)
       editorView.dom.addEventListener('touchend', notifySelectionChange)
@@ -1231,19 +1305,22 @@ function MarkdownViewInner({
         detachStylusWriting()
         detachMarquee()
       }
-      notifySelectionChange()
-      onSelectionChangeRef.current(buildMarkdownSelectionContext(
-        crepe.editor.action((ctx) => ctx.get(editorViewCtx)).state,
-        documentPathRef.current,
-      ))
+      selectionNotifier.flush()
     })
 
     return () => {
+      // The last keystrokes go to their note before the editor closes.
+      markdownChanges.flush()
+      unregisterPendingChanges()
+      flushEditorChangesRef.current = () => {}
       isMounted = false
       isReadyRef.current = false
       crepeRef.current = null
       setWikiLinkMenuState(null)
+      selectionNotifierRef.current?.cancel()
+      selectionNotifierRef.current = null
       onSelectionChangeRef.current(null)
+      if (chromeFrame !== null) window.cancelAnimationFrame(chromeFrame)
       codeBlockObserver.disconnect()
       cleanupXGraphPreviews()
       gitbookResolver.dispose()
@@ -1283,7 +1360,9 @@ function MarkdownViewInner({
     hasFrontmatterRef.current = nextDocument.hasFrontmatter
 
     const editorView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
-    onSelectionChangeRef.current(buildMarkdownSelectionContext(editorView.state, documentPath))
+    const selection = buildMarkdownSelectionContext(editorView.state, documentPath)
+    if (selectionNotifierRef.current) selectionNotifierRef.current.sendNow(selection)
+    else onSelectionChangeRef.current(selection)
   }, [documentPath, externalSourceUpdate, isEditorReady])
 
   useEffect(() => {
@@ -1327,7 +1406,10 @@ function MarkdownViewInner({
     })
   }, [wikiLinkLookup])
 
-  const handleAddProperty = (entry: FrontmatterEntry) => {
+  // Stable, so the properties panel is not drawn again while the body is typed.
+  const handleAddProperty = useCallback((entry: FrontmatterEntry) => {
+    // The body the editor still holds goes with the new property.
+    flushEditorChangesRef.current()
     const nextEntries = [...frontmatterRef.current, entry]
     frontmatterRef.current = nextEntries
     hasFrontmatterRef.current = true
@@ -1339,10 +1421,11 @@ function MarkdownViewInner({
     })
 
     latestComposedSourceRef.current = nextSource
-    onSourceChangeRef.current(nextSource)
-  }
+    onSourceChangeRef.current(nextSource, documentPathRef.current)
+  }, [])
 
-  const handleEditProperty = async (key: string, value: unknown) => {
+  const handleEditProperty = useCallback(async (key: string, value: unknown) => {
+    flushEditorChangesRef.current()
     const index = frontmatterRef.current.findIndex((entry) => entry.key === key)
     if (index < 0) return
 
@@ -1360,7 +1443,7 @@ function MarkdownViewInner({
     })
 
     latestComposedSourceRef.current = nextSource
-    onSourceChangeRef.current(nextSource)
+    onSourceChangeRef.current(nextSource, documentPath)
 
     // Page links are bidirectional: the backend checks cycles and updates
     // the opposite link of the previous and new target notes.
@@ -1387,7 +1470,7 @@ function MarkdownViewInner({
             body: latestBodyRef.current,
           })
           latestComposedSourceRef.current = canonicalSource
-          onSourceChangeRef.current(canonicalSource)
+          onSourceChangeRef.current(canonicalSource, documentPath)
         }
         if (result.error) {
           console.error('[MarkdownView] Page link sync error:', result.error)
@@ -1396,9 +1479,10 @@ function MarkdownViewInner({
         console.error('[MarkdownView] Page link sync error:', error)
       }
     }
-  }
+  }, [documentPath, libraryId])
 
-  const handleDeleteProperty = (key: string) => {
+  const handleDeleteProperty = useCallback((key: string) => {
+    flushEditorChangesRef.current()
     const nextEntries = frontmatterRef.current.filter((entry) => entry.key !== key)
     frontmatterRef.current = nextEntries
     if (nextEntries.length === 0) {
@@ -1412,8 +1496,8 @@ function MarkdownViewInner({
     })
 
     latestComposedSourceRef.current = nextSource
-    onSourceChangeRef.current(nextSource)
-  }
+    onSourceChangeRef.current(nextSource, documentPathRef.current)
+  }, [])
 
   /** Runs a toolbar command; on a block's toolbar it first selects that block's text. */
   const runFormat = (action: (view: EditorView) => void) => {
@@ -1471,14 +1555,11 @@ function MarkdownViewInner({
       minHeight: pagePixels
         ? sheetCount * pagePixels.height + (sheetCount - 1) * PAGE_GAP_PX
         : Math.max(
-          Math.ceil(inkBottom(ink.strokes)) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
+          Math.ceil(lowestInk) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
           Math.max(0, hostHeight - deskPadding) / sheetScale,
         ),
       transform: sheetScale === 1 ? undefined : `scale(${sheetScale})`,
     } as CSSProperties
-    : undefined
-  const frameStyle = sheetPixels
-    ? { width: sheetPixels.width * sheetScale, height: pagesHeight * sheetScale } as CSSProperties
     : undefined
   const hostMode = pagePixels ? ' is-sheet is-paged' : sheetPixels ? ' is-sheet is-continuous' : ''
 
@@ -1504,7 +1585,7 @@ function MarkdownViewInner({
       ) : null}
       <div ref={zoomContentRef} className="notia-markdown-zoom-content">
         {/* The structure is the same in both modes, so switching never remounts the editor. */}
-        <div className="notia-markdown-pages-frame" style={frameStyle}>
+        <SheetFrame pagesRef={pagesRef} sheetWidth={sheetPixels?.width ?? null} scale={sheetScale}>
         <div ref={pagesRef} className="notia-markdown-pages" style={pagesStyle}>
           {pagePixels ? (
             <div className="notia-markdown-page-sheets" aria-hidden="true">
@@ -1523,7 +1604,7 @@ function MarkdownViewInner({
             <ChatAttachmentImages source={source} />
             <div className="notia-markdown-properties-wrap">
               <MarkdownPropertiesPanel
-                entries={parsedDocument.frontmatter}
+                entries={frontmatterEntries}
                 wikiLinkLookup={wikiLinkLookup}
                 libraryId={libraryId}
                 onAddProperty={handleAddProperty}
@@ -1553,7 +1634,7 @@ function MarkdownViewInner({
             />
           ) : null}
         </div>
-        </div>
+        </SheetFrame>
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
       <WikiLinkPreviewCard rootRef={rootRef} libraryId={libraryId} />

@@ -345,6 +345,78 @@ pub fn invalidate_android_path_lru(state: &AndroidDirectoryPickerState, path_pre
     }
 }
 
+/// Resolves `segments` under `tree_uri` from the deepest folder already
+/// known, with one shallow listing per missing level, instead of reading
+/// the whole tree. `Some(None)` means a listing showed the entry does not
+/// exist; `None` that the walk could not decide (an error), and the caller
+/// may still read the whole tree. Found entries go to the LRU unless the
+/// tree changed meanwhile. Only exact cached paths are used: a nested path
+/// never falls back to the root.
+#[cfg(target_os = "android")]
+pub fn resolve_android_path_by_walking(
+    state: &AndroidDirectoryPickerState,
+    tree_uri: &str,
+    segments: &[String],
+) -> Option<Option<String>> {
+    let root = tree_uri.trim_end_matches('/');
+    let key = |depth: usize| {
+        if depth == 0 {
+            root.to_string()
+        } else {
+            format!("{root}/{}", segments[..depth].join("/"))
+        }
+    };
+    let known = |path: &str| {
+        resolve_android_path_lru(state, path).or_else(|| state.paths.lock().ok()?.get(path).cloned())
+    };
+    let epoch = tree_cache_epoch(state, tree_uri);
+    let mut depth = segments.len();
+    let mut current = loop {
+        if depth == 0 {
+            break tree_uri.to_string();
+        }
+        if let Some(uri) = known(&key(depth)) {
+            if depth == segments.len() {
+                return Some(Some(uri));
+            }
+            break uri;
+        }
+        depth -= 1;
+    };
+    while depth < segments.len() {
+        let listing = {
+            let guard = state.handle.lock().ok()?;
+            let handle = guard.as_ref()?;
+            handle
+                .run_mobile_plugin::<ReadTreeResponse>("readDirectory", serde_json::json!({ "uri": current }))
+                .ok()?
+        };
+        let Some(child) = listing.nodes.into_iter().find(|node| node.name == segments[depth]) else {
+            return Some(None);
+        };
+        if !child.id.starts_with("content://") {
+            return None;
+        }
+        depth += 1;
+        if tree_cache_epoch(state, tree_uri) == epoch {
+            put_android_path_lru(state, key(depth), child.id.clone());
+        }
+        current = child.id;
+    }
+    Some(Some(current))
+}
+
+/// The children of one folder document (shallow), as `(name, is_file)`.
+#[cfg(target_os = "android")]
+pub(crate) fn list_android_folder(state: &AndroidDirectoryPickerState, folder_uri: &str) -> Result<Vec<(String, bool)>, String> {
+    let guard = state.handle.lock().map_err(|_| "No se pudo acceder al selector de carpetas.".to_string())?;
+    let handle = guard.as_ref().ok_or_else(|| "El selector de carpetas no esta disponible.".to_string())?;
+    let response = handle
+        .run_mobile_plugin::<ReadTreeResponse>("readDirectory", serde_json::json!({ "uri": folder_uri }))
+        .map_err(|error| format!("No se pudo leer el directorio Android: {error}"))?;
+    Ok(response.nodes.into_iter().map(|node| (node.name, node.node_type == "file")).collect())
+}
+
 /// Update cached path→URI mappings from tree nodes that have already been
 /// fetched (e.g. by `read_android_library_tree`). This avoids the redundant
 /// second `readTree` call that `refresh_android_tree_path_cache` would make.
@@ -776,7 +848,8 @@ pub async fn read_android_directory(
         let uri = {
             let normalized_key = normalize_android_root_key(&payload.directory_path);
 
-            // 1. Check the paths cache for an exact match (most accurate).
+            // 1. Check the paths cache for an exact match (most accurate),
+            //    then the LRU, where folders resolved by walking are kept.
             let exact_path_uri = {
                 let paths = state.paths.lock().map_err(|_| {
                     "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
@@ -785,21 +858,61 @@ pub async fn read_android_directory(
                     .get(&payload.directory_path)
                     .cloned()
                     .or_else(|| paths.get(&normalized_key).cloned())
-            };
+            }
+            .or_else(|| resolve_android_path_lru(state.inner(), &payload.directory_path));
+
+            // The tree grant the folder belongs to: the payload's, or the
+            // selected root that contains it.
+            let tree = payload
+                .directory_uri
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    let roots = state.roots.lock().ok()?;
+                    roots
+                        .get(&payload.directory_path)
+                        .cloned()
+                        .or_else(|| roots.get(&normalized_key).cloned())
+                        .or_else(|| {
+                            roots
+                                .iter()
+                                .filter(|(root_path, _)| {
+                                    let norm_root = normalize_android_root_key(root_path);
+                                    is_same_or_nested_path(root_path, &payload.directory_path)
+                                        || is_same_or_nested_path(&norm_root, &payload.directory_path)
+                                })
+                                .max_by_key(|(root_path, _)| root_path.len())
+                                .map(|(_, uri)| uri.clone())
+                        })
+                });
+            let nested = tree.as_deref().filter(|tree| is_saf_tree_uri(tree)).and_then(|tree| {
+                crate::filesystem::android_saf::android_relative_segments(&payload.directory_path, tree)
+                    .map(|segments| (tree.to_string(), segments))
+            });
 
             if exact_path_uri.is_some() {
                 log::info!(
                     "[notia:directory_picker] read_android_directory uri resolved from paths cache"
                 );
                 exact_path_uri
+            } else if let Some((tree, segments)) = nested {
+                // 2. A folder inside the tree resolves to its own document,
+                //    one shallow listing per level not known yet. Listing the
+                //    tree instead would show the root's children as this
+                //    folder's, and cache the root under the folder's path.
+                match resolve_android_path_by_walking(state.inner(), &tree, &segments) {
+                    Some(Some(uri)) => Some(uri),
+                    Some(None) => return Err("La carpeta ya no existe en la biblioteca.".to_string()),
+                    None => return Err("No se pudo leer el directorio Android.".to_string()),
+                }
             } else if let Some(uri) = payload
                 .directory_uri
                 .clone()
                 .filter(|value| !value.trim().is_empty())
             {
-                // 2. Use the provided directoryUri, but only store it in the
-                //    paths cache (not roots) unless this is a known library root.
-                //    Subdirectories should not pollute the roots cache.
+                // 3. The provided directoryUri is the folder itself (the tree
+                //    root, or a document). Store it in the paths cache (not
+                //    roots) unless this is a known library root.
                 {
                     let mut paths = state.paths.lock().map_err(|_| {
                         "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
@@ -828,25 +941,8 @@ pub async fn read_android_directory(
                 );
                 Some(uri)
             } else {
-                // 3. Fallback: check roots for exact match or prefix match.
-                let roots = state.roots.lock().map_err(|_| {
-                    "No se pudo acceder a las carpetas Android seleccionadas.".to_string()
-                })?;
-                roots
-                    .get(&payload.directory_path)
-                    .cloned()
-                    .or_else(|| roots.get(&normalized_key).cloned())
-                    .or_else(|| {
-                        roots
-                            .iter()
-                            .filter(|(root_path, _)| {
-                                let norm_root = normalize_android_root_key(root_path);
-                                is_same_or_nested_path(root_path, &payload.directory_path)
-                                    || is_same_or_nested_path(&norm_root, &payload.directory_path)
-                            })
-                            .max_by_key(|(root_path, _)| root_path.len())
-                            .map(|(_, uri)| uri.clone())
-                    })
+                // 4. The folder is a selected root itself.
+                tree
             }
         };
 

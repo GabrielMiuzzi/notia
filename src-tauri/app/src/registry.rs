@@ -158,6 +158,7 @@ fn route(command: &str) -> Option<Route> {
         "health_generate_plan" => health_generate_plan,
         "health_estimate_meal" => health_estimate_meal,
         "gym_view" => gym_view,
+        "gym_resume" => gym_resume,
         "gym_apply" => gym_apply,
         "gym_exercise" => gym_exercise,
         "gym_catalog_apply" => gym_catalog_apply,
@@ -290,6 +291,7 @@ fn route(command: &str) -> Option<Route> {
         "connection_settings" => connection_settings,
         "save_connection_settings" => save_connection_settings,
         "test_host_connection" => test_host_connection,
+        "client_open" => client_open,
         "enter_offline_copy" => enter_offline_copy,
         "leave_offline_copy" => leave_offline_copy,
         "sync_copy_now" => sync_copy_now,
@@ -429,6 +431,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "health_generate_plan",
     "health_estimate_meal",
     "gym_view",
+    "gym_resume",
     "gym_apply",
     "gym_exercise",
     "gym_catalog_apply",
@@ -540,6 +543,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "connection_settings",
     "save_connection_settings",
     "test_host_connection",
+    "client_open",
     "enter_offline_copy",
     "leave_offline_copy",
     "sync_copy_now",
@@ -619,6 +623,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "connection_settings",
     "save_connection_settings",
     "test_host_connection",
+    "client_open",
     "enter_offline_copy",
     "leave_offline_copy",
     "sync_copy_now",
@@ -1270,6 +1275,11 @@ fn health_estimate_meal(app: &AppHandle, _window_label: &str, command: &str, arg
 fn gym_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "query")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_view(arg0, arg1, arg2).await) })))
+}
+
+fn gym_resume(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1) = (app.clone(), arg(command, args, "context")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gym::gym_resume(arg0, arg1).await) })))
 }
 
 fn gym_apply(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1967,6 +1977,11 @@ fn test_host_connection(app: &AppHandle, _window_label: &str, command: &str, arg
     let arg0 = app.clone();
     let arg1 = arg::<Option<crate::connection::TestHostPayload>>(command, args, "payload")?.unwrap_or_default();
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::connection::test_host_connection(arg0, arg1).await) })))
+}
+
+fn client_open(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::connection::client_open(app).await) })))
 }
 
 fn enter_offline_copy(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {

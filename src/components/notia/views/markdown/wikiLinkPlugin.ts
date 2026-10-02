@@ -1,4 +1,4 @@
-import { Plugin, PluginKey, TextSelection, type EditorState, type Selection } from '@milkdown/kit/prose/state'
+import { Plugin, PluginKey, TextSelection, type EditorState, type Selection, type StateField } from '@milkdown/kit/prose/state'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
@@ -13,7 +13,9 @@ import {
   type WikiLinkTextMatch,
 } from '../../../../engines/markdown/wikiLinkEngine'
 
-const WIKI_LINK_PLUGIN_KEY = new PluginKey('notia-wikilink-plugin')
+const WIKI_LINK_PLUGIN_KEY = new PluginKey<WikiLinkDecorationState>('notia-wikilink-plugin')
+/** Meta of a transaction that resolves every link again (the notes of the library changed). */
+const WIKI_LINK_REFRESH_META = 'notia-refresh-wikilinks'
 /** Brackets, `|` and `.md` of a link: dimmed while it is edited, hidden otherwise. */
 const WIKI_LINK_SYNTAX_CLASS = 'notia-wikilink-syntax'
 /** Class of a link that points to an existing note; only a click on it opens the note. */
@@ -122,20 +124,25 @@ export function isEditingWikiLink(selection: Pick<Selection, 'from' | 'to'>, lin
   return selection.from <= link.to && selection.to >= link.from
 }
 
-function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLookup): DecorationSet {
-  const decorations: Decoration[] = []
-
-  state.doc.descendants((node, position, parent) => {
-    if (node.type.name === 'code_block') {
+/** Adds the decorations of the links inside `node`, whose content starts at `contentStart`. */
+function collectWikiLinkDecorations(
+  node: ProseNode,
+  contentStart: number,
+  selection: Pick<Selection, 'from' | 'to'>,
+  lookup: MarkdownWikiLinkLookup,
+  decorations: Decoration[],
+): void {
+  node.descendants((child, offset, parent) => {
+    if (child.type.name === 'code_block') {
       return false
     }
 
-    if (!node.isText || !node.text || isCodeText(node, parent)) {
+    if (!child.isText || !child.text || isCodeText(child, parent)) {
       return
     }
 
-    for (const match of findWikiLinkMatches(node.text)) {
-      const link = toRange(position, match)
+    for (const match of findWikiLinkMatches(child.text)) {
+      const link = toRange(contentStart + offset, match)
       const target = resolveWikiLinkTarget(lookup, match.reference)
       const className = target
         ? `notia-wikilink-token ${RESOLVED_WIKI_LINK_CLASS}`
@@ -144,15 +151,113 @@ function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLo
       // The note's path lets the editor show its card on hover.
       decorations.push(Decoration.inline(link.from, link.to, target ? { class: className, 'data-wikilink-path': target.path } : { class: className }))
       if (link.labelTo <= link.labelFrom) continue
-      const syntaxClass = isEditingWikiLink(state.selection, link) ? WIKI_LINK_SYNTAX_CLASS : `${WIKI_LINK_SYNTAX_CLASS} is-hidden`
+      const syntaxClass = isEditingWikiLink(selection, link) ? WIKI_LINK_SYNTAX_CLASS : `${WIKI_LINK_SYNTAX_CLASS} is-hidden`
       decorations.push(Decoration.inline(link.from, link.labelFrom, { class: syntaxClass }))
       if (link.labelTo < link.to) decorations.push(Decoration.inline(link.labelTo, link.to, { class: syntaxClass }))
     }
 
     return
   })
+}
 
+/** The decorations of every link of the note. */
+export function buildWikiLinkDecorations(state: EditorState, lookup: MarkdownWikiLinkLookup): DecorationSet {
+  const decorations: Decoration[] = []
+  collectWikiLinkDecorations(state.doc, 0, state.selection, lookup, decorations)
   return DecorationSet.create(state.doc, decorations)
+}
+
+interface PositionRange {
+  from: number
+  to: number
+}
+
+/** The stretch of `next` that differs from `previous`, or `null` when nothing does. */
+function changedRange(previous: ProseNode, next: ProseNode): PositionRange | null {
+  const start = previous.content.findDiffStart(next.content)
+  if (start === null) return null
+  const end = previous.content.findDiffEnd(next.content)
+  if (!end) return { from: start, to: start }
+  // Repeated content can make both ends cross; move them past the start.
+  const overlap = start - Math.min(end.a, end.b)
+  return { from: start, to: overlap > 0 ? end.b + overlap : end.b }
+}
+
+/**
+ * Decorates again the text blocks that touch `ranges` (their edges
+ * included), with the rest of the set as it was. A link never leaves its
+ * text block, so the others keep their decorations.
+ */
+function redecorateTextblocks(
+  decorations: DecorationSet,
+  state: EditorState,
+  ranges: PositionRange[],
+  lookup: MarkdownWikiLinkLookup,
+): DecorationSet {
+  const { doc, selection } = state
+  const done = new Set<number>()
+  let next = decorations
+  for (const range of ranges) {
+    const from = Math.max(0, Math.min(range.from, range.to) - 1)
+    const to = Math.min(doc.content.size, Math.max(range.from, range.to) + 1)
+    doc.nodesBetween(from, to, (node, position) => {
+      if (!node.isTextblock) return true
+      if (done.has(position)) return false
+      done.add(position)
+      next = next.remove(next.find(position, position + node.nodeSize))
+      if (node.type.name === 'code_block') return false
+      const fresh: Decoration[] = []
+      collectWikiLinkDecorations(node, position + 1, selection, lookup, fresh)
+      if (fresh.length > 0) next = next.add(doc, fresh)
+      return false
+    })
+  }
+  return next
+}
+
+export interface WikiLinkDecorationState {
+  decorations: DecorationSet
+  /** The notes the links were resolved against. */
+  lookup: MarkdownWikiLinkLookup
+}
+
+/**
+ * The links' decorations, kept from one state to the next: an edit decorates
+ * again only the text blocks it changed, and a moved cursor only those it
+ * left or reached (their brackets show or hide). Every link is resolved
+ * again when the notes change (`notia-refresh-wikilinks`).
+ */
+export function wikiLinkDecorationField(getLookup: () => MarkdownWikiLinkLookup): StateField<WikiLinkDecorationState> {
+  return {
+    init: (_config, state) => {
+      const lookup = getLookup()
+      return { decorations: buildWikiLinkDecorations(state, lookup), lookup }
+    },
+    apply: (transaction, value, previous, next) => {
+      const lookup = getLookup()
+      if (lookup !== value.lookup || transaction.getMeta(WIKI_LINK_REFRESH_META) !== undefined) {
+        return { decorations: buildWikiLinkDecorations(next, lookup), lookup }
+      }
+
+      if (!transaction.docChanged && previous.selection.eq(next.selection)) {
+        return value
+      }
+
+      let decorations = value.decorations
+      const ranges: PositionRange[] = []
+      if (transaction.docChanged) {
+        decorations = decorations.map(transaction.mapping, transaction.doc)
+        const changed = changedRange(previous.doc, next.doc)
+        if (changed) ranges.push(changed)
+      }
+      // Links whose brackets show or hide: those the old or the new selection touches.
+      ranges.push(
+        { from: transaction.mapping.map(previous.selection.from), to: transaction.mapping.map(previous.selection.to) },
+        { from: next.selection.from, to: next.selection.to },
+      )
+      return { decorations: redecorateTextblocks(decorations, next, ranges, lookup), lookup }
+    },
+  }
 }
 
 /**
@@ -268,6 +373,7 @@ export function createWikiLinkPlugin(config: CreateWikiLinkPluginConfig) {
     () =>
       new Plugin({
         key: WIKI_LINK_PLUGIN_KEY,
+        state: wikiLinkDecorationField(config.getLookup),
         view: (view) => {
           config.onMenuContextChange(buildMenuContext(view))
 
@@ -288,7 +394,7 @@ export function createWikiLinkPlugin(config: CreateWikiLinkPluginConfig) {
           return position === null ? null : next.tr.setSelection(TextSelection.create(next.doc, position))
         },
         props: {
-          decorations: (state) => buildWikiLinkDecorations(state, config.getLookup()),
+          decorations: (state) => WIKI_LINK_PLUGIN_KEY.getState(state)?.decorations,
           handleKeyDown: (view, event) => {
             if (!config.isMenuOpen()) {
               return false

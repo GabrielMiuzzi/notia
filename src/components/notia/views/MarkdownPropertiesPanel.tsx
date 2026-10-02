@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { memo, useId, useMemo, useState } from 'react'
 import { ArrowLeft, ArrowRight, Binary, Calendar, ChevronRight, Hash, Link2, ListChecks, Plus, SquareCheck, Type, X, type LucideIcon } from 'lucide-react'
 import { NotiaButton } from '../../common/NotiaButton'
 import type { MarkdownWikiLinkLookup } from '../../../engines/markdown/wikiLinkEngine'
@@ -125,7 +125,7 @@ function AddPropertyForm({
   )
 }
 
-export function MarkdownPropertiesPanel({
+function MarkdownPropertiesPanelInner({
   entries,
   wikiLinkLookup,
   libraryId,
@@ -243,3 +243,7 @@ export function MarkdownPropertiesPanel({
     </section>
   )
 }
+
+/** Drawn again only when its properties or handlers change, not while the body is typed. */
+export const MarkdownPropertiesPanel = memo(MarkdownPropertiesPanelInner)
+MarkdownPropertiesPanel.displayName = 'MarkdownPropertiesPanel'

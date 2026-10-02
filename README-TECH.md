@@ -8161,7 +8161,7 @@ Estado vigente desde el esquema SQLite 26. Reemplaza lo que las secciones anteri
 
 ### Interfaz (`src/modules/finance`)
 
-Rediseño del 2026-09-25 según el canvas «Notia · Finanzas rediseño» (https://claude.ai/artifact/JNijaDH9muBxtTBxaNW4W9): boards Resumen, Movimientos, Sueldo y ahorro, Resumen · teléfono, Productos y tickets, y Productos sin datos.
+Rediseño del 2026-09-25 según el canvas «Notia · Finanzas rediseño» (https://claude.ai/artifact/JNijaDH9muBxtTBxaNW4W9): boards Resumen, Movimientos, Sueldo y ahorro, Productos y tickets, y Productos sin datos. Desde el 2026-10-02 también sigue los boards de teléfono del mismo canvas (`Mobile.dc.html`, `MobileMovimientos`, `MobileSueldo`, `MobileProductos` y `MobileProductosVacio`).
 
 **Frontera Rust/React.** Rust deriva todo lo que la pantalla muestra en `app/src/finance_screen.rs`; React solo formatea (`engines/financeFormat.ts`, `engines/financeMovementText.ts`) y distribuye. Cuatro comandos de lectura, todos con `{ payload: { context, … } }`:
 
@@ -8190,11 +8190,34 @@ Rediseño del 2026-09-25 según el canvas «Notia · Finanzas rediseño» (https
 
 **Pantalla:** `FinanceScreen` (encabezado, pestañas, mes compartido entre Resumen y Movimientos, pie del teléfono) y una pestaña por componente (`FinanceOverviewTab`, `FinanceMovementsTab`, `FinanceSalaryTab`, `FinanceProductsTab`); Dev queda como pestaña pequeña al final, fuera del canvas. `useFinanceResource` carga cada vista, descarta respuestas viejas y recarga ante cambios.
 
+**Teléfono (2026-10-02):** `FinanceScreen` mide su propio ancho con `useNarrowContainer` (`src/hooks/useNarrowContainer.ts`, `ResizeObserver` en un efecto de layout; Gimnasio lo usa a través de `usePhoneLayout`). Por debajo de 641 px agrega `finance-screen--phone` y cada pestaña recibe `phone`. Con `phone`, la pestaña sigue cargando sus datos y su estado (búsqueda, filtro, orden, producto elegido) como antes, pero pinta otro componente de `components/phone/`, con otra estructura y no solo otras columnas:
+- **Encabezado y pie:** eyebrow, mes con flechas de 40 px y botón de chat de 44 px; pestañas con subrayado que se desplazan de costado (la elegida se lleva a la vista) y sin Dev. El pie tiene las cotizaciones (solo en Resumen; la fecha lleva a Sueldo y ahorro) y **Herramientas de desarrollo**.
+- **`PhoneOverview`:**
+  - «Para revisar» de a una tarjeta, con flechas y «N de M»;
+  - uso del sueldo con leyenda en filas;
+  - cuatro mosaicos: gastos, ahorrado, en tarjeta a pagar y la reserva;
+  - categorías con «Categorizar en el chat»;
+  - tarjetas pagadas, servicios con su estado y últimos movimientos.
+- **`PhoneMovements`:** búsqueda, chips en una fila que se desplaza y grupos por cuenta. Cada fila es un botón con `aria-expanded` que abre el detalle debajo (nota, datos y «Pedir un cambio en el chat»), de a una fila. Se retiraron la hoja inferior, su fondo y el cierre con Escape. En el ancho, el detalle lateral sigue siempre visible.
+- **`PhoneSalary`:** las últimas seis barras con la línea del promedio, Pesos/Dólares, mosaicos de promedio y de inflación, el texto del dólar oficial, las tres partes del sueldo en 12 celdas, las cotizaciones en 2×2 con «Tu compra» y cada reserva.
+- **`PhoneProducts`:**
+  - lista con búsqueda, orden y tickets;
+  - al tocar un producto, su ficha reemplaza la lista: «Más barato hoy», contra el más caro, desde la 1.ª compra, gráfico (`FinancePriceChart` con `phone`: 150 px, leyenda bajo el título y sin escala), comercios, producto parecido y «Corregir en el chat»;
+  - sin productos, los tres pasos y «Mandar un ticket».
+
+Los textos compartidos entre ancho y teléfono viven en `engines/financeSalaryText.ts` y `engines/financeProductText.ts`. `FinancePriceChart` salió de `FinanceProductsTab`. Las variantes `finance-only-narrow` y `finance-only-wide`, que duplicaban contenido en el DOM, se retiraron, igual que los mosaicos del Resumen ancho angosto. Para la vista previa visual, la prueba ignorada `finance_screen::tests::dump_preview_fixtures` (`FIN_LIBRARY`, `FIN_OUT`, `FIN_MONTH`) vuelca las cuatro pestañas de una copia de biblioteca a JSON.
+
 **Chat:** los botones de «Para revisar», «Categorizar en el chat», «Pedir un cambio en el chat», «Corregir en el chat» y «Mandar un ticket» abren el chat lateral (`setRightChatPanelOpen`) y ponen el texto en su compositor mediante `services/chat/chatComposerRequests.ts`, sin enviarlo; «Cargar con el asistente» solo lo abre y le da el foco. Si el chat lateral todavía no está montado, el último pedido espera a que se suscriba.
 
 **Refresco:** `finance::sync_context`, por donde terminan todas las escrituras financieras (también las del agente y Telegram), emite `notia:finance-data-changed`; `subscribeToFinanceDataChanges` escucha ese evento además del aviso local.
 
-**Estilos:** `styles/finance.css`, con los tokens de la paleta (el teal del canvas es el acento; tarjetas, periwinkle; avisos, ámbar) y container queries: 12 columnas desde 1181 px, dos columnas hasta 900 px y el diseño de teléfono hasta 640 px. En el teléfono las dudas se deslizan con scroll-snap y el detalle de un movimiento es una hoja inferior.
+**Estilos:** `styles/finance.css`, con los tokens de la paleta (el teal del canvas es el acento; tarjetas, periwinkle; avisos, ámbar; el verde del ahorro del canvas, teal) y container queries para el ancho: 12 columnas desde 1181 px y dos columnas hasta 900 px. El teléfono usa las clases `finance-phone-*` bajo `finance-screen--phone`, con las medidas de los boards: tarjetas de radio 16, mosaicos de 14, botones y búsqueda de 44 px, chips de 40 px, filas de movimiento de 60 px y de producto de 64 px. Con `pointer: coarse`, las flechas de «Para revisar» y el selector Pesos/Dólares crecen a 44 y 40 px.
+
+**Validación del teléfono (2026-10-02):**
+- `FinanceScreen.test.tsx` cubre la navegación de teléfono: revisar de a una tarjeta, abrir un movimiento en el lugar, la ficha de un producto y volver.
+- `tsc`, ESLint y `vitest run` (474 en 112 archivos) aprobados; `cargo test -p notia-app finance_screen` compila la prueba ignorada.
+- Revisión visual con Chrome sin ventana a 390 px contra los cinco boards, en tema oscuro y claro, y a 700 y 1280 px para el ancho.
+- Pendiente: probar en el Motorola y en la tableta Android.
 
 **Se retiraron:**
 
@@ -9207,24 +9230,24 @@ Comandos. Los tres están en `LOCAL_ONLY_COMMANDS`, así un cliente nunca cambia
   - Lo que solo funciona en el equipo que ejecuta Notia (grabación, Meeting, selectores, alta de correo en el navegador) responde `unsupported`: «En modo cliente esta función la ofrece el host…».
 - **Archivos:** el esquema `notiahost` de la ventana (`tauri_host.rs::host_file`) pide `GET /api/file` al host con la sesión. La interfaz lo usa con `convertFileSrc(path, 'notiahost')`. La CSP suma `notiahost:` y `http://notiahost.localhost` en `img-src`, `media-src` y `connect-src`.
 - **Eventos:** un hilo abre `wss://host/api/events` (tungstenite sobre rustls, con la cookie y `Origin`) y emite en la ventana cada evento del host. Al reconectar pide `?since=<último seq>`.
-- **Monitor:** consulta `/api/health` cada 10 s con conexión y cada 4 s sin ella, emite `notia:host-link` cuando cambia el estado y sincroniza la copia.
+- **Monitor:** consulta `/api/health` cada 10 s con conexión y cada 4 s sin ella (espera hasta 3 s la respuesta, `HEALTH_TIMEOUT`), emite `notia:host-link` cuando cambia el estado y lanza la sincronización de la copia en su propio hilo (`host_mirror::sync_in_background`), así las consultas siguen durante una sincronización larga.
 - **Servicios apagados en un cliente:** Telegram (`desired_worker`), el agente autónomo, la sincronización de Agenda, los backups, la publicación automática y la precarga del modelo de voz.
 - **`rustls` y `tungstenite`** pasaron a dependencias de todas las plataformas, porque el cliente de Android los usa.
 
 ### Interfaz del cliente
 
 - **`src/main.tsx`:** la ventana carga `WindowApp` (`src/components/client/`), que lee `connection_settings`. Host abre la app como siempre. Cliente abre `ClientApp`:
-  1. `test_host_connection`. Si el host no responde:
-     - con copia → `enter_offline_copy` y la app sobre la copia;
-     - si no → pantalla «Sin conexión con el host», con Reintentar, «Guardar esta dirección» y «Usar este equipo como host» (en Android, «Usar la biblioteca de este dispositivo»).
-  2. Instala `createHostTransport` (`src/services/transport/hostTransport.ts`): Tauri IPC, `kind: 'remote'`, la plataforma del host, `supports` que oculta `hostOnlyCommands`, y `fileUrl` con `notiahost`.
+  1. `client_open` (Rust decide dónde abre la ventana; ver «Apertura del cliente (2026-10-02)»). Devuelve `{ opening: 'host' | 'copy' | 'offline', message, connection }`:
+     - `copy` → la app sobre la copia;
+     - `offline` → pantalla «Sin conexión con el host», con Reintentar, «Guardar esta dirección» y «Usar este equipo como host» (en Android, «Usar la biblioteca de este dispositivo»).
+  2. Con `host`, instala `createHostTransport` (`src/services/transport/hostTransport.ts`): Tauri IPC, `kind: 'remote'`, la plataforma del host, `supports` que oculta `hostOnlyCommands`, y `fileUrl` con `notiahost`.
   3. `app_auth_status` del host. Si falta sesión, `LoginScreen` con Recordar sesión y datos.
-  4. Con copia, `sync_copy_now` («Sincronizando la copia local con el host…»). Después, la app.
+  4. La app. La copia se sincroniza en segundo plano: ya no hay pantalla «Sincronizando la copia local con el host…».
 - **Estilos:** `ClientApp` (y `RemoteApp`) importan `src/styles/notia.css`, porque el login, «Sin conexión con el host» y «Conectando…» se muestran antes de cargar la app, que es la que traía esa hoja. Sin eso, esas pantallas salían sin diseño (visto en Android).
 - **Avisos:**
   - Sin conexión durante el uso, un aviso arriba: «Reintentando…», más «Usar la copia local» si hay copia.
   - Trabajando con la copia, el aviso dice que la base es de solo lectura.
-  - Cuando el host vuelve, cuenta 5 s («Volver ahora») para que el editor guarde; luego `leave_offline_copy` y recarga.
+  - Cuando el host vuelve, cuenta 5 s («Volver ahora») para que el editor guarde; luego `leave_offline_copy` y recarga. La copia se concilia en segundo plano después de abrir la sesión.
 - **Dictado:** con `kind: 'remote'` la ventana graba y manda el audio a `speech_remote_audio`, y el host lo reconoce. Meeting se oculta porque `start_speech_session` no se ofrece.
 - **`RunModeSection`** (`src/components/notia/settings/`):
   - Tarjetas de radio Host y Cliente.
@@ -9259,7 +9282,7 @@ Archivos: `backend-core/src/mirror_sync.rs`, `app/src/host_sync.rs`, `app/src/ho
   | Solo la copia | Sube el archivo, o lo borra en el host |
   | Los dos | El de fecha de modificación más nueva gana; un empate queda con el del host; una edición gana a un borrado; iguales en los dos lados solo se registran |
 
-- **Cuándo:** con conexión y sesión, en cada vuelta del monitor (10 s) y antes de abrir la app después del login (`sync_copy_now`). Un archivo que no viajó (más de 24 MB, o el host no lo dio) queda en `skipped` y se reintenta. Un corte guarda lo ya hecho. El evento `notia:copy-sync` y `connection_settings.copy` informan el resultado.
+- **Cuándo:** con conexión y sesión, en segundo plano (`sync_in_background`, un hilo `notia-copy-sync`; si ya corre una, no se lanza otra): apenas se abre una sesión con el host (login, sesión recordada o renovada) y en cada vuelta del monitor (10 s). `sync_copy_now` sigue disponible y espera el resultado. La ventana nunca espera la sincronización. Un archivo que no viajó (más de 24 MB, o el host no lo dio) queda en `skipped` y se reintenta. Un corte guarda lo ya hecho. El evento `notia:copy-sync` y `connection_settings.copy` informan el resultado.
 - **Sin conexión:**
   - `enter_offline_copy` agrega la carpeta como biblioteca de este equipo (`add_desktop_library`) y la selecciona, recordando la selección anterior.
   - `database_is_read_only` hace que `open_library_connection`, `open_existing_library_connection_rw` y la inicialización abran la base en solo lectura y sin migrar.
@@ -9267,7 +9290,7 @@ Archivos: `backend-core/src/mirror_sync.rs`, `app/src/host_sync.rs`, `app/src/ho
   - `leave_offline_copy` vuelve al host y restaura la selección. La siguiente sincronización concilia lo cambiado.
 - **Errores:** sin copia previa, «Todavía no hay una copia de la biblioteca en este equipo: conectate al host al menos una vez.».
 - **Orden y fallas (2026-09-28):**
-  - La base se baja antes que los archivos: la copia se abre sin conexión solo si la tiene (`database_ms`); si no, «La copia de este equipo todavía no tiene la base de datos…».
+  - Orden (2026-10-02): primero sube lo que cambió en este equipo (`Upload` y `DeleteRemote`), así la ventana, ya sobre el host, muestra enseguida lo editado sin conexión; después la base; al final lo que cambió en el host. En la primera sincronización no hay nada que subir, así que la base sigue bajando antes que los archivos: la copia se abre sin conexión solo si la tiene (`database_ms`); si no, «La copia de este equipo todavía no tiene la base de datos…».
   - Un archivo que no se puede escribir o leer queda en `skipped` y la sincronización sigue. Solo se corta si el host deja de responder (`ProviderUnavailable`, `Unauthorized` o `Forbidden`).
   - Antes, un archivo con error cortaba todo antes de la base. Sin conexión, el plugin Android creaba una base vacía y el inicio de sesión fallaba con «No se pudo revisar el inicio de sesión…».
   - Al abrir la base de la copia en solo lectura, `check_copy_snapshot` exige la tabla `library_users`.
@@ -9325,6 +9348,25 @@ Cuando dos ventanas del mismo host abren la misma nota (el host y sus clientes, 
   - Si la sala se pierde (el host se reinició), la nota sigue sola.
 - **Cuándo se activa:** `connection_settings.collaboration` es `true` en un cliente conectado o en un host que escucha. Aplica al editor de notas de las pestañas; el diálogo de fuente del Task Manager y las notas grandes no participan.
 
+### Apertura del cliente y estado de la conexión (2026-10-02)
+
+Archivos: `app/src/connection.rs` (`client_open`), `app/src/client_status.rs`, `app/src/host_mirror.rs`, `app/src/host_client.rs`, `app/src/mobile_continuity.rs`, `resources/continuity/android/ContinuityPlugin.kt`, `src/components/client/ClientApp.tsx`.
+
+- **`client_open`** (comando local del cliente: está en `LOCAL_ONLY_COMMANDS` y en `CLIENT_LOCAL_COMMANDS`):
+  - Con una copia lista (`host_mirror::copy_ready`: «Con copia», `current.json` del host guardado, `database_ms` y la carpeta de la copia presente), prueba el host esperando como mucho `HEALTH_TIMEOUT` (3 s), el mismo tiempo del monitor. Así un host que el monitor ve responder también responde al abrir, y la ventana no entra en un ciclo copia → host → copia.
+  - Sin copia lista, prueba con el tiempo de «Probar conexión» (15 s).
+  - Si el host responde: `leave_offline_copy` y `opening: 'host'`. Si no, con copia: `enter_offline_copy` y `opening: 'copy'`; si eso falla, o sin copia, `opening: 'offline'` con el motivo.
+  - Antes la ventana hacía esta decisión en React (`test_host_connection` + `enter_offline_copy`) y además esperaba `sync_copy_now` después del login.
+- **Estado de la conexión** (`client_status::describe`, función pura con pruebas): `connecting`, `connected`, `syncing`, `failed` o `offline`, con título y texto en español. Sale del enlace (`LinkView`: estado, biblioteca, sesión, mensaje) y de la copia (`is_offline`, `is_transferring`, `last_error`). Un dispositivo que no es cliente no tiene estado.
+  - `syncing` solo mientras la sincronización mueve archivos o la base (`transferring`), no en cada comparación de 10 s.
+  - Se recalcula (`client_status::refresh`) al emitir `notia:host-link`, al empezar a transferir, al terminar una sincronización, al entrar o salir de la copia, en `client_open` y en `connection::start` (un cambio a Host la quita).
+- **Notificación fija en Android:**
+  - `refresh` manda el estado a un hilo propio (`notia-link-status`), que solo llama al plugin cuando el estado cambió y descarta los intermedios. Al arrancar, el primer envío quita una notificación que haya quedado de una ejecución anterior.
+  - `ContinuityPlugin.showConnectionStatus { kind, title, text }` publica la notificación `0x4E0B` en el canal «Conexión con el host» (`notia-host-connection`, importancia baja), continua (`setOngoing`), sin sonido al actualizarse y con un ícono del sistema según `kind`. Tocarla abre Notia. `clearConnectionStatus` la quita.
+  - En Android 13 o superior, la primera vez pide `POST_NOTIFICATIONS` (el permiso ya estaba en el manifiesto). Si se rechaza, Android no la muestra.
+  - `onDestroy` del plugin la quita cuando la actividad se cierra (no al rotar). Desde Android 14 la persona puede descartarla; vuelve a aparecer con el próximo cambio de estado.
+  - En Windows y Linux no hay notificación: la ventana ya muestra el estado.
+
 ### Eventos nuevos
 
 | Evento | Emisor | Consumidor |
@@ -9341,7 +9383,8 @@ Cuando dos ventanas del mismo host abren la misma nota (el host y sus clientes, 
   - Las carpetas que quedan vacías al borrar no se eliminan.
   - El dictado del cliente usa el micrófono del WebView; falta probar sus permisos.
 - **Copia:**
-  - La primera sincronización baja toda la biblioteca, y durante una sincronización larga el monitor espera.
+  - La primera sincronización baja toda la biblioteca.
+  - Mientras la sincronización en segundo plano sube lo editado sin conexión, la ventana ya muestra el host. Si en esos segundos se edita en el host el mismo archivo, gana la fecha más nueva: la edición sin conexión se pierde.
   - Las fechas dependen del reloj de cada equipo.
   - Los cambios de la base hechos sin conexión no existen (solo lectura).
 - **Edición en conjunto:**
@@ -10624,7 +10667,8 @@ contexto: "#Personal"                         # líneas de nota: se conservan al
 
 | Comando | Entrada | Salida |
 |---|---|---|
-| `gym_view` | `context`, `query` | `GymView` |
+| `gym_view` | `context`, `query` | `GymView`, con `screen`: la pantalla armada. Con `query.resume` y un entrenamiento en curso, arma Entrenar de esa rutina |
+| `gym_resume` | `context` | La rutina del entrenamiento en curso con actividad en las últimas 6 horas (`Session::resumable`, `RESUME_WINDOW_MS`), o `null` |
 | `gym_apply` | `context`, `mutation`, `query` | `{ view, routineId }`: la rutina creada o duplicada, o la que queda después de borrar |
 | `gym_exercise` | `context`, `exerciseId` | `ExerciseDetail` con imagen |
 | `gym_catalog_apply` | `context`, `mutation`, `photo?` | `{ exercise?, equipmentId? }`; un equipamiento nuevo queda marcado como propio |
@@ -10633,20 +10677,40 @@ contexto: "#Personal"                         # líneas de nota: se conservan al
 | `gym_equipment_images` | `context` | id → `data:` |
 | `gym_body` | `context` | `BodyView` con el sexo del perfil de Salud (masculino si no hay perfil) |
 
-- **Caché del catálogo**: se lee una vez por biblioteca y se guarda con la lista de archivos (nombre, tamaño y fecha de modificación). Si cambia un archivo, se vuelve a leer, también cuando se edita a mano o en el editor. Los escritos del módulo la invalidan.
-- **Android**: la lista de archivos sale de `read_android_flat_entries` y se leen con el adaptador SAF.
+- **Caché del catálogo** (2026-10-02): cada archivo se guarda leído junto con su marca (ruta, tamaño y fecha; en Android solo ruta y fecha, porque el listado de una carpeta no trae el tamaño). Si la lista cambia, se releen solo los archivos nuevos o cambiados. La lista se da por buena durante 5 s (`LISTING_TTL`), salvo que un escrito del módulo suba la generación del catálogo; un escrito o un borrado descarta solo esas rutas. Se guardan como mucho 4 bibliotecas. Las fotos del equipamiento (`gym_equipment_images`) también se guardan por marca. Una edición hecha fuera de Notia aparece en hasta 5 s.
+- **Android**: `android_folder_files` resuelve `Gym/exercises` y `Gym/equipment` por niveles (`resolve_android_path_by_walking`) y lista cada carpeta sola; si eso falla, usa la lista completa. Antes la lista completa de la biblioteca se leía dos veces por cada comando y sus rutas (`<árbol>/<ruta>`) nunca coincidían, así que en Android el catálogo quedaba vacío.
+- **Un cambio de la pantalla** (`gym_apply`): arma la vista con el catálogo y la conexión que ya tiene (`write_then`). `profile_sex` lee solo `health_settings.profile_json`.
 - **Renombrar** un ejercicio o un equipamiento mueve el `.md` (`Nombre.md`, `Nombre 2.md`…); el video conserva su nombre.
-- **Eventos**: cada escritura emite `notia://gym-changed` con el id de la biblioteca.
+- **Eventos**: cada escritura emite `notia://gym-changed` con `{ libraryId, origin }`. `gym_apply` recibe `context.origin` (`GymApplyContext`) y lo devuelve en el evento; las herramientas de la IA y los cambios del catálogo mandan `origin: null`.
 - **Modo cliente**: los comandos van al host porque no están en `CLIENT_LOCAL_COMMANDS`, así que los datos y el catálogo son los del host.
 
 ### Pantalla (`src/modules/gym`)
 
-- `useGymView` guarda la consulta (pantalla, rutina, día, búsqueda, grupo, filtro) y vuelve a pedir la vista ante cada cambio o evento.
+- `useGymView` guarda la consulta (pantalla, rutina, día, búsqueda, grupo, filtro) y vuelve a pedir la vista ante cada cambio o evento ajeno. El evento de su propio cambio (mismo `origin`) se ignora: la respuesta ya trae la vista. Antes ese evento descartaba la respuesta y la rutina creada o duplicada no quedaba elegida. Si la respuesta de un cambio queda vieja, pide la vista una vez cuando terminan los pedidos.
+- La búsqueda espera 250 ms (`SearchField`). Los relojes de Entrenar viven en `TrainingTimers`, así la lista no se vuelve a pintar cada 500 ms; `LibraryAside` y sus filas se memorizan.
+- **Toques encolados en Entrenar** (2026-10-02): con la pantalla trabada, los toques se encolaban y caían después sobre el botón que aparecía en el mismo lugar: «Terminar» (sin confirmación), luego «Empezar de nuevo» y luego «Empezar entrenamiento». Además, marcar una serie de un entrenamiento terminado arrancaba otro desde cero. Así un entrenamiento quedaba guardado a medias y la rutina «se reiniciaba». Ahora:
+  - «Terminar» pide confirmación con las series hechas («Seguir entrenando» la cancela).
+  - `useGymView` expone `applying` desde el mismo toque; mientras Rust no responde, los controles de la sesión (empezar, pausar, reanudar, terminar, empezar de nuevo) no toman toques. Se marcan con `aria-disabled` y no se ven deshabilitados, para que no parpadeen con cada serie. Las series siguen tomando toques.
+  - En un entrenamiento terminado las series quedan deshabilitadas, y `plan_change` rechaza `ToggleSetDone` sobre la sesión terminada de esa rutina: «Ya terminaste este entrenamiento. Tocá «Empezar de nuevo» para entrenar otra vez.». La herramienta `mark_set` de la IA recibe el mismo rechazo.
+- **Seguir donde estaba** (2026-10-02): el entrenamiento en curso ya se guardaba en la base con cada cambio (`gym_settings.session_json`; en Android también en la carpeta SAF) y su reloj se calcula desde `started_ms`, así que sigue corriendo con la app cerrada. Faltaba volver a él:
+  - `useGymView` abre con `resume: true`; Rust arma Entrenar si hay un entrenamiento en curso y la consulta adopta la pantalla y la rutina de la vista (`view.screen`, `view.routineId`) sin pedirla otra vez. Las pantallas siguientes son las que elige la persona.
+  - `useResumeWorkout` (lo llama `NotiaMenu`) pregunta `gym_resume` al abrir la app o cambiar de biblioteca; si hay rutina, abre la pestaña de Gimnasio, salvo que la persona ya haya abierto otra cosa que no sea Inicio. Uno olvidado (más de 6 horas sin actividad) no se impone: sigue al entrar a Gimnasio.
+  - `CommitInput` y `CommitTextArea` mandan lo escrito y todavía no enviado cuando la página se oculta (`visibilitychange`, `pagehide`) o el campo se desmonta: Android puede cerrar la app sin que el campo pierda el foco.
 - Los campos numéricos mandan su valor al salir o con Enter (`CommitInput`).
 - El reloj y el anillo de descanso cuentan con `nowMs` de Rust (la diferencia con el reloj del dispositivo), sin decidir nada.
 - `BodyGraph` pinta los trazos con los colores del tema; estados y niveles van como `data-tone`.
 - Los colores de la paleta están en `gym.css` (oscuro y claro), por grupo (`data-group`) y por rutina (`data-color`).
-- Es responsive con container queries: tres columnas en escritorio, dos en tablet y una en teléfono. En el teléfono, los temporizadores de Entrenar quedan arriba.
+- Es responsive con container queries: tres columnas en escritorio y dos en tablet.
+- **Versión celular** (2026-10-02, tablero «Versión celular» del canvas): cuando el espacio de Gimnasio mide menos de 600 px (`usePhoneLayout`, que mide el contenedor con `ResizeObserver` antes de pintar), la vista lleva `data-layout="phone"` y cambia de estructura, no solo de columnas:
+  - `PhoneTabBar` (Panel, Rutinas, Equipamiento) abajo en el panel, la lista, ver rutina y equipamiento.
+  - Rutinas es su propia pantalla (`PhoneRoutineList`, tarjetas con color, enfoque, ejercicios y días); tocar una abre ver rutina, con «Rutinas» para volver. Que la lista esté abierta es estado de pantalla de `GymDashboardView`; Rust sigue armando la vista de `rutinas`. «Nueva» crea la rutina y la abre en Editar (`apply` devuelve la rutina que eligió Rust).
+  - Panel: sin los accesos del encabezado, con la tarjeta «Próximo entrenamiento» y el mapa de días de las últimas 12 semanas.
+  - Ver rutina: Editar y Entrenar en dos columnas bajo los días, el resumen de cada ejercicio bajo su nombre y el Resumen de la rutina al final.
+  - Editar: barra «Editando» con duplicar, eliminar y Listo; abajo, fijo, «Agregar ejercicio» abre la lista de ejercicios (`LibraryAside`) como hoja (`PhoneSheet`, `.gym-sheet--tall`) con «Listo».
+  - Entrenar: «Volver a la rutina» arriba, el reloj con sus controles en una tarjeta (`SessionClock`) y el descanso en una barra fija abajo con un anillo de 64 px (`RestBar`). En escritorio `TrainingTimers` arma la columna con `SessionClock`, `RestRing` y el resumen de la sesión.
+  - Equipamiento: dos columnas de tarjetas; el formulario de equipamiento propio es una hoja.
+  - La ficha del ejercicio ocupa toda la pantalla (`.gym-card-panel--phone`).
+  - Las hojas se apoyan abajo con `.notia-modal-engine-backdrop:has(> .gym-sheet)` y respetan las áreas seguras.
 
 ### Herramientas de la IA
 
@@ -10844,3 +10908,77 @@ La contraseña sellada se da por vieja solo con `unauthorized` y el mensaje exac
 - Pendiente:
   - volver a registrar gaia en el host;
   - probar la primera sincronización de la copia en el celular con la biblioteca completa.
+
+## Rendimiento en Android: trabajo fuera del hilo de la interfaz, base más chica, editor y Gimnasio (2026-10-02)
+
+La app se trababa en Android (Motorola Edge 70 Pro y Lenovo Yoga Tab Pro, más de 12 GB de RAM); Gimnasio y la edición de notas eran casi inusables. Las causas no eran de memoria ni del perfil de compilación (el APK es release), sino de dónde y cuántas veces se hacía el trabajo.
+
+### Hilos
+
+- **Plugins Kotlin** (`resources/directory-picker`, `resources/database`, `resources/ai`): Tauri entrega cada `@Command` en el hilo principal de Android, el mismo que maneja el toque, el scroll y el WebView. Antes, cada consulta SAF, lectura o escritura de archivo y cada copia de la base corría ahí. Ahora:
+  - `DirectoryPickerPlugin.runSaf` y los cuatro comandos de `LibraryDatabasePlugin` corren en un único hilo compartido, `NotiaStorageThread` (`notia-storage`), declarado en `DirectoryPickerPlugin.kt`. Un solo hilo conserva el orden de antes: un listado nunca corre mientras se copia la base en la misma carpeta. Solo el selector de carpetas sigue en el hilo principal.
+  - `AiBridgePlugin.run` (Ollama en Android) corre sus llamadas HTTP en un pool propio; antes una respuesta larga congelaba la interfaz.
+  - `invoke.resolve` responde desde ese hilo: la respuesta vuelve a Rust por JNI y Rust la espera en un canal, así que es seguro.
+  - Las copias de `gen/android` se actualizan solas con `build.rs` al compilar para Android.
+- **Comandos de la interfaz** (`src/tauri_host.rs`, `run_in_order`): en Android el IPC usa `postMessage` del puente JavaScript, que deja la página esperando mientras el comando corre; 113 comandos eran `Dispatch::Ready` y corrían ahí (leer y guardar notas, el Task Manager, la configuración). Ahora todo `app_invoke` se despacha en un hilo propio (`notia-commands`), en el orden de llegada. Los `Pending` siguen corriendo su tarea en el runtime async. Aplica también en Windows, donde el hilo que entregaba los comandos era el de la ventana.
+
+### Base de datos
+
+- **`backend_operation_journal` sin límite**: guardaba cada pedido (hasta 8 MB por registro) y nunca se borraba. En la biblioteca del usuario ocupaba 72 de los 75,7 MB de `notia.db`, y en Android cada cambio copia la base entera a la carpeta SAF. `save_backend_operation_record` ahora poda en el mismo guardado: por usuario quedan los 48 más recientes y ninguno de más de 7 días (`MAX_SAVED_OPERATIONS_PER_USER`, `SAVED_OPERATIONS_MAX_AGE`). Si quedan 2048 páginas libres o más, compacta con `VACUUM` (si otra conexión escribe, falla en silencio y se reintenta en la próxima poda). El journal en memoria ya se limitaba a 256 registros.
+- **Copia del host en un cliente** (`host_mirror.rs`): la base del host cambia casi cada minuto (las acciones programadas renuevan su lease), y la copia la volvía a bajar entera cada vez. Ahora se copia otra vez como mucho cada 10 minutos (`DATABASE_REFRESH`), salvo que todavía no haya ninguna. Solo sirve sin conexión.
+
+### Biblioteca
+
+- **Índice de enlaces incremental** (`library_graph.rs`): cada guardado de una nota programaba `rebuild_link_cache`, que releía hasta 5000 notas por SAF. Ahora `SOURCE_CACHE` guarda el texto leído de cada biblioteca (como mucho 4) y la reconstrucción relee solo lo que cambió.
+  - `TauriFilesystemDocumentAdapter::changing` olvida la nota antes de cada escritura, creación, borrado o escritura binaria (y una carpeta, todo lo de adentro).
+  - Lo que se escribe mientras se construye queda anotado (`SourceSlot::Building`) y se descarta al guardar; `GRAPH_BUILD` permite una construcción a la vez.
+  - Lo que cambia fuera de Notia se relee a lo sumo cada 10 minutos (`FULL_READ_INTERVAL`). Graph View sigue leyendo todo cuando el cliente pide una revisión nueva (`build_graph`).
+- **Reindexación** (`library_inventory.rs`): si el listado es igual al índice publicado (`published_unchanged`), no se escribe ni se copia la base a SAF y conserva su generación. `reindex_library_if_changed` deja de programar la reconstrucción de enlaces cuando no cambió nada.
+- **Refresco del explorador en Android** (`library_session.rs`): el árbol se sigue leyendo (no hay watcher), pero se recuerda su huella (`tree_signature`); si no cambió y no es forzado, responde `changed: false`, sin nodos ni reindexación.
+- **Rutas SAF** (`mobile_directory_picker.rs`):
+  - `resolve_android_path_by_walking` resuelve una ruta desde la carpeta más profunda que ya está en caché, con un listado superficial por nivel. `Some(None)` significa que un listado mostró que no existe. Solo usa rutas exactas en caché: una ruta anidada nunca cae en la raíz.
+  - `resolve_entry_uri` lo usa antes de leer el árbol completo. Antes, un fallo con la caché vencida (30 s, o después de cualquier cambio) leía todo el árbol, también para comprobar que un archivo opcional no existe.
+  - `read_android_directory`: una carpeta anidada que no estaba en caché se listaba con la URI raíz del árbol, así que mostraba los hijos de la raíz y guardaba la raíz bajo la ruta de la carpeta. Ahora se resuelve por niveles; si no existe, «La carpeta ya no existe en la biblioteca.».
+  - `list_android_folder` lista una carpeta por su URI de documento.
+- **Recetas en Android** (`recipes.rs`): la lista completa traía rutas `<árbol>/<ruta>` y se comparaba con `recipes/`, así que Android nunca encontraba recetas. Ahora resuelve la carpeta por niveles y la lista sola.
+- **Supervisor de Telegram** (`telegram_worker.rs`): leía y descifraba la configuración cada 5 s. Ahora guarda su decisión (`Decision`) y la toma otra vez cuando Notia escribe una configuración (el adaptador llama a `library_config::config_changed`), una biblioteca se bloquea o desbloquea (`config_vault`), cambia la biblioteca seleccionada o pasa un minuto.
+
+### Chat
+
+- `TauriBackendEventSink` une los fragmentos consecutivos de `assistant-delta` y de `thinking-summary` y los manda como mucho cada 50 ms (`STREAM_BATCH`); cualquier otro evento manda antes lo pendiente, así el orden no cambia. El frontend ya sumaba los fragmentos, así que el texto final es el mismo. Antes cada fragmento era un script en el hilo de la ventana y una actualización de React.
+
+### Editor Markdown (`src/components/notia/views/markdown/`)
+
+- **Un Markdown por pausa**: el listener de Milkdown creaba un debounce nuevo por cambio, así que serializaba la nota entera en cada tecla y cada serialización volvía a renderizar el shell. `markdownChangeBuffer.ts` serializa una vez después de 250 ms sin cambios (como mucho cada 2 s escribiendo sin parar), al perder el foco y al desmontarse.
+  - Cuenta los mismos cambios que el listener (`docChanged || storedMarksSet`, sin `addToHistory: false`) y no escribe un documento igual al último.
+  - Un documento nuevo (abrir o reemplazar desde afuera) es el nuevo punto de partida y descarta lo pendiente.
+  - `services/markdown/pendingEditorChanges.ts` registra los editores abiertos. `useTabManager` los vacía antes de cerrar una pestaña, de `persistDirtyTextDocuments` (salida, cierre de ventana, cambio de biblioteca) y de renombrar. Las propiedades de la nota y la barra del diálogo de tareas también vacían antes.
+  - `onSourceChange` lleva la ruta de la nota, así lo que se escribe al cambiar de pestaña va a la nota correcta.
+- **Menos renders**: `useLazyPreloadOnIdle`, `NotiaMenu` y `NotiaRightPanel` seleccionan solo lo que usan; el frontmatter se lee del bloque inicial (`leadingFrontmatterBlock`); `inkBottom` y `MarkdownPropertiesPanel` se memorizan; `useTextDocumentAutosave` sigue al store por suscripción.
+- **Selección**: `selectionNotifier.ts` manda como mucho una cada 150 ms y nada si no cambió (`isSameMarkdownSelection`). `useWorkspaceAiSnapshot` solo vuelve a calcular la huella de las pestañas cuando cambian.
+- **Enlaces wiki** (`wikiLinkPlugin.ts`): las decoraciones viven en el estado del plugin; una edición vuelve a decorar solo los bloques de texto que cambiaron y un movimiento del cursor solo los que tocan la selección vieja y la nueva. Se reconstruyen enteras con `notia-refresh-wikilinks` o si cambian los destinos.
+- **Paginación y tinta**: `breakCandidates` recorre el DOM una vez (antes `nodeDOM` por bloque, cuadrático), suma los cortes en el camino y usa un `Map`; el `ResizeObserver` ignora los tamaños recién medidos. `createStrokesOnPages` conserva cada trazo mientras no cambian los cortes de arriba, y `StrokePath` se memoriza.
+- **Observadores**: el de los bloques de código y LaTeX solo actúa con cambios adentro de ellos, una vez por frame; el de XGraph solo mira nodos agregados o quitados.
+- **Colaboración**: los cambios de awareness solo del cliente local no despachan otra actualización.
+- **CSS con puntero grueso**: sin `backdrop-filter` en los fondos de los modales y sombra de 12 px (antes 32) en la hoja continua.
+- **Diferencias visibles**: el texto de la pestaña, «Guardado» y el chat lateral se actualizan en la pausa y no 200 ms después de cada tecla; cambiar de pestaña ya no pierde las últimas teclas; un reemplazo desde afuera (una edición de la IA) descarta las teclas pendientes en vez de deshacerse 200 ms después; la selección llega al chat lateral hasta 150 ms después.
+
+### Arranque
+
+- `NotiaWorkspace` carga bajo demanda (`lazy` + `ModuleView`) ColdPass, Meeting, Finanzas, Agenda, Rutina, Acciones IA, Recetas, Salud y Gimnasio. Inicio, el chat y el editor siguen en el paquete inicial.
+
+### Validación
+
+- Probado:
+  - `cargo test -p notia-app --features bluetooth`: 474 y 4 ignorados. `cargo test -p notia-backend-core`: 494.
+  - Pruebas nuevas en Rust: `saved_operations_keep_only_the_recent_ones_and_compact_the_file`, `the_link_cache_rereads_only_the_notes_notia_wrote`, `the_same_library_keeps_its_generation`, `streamed_fragments_travel_joined_and_in_order` y seis de Gimnasio.
+  - `cargo check --target aarch64-linux-android` y la compilación Kotlin con Gradle (`:app:compileArm64DebugKotlin`).
+  - `tsc` sin errores y `vitest`: 461 en 107 archivos, con pruebas nuevas del buffer de cambios, la selección, los editores pendientes, `useTabManager`, `MarkdownView`, los enlaces wiki (300 ediciones al azar comparadas con la reconstrucción completa), la paginación, la tinta y Gimnasio.
+- Pendiente:
+  - Probar en los dos dispositivos: la sensación al escribir, el zoom con dos dedos, el modo página, el guardado del diálogo de tareas, Gimnasio y Recetas con la biblioteca real, y el explorador en carpetas de tercer nivel.
+  - Medir en el dispositivo el tiempo de `syncDatabase` con la base podada.
+- No hecho:
+  - El listener de dos dedos del zoom (`useMarkdownZoom`) sigue siempre activo: Chromium decide al primer toque si los movimientos se pueden cancelar, y agregarlo con el segundo dedo podría hacer que la nota se desplace mientras se hace zoom. Hay que probarlo en el dispositivo.
+  - `iconEngine` de InkMath importa todos los íconos de Lucide (712 KB que se precargan al arrancar).
+  - La copia de la base a SAF sigue haciéndose después de cada cambio (ahora fuera del hilo de la interfaz y con una base mucho más chica); agruparla arriesga perder datos si Android cierra la app.
+  - El refresco del explorador en Android sigue leyendo el árbol completo; solo evita reenviarlo y reindexarlo.

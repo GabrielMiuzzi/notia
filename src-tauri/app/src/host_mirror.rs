@@ -1,13 +1,17 @@
 //! The copy a «Con copia» client keeps of its host's library.
 //!
 //! - **Online**, every command runs on the host and this copy follows it:
-//!   the monitor of `host_client` syncs it every few seconds (`sync`), with
-//!   the rules of `mirror_sync` and the commands of `host_sync`.
+//!   a sync starts in the background as soon as a session with the host
+//!   opens, and the monitor of `host_client` repeats it every few seconds
+//!   (`sync_in_background`), with the rules of `mirror_sync` and the
+//!   commands of `host_sync`. The window never waits for it.
 //! - **Offline**, the window works on the copy as a library of this device
 //!   (`enter_offline_copy`): notes and files can change, the database is a
-//!   read-only snapshot, and the AI and speech recognition are local.
+//!   read-only snapshot, and the AI and speech recognition are local. A
+//!   ready copy opens at once when the host does not answer (`copy_ready`).
 //! - **Back online**, the next sync reconciles both sides: the last
-//!   modified file wins, whatever device changed it.
+//!   modified file wins, whatever device changed it. What changed on this
+//!   device travels first, so the host shows it as soon as possible.
 //!
 //! Where the copy lives (`CopyStore`): on Windows and Linux in the app data
 //! folder (`mirror/<library>/<name>`); on Android in a folder the person
@@ -40,10 +44,21 @@ const CURRENT_FILE: &str = "current.json";
 /// Mark of a copy, with the host library it belongs to.
 const MARK_PATH: &str = ".notia/notia-copy.json";
 const DATABASE_PATH: &str = ".notia/notia.db";
+/// How often a changed database of the host is copied again. The copy only
+/// serves offline, and the host's database changes every minute (its
+/// scheduled actions renew a lease): copying it on every change moved the
+/// whole file over the network and, on Android, through SAF.
+const DATABASE_REFRESH: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[derive(Default)]
 pub(crate) struct MirrorState {
     sync: tokio::sync::Mutex<()>,
+    /// A sync of `sync_in_background` runs.
+    background: AtomicBool,
+    /// The running sync moves files or the database (not only compares).
+    transferring: AtomicBool,
+    /// When this run last copied the host's database.
+    database_copied_at: Mutex<Option<std::time::Instant>>,
     offline: AtomicBool,
     /// The copy was listed since this device last worked offline: on
     /// Android, where listing a SAF folder is slow, later syncs trust the
@@ -203,6 +218,46 @@ pub(crate) fn last_status(app: &AppHandle) -> Option<CopyStatus> {
     state(app).and_then(|state| state.last.lock().ok().and_then(|last| last.clone()))
 }
 
+/// Whether a sync is moving files or the database right now.
+pub(crate) fn is_transferring(app: &AppHandle) -> bool {
+    state(app).is_some_and(|state| state.transferring.load(Ordering::SeqCst))
+}
+
+/// The error of the last sync, when it failed.
+pub(crate) fn last_error(app: &AppHandle) -> Option<String> {
+    last_status(app).and_then(|status| status.error)
+}
+
+/// Whether this device has a copy of its host's library that opens without
+/// the host: synced at least once with the saved host, with its database.
+pub(crate) fn copy_ready(app: &AppHandle) -> bool {
+    if !keeps_copy(app) {
+        return false;
+    }
+    let Ok(directory) = directory(app) else {
+        return false;
+    };
+    let current: CurrentCopy = read_json(&directory.join(CURRENT_FILE));
+    if current.library_id.is_empty() || current.host_address != crate::connection::settings(app).host_address {
+        return false;
+    }
+    let Ok(record_file) = record_path(app, &current.library_id) else {
+        return false;
+    };
+    let record: CopyRecord = read_json(&record_file);
+    record.database_ms.is_some() && copy_folder_exists(app, &record)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn copy_folder_exists(_app: &AppHandle, record: &CopyRecord) -> bool {
+    record.folder.as_ref().is_some_and(|folder| folder.is_dir())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn copy_folder_exists(app: &AppHandle, record: &CopyRecord) -> bool {
+    crate::connection::settings(app).copy_folder.is_some_and(|folder| record.folder_uri.as_deref() == Some(folder.uri.as_str()))
+}
+
 // ---------- Where the copy lives ----------
 
 /// The folder of the copy and how its files are read and written.
@@ -342,6 +397,7 @@ pub(crate) async fn sync(app: &AppHandle) -> Result<CopyStatus, BackendError> {
     let (library_id, library_name) = crate::host_client::served_library(app)
         .ok_or_else(|| unavailable("Todavía no se sabe qué biblioteca comparte el host."))?;
     let result = sync_library(app, &state, &library_id, &library_name).await;
+    state.transferring.store(false, Ordering::SeqCst);
     let status = match &result {
         Ok(status) => status.clone(),
         Err(error) => CopyStatus { at_ms: now_ms(), error: Some(error.message.clone()), ..CopyStatus::default() },
@@ -350,7 +406,35 @@ pub(crate) async fn sync(app: &AppHandle) -> Result<CopyStatus, BackendError> {
         *last = Some(status.clone());
     }
     let _ = app.emit(COPY_EVENT, &status);
+    crate::client_status::refresh(app);
     result
+}
+
+/// Starts a sync on its own thread, unless one already runs: the window
+/// and the monitor of the host never wait for it.
+pub(crate) fn sync_in_background(app: &AppHandle) {
+    if !keeps_copy(app) || is_offline(app) {
+        return;
+    }
+    let Some(state) = state(app) else {
+        return;
+    };
+    if state.background.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new().name("notia-copy-sync".into()).spawn(move || {
+        if let Err(error) = crate::host::async_runtime::block_on(sync(&app)) {
+            log::warn!("[notia:copy] the copy did not sync: {}", error.message);
+        }
+        if let Some(state) = self::state(&app) {
+            state.background.store(false, Ordering::SeqCst);
+        }
+    });
+    if spawned.is_err() {
+        state.background.store(false, Ordering::SeqCst);
+        log::error!("[notia:copy] the sync of the copy did not start");
+    }
 }
 
 async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, library_name: &str) -> Result<CopyStatus, BackendError> {
@@ -375,42 +459,60 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
     let remote: BTreeMap<String, FileStamp> = manifest.files.iter().map(|file| (file.path.clone(), file.stamp)).collect();
     let paths: BTreeSet<String> = record.files.keys().chain(local.keys()).chain(remote.keys()).cloned().collect();
 
-    let mut status = CopyStatus::default();
-    let mut downloaded = Vec::new();
-    let mut failure = None;
-    // The database goes first: the copy opens offline only with it (the
-    // sign-in reads the Owner from it).
-    if manifest.database.map(|database| database.modified_ms) != record.database_ms {
+    // What changed on this device travels first: the window, already on
+    // the host, shows the offline work as soon as possible. Then the
+    // database (the copy opens offline only with it: the sign-in reads the
+    // Owner from it) and last what the host changed.
+    let mut plans: Vec<(String, SyncAction)> = paths
+        .into_iter()
+        .map(|path| {
+            let action = plan(record.files.get(&path), local.get(&path), remote.get(&path));
+            (path, action)
+        })
+        .filter(|(_, action)| *action != SyncAction::Keep)
+        .collect();
+    plans.sort_by_key(|(_, action)| !is_outgoing(*action));
+    let database_due = record.database_ms.is_none()
+        || state
+            .database_copied_at
+            .lock()
+            .ok()
+            .and_then(|copied| *copied)
+            .is_none_or(|copied| copied.elapsed() >= DATABASE_REFRESH);
+    let database_changed = database_due && manifest.database.map(|database| database.modified_ms) != record.database_ms;
+    if !plans.is_empty() || database_changed {
+        state.transferring.store(true, Ordering::SeqCst);
+        crate::client_status::refresh(app);
+    }
+    let (outgoing, incoming) = plans.split_at(plans.partition_point(|(_, action)| is_outgoing(*action)));
+
+    let mut pass = Pass {
+        app,
+        store: &store,
+        library_id,
+        host_root: &manifest.root,
+        local: &local,
+        remote: &remote,
+        record: &mut record,
+        status: CopyStatus::default(),
+        downloaded: Vec::new(),
+        failure: None,
+    };
+    pass.run(outgoing).await;
+    if pass.failure.is_none() && database_changed {
         match copy_database(app, &store, &payload).await {
-            Ok(modified_ms) => record.database_ms = modified_ms,
-            Err(error) => failure = Some(error),
-        }
-    }
-    for path in paths.into_iter().take_while(|_| failure.is_none()) {
-        let action = plan(record.files.get(&path), local.get(&path), remote.get(&path));
-        match apply(app, &store, library_id, &manifest.root, &path, action, local.get(&path), remote.get(&path), &mut status).await {
-            Ok(Outcome::Base(next)) => {
-                if action == SyncAction::Download {
-                    downloaded.push(path.clone());
+            Ok(modified_ms) => {
+                pass.record.database_ms = modified_ms;
+                if let Ok(mut copied) = state.database_copied_at.lock() {
+                    *copied = Some(std::time::Instant::now());
                 }
-                record.files.insert(path, next);
             }
-            Ok(Outcome::Drop) => {
-                record.files.remove(&path);
-            }
-            Ok(Outcome::Unchanged) => {}
-            // Without the host the sync stops; a file that cannot travel is
-            // skipped, and the next sync tries it again.
-            Err(error) if connection_lost(&error) => {
-                failure = Some(error);
-                break;
-            }
-            Err(error) => {
-                log::error!("[notia:copy] a file of the copy did not sync: {}", error.message);
-                status.skipped.push(path);
-            }
+            Err(error) => pass.failure = Some(error),
         }
     }
+    pass.run(incoming).await;
+    let Pass { mut status, downloaded, mut failure, .. } = pass;
+
     // What the copy's folder says about the files just written.
     if !downloaded.is_empty() {
         if let Ok(after) = store.list(app) {
@@ -450,6 +552,58 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
 /// than one file failing (it is skipped).
 fn connection_lost(error: &BackendError) -> bool {
     matches!(error.code, BackendErrorCode::ProviderUnavailable | BackendErrorCode::Unauthorized | BackendErrorCode::Forbidden)
+}
+
+/// Whether `action` takes a change of this device to the host.
+fn is_outgoing(action: SyncAction) -> bool {
+    matches!(action, SyncAction::Upload | SyncAction::DeleteRemote)
+}
+
+/// One run over the files of a sync, recording what travelled.
+struct Pass<'a> {
+    app: &'a AppHandle,
+    store: &'a CopyStore,
+    library_id: &'a str,
+    host_root: &'a str,
+    local: &'a BTreeMap<String, FileStamp>,
+    remote: &'a BTreeMap<String, FileStamp>,
+    record: &'a mut CopyRecord,
+    status: CopyStatus,
+    /// Files written in the copy, whose folder stamps are read afterwards.
+    downloaded: Vec<String>,
+    /// Why the sync stopped (the host stopped answering).
+    failure: Option<BackendError>,
+}
+
+impl Pass<'_> {
+    async fn run(&mut self, plans: &[(String, SyncAction)]) {
+        for (path, action) in plans {
+            if self.failure.is_some() {
+                return;
+            }
+            let (local, remote) = (self.local.get(path), self.remote.get(path));
+            let applied = apply(self.app, self.store, self.library_id, self.host_root, path, *action, local, remote, &mut self.status).await;
+            match applied {
+                Ok(Outcome::Base(next)) => {
+                    if *action == SyncAction::Download {
+                        self.downloaded.push(path.clone());
+                    }
+                    self.record.files.insert(path.clone(), next);
+                }
+                Ok(Outcome::Drop) => {
+                    self.record.files.remove(path);
+                }
+                Ok(Outcome::Unchanged) => {}
+                // Without the host the sync stops; a file that cannot travel
+                // is skipped, and the next sync tries it again.
+                Err(error) if connection_lost(&error) => self.failure = Some(error),
+                Err(error) => {
+                    log::error!("[notia:copy] a file of the copy did not sync: {}", error.message);
+                    self.status.skipped.push(path.clone());
+                }
+            }
+        }
+    }
 }
 
 /// What one action leaves in the record of the file.
@@ -744,6 +898,7 @@ pub(crate) fn enter_offline_copy(app: &AppHandle) -> Result<OfflineCopy, Backend
     if let Some(state) = state(app) {
         state.offline.store(true, Ordering::SeqCst);
     }
+    crate::client_status::refresh(app);
     Ok(OfflineCopy { library_id: library.id, library_name: current.library_name })
 }
 
@@ -786,6 +941,7 @@ pub(crate) fn leave_offline_copy(app: &AppHandle) -> Result<(), BackendError> {
     if let Ok(mut copy) = READ_ONLY_COPY.lock() {
         *copy = None;
     }
+    crate::client_status::refresh(app);
     let current: CurrentCopy = read_json(&directory(app)?.join(CURRENT_FILE));
     if current.library_id.is_empty() {
         return Ok(());
@@ -912,9 +1068,15 @@ mod tests {
             sync(&client).await.expect("sync");
         });
 
-        // The host closes: the window works on the copy.
+        // The host closes: the window opens the copy without waiting for it.
         stop.store(true, Ordering::SeqCst);
         drop(host);
+        assert!(copy_ready(&client));
+        let started = std::time::Instant::now();
+        let opened = crate::host::async_runtime::block_on(crate::connection::client_open(client.clone())).expect("open");
+        assert_eq!(serde_json::to_value(&opened).expect("json")["opening"], "copy");
+        assert!(started.elapsed() <= crate::host_client::HEALTH_TIMEOUT + std::time::Duration::from_secs(2));
+        assert!(is_offline(&client));
         let offline = enter_offline_copy(&client).expect("offline copy");
         assert!(!crate::host_client::uses_host(&client));
         let status = |library_id: &str| {

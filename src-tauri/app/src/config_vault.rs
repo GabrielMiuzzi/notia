@@ -53,6 +53,7 @@ pub(crate) fn unlock(app: &AppHandle, library_id: &str, unlocked: Unlocked) {
     if let Ok(mut keys) = app.state::<ConfigVaultState>().unlocked.lock() {
         keys.insert(library_id.to_string(), unlocked);
     }
+    crate::library_config::config_changed();
 }
 
 /// Replaces the wrapped copy of an unlocked library (a new password).
@@ -76,6 +77,7 @@ pub(crate) fn lock(app: &AppHandle, library_id: &str) {
         keys.remove(library_id);
     }
     forget_session(app, library_id);
+    crate::library_config::config_changed();
 }
 
 // ---------- Remembered on this device ----------

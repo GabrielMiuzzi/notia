@@ -359,7 +359,18 @@ impl Session {
     pub fn active(&self) -> bool {
         matches!(self.status, SessionStatus::Running | SessionStatus::Paused)
     }
+
+    /// Un entrenamiento en curso con actividad reciente: al abrir la app se
+    /// vuelve a él. Uno olvidado hace horas no se impone al abrir (sigue
+    /// en Gimnasio). `started_ms` es el comienzo del tramo que corre o el
+    /// momento de la pausa.
+    pub fn resumable(&self, now_ms: i64) -> bool {
+        self.active() && now_ms - self.started_ms < RESUME_WINDOW_MS
+    }
 }
+
+/// Cuánto después del último tramo un entrenamiento se retoma solo al abrir la app.
+pub const RESUME_WINDOW_MS: i64 = 6 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BodySex {

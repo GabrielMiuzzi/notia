@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useAppSelector } from '../../../store/hooks'
+import { useAppSelector, type RootState } from '../../../store/hooks'
 import { selectActiveDocument } from '../../../features/documents/documentsSelectors'
 import { shouldUseLargeMarkdownView } from '../../../engines/markdown/markdownEditorLimits'
 import { getRuntimeDevice } from '../../../utils/platform/getRuntimeDevice'
@@ -11,10 +11,14 @@ import { preloadLazyComponent, preloadLazyComponentSequence } from '../../../ser
  * opening the first file feels instant. On Android the preload is skipped
  * by default to avoid consuming memory and mobile data unnecessarily.
  */
+/** Only the answer is selected: the open note's text changes on every pause in typing. */
+function selectShouldSkipMarkdownPreload(state: RootState): boolean {
+  const activeDocument = selectActiveDocument(state)
+  return activeDocument?.viewKind === 'markdown' && shouldUseLargeMarkdownView(activeDocument.source)
+}
+
 export function useLazyPreloadOnIdle() {
-  const activeDocument = useAppSelector(selectActiveDocument)
-  const shouldSkipMarkdownPreload =
-    activeDocument?.viewKind === 'markdown' && shouldUseLargeMarkdownView(activeDocument.source)
+  const shouldSkipMarkdownPreload = useAppSelector(selectShouldSkipMarkdownPreload)
 
   useEffect(() => {
     const isAndroid = getRuntimeDevice() === 'Android'

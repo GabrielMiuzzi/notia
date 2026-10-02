@@ -14,6 +14,8 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Versioned Android boundary for Ollama access. The WebView never opens the
@@ -22,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The tool command receives JSON strings for messages/tools so the DTO stays
  * stable even when a tool argument contains a nested object or array.
+ *
+ * Tauri delivers the commands on the main thread; the HTTP calls run on
+ * their own threads (`run`), so a long answer never freezes the interface.
  */
 @TauriPlugin
 class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
@@ -401,10 +406,12 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun run(invoke: Invoke, block: () -> JSObject) {
-        try {
-            invoke.resolve(block())
-        } catch (error: Exception) {
-            invoke.resolve(JSObject().put("ok", false).put("error", error.message ?: "Fallo en el bridge AI Android."))
+        requests.execute {
+            try {
+                invoke.resolve(block())
+            } catch (error: Exception) {
+                invoke.resolve(JSObject().put("ok", false).put("error", error.message ?: "Fallo en el bridge AI Android."))
+            }
         }
     }
 
@@ -439,5 +446,10 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         const val DEFAULT_TOOL_TIMEOUT_SECONDS = 600
         /** Default read timeout for full streaming completions. */
         const val DEFAULT_STREAM_TIMEOUT_SECONDS = 600
+
+        /** Threads of the HTTP calls; the requests are independent. */
+        val requests: ExecutorService = Executors.newCachedThreadPool { work ->
+            Thread(work, "notia-ai-bridge").apply { isDaemon = true }
+        }
     }
 }

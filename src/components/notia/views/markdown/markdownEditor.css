@@ -1274,6 +1274,14 @@
   border-radius: 4px 4px 0 0;
 }
 
+/* The continuous sheet grows with every new line and its wide blurred
+   shadow was painted again each time; touch screens keep a short one. */
+@media (pointer: coarse) {
+  .notia-markdown-page-sheet.is-continuous {
+    box-shadow: 0 4px 12px var(--color-menu-shadow);
+  }
+}
+
 .notia-markdown-page-number {
   position: absolute;
   right: 0;

@@ -16,16 +16,32 @@ import {
   formatSignedPercent,
   formatUpdatedAt,
 } from '../engines/financeFormat'
+import {
+  capitalize,
+  joinSpanish,
+  lastPurchaseComparison,
+  missingReserveMovements,
+  RESERVE_MOVEMENT_TYPES as MOVEMENT_TYPES,
+  reserveMovementAdds,
+} from '../engines/financeSalaryText'
 import type { FinanceSalarySavings, QuoteCard, ReserveView, SalaryShare, SalaryShareKey } from '../types/financeScreen'
 import { FinanceStatus } from './FinanceStatus'
+import { PhoneSalary } from './phone/PhoneSalary'
 
 const SHORT_RANGE = 6
 const BAR_MAX_HEIGHT = 200
 
-export function FinanceSalaryTab({ library, month }: { library: NotiaLibrary; month: string }) {
+/** `phone`: the phone board of the canvas. */
+export function FinanceSalaryTab({ library, month, phone }: { library: NotiaLibrary; month: string; phone: boolean }) {
   const load = useCallback(() => getFinanceSalarySavings(library, month), [library, month])
   const { data, error, isLoading, reload } = useFinanceResource(load, 'No se pudieron cargar el sueldo y el ahorro.')
   if (!data) return <FinanceStatus isLoading={isLoading} error={error} onRetry={reload} />
+  if (phone) {
+    return <>
+      {error && <FinanceStatus isLoading={false} error={error} onRetry={reload} />}
+      <PhoneSalary data={data} />
+    </>
+  }
   return <div className="finance-salary">
     {error && <FinanceStatus isLoading={false} error={error} onRetry={reload} />}
     <div className="finance-salary__grid">
@@ -127,10 +143,6 @@ function InflationCard({ data }: { data: FinanceSalarySavings }) {
   </section>
 }
 
-function capitalize(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1)
-}
-
 // ---------------------------------------------------------------------------
 // Shares of the salary
 
@@ -209,31 +221,12 @@ function QuoteTile({ quote }: { quote: QuoteCard }) {
   </div>
 }
 
-function lastPurchaseComparison(purchase: NonNullable<FinanceSalarySavings['lastPurchase']>): string {
-  const describe = (difference: number, against: string) => difference === 0
-    ? `lo mismo que ${against}`
-    : `${formatAmount(Math.abs(difference), 'ARS', 0)} ${difference < 0 ? 'menos' : 'más'} que ${against}`
-  const parts = [
-    purchase.vsOfficial !== null ? describe(purchase.vsOfficial, 'el oficial venta de hoy') : null,
-    purchase.vsBlue !== null ? describe(purchase.vsBlue, 'el blue') : null,
-  ].filter(Boolean)
-  return parts.length === 0 ? 'Sin cotizaciones de hoy para comparar.' : `${capitalize(parts.join(' y '))}.`
-}
-
 // ---------------------------------------------------------------------------
 // Savings reserves
 
-const MOVEMENT_TYPES: Record<string, { total: string; row: string }> = {
-  contribution: { total: 'Aportes', row: 'Aporte' },
-  withdrawal: { total: 'Retiros', row: 'Retiro' },
-  return: { total: 'Rendimientos', row: 'Rendimiento' },
-  loss: { total: 'Pérdidas', row: 'Pérdida' },
-  adjustment: { total: 'Ajustes', row: 'Ajuste' },
-}
-
 function ReserveCard({ reserve }: { reserve: ReserveView }) {
   const change = Number(reserve.monthChange)
-  const missing = Object.keys(MOVEMENT_TYPES).filter((kind) => !reserve.totals.some((total) => total.kind === kind)).map((kind) => MOVEMENT_TYPES[kind].total.toLowerCase())
+  const missing = missingReserveMovements(reserve.totals)
   return <section className="finance-card finance-span-12 finance-reserve" aria-labelledby={`finance-reserve-${reserve.id}`}>
     <div className="finance-card__head">
       <div>
@@ -258,13 +251,9 @@ function ReserveCard({ reserve }: { reserve: ReserveView }) {
           <td>{movement.reason || '—'}</td>
           <td>{MOVEMENT_TYPES[movement.movementType]?.row ?? movement.movementType}</td>
           <td className="is-number finance-soft-text">{movement.cost ? `${formatMoney(movement.cost, 0)}${movement.rate ? ` · a ${formatAmount(movement.rate, movement.cost.currency, 0)}` : ''}` : '—'}</td>
-          <td className={`is-number finance-strong ${movement.movementType === 'contribution' || movement.movementType === 'return' ? 'finance-teal' : ''}`}>{movement.movementType === 'contribution' || movement.movementType === 'return' ? '+' : '−'} {formatAmount(movement.amount, movement.currency)}</td>
+          <td className={`is-number finance-strong ${reserveMovementAdds(movement.movementType) ? 'finance-teal' : ''}`}>{reserveMovementAdds(movement.movementType) ? '+' : '−'} {formatAmount(movement.amount, movement.currency)}</td>
         </tr>)}</tbody>
       </table>
     </div>}
   </section>
-}
-
-function joinSpanish(items: string[]): string {
-  return items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} ni ${items[items.length - 1]}`
 }

@@ -5,13 +5,10 @@ import '../../styles/notia.css'
 import { installBackendTransport, subscribeBackend } from '../../services/transport'
 import { createHostTransport } from '../../services/transport/hostTransport'
 import {
-  enterOfflineCopy,
-  fetchConnection,
   HOST_LINK_EVENT,
   leaveOfflineCopy,
+  openClient,
   saveConnection,
-  syncCopyNow,
-  testHostConnection,
   type ConnectionView,
   type HostLink,
 } from '../../services/connection/connectionRuntime'
@@ -29,7 +26,6 @@ const App = lazy(() => import('../../App'))
 
 type Stage =
   | { kind: 'checking' }
-  | { kind: 'syncing' }
   | { kind: 'offline'; message: string }
   | { kind: 'login'; status: AppAuthStatus & { libraryId: string } }
   | { kind: 'ready' }
@@ -133,9 +129,10 @@ function OfflineScreen({ connection, message, onRetry }: { connection: Connectio
 }
 
 /**
- * Window of a client (Settings → General → «Modo de ejecución»): checks
- * the host, signs in with the Owner of its library and then loads the app,
- * whose commands the backend of this device runs on the host.
+ * Window of a client (Settings → General → «Modo de ejecución»): the
+ * backend decides where it opens (`openClient`): on the host, after signing
+ * in with the Owner of its library, or on the copy when the host does not
+ * answer. The copy syncs in the background; the window never waits for it.
  */
 export function ClientApp({ initial }: { initial: ConnectionView }) {
   const [connection, setConnection] = useState(initial)
@@ -143,40 +140,18 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
   const [link, setLink] = useState<HostLink>(initial.link)
   const [returnIn, setReturnIn] = useState<number | null>(null)
 
-  // Signed in to the host: a copy first takes what changed offline.
-  const enterHost = useCallback(async (view: ConnectionView) => {
-    if (view.clientKind === 'copy' && view.canKeepCopy) {
-      setStage({ kind: 'syncing' })
-      await syncCopyNow().catch(() => {
-        // The copy syncs again every few seconds; the app opens anyway.
-      })
-    }
-    setStage({ kind: 'ready' })
-  }, [])
-
   const check = useCallback(async () => {
     setStage({ kind: 'checking' })
-    const probe = await testHostConnection()
-    let next = await fetchConnection()
+    const opened = await openClient()
+    const next = opened.connection
     setConnection(next)
-    if (!probe.ok) {
-      const message = probe.message ?? `El host ${next.hostAddress} no responde.`
-      if (next.clientKind === 'copy' && next.canKeepCopy) {
-        try {
-          await enterOfflineCopy()
-          setStage({ kind: 'copy' })
-        } catch (reason) {
-          setStage({ kind: 'offline', message: `${message} ${authErrorMessage(reason, '')}`.trim() })
-        }
-        return
-      }
-      setStage({ kind: 'offline', message })
+    if (opened.opening === 'copy') {
+      setStage({ kind: 'copy' })
       return
     }
-    if (next.offlineCopy) {
-      await leaveOfflineCopy()
-      next = await fetchConnection()
-      setConnection(next)
+    if (opened.opening === 'offline') {
+      setStage({ kind: 'offline', message: opened.message ?? '' })
+      return
     }
     installBackendTransport(createHostTransport({ hostPlatform: next.link.platform, hostOnlyCommands: next.hostOnlyCommands }))
     const status = await fetchAppAuthStatus(null)
@@ -184,8 +159,8 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
       setStage({ kind: 'login', status: { ...status, libraryId: status.libraryId } })
       return
     }
-    await enterHost(next)
-  }, [enterHost])
+    setStage({ kind: 'ready' })
+  }, [])
 
   useEffect(() => {
     void check().catch((reason: unknown) => {
@@ -241,7 +216,7 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
         <div className="notia-remote-banner notia-client-banner" data-tone={hostBack ? 'online' : undefined} role="status">
           {hostBack ? (
             <>
-              <span>El host volvió a responder. Volviendo en {returnIn ?? RETURN_DELAY_SECONDS} s y sincronizando la copia…</span>
+              <span>El host volvió a responder. Volviendo en {returnIn ?? RETURN_DELAY_SECONDS} s; la copia se sincroniza en segundo plano.</span>
               <button type="button" className="notia-client-banner-action" onClick={returnToHost}>Volver ahora</button>
             </>
           ) : (
@@ -275,7 +250,7 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
   if (stage.kind === 'login') {
     return (
       <div className={`notia-app-shell ${prefersLightTheme() ? 'notia-theme-light' : 'notia-theme-dark'}`}>
-        <LoginScreen status={stage.status} canRemember onUnlocked={() => { void enterHost(connection) }} />
+        <LoginScreen status={stage.status} canRemember onUnlocked={() => setStage({ kind: 'ready' })} />
       </div>
     )
   }
@@ -294,9 +269,7 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
   }
   return (
     <ClientScreen library={connection.link.library}>
-      <p className="notia-login-text" role="status">
-        {stage.kind === 'syncing' ? 'Sincronizando la copia local con el host…' : `Conectando con el host ${connection.hostAddress}…`}
-      </p>
+      <p className="notia-login-text" role="status">Conectando con el host {connection.hostAddress}…</p>
     </ClientScreen>
   )
 }

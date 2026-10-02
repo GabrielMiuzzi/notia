@@ -16,6 +16,10 @@ use crate::backend::{
 pub const BACKEND_EVENT: &str = "notia:backend-event";
 const MAX_REPLAY_EVENTS_PER_REQUEST: usize = 512;
 const MAX_REPLAY_REQUESTS: usize = 256;
+/// Streamed text (answer and thinking) reaches the window at most this
+/// often: each event is a script run on the window's thread, and a model
+/// sends dozens of fragments per second.
+const STREAM_BATCH: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Valida el sobre local sin ejecutar lógica de dominio. La misma frontera se
 /// puede reutilizar cuando exista el transporte headless HTTP/WebSocket.
@@ -139,6 +143,31 @@ pub struct TauriBackendEventSink {
     app: AppHandle,
     store: Arc<BackendEventStore>,
     key: EventStreamKey,
+    /// Fragments of streamed text not sent yet, shared by the clones.
+    pending: Arc<Mutex<PendingText>>,
+}
+
+/// Consecutive fragments of the same kind joined into one event.
+struct PendingText {
+    event: Option<BackendEvent>,
+    flush_scheduled: bool,
+    last_sent: std::time::Instant,
+}
+
+/// Adds `next` to `pending` when both are fragments of the same kind.
+fn join_text(pending: &mut BackendEvent, next: &BackendEvent) -> bool {
+    match (pending, next) {
+        (BackendEvent::AssistantDelta { delta, .. }, BackendEvent::AssistantDelta { delta: more, .. })
+        | (BackendEvent::ThinkingSummary { summary: delta, .. }, BackendEvent::ThinkingSummary { summary: more, .. }) => {
+            delta.push_str(more);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn is_streamed_text(event: &BackendEvent) -> bool {
+    matches!(event, BackendEvent::AssistantDelta { .. } | BackendEvent::ThinkingSummary { .. })
 }
 
 impl TauriBackendEventSink {
@@ -151,6 +180,57 @@ impl TauriBackendEventSink {
             app,
             store,
             key: EventStreamKey::new(context),
+            pending: Arc::new(Mutex::new(PendingText {
+                event: None,
+                flush_scheduled: false,
+                last_sent: std::time::Instant::now(),
+            })),
+        }
+    }
+
+    fn send(&self, event: BackendEvent) -> Result<(), BackendError> {
+        let envelope = self.store.append(&self.key, event)?;
+        // El historial ya quedó registrado: si la ventana no está disponible
+        // (oculta, recargando o destruida) el cliente recupera el evento por
+        // replay y la operación backend continúa.
+        if let Err(error) = self.app.emit(BACKEND_EVENT, envelope) {
+            log::warn!("[notia:backend] evento no emitido a la ventana: {error}");
+        }
+        Ok(())
+    }
+
+    /// Sends the joined fragments, if any. Called with `pending` locked, so
+    /// they always go before the event that follows them.
+    fn flush(&self, pending: &mut PendingText) -> Result<(), BackendError> {
+        pending.last_sent = std::time::Instant::now();
+        match pending.event.take() {
+            Some(event) => self.send(event),
+            None => Ok(()),
+        }
+    }
+
+    /// Sends the fragments after [`STREAM_BATCH`], unless a later event
+    /// sends them first.
+    fn schedule_flush(&self, pending: &mut PendingText) {
+        if pending.flush_scheduled {
+            return;
+        }
+        pending.flush_scheduled = true;
+        let sink = self.clone();
+        let wait = STREAM_BATCH.saturating_sub(pending.last_sent.elapsed());
+        let spawned = std::thread::Builder::new().name("notia-stream-flush".into()).spawn(move || {
+            std::thread::sleep(wait);
+            let Ok(mut pending) = sink.pending.lock() else {
+                return;
+            };
+            pending.flush_scheduled = false;
+            if let Err(error) = sink.flush(&mut pending) {
+                log::warn!("[notia:backend] texto del stream no emitido: {}", error.message);
+            }
+        });
+        if spawned.is_err() {
+            pending.flush_scheduled = false;
+            let _ = self.flush(pending);
         }
     }
 }
@@ -162,13 +242,21 @@ impl BackendEventSink for TauriBackendEventSink {
                 "El evento no pertenece a la solicitud activa.",
             ));
         }
-        let envelope = self.store.append(&self.key, event)?;
-        // El historial ya quedó registrado: si la ventana no está disponible
-        // (oculta, recargando o destruida) el cliente recupera el evento por
-        // replay y la operación backend continúa.
-        if let Err(error) = self.app.emit(BACKEND_EVENT, envelope) {
-            log::warn!("[notia:backend] evento no emitido a la ventana: {error}");
+        let mut pending = self.pending.lock().map_err(|_| internal_error("No se pudo emitir el evento backend."))?;
+        if !is_streamed_text(&event) {
+            self.flush(&mut pending)?;
+            return self.send(event);
         }
+        let joined = pending.event.as_mut().is_some_and(|current| join_text(current, &event));
+        if !joined {
+            // Another kind of fragment: the joined ones go first.
+            self.flush(&mut pending)?;
+            pending.event = Some(event);
+        }
+        if pending.last_sent.elapsed() >= STREAM_BATCH {
+            return self.flush(&mut pending);
+        }
+        self.schedule_flush(&mut pending);
         Ok(())
     }
 }
@@ -186,6 +274,40 @@ mod tests {
         BackendEvent::RequestReceived {
             request_id: request_id.to_string(),
         }
+    }
+
+    #[test]
+    fn streamed_fragments_travel_joined_and_in_order() {
+        use crate::backend::BackendEventSink;
+        use crate::host::{AppPaths, HostPorts};
+        let root = std::env::temp_dir().join(format!("notia-stream-{}", uuid::Uuid::new_v4()));
+        let app = crate::create_app(AppPaths::new(Some(root.clone()), None), HostPorts::default());
+        let store = std::sync::Arc::new(BackendEventStore::default());
+        let key = EventStreamKey::from_parts("library-a", "user-1", "request-1");
+        let sink = super::TauriBackendEventSink {
+            app,
+            store: store.clone(),
+            key: key.clone(),
+            pending: std::sync::Arc::new(std::sync::Mutex::new(super::PendingText {
+                event: None,
+                flush_scheduled: false,
+                last_sent: std::time::Instant::now(),
+            })),
+        };
+        let delta = |text: &str| BackendEvent::AssistantDelta { request_id: "request-1".into(), delta: text.into() };
+        let thinking = |text: &str| BackendEvent::ThinkingSummary { request_id: "request-1".into(), summary: text.into() };
+        for event in [thinking("pen"), thinking("sando"), delta("Ho"), delta("la"), delta(" mundo"), event("request-1")] {
+            sink.publish(event).expect("publish");
+        }
+        let replayed: Vec<BackendEvent> = store.replay_since(&key, 0).expect("replay").into_iter().map(|envelope| envelope.event).collect();
+        assert_eq!(replayed, vec![thinking("pensando"), delta("Hola mundo"), event("request-1")]);
+
+        // Fragments without a following event still arrive.
+        sink.publish(delta("fin")).expect("last");
+        std::thread::sleep(super::STREAM_BATCH * 4);
+        let last = store.replay_since(&key, 0).expect("replay").pop().map(|envelope| envelope.event);
+        assert_eq!(last, Some(delta("fin")));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

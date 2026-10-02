@@ -174,6 +174,7 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "connection_settings",
     "save_connection_settings",
     "test_host_connection",
+    "client_open",
     "enter_offline_copy",
     "leave_offline_copy",
     "sync_copy_now",

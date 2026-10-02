@@ -167,17 +167,25 @@ fn recipe_paths(app: &AppHandle, library_id: &str) -> RecipesResult<Vec<String>>
     }
 }
 
+/// The recipe files of an Android library: the folder is found level by
+/// level and listed alone, without walking the whole library. (The listing
+/// of the whole library brought `<tree>/<path>` and was compared with
+/// `recipes/`, so Android never found a recipe.)
 #[cfg(target_os = "android")]
 fn android_recipe_paths(app: &AppHandle, tree_uri: &str) -> RecipesResult<Vec<String>> {
-    let picker = app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>();
-    let files = crate::mobile_directory_picker::read_android_flat_entries(picker.inner(), tree_uri)
-        .map_err(|_| RecipesError::new(RecipesErrorCode::Storage, "No se pudo leer la biblioteca Android; volvé a autorizar la carpeta."))?;
-    let prefix = format!("{RECIPES_FOLDER}/");
-    let mut paths = files
+    use crate::mobile_directory_picker::{self as picker, AndroidDirectoryPickerState};
+    let unreadable = || RecipesError::new(RecipesErrorCode::Storage, "No se pudo leer la biblioteca Android; volvé a autorizar la carpeta.");
+    let state = app.state::<AndroidDirectoryPickerState>();
+    let folder = match picker::resolve_android_path_by_walking(state.inner(), tree_uri, &[RECIPES_FOLDER.to_string()]) {
+        Some(Some(folder)) => folder,
+        Some(None) => return Ok(Vec::new()),
+        None => return Err(unreadable()),
+    };
+    let mut paths = picker::list_android_folder(state.inner(), &folder)
+        .map_err(|_| unreadable())?
         .into_iter()
-        .filter(|file| file.node_type != "folder")
-        .map(|file| file.path.trim_start_matches('/').to_string())
-        .filter(|path| path.starts_with(&prefix) && !path[prefix.len()..].contains('/') && visible_recipe_file(&path[prefix.len()..]))
+        .filter(|(name, is_file)| *is_file && visible_recipe_file(name))
+        .map(|(name, _)| format!("{RECIPES_FOLDER}/{name}"))
         .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)

@@ -4,6 +4,7 @@ import type { NotiaLibrary } from '../../../types/notia'
 import { useAppDispatch } from '../../../store/hooks'
 import { setRightChatPanelOpen } from '../../../features/ui/uiSlice'
 import { requestChatComposerText } from '../../../services/chat/chatComposerRequests'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import { getDollarQuotes } from '../services/dollarQuotesService'
 import { notifyFinanceDataChanged } from '../services/financeDataEvents'
 import { useFinanceResource } from '../hooks/useFinanceResource'
@@ -17,12 +18,15 @@ import '../styles/finance.css'
 
 type FinanceTab = 'overview' | 'movements' | 'salary' | 'products' | 'dev'
 
-const TABS: Array<{ id: FinanceTab; label: string; short: string }> = [
-  { id: 'overview', label: 'Resumen', short: 'Resumen' },
-  { id: 'movements', label: 'Movimientos', short: 'Movimientos' },
-  { id: 'salary', label: 'Sueldo y ahorro', short: 'Sueldo' },
-  { id: 'products', label: 'Productos y tickets', short: 'Productos' },
+const TABS: Array<{ id: FinanceTab; label: string; phone: string }> = [
+  { id: 'overview', label: 'Resumen', phone: 'Resumen' },
+  { id: 'movements', label: 'Movimientos', phone: 'Movimientos' },
+  { id: 'salary', label: 'Sueldo y ahorro', phone: 'Sueldo y ahorro' },
+  { id: 'products', label: 'Productos y tickets', phone: 'Productos' },
 ]
+
+/** Width of the view below which the phone boards of the canvas apply. */
+const PHONE_MAX_WIDTH = 641
 
 const TICKET_PROMPT = 'Te mando un ticket para cargar en Finanzas.'
 
@@ -37,11 +41,16 @@ function shiftMonth(month: string, offset: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
-/** Finanzas: read-only screen; the assistant loads and changes everything. */
+/**
+ * Finanzas: read-only screen; the assistant loads and changes everything.
+ * In the space of a phone it follows the phone boards of the canvas.
+ */
 export function FinanceScreen({ library }: { library: NotiaLibrary }) {
   const dispatch = useAppDispatch()
   const [tab, setTab] = useState<FinanceTab>('overview')
   const [month, setMonth] = useState(currentMonth)
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = useNarrowContainer(root, PHONE_MAX_WIDTH)
   const quotes = useFinanceResource(getDollarQuotes, 'No se pudieron cargar las cotizaciones.')
 
   const openChat = useCallback((prompt: string | null) => {
@@ -57,34 +66,47 @@ export function FinanceScreen({ library }: { library: NotiaLibrary }) {
     ? { label: 'Mandar un ticket', prompt: TICKET_PROMPT }
     : { label: 'Cargar con el asistente', prompt: null }
   const oficial = quotes.data?.find((quote) => quote.kind === 'oficial')
+  const monthButtons = (child: ReactNode) => <>
+    <IconButton label="Mes anterior" onClick={() => setMonth((value) => shiftMonth(value, -1))}><ChevronLeft size={phone ? 16 : 18} /></IconButton>
+    {child}
+    <IconButton label="Mes siguiente" onClick={() => setMonth((value) => shiftMonth(value, 1))}><ChevronRight size={phone ? 16 : 18} /></IconButton>
+  </>
 
-  return <main className="notia-main finance-screen">
+  return <main ref={setRoot} className={`notia-main finance-screen${phone ? ' finance-screen--phone' : ''}`}>
     <div className="finance-screen__wrap">
-      <header className="finance-header">
+      {phone ? <header className="finance-phone-head">
+        <div className="finance-phone-head__main">
+          <span className="finance-eyebrow">Finanzas</span>
+          {hasMonth ? <div className="finance-phone-head__month">{monthButtons(<h1>{title}</h1>)}</div> : <h1>{title}</h1>}
+        </div>
+        <button type="button" className="finance-phone-head__chat" aria-label={primaryAction.label} onClick={() => openChat(primaryAction.prompt)}><MessageSquare size={20} aria-hidden="true" /></button>
+      </header> : <header className="finance-header">
         <div className="finance-header__main">
           <span className="finance-eyebrow">Finanzas</span>
           <div className="finance-header__title">
-            {hasMonth && <IconButton label="Mes anterior" onClick={() => setMonth((value) => shiftMonth(value, -1))}><ChevronLeft size={18} /></IconButton>}
-            <h1>{title}</h1>
-            {hasMonth && <IconButton label="Mes siguiente" onClick={() => setMonth((value) => shiftMonth(value, 1))}><ChevronRight size={18} /></IconButton>}
+            {hasMonth ? monthButtons(<h1>{title}</h1>) : <h1>{title}</h1>}
           </div>
-          {tab === 'overview' && <p className="finance-header__sub finance-only-wide">Lo carga el asistente desde el chat o Telegram. Esta pantalla solo muestra.</p>}
-          {tab === 'products' && <p className="finance-header__sub finance-only-wide">Cada ticket que le mandás al asistente suma sus productos con el precio y el comercio.</p>}
+          {tab === 'overview' && <p className="finance-header__sub">Lo carga el asistente desde el chat o Telegram. Esta pantalla solo muestra.</p>}
+          {tab === 'products' && <p className="finance-header__sub">Cada ticket que le mandás al asistente suma sus productos con el precio y el comercio.</p>}
         </div>
-        <div className="finance-header__actions finance-only-wide">
+        <div className="finance-header__actions">
           {tab === 'overview' && <button type="button" className="finance-button finance-button--ghost" onClick={refresh} aria-label="Actualizar datos"><RefreshCw size={16} aria-hidden="true" />Actualizar</button>}
           <button type="button" className="finance-button finance-button--primary" onClick={() => openChat(primaryAction.prompt)}><MessageSquare size={16} aria-hidden="true" />{primaryAction.label}</button>
         </div>
-      </header>
+      </header>}
 
-      <nav className="finance-tabs" aria-label="Secciones de Finanzas">
+      <nav className={phone ? 'finance-phone-tabs' : 'finance-tabs'} aria-label="Secciones de Finanzas">
         <div className="finance-tabs__list" role="tablist">
-          {TABS.map((item) => <button key={item.id} type="button" role="tab" id={`finance-tab-${item.id}`} aria-controls="finance-tabpanel" aria-selected={tab === item.id} onClick={() => setTab(item.id)}>
-            <span className="finance-only-wide">{item.label}</span><span className="finance-only-narrow">{item.short}</span>
+          {TABS.map((item) => <button key={item.id} type="button" role="tab" id={`finance-tab-${item.id}`} aria-controls="finance-tabpanel" aria-selected={tab === item.id} onClick={(event) => {
+            setTab(item.id)
+            // On a phone the tabs scroll sideways: keep the chosen one whole.
+            if (phone) event.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+          }}>
+            {phone ? item.phone : item.label}
           </button>)}
-          <button type="button" role="tab" id="finance-tab-dev" aria-controls="finance-tabpanel" aria-selected={tab === 'dev'} className="finance-tabs__dev finance-only-wide" onClick={() => setTab('dev')}>Dev</button>
+          {phone ? null : <button type="button" role="tab" id="finance-tab-dev" aria-controls="finance-tabpanel" aria-selected={tab === 'dev'} className="finance-tabs__dev" onClick={() => setTab('dev')}>Dev</button>}
         </div>
-        {tab === 'overview' && quotes.data && quotes.data.length > 0 && <div className="finance-tabs__quotes finance-only-wide" aria-label="Dólar venta">
+        {!phone && tab === 'overview' && quotes.data && quotes.data.length > 0 && <div className="finance-tabs__quotes" aria-label="Dólar venta">
           <span className="finance-mono-label">Dólar venta</span>
           {quotes.data.map((quote) => <span key={quote.kind}>{quote.name} <strong>{formatAmount(quote.sell, 'ARS', 0)}</strong></span>)}
           {oficial && <span>{formatUpdatedAt(oficial.updatedAt)}</span>}
@@ -92,21 +114,20 @@ export function FinanceScreen({ library }: { library: NotiaLibrary }) {
       </nav>
 
       <section id="finance-tabpanel" role="tabpanel" aria-labelledby={`finance-tab-${tab}`} className="finance-tabpanel">
-        {tab === 'overview' && <FinanceOverviewTab library={library} month={month} officialSell={oficial?.sell ?? null} onOpenChat={openChat} onShowMovements={showMovements} />}
-        {tab === 'movements' && <FinanceMovementsTab library={library} month={month} onOpenChat={openChat} />}
-        {tab === 'salary' && <FinanceSalaryTab library={library} month={month} />}
-        {tab === 'products' && <FinanceProductsTab library={library} onOpenChat={openChat} ticketPrompt={TICKET_PROMPT} />}
+        {tab === 'overview' && <FinanceOverviewTab library={library} month={month} officialSell={oficial?.sell ?? null} onOpenChat={openChat} onShowMovements={showMovements} phone={phone} />}
+        {tab === 'movements' && <FinanceMovementsTab library={library} month={month} onOpenChat={openChat} phone={phone} />}
+        {tab === 'salary' && <FinanceSalaryTab library={library} month={month} phone={phone} />}
+        {tab === 'products' && <FinanceProductsTab library={library} onOpenChat={openChat} ticketPrompt={TICKET_PROMPT} phone={phone} />}
         {tab === 'dev' && <FinanceDeveloperView library={library} />}
       </section>
 
-      <footer className="finance-footer finance-only-narrow">
-        {tab === 'overview' && quotes.data && quotes.data.length > 0 && <div className="finance-footer__quotes">
+      {phone && <footer className="finance-phone-foot">
+        {tab === 'overview' && quotes.data && quotes.data.length > 0 && <div className="finance-phone-foot__quotes">
           <span>{quotes.data.map((quote) => `${quote.name} ${formatAmount(quote.sell, 'ARS', 0)}`).join(' · ')}</span>
-          {oficial && <span>{formatUpdatedAt(oficial.updatedAt).split(',')[0]}</span>}
+          {oficial && <button type="button" className="finance-link-button" onClick={() => setTab('salary')}>{formatUpdatedAt(oficial.updatedAt).split(',')[0]}</button>}
         </div>}
-        <button type="button" className="finance-button finance-button--primary finance-button--block" onClick={() => openChat(primaryAction.prompt)}><MessageSquare size={18} aria-hidden="true" />{primaryAction.label}</button>
         <button type="button" className="finance-button finance-button--quiet" aria-pressed={tab === 'dev'} onClick={() => setTab(tab === 'dev' ? 'overview' : 'dev')}>{tab === 'dev' ? 'Volver al resumen' : 'Herramientas de desarrollo'}</button>
-      </footer>
+      </footer>}
     </div>
   </main>
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert'
 import {
   getFrontmatterValue,
   hasFrontmatterKey,
+  leadingFrontmatterBlock,
   parseFrontmatterDocument,
   serializeFrontmatterDocument,
   setFrontmatterValue,
@@ -92,5 +93,30 @@ describe('frontmatter round trip', () => {
     const again = parseFrontmatterDocument(serializeFrontmatterDocument({ ...parsed, body: 'Cuerpo editado' }))
     assert.deepStrictEqual(again.frontmatter, parsed.frontmatter)
     assert.deepStrictEqual(parsed.frontmatter.slice(0, 5).map((entry) => entry.value), ['7954508202859205', '007', 'true', 'null', '"hola"'])
+  })
+})
+
+describe('leadingFrontmatterBlock', () => {
+  const sources = [
+    '---\ntitle: Nota\npageMode: true\n---\n\nCuerpo\n---\nmás',
+    '---\r\ntitle: Nota\r\n  ---  \r\nCuerpo',
+    '---\ntitle: sin cierre\nCuerpo',
+    '---\n---',
+    '---\n',
+    'Cuerpo\n---\ntitle: no\n---',
+    '',
+  ]
+
+  it('reads the same properties as the whole note', () => {
+    for (const source of sources) {
+      assert.deepStrictEqual(parseFrontmatterDocument(leadingFrontmatterBlock(source)).frontmatter, parseFrontmatterDocument(source).frontmatter)
+    }
+  })
+
+  it('stays the same while only the body changes', () => {
+    const block = leadingFrontmatterBlock('---\ntitle: Nota\n---\n\nCuerpo')
+    assert.strictEqual(block, '---\ntitle: Nota\n---\n')
+    assert.strictEqual(leadingFrontmatterBlock('---\ntitle: Nota\n---\n\nCuerpo editado'), block)
+    assert.strictEqual(leadingFrontmatterBlock('Sin propiedades'), '')
   })
 })

@@ -5,8 +5,9 @@
 //! muestra lo decide el núcleo (`backend_core::gym`).
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -29,7 +30,8 @@ use crate::backend::{BackendError, BackendErrorCode};
 use crate::host::{AppHandle, Emitter, Manager};
 use crate::library_registry::{LibraryBindingRegistry, LibraryBindingRoot};
 
-/// Rust avisa con el id de la biblioteca cuando cambian los datos o el catálogo de Rutinas.
+/// Rust avisa cuando cambian los datos o el catálogo de Rutinas, con el id de
+/// la biblioteca y la vista que pidió el cambio (ver [`GymChanged`]).
 pub(crate) const GYM_CHANGED_EVENT: &str = "notia://gym-changed";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Un video o una imagen subidos a la ficha.
@@ -118,6 +120,27 @@ impl GymContext {
     }
 }
 
+/// El contexto de un cambio de la pantalla: además de la biblioteca y el
+/// usuario, la marca de la vista que lo pide. Esa vista recibe la vista nueva
+/// en la respuesta y no se recarga con el aviso de su propio cambio.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GymApplyContext {
+    #[serde(flatten)]
+    pub context: GymContext,
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+/// El aviso de [`GYM_CHANGED_EVENT`]. Los cambios del agente no tienen
+/// `origin`: toda vista abierta se recarga.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GymChanged<'a> {
+    library_id: &'a str,
+    origin: Option<&'a str>,
+}
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
 }
@@ -130,7 +153,11 @@ fn local_today() -> (jiff::civil::Date, String) {
 }
 
 fn changed(app: &AppHandle, library_id: &str) {
-    let _ = app.emit(GYM_CHANGED_EVENT, library_id);
+    changed_from(app, library_id, None);
+}
+
+fn changed_from(app: &AppHandle, library_id: &str, origin: Option<&str>) {
+    let _ = app.emit(GYM_CHANGED_EVENT, GymChanged { library_id, origin });
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> GymCommandResult<T> + Send + 'static) -> GymCommandResult<T> {
@@ -185,25 +212,37 @@ fn folder_files(app: &AppHandle, library_id: &str, folder: &str) -> GymCommandRe
     Ok(files)
 }
 
+/// En Android se lista solo la carpeta del catálogo (no toda la biblioteca).
+/// La lectura de una carpeta busca su URI en la caché de rutas de SAF, que
+/// llena la lectura del árbol; si la carpeta no está, el árbol se lee una vez
+/// (a lo sumo cada 30 s). Si la lista no sale de esa carpeta, se recorre la
+/// biblioteca como antes.
 #[cfg(target_os = "android")]
 fn android_folder_files(app: &AppHandle, tree_uri: &str, folder: &str) -> GymCommandResult<Vec<FileStamp>> {
-    let picker = app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>();
-    let entries = crate::mobile_directory_picker::read_android_flat_entries(picker.inner(), tree_uri)
-        .map_err(|_| GymCommandError::storage("No se pudo leer la biblioteca Android; volvé a autorizar la carpeta."))?;
-    let prefix = format!("{folder}/");
-    Ok(entries
-        .into_iter()
-        .filter(|entry| entry.node_type != "folder")
-        .filter_map(|entry| {
-            let path = entry.path.trim_start_matches('/').to_string();
-            let name = path.strip_prefix(&prefix)?.to_string();
-            (!name.contains('/') && visible_markdown(&name)).then(|| FileStamp {
-                path,
-                size: entry.size.unwrap_or_default(),
-                modified: entry.last_modified.unwrap_or_default(),
-            })
-        })
-        .collect())
+    use crate::mobile_directory_picker::{self as picker, AndroidDirectoryPickerState, ReadAndroidTreePayload};
+    let unreadable = || GymCommandError::storage("No se pudo leer la biblioteca Android; volvé a autorizar la carpeta.");
+    let state = app.state::<AndroidDirectoryPickerState>();
+    let lookup = format!("{}/{folder}", tree_uri.trim_end_matches('/'));
+    // La carpeta se busca desde la última conocida, un nivel por vez, sin
+    // leer todo el árbol.
+    let segments: Vec<String> = folder.split('/').map(str::to_string).collect();
+    let folder_uri = match picker::resolve_android_path_by_walking(state.inner(), tree_uri, &segments) {
+        // Todavía no existe.
+        Some(None) => return Ok(Vec::new()),
+        found => found.flatten().filter(|uri| is_tree_document(tree_uri, uri)),
+    };
+    if let Some(folder_uri) = folder_uri {
+        let payload = ReadAndroidTreePayload { directory_path: lookup.clone(), directory_uri: None };
+        let nodes = crate::host::async_runtime::block_on(picker::read_android_directory(app.state(), payload))
+            .ok()
+            .and_then(|nodes| serde_json::to_value(nodes).ok())
+            .and_then(|nodes| serde_json::from_value::<Vec<crate::backend::library_tree::LibraryTreeNodeDto>>(nodes).ok());
+        if let Some(files) = nodes.and_then(|nodes| shallow_stamps(tree_uri, folder, &folder_uri, &nodes)) {
+            return Ok(files);
+        }
+    }
+    let entries = picker::read_android_flat_entries(state.inner(), tree_uri).map_err(|_| unreadable())?;
+    Ok(flat_stamps(tree_uri, folder, entries))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -211,53 +250,226 @@ fn android_folder_files(_app: &AppHandle, _tree_uri: &str, _folder: &str) -> Gym
     Err(GymCommandError::storage("La biblioteca no está disponible."))
 }
 
-/// El catálogo leído de cada biblioteca, con la lista de archivos de la que
-/// salió: se vuelve a leer cuando cambia un archivo.
-type CatalogCache = Mutex<HashMap<String, (Vec<FileStamp>, Arc<Catalog>)>>;
+/// Si `uri` es un documento del árbol (no la raíz ni otra cosa). La URI no se
+/// interpreta: solo se compara su comienzo.
+#[cfg(any(target_os = "android", test))]
+fn is_tree_document(tree_uri: &str, uri: &str) -> bool {
+    uri.starts_with(&format!("{}/document/", tree_uri.trim_end_matches('/')))
+}
 
-fn catalog_cache() -> &'static CatalogCache {
-    static CACHE: OnceLock<CatalogCache> = OnceLock::new();
+/// Los `.md` de una carpeta listada sola en Android. Cada hijo tiene que
+/// venir de esa carpeta, un documento del árbol (no la raíz); si no, `None`.
+/// En Android la marca es la fecha de modificación: la lectura de una carpeta
+/// no trae el tamaño, y así las dos maneras de listar dan la misma marca.
+#[cfg(any(target_os = "android", test))]
+fn shallow_stamps(
+    tree_uri: &str,
+    folder: &str,
+    folder_uri: &str,
+    nodes: &[crate::backend::library_tree::LibraryTreeNodeDto],
+) -> Option<Vec<FileStamp>> {
+    if !is_tree_document(tree_uri, folder_uri) {
+        return None;
+    }
+    let prefix = format!("{}/", folder_uri.trim_end_matches('/'));
+    let mut files = Vec::new();
+    for node in nodes {
+        let name = node.path.as_deref()?.strip_prefix(&prefix)?;
+        if name.is_empty() || name.contains('/') {
+            return None;
+        }
+        if node.node_type == crate::backend::library_tree::LibraryNodeKind::File && visible_markdown(name) {
+            files.push(FileStamp { path: format!("{folder}/{name}"), size: 0, modified: node.modified_at.unwrap_or_default() });
+        }
+    }
+    Some(files)
+}
+
+/// Los `.md` de una carpeta en la lista completa de la biblioteca: las rutas
+/// llegan como `<árbol>/<ruta lógica>`.
+#[cfg(any(target_os = "android", test))]
+fn flat_stamps(tree_uri: &str, folder: &str, entries: Vec<crate::mobile_directory_picker::AndroidFlatFileEntry>) -> Vec<FileStamp> {
+    let prefix = format!("{}/{folder}/", tree_uri.trim_end_matches('/'));
+    entries
+        .into_iter()
+        .filter(|entry| entry.node_type != "folder")
+        .filter_map(|entry| {
+            let name = entry.path.strip_prefix(&prefix)?;
+            (!name.contains('/') && visible_markdown(name)).then(|| FileStamp {
+                path: format!("{folder}/{name}"),
+                size: 0,
+                modified: entry.last_modified.unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Cuánto sirve la lista de archivos leída: los pedidos de un mismo toque
+/// (el cambio, la vista, el aviso) no vuelven a listar las carpetas. Un
+/// cambio hecho desde Notia la vence enseguida; uno de afuera se ve después.
+const LISTING_TTL: Duration = Duration::from_secs(5);
+/// Bibliotecas con el catálogo en memoria; sale la menos usada.
+const MAX_CACHED_LIBRARIES: usize = 4;
+
+/// Lo que dio un archivo del catálogo leído sin imágenes.
+#[derive(Debug, Clone)]
+enum CatalogFile {
+    Exercise(Exercise),
+    Equipment(Equipment),
+    /// Se leyó, pero no tiene el formato de Rutinas.
+    Other,
+}
+
+/// El catálogo de una biblioteca en memoria, con lo leído de cada archivo y
+/// la marca que tenía: un cambio vuelve a leer solo los archivos nuevos o
+/// cambiados.
+struct CachedCatalog {
+    /// La lista de la que salió `catalog`; `None` después de una escritura.
+    stamps: Option<Vec<FileStamp>>,
+    listed_at: Instant,
+    /// La generación de escrituras con la que se listó.
+    generation: u64,
+    used_at: Instant,
+    files: HashMap<String, (FileStamp, CatalogFile)>,
+    /// Las fotos del equipamiento ya leídas, con la marca de su archivo.
+    images: HashMap<String, (FileStamp, Option<String>)>,
+    catalog: Arc<Catalog>,
+}
+
+type CatalogCache = HashMap<String, CachedCatalog>;
+
+fn catalog_cache() -> &'static Mutex<CatalogCache> {
+    static CACHE: OnceLock<Mutex<CatalogCache>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
-fn forget_catalog(library_id: &str) {
-    if let Ok(mut cache) = catalog_cache().lock() {
-        cache.remove(library_id);
+/// Sube con cada escritura del catálogo: una lista hecha antes ya no sirve.
+static CATALOG_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn with_cache<T>(work: impl FnOnce(&mut CatalogCache) -> T) -> T {
+    let mut cache = catalog_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    work(&mut cache)
+}
+
+/// El catálogo en memoria, si su lista todavía sirve.
+fn fresh_catalog(cache: &mut CatalogCache, library_id: &str, generation: u64, now: Instant) -> Option<Arc<Catalog>> {
+    let entry = cache.get_mut(library_id)?;
+    let fresh = entry.stamps.is_some() && entry.generation == generation && now.duration_since(entry.listed_at) < LISTING_TTL;
+    fresh.then(|| {
+        entry.used_at = now;
+        Arc::clone(&entry.catalog)
+    })
+}
+
+/// El catálogo en memoria si la lista nueva es la misma de la que salió.
+fn same_listing(cache: &mut CatalogCache, library_id: &str, stamps: &[FileStamp], generation: u64, now: Instant) -> Option<Arc<Catalog>> {
+    let entry = cache.get_mut(library_id)?;
+    (entry.stamps.as_deref() == Some(stamps)).then(|| {
+        entry.listed_at = now;
+        entry.generation = generation;
+        entry.used_at = now;
+        Arc::clone(&entry.catalog)
+    })
+}
+
+/// Guarda el catálogo de una biblioteca con las fotos que siguen sirviendo;
+/// si hay demasiadas bibliotecas, sale la menos usada.
+fn store_catalog(cache: &mut CatalogCache, library_id: &str, mut entry: CachedCatalog) {
+    if let Some(previous) = cache.remove(library_id) {
+        entry.images = previous
+            .images
+            .into_iter()
+            .filter(|(path, (stamp, _))| entry.files.get(path).is_some_and(|(current, _)| current == stamp))
+            .collect();
     }
+    while cache.len() >= MAX_CACHED_LIBRARIES {
+        let Some(oldest) = cache.iter().min_by_key(|(_, entry)| entry.used_at).map(|(id, _)| id.clone()) else { break };
+        cache.remove(&oldest);
+    }
+    cache.insert(library_id.to_string(), entry);
+}
+
+/// Después de escribir o borrar archivos del catálogo: la próxima lectura
+/// lista de nuevo y vuelve a leer solo esos archivos.
+fn forget_catalog_files(library_id: &str, paths: &[&str]) {
+    CATALOG_GENERATION.fetch_add(1, Ordering::SeqCst);
+    with_cache(|cache| {
+        if let Some(entry) = cache.get_mut(library_id) {
+            entry.stamps = None;
+            for path in paths {
+                entry.files.remove(*path);
+                entry.images.remove(*path);
+            }
+        }
+    });
+}
+
+/// Lo leído de cada archivo listado: lo que no cambió sale de `previous` y el
+/// resto se lee. Un archivo que no se puede leer queda afuera (y se vuelve a
+/// intentar cuando cambia la lista).
+fn read_catalog_files(
+    stamps: &[FileStamp],
+    mut previous: HashMap<String, (FileStamp, CatalogFile)>,
+    mut read: impl FnMut(&str) -> Option<String>,
+) -> HashMap<String, (FileStamp, CatalogFile)> {
+    let mut files = HashMap::with_capacity(stamps.len());
+    for stamp in stamps {
+        let file = match previous.remove(&stamp.path) {
+            Some((cached, file)) if cached == *stamp => file,
+            _ => {
+                let Some(text) = read(&stamp.path) else { continue };
+                let parsed = if stamp.path.starts_with(EXERCISES_FOLDER) {
+                    parse_exercise(&stamp.path, &text, false).map(CatalogFile::Exercise)
+                } else {
+                    parse_equipment(&stamp.path, &text, false).map(CatalogFile::Equipment)
+                };
+                parsed.unwrap_or(CatalogFile::Other)
+            }
+        };
+        files.insert(stamp.path.clone(), (stamp.clone(), file));
+    }
+    files
+}
+
+/// El catálogo con los archivos en el orden de la lista.
+fn assemble_catalog(stamps: &[FileStamp], files: &HashMap<String, (FileStamp, CatalogFile)>) -> Catalog {
+    let mut catalog = Catalog::default();
+    for stamp in stamps {
+        match files.get(&stamp.path).map(|(_, file)| file) {
+            Some(CatalogFile::Exercise(exercise)) => catalog.exercises.push(exercise.clone()),
+            Some(CatalogFile::Equipment(item)) => catalog.equipment.push(item.clone()),
+            Some(CatalogFile::Other) | None => {}
+        }
+    }
+    catalog.exercises.sort_by_cached_key(|exercise| fold(&exercise.name));
+    // Un id repetido (un archivo copiado) cuenta una sola vez.
+    let mut seen = std::collections::BTreeSet::new();
+    catalog.exercises.retain(|exercise| seen.insert(exercise.id.clone()));
+    let mut seen = std::collections::BTreeSet::new();
+    catalog.equipment.retain(|item| seen.insert(item.id.clone()));
+    catalog
 }
 
 /// El catálogo sin imágenes, para las listas.
 pub(crate) fn load_catalog(app: &AppHandle, library_id: &str) -> GymCommandResult<Arc<Catalog>> {
+    let generation = CATALOG_GENERATION.load(Ordering::SeqCst);
+    if let Some(catalog) = with_cache(|cache| fresh_catalog(cache, library_id, generation, Instant::now())) {
+        return Ok(catalog);
+    }
     let mut stamps = folder_files(app, library_id, EXERCISES_FOLDER)?;
     stamps.extend(folder_files(app, library_id, EQUIPMENT_FOLDER)?);
-    if let Some((cached, catalog)) = catalog_cache().lock().ok().and_then(|cache| cache.get(library_id).cloned()) {
-        if cached == stamps {
-            return Ok(catalog);
-        }
+    if let Some(catalog) = with_cache(|cache| same_listing(cache, library_id, &stamps, generation, Instant::now())) {
+        return Ok(catalog);
     }
-    let catalog = crate::library_documents::with_documents(app, library_id, |documents| {
-        let mut catalog = Catalog::default();
-        for stamp in &stamps {
-            // Un archivo que no se puede leer o que no es del catálogo queda afuera.
-            let Ok(Some(text)) = documents.read(&stamp.path) else { continue };
-            if stamp.path.starts_with(EXERCISES_FOLDER) {
-                catalog.exercises.extend(parse_exercise(&stamp.path, &text, false));
-            } else {
-                catalog.equipment.extend(parse_equipment(&stamp.path, &text, false));
-            }
-        }
-        catalog.exercises.sort_by_cached_key(|exercise| fold(&exercise.name));
-        // Un id repetido (un archivo copiado) cuenta una sola vez.
-        let mut seen = std::collections::BTreeSet::new();
-        catalog.exercises.retain(|exercise| seen.insert(exercise.id.clone()));
-        let mut seen = std::collections::BTreeSet::new();
-        catalog.equipment.retain(|item| seen.insert(item.id.clone()));
-        Ok(catalog)
+    let previous = with_cache(|cache| cache.get(library_id).map(|entry| entry.files.clone())).unwrap_or_default();
+    let files = crate::library_documents::with_documents(app, library_id, |documents| {
+        Ok(read_catalog_files(&stamps, previous, |path| documents.read(path).ok().flatten()))
     })?;
-    let catalog = Arc::new(catalog);
-    if let Ok(mut cache) = catalog_cache().lock() {
-        cache.insert(library_id.to_string(), (stamps, Arc::clone(&catalog)));
-    }
+    let catalog = Arc::new(assemble_catalog(&stamps, &files));
+    let now = Instant::now();
+    // Si se escribió mientras tanto, la generación vieja hace que se liste de nuevo.
+    let entry = CachedCatalog { stamps: Some(stamps), listed_at: now, generation, used_at: now, files, images: HashMap::new(), catalog: Arc::clone(&catalog) };
+    with_cache(|cache| store_catalog(cache, library_id, entry));
     Ok(catalog)
 }
 
@@ -291,15 +503,16 @@ fn free_path(catalog_paths: &[String], folder: &str, name: &str, current: Option
 
 /// Escribe un archivo del catálogo; si cambió de nombre, lo mueve.
 fn write_catalog_file(app: &AppHandle, library_id: &str, old_path: Option<&str>, path: &str, content: &str) -> GymCommandResult<()> {
-    crate::library_documents::with_documents(app, library_id, |documents| {
+    let written = crate::library_documents::with_documents(app, library_id, |documents| {
         documents.adapter.upsert_text_locator(&documents.locator(path)?, content)?;
         if let Some(old) = old_path.filter(|old| !old.eq_ignore_ascii_case(path)) {
             documents.adapter.delete_locator(&documents.locator(old)?)?;
         }
         Ok(())
-    })?;
-    forget_catalog(library_id);
-    Ok(())
+    });
+    // También si falló a medias: lo que quedó en los archivos se lee de nuevo.
+    forget_catalog_files(library_id, &[path, old_path.unwrap_or(path)]);
+    Ok(written?)
 }
 
 /// La foto de un equipamiento o la imagen de un ejercicio, como `data:`
@@ -409,7 +622,7 @@ pub(crate) fn load(connection: &Connection, owner: &str) -> GymCommandResult<Gym
         .query_map([owner], |row| from_json::<Workout>(&row.get::<_, String>(0)?, "workout_json"))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // El cuerpo que se muestra sale del perfil de Salud.
-    let sex = crate::health::load(connection, owner).ok().and_then(|health| health.profile).map(|profile| profile.sex);
+    let sex = profile_sex(connection, owner);
     Ok(GymData {
         routines,
         workouts,
@@ -418,6 +631,18 @@ pub(crate) fn load(connection: &Connection, owner: &str) -> GymCommandResult<Gym
         sex: if sex == Some(crate::backend::health::Sex::Female) { BodySex::Female } else { BodySex::Male },
         sex_from_profile: sex.is_some(),
     })
+}
+
+/// El sexo del perfil de Salud, si lo cargó: se lee solo el perfil, no los
+/// registros de Salud.
+fn profile_sex(connection: &Connection, owner: &str) -> Option<crate::backend::health::Sex> {
+    let profile = connection
+        .query_row("SELECT profile_json FROM health_settings WHERE owner_user_id = ?1", [owner], |row| row.get::<_, Option<String>>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .flatten()?;
+    serde_json::from_str::<crate::backend::health::Profile>(&profile).ok().map(|profile| profile.sex)
 }
 
 fn ensure_settings(connection: &Connection, owner: &str) -> rusqlite::Result<()> {
@@ -480,6 +705,19 @@ fn read<T>(app: &AppHandle, context: &GymContext, work: impl FnOnce(&GymData) ->
 /// Aplica un cambio en una transacción y lo guarda (en Android, de vuelta
 /// por SAF).
 fn write(app: &AppHandle, context: &GymContext, mutation: &GymMutation, catalog: &Catalog) -> GymCommandResult<Option<String>> {
+    write_then(app, context, None, mutation, catalog, |_| Ok(())).map(|(routine_id, ())| routine_id)
+}
+
+/// Como [`write`], y `after` lee con la misma conexión lo ya guardado. El
+/// aviso lleva `origin`, la vista que pidió el cambio.
+fn write_then<T>(
+    app: &AppHandle,
+    context: &GymContext,
+    origin: Option<&str>,
+    mutation: &GymMutation,
+    catalog: &Catalog,
+    after: impl FnOnce(&Connection) -> GymCommandResult<T>,
+) -> GymCommandResult<(Option<String>, T)> {
     let location = location(app, &context.library_id)?;
     let mut connection = open(app, context, &location)?;
     let transaction = connection.transaction()?;
@@ -490,10 +728,11 @@ fn write(app: &AppHandle, context: &GymContext, mutation: &GymMutation, catalog:
     let change = plan_change(&data, catalog, mutation, &mut clock)?;
     apply_ops(&transaction, context.owner(), &change.ops)?;
     transaction.commit()?;
+    let saved = after(&connection)?;
     drop(connection);
     crate::database::sync_user_data_connection(app, location.android_directory_uri.as_deref()).map_err(GymCommandError::storage)?;
-    changed(app, &context.library_id);
-    Ok(change.routine_id)
+    changed_from(app, &context.library_id, origin);
+    Ok((change.routine_id, saved))
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +749,18 @@ pub async fn gym_view(app: AppHandle, context: GymContext, query: Option<GymQuer
     blocking(move || view(&app, &context, &query.unwrap_or_default())).await
 }
 
+/// La rutina del entrenamiento que se retoma al abrir la app, si hay uno en
+/// curso con actividad reciente (`Session::resumable`).
+pub async fn gym_resume(app: AppHandle, context: GymContext) -> GymCommandResult<Option<String>> {
+    blocking(move || {
+        let now = now_ms();
+        read(&app, &context, |data| {
+            Ok(data.session.as_ref().filter(|session| session.resumable(now)).map(|session| session.routine_id.clone()))
+        })
+    })
+    .await
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GymApplyResult {
@@ -518,16 +769,20 @@ pub struct GymApplyResult {
     pub routine_id: Option<String>,
 }
 
-/// Aplica un cambio de la pantalla y devuelve la vista actualizada.
-pub async fn gym_apply(app: AppHandle, context: GymContext, mutation: GymMutation, query: Option<GymQuery>) -> GymCommandResult<GymApplyResult> {
+/// Aplica un cambio de la pantalla y devuelve la vista actualizada, armada
+/// con el mismo catálogo y lo recién guardado.
+pub async fn gym_apply(app: AppHandle, context: GymApplyContext, mutation: GymMutation, query: Option<GymQuery>) -> GymCommandResult<GymApplyResult> {
     blocking(move || {
+        let GymApplyContext { context, origin } = context;
         let catalog = load_catalog(&app, &context.library_id)?;
-        let routine_id = write(&app, &context, &mutation, &catalog)?;
+        let (routine_id, data) =
+            write_then(&app, &context, origin.as_deref(), &mutation, &catalog, |connection| load(connection, context.owner()))?;
         let mut query = query.unwrap_or_default();
         if routine_id.is_some() {
             query.routine_id = routine_id.clone();
         }
-        Ok(GymApplyResult { view: view(&app, &context, &query)?, routine_id })
+        let (today, _) = local_today();
+        Ok(GymApplyResult { view: build_view(&data, &catalog, &query, today, now_ms()), routine_id })
     })
     .await
 }
@@ -616,8 +871,9 @@ fn apply_catalog(app: &AppHandle, context: &GymContext, mutation: &CatalogMutati
                 return Err(GymCommandError::validation("El equipamiento del catálogo no se quita: desmarcalo si no lo tenés."));
             }
             let path = item.path.clone();
-            crate::library_documents::with_documents(app, library_id, |documents| documents.adapter.delete_locator(&documents.locator(&path)?))?;
-            forget_catalog(library_id);
+            let deleted = crate::library_documents::with_documents(app, library_id, |documents| documents.adapter.delete_locator(&documents.locator(&path)?));
+            forget_catalog_files(library_id, &[&path]);
+            deleted?;
             CatalogResult { exercise: None, equipment_id: None }
         }
     };
@@ -691,23 +947,62 @@ pub async fn gym_video(app: AppHandle, context: GymContext, exercise_id: String)
     .await
 }
 
-/// Las fotos del equipamiento, por id.
+/// Una foto del equipamiento que hay que leer: id, archivo y la marca que
+/// tiene ahora (sin marca se lee, pero no se guarda en memoria).
+type MissingImage = (String, String, Option<FileStamp>);
+
+/// Las fotos ya leídas que siguen sirviendo, por id, y las que hay que leer.
+fn cached_images(cache: &CatalogCache, library_id: &str, items: &[(String, String)]) -> (BTreeMap<String, String>, Vec<MissingImage>) {
+    let mut images = BTreeMap::new();
+    let mut missing = Vec::new();
+    let entry = cache.get(library_id);
+    for (id, path) in items {
+        let stamp = entry.and_then(|entry| entry.files.get(path)).map(|(stamp, _)| stamp);
+        match (stamp, entry.and_then(|entry| entry.images.get(path))) {
+            (Some(stamp), Some((cached, image))) if cached == stamp => {
+                if let Some(image) = image {
+                    images.insert(id.clone(), image.clone());
+                }
+            }
+            _ => missing.push((id.clone(), path.clone(), stamp.cloned())),
+        }
+    }
+    (images, missing)
+}
+
+/// Las fotos del equipamiento, por id. Se leen una vez por versión de cada
+/// archivo.
 pub async fn gym_equipment_images(app: AppHandle, context: GymContext) -> GymCommandResult<BTreeMap<String, String>> {
     blocking(move || {
         let library_id = context.library_id.as_str();
         location(&app, library_id)?;
         let catalog = load_catalog(&app, library_id)?;
-        Ok(crate::library_documents::with_documents(&app, library_id, |documents| {
-            let mut images = BTreeMap::new();
-            for item in catalog.equipment.iter().filter(|item| item.has_image) {
-                if let Ok(Some(text)) = documents.read(&item.path) {
-                    if let Some(image) = parse_equipment(&item.path, &text, true).and_then(|item| item.image) {
-                        images.insert(item.id.clone(), image);
+        let items = catalog.equipment.iter().filter(|item| item.has_image).map(|item| (item.id.clone(), item.path.clone())).collect::<Vec<_>>();
+        let (mut images, missing) = with_cache(|cache| cached_images(cache, library_id, &items));
+        if missing.is_empty() {
+            return Ok(images);
+        }
+        let read = crate::library_documents::with_documents(&app, library_id, |documents| {
+            let mut read = Vec::new();
+            for (id, path, stamp) in missing {
+                // Una foto que no se puede leer ahora se vuelve a intentar la próxima vez.
+                if let Ok(Some(text)) = documents.read(&path) {
+                    read.push((id, stamp, parse_equipment(&path, &text, true).and_then(|item| item.image)));
+                }
+            }
+            Ok(read)
+        })?;
+        with_cache(|cache| {
+            if let Some(entry) = cache.get_mut(library_id) {
+                for (_, stamp, image) in &read {
+                    if let Some(stamp) = stamp {
+                        entry.images.insert(stamp.path.clone(), (stamp.clone(), image.clone()));
                     }
                 }
             }
-            Ok(images)
-        })?)
+        });
+        images.extend(read.into_iter().filter_map(|(id, _, image)| image.map(|image| (id, image))));
+        Ok(images)
     })
     .await
 }
@@ -824,7 +1119,7 @@ pub(crate) fn execute_tool(
         }
         GymToolAction::DeleteExercise { exercise_id } => {
             let exercise = catalog.exercise(&exercise_id).cloned().ok_or_else(|| GymCommandError::new(GymCommandErrorCode::NotFound, "El ejercicio ya no existe."))?;
-            crate::library_documents::with_documents(app, library_id, |documents| {
+            let deleted = crate::library_documents::with_documents(app, library_id, |documents| {
                 documents.adapter.delete_locator(&documents.locator(&exercise.path)?)?;
                 if let Some(video) = &exercise.video {
                     let locator = documents.locator(&video_path(&exercise, video))?;
@@ -833,8 +1128,9 @@ pub(crate) fn execute_tool(
                     }
                 }
                 Ok(())
-            })?;
-            forget_catalog(library_id);
+            });
+            forget_catalog_files(library_id, &[&exercise.path]);
+            deleted?;
             changed(app, library_id);
         }
         GymToolAction::SaveEquipment { equipment_id, name, category, photo } => {
@@ -983,6 +1279,215 @@ mod tests {
         let workouts = execute_tool(&app, &context, "list_gym_workouts", &json!({}), &[]).expect("workouts");
         assert_eq!(workouts["workouts"][0]["sets"], 4);
         assert_eq!(workouts["workouts"][0]["routine"], "Pecho");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    fn stamp(path: &str, modified: i64) -> FileStamp {
+        FileStamp { path: path.into(), size: 0, modified }
+    }
+
+    fn exercise_text(id: &str, name: &str) -> String {
+        format!("---\nid: {id}\ngrupo: pecho\nregistro: peso-reps\nkcalPorMinuto: 6\n---\n# {name}\n")
+    }
+
+    /// Only new or changed files are read again; a file that is gone leaves
+    /// the catalog, and the order and the repeated ids stay as before.
+    #[test]
+    fn catalog_files_are_read_once_per_version() {
+        let texts = HashMap::from([
+            ("Gym/exercises/Flexiones.md".to_string(), exercise_text("push_ups", "Flexiones")),
+            ("Gym/exercises/Press.md".to_string(), exercise_text("bench_press", "Press de banca")),
+            ("Gym/exercises/Press copia.md".to_string(), exercise_text("bench_press", "Press de banca")),
+            ("Gym/exercises/Notas.md".to_string(), "Sin formato".to_string()),
+            ("Gym/equipment/Barra.md".to_string(), "---\nid: barbell\ncategoria: libres\norigen: catalogo\n---\n# Barra y discos\n".to_string()),
+        ]);
+        let reads = std::cell::RefCell::new(Vec::<String>::new());
+        let read = |path: &str| {
+            reads.borrow_mut().push(path.to_string());
+            texts.get(path).cloned()
+        };
+        let mut stamps = vec![
+            stamp("Gym/equipment/Barra.md", 1),
+            stamp("Gym/exercises/Flexiones.md", 1),
+            stamp("Gym/exercises/Notas.md", 1),
+            stamp("Gym/exercises/Press copia.md", 1),
+            stamp("Gym/exercises/Press.md", 1),
+            stamp("Gym/exercises/Roto.md", 1),
+        ];
+        let files = read_catalog_files(&stamps, HashMap::new(), &read);
+        assert_eq!(reads.borrow().len(), 6);
+        // The unreadable file is left out, so it is tried again later.
+        assert!(!files.contains_key("Gym/exercises/Roto.md"));
+        let catalog = assemble_catalog(&stamps, &files);
+        assert_eq!(catalog.exercises.iter().map(|exercise| exercise.id.as_str()).collect::<Vec<_>>(), ["push_ups", "bench_press"]);
+        assert_eq!(catalog.exercises[1].path, "Gym/exercises/Press copia.md");
+        assert_eq!(catalog.equipment.len(), 1);
+
+        reads.borrow_mut().clear();
+        let files = read_catalog_files(&stamps, files, &read);
+        assert_eq!(*reads.borrow(), ["Gym/exercises/Roto.md"]);
+
+        reads.borrow_mut().clear();
+        stamps[1].modified = 2;
+        stamps.remove(4);
+        let files = read_catalog_files(&stamps, files, &read);
+        assert_eq!(*reads.borrow(), ["Gym/exercises/Flexiones.md", "Gym/exercises/Roto.md"]);
+        assert!(!files.contains_key("Gym/exercises/Press.md"));
+        let catalog = assemble_catalog(&stamps, &files);
+        assert_eq!(catalog.exercises.len(), 2);
+    }
+
+    fn cached(stamps: Option<Vec<FileStamp>>, generation: u64, at: Instant) -> CachedCatalog {
+        let files = stamps.iter().flatten().map(|stamp| (stamp.path.clone(), (stamp.clone(), CatalogFile::Other))).collect();
+        CachedCatalog { stamps, listed_at: at, generation, used_at: at, files, images: HashMap::new(), catalog: Arc::new(Catalog::default()) }
+    }
+
+    /// The listing serves for a short time and until a write; the cache keeps
+    /// a few libraries and drops the least used one.
+    #[test]
+    fn the_catalog_cache_expires_and_is_bounded() {
+        let start = Instant::now();
+        let listing = vec![stamp("Gym/exercises/A.md", 1)];
+        let mut cache = CatalogCache::new();
+        store_catalog(&mut cache, "biblioteca", cached(Some(listing.clone()), 7, start));
+        assert!(fresh_catalog(&mut cache, "biblioteca", 7, start + Duration::from_secs(1)).is_some());
+        assert!(fresh_catalog(&mut cache, "biblioteca", 7, start + LISTING_TTL).is_none());
+        assert!(fresh_catalog(&mut cache, "biblioteca", 8, start).is_none());
+        // The same listing keeps the catalog and serves for another while.
+        let later = start + LISTING_TTL * 2;
+        assert!(same_listing(&mut cache, "biblioteca", &listing, 8, later).is_some());
+        assert!(fresh_catalog(&mut cache, "biblioteca", 8, later).is_some());
+        assert!(same_listing(&mut cache, "biblioteca", &[stamp("Gym/exercises/A.md", 2)], 8, later).is_none());
+        // After a write nothing matches until the folders are listed and read.
+        cache.get_mut("biblioteca").expect("entry").stamps = None;
+        assert!(fresh_catalog(&mut cache, "biblioteca", 8, later).is_none());
+        assert!(same_listing(&mut cache, "biblioteca", &[], 8, later).is_none());
+
+        for index in 0..MAX_CACHED_LIBRARIES {
+            store_catalog(&mut cache, &format!("otra-{index}"), cached(Some(Vec::new()), 8, later + Duration::from_secs(index as u64 + 1)));
+        }
+        assert_eq!(cache.len(), MAX_CACHED_LIBRARIES);
+        assert!(!cache.contains_key("biblioteca"));
+    }
+
+    /// Equipment photos are read again only when their file changes.
+    #[test]
+    fn equipment_photos_are_kept_per_file_version() {
+        let start = Instant::now();
+        let mut cache = CatalogCache::new();
+        let barra = stamp("Gym/equipment/Barra.md", 1);
+        let mut entry = cached(Some(vec![barra.clone(), stamp("Gym/equipment/Banco.md", 1)]), 0, start);
+        entry.images.insert(barra.path.clone(), (barra.clone(), Some("data:image/jpeg;base64,AAAA".into())));
+        store_catalog(&mut cache, "biblioteca", entry);
+        let items = [("barbell".to_string(), barra.path.clone()), ("bench".to_string(), "Gym/equipment/Banco.md".to_string())];
+        let (images, missing) = cached_images(&cache, "biblioteca", &items);
+        assert_eq!(images.get("barbell").map(String::as_str), Some("data:image/jpeg;base64,AAAA"));
+        assert_eq!(missing, [("bench".to_string(), "Gym/equipment/Banco.md".to_string(), Some(stamp("Gym/equipment/Banco.md", 1)))]);
+
+        // A new version of the file drops the photo read before.
+        let changed = stamp("Gym/equipment/Barra.md", 2);
+        store_catalog(&mut cache, "biblioteca", cached(Some(vec![changed.clone()]), 0, start));
+        let (images, missing) = cached_images(&cache, "biblioteca", &items[..1]);
+        assert!(images.is_empty());
+        assert_eq!(missing[0].2, Some(changed));
+        // Without a cached catalog the photos are read, not lost.
+        let (_, missing) = cached_images(&cache, "otra", &items);
+        assert_eq!(missing.len(), 2);
+        assert!(missing.iter().all(|(_, _, stamp)| stamp.is_none()));
+    }
+
+    /// Android lists only the folder; a listing that came from another folder
+    /// (the root, when SAF could not resolve it) is not used.
+    #[test]
+    fn android_listings_keep_only_the_catalog_folder() {
+        let tree = "content://com.android.externalstorage.documents/tree/primary%3ANotia";
+        let folder = format!("{tree}/document/primary%3ANotia%2FGym%2Fexercises");
+        let node = |path: &str, kind: &str, modified: Option<i64>| -> crate::backend::library_tree::LibraryTreeNodeDto {
+            serde_json::from_value(serde_json::json!({ "id": format!("{tree}/document/x"), "name": path.rsplit('/').next(), "path": path, "type": kind, "modifiedAt": modified }))
+                .expect("node")
+        };
+        let nodes = [
+            node(&format!("{folder}/Press.md"), "file", Some(42)),
+            node(&format!("{folder}/_plantilla.md"), "file", Some(1)),
+            node(&format!("{folder}/Press.mp4"), "file", Some(1)),
+            node(&format!("{folder}/fotos"), "folder", None),
+            node(&format!("{folder}/Plancha.md"), "file", None),
+        ];
+        assert_eq!(
+            shallow_stamps(tree, EXERCISES_FOLDER, &folder, &nodes),
+            Some(vec![stamp("Gym/exercises/Press.md", 42), stamp("Gym/exercises/Plancha.md", 0)])
+        );
+        // Children of the root, or the root itself as the folder, are rejected.
+        assert_eq!(shallow_stamps(tree, EXERCISES_FOLDER, &folder, &[node(&format!("{tree}/Gym"), "folder", None)]), None);
+        assert_eq!(shallow_stamps(tree, EXERCISES_FOLDER, tree, &[node(&format!("{tree}/Notas.md"), "file", Some(1))]), None);
+
+        let entry = |path: String, kind: &str| crate::mobile_directory_picker::AndroidFlatFileEntry {
+            name: path.rsplit('/').next().unwrap_or_default().to_string(),
+            path,
+            node_type: kind.into(),
+            size: Some(10),
+            last_modified: Some(5),
+        };
+        let entries = vec![
+            entry(format!("{tree}/Gym/exercises/Press.md"), "file"),
+            entry(format!("{tree}/Gym/exercises/viejos/Remo.md"), "file"),
+            entry(format!("{tree}/Gym/equipment/Barra.md"), "file"),
+            entry(format!("{tree}/Notas/Gym/exercises/Otro.md"), "file"),
+        ];
+        assert_eq!(flat_stamps(tree, EXERCISES_FOLDER, entries), [stamp("Gym/exercises/Press.md", 5)]);
+    }
+
+    /// The body follows the sex of the Salud profile, read on its own.
+    #[test]
+    fn the_body_follows_the_health_profile() {
+        let connection = database();
+        let owner = crate::backend::OWNER_LIBRARY_USER_ID;
+        connection
+            .execute(
+                "INSERT INTO health_settings (owner_user_id, profile_json, updated_at) VALUES (?1, ?2, 0)",
+                params![owner, r#"{"birthDate":"1990-01-01","sex":"F","heightCm":165,"activity":1.4}"#],
+            )
+            .expect("profile");
+        let data = load(&connection, owner).expect("load");
+        assert_eq!(data.sex, BodySex::Female);
+        assert!(data.sex_from_profile);
+    }
+
+    /// On a library folder: the catalog is listed again after a write, and the
+    /// equipment photos come from the file.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn the_catalog_is_read_again_after_a_write() {
+        use crate::host::{AppContext, AppPaths, HostPorts, Manager};
+
+        let root = std::env::temp_dir().join(format!("notia-gym-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(EXERCISES_FOLDER)).expect("exercises");
+        std::fs::create_dir_all(root.join(EQUIPMENT_FOLDER)).expect("equipment");
+        std::fs::write(root.join(EXERCISES_FOLDER).join("Flexiones.md"), exercise_text("push_ups", "Flexiones")).expect("exercise");
+        std::fs::write(
+            root.join(EQUIPMENT_FOLDER).join("Barra.md"),
+            "---\nid: barbell\ncategoria: libres\norigen: catalogo\n---\n# Barra y discos\n\n![Barra](data:image/jpeg;base64,AAAA)\n",
+        )
+        .expect("equipment");
+        let app = AppContext::new(AppPaths::default(), HostPorts::default());
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-gym-cache", &root).expect("binding");
+        app.manage(registry);
+        app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+
+        let first = load_catalog(&app, "library-gym-cache").expect("catalog");
+        assert_eq!(first.exercises.len(), 1);
+        assert!(Arc::ptr_eq(&first, &load_catalog(&app, "library-gym-cache").expect("again")));
+        std::fs::write(root.join(EXERCISES_FOLDER).join("Plancha.md"), exercise_text("plank", "Plancha")).expect("new exercise");
+        forget_catalog_files("library-gym-cache", &["Gym/exercises/Plancha.md"]);
+        let after = load_catalog(&app, "library-gym-cache").expect("after the write");
+        assert_eq!(after.exercises.iter().map(|exercise| exercise.id.as_str()).collect::<Vec<_>>(), ["push_ups", "plank"]);
+
+        let context = GymContext { library_id: "library-gym-cache".into(), actor_library_user_id: crate::backend::OWNER_LIBRARY_USER_ID.into() };
+        let images = crate::host::async_runtime::block_on(gym_equipment_images(app.clone(), context.clone())).expect("images");
+        assert_eq!(images.get("barbell").map(String::as_str), Some("data:image/jpeg;base64,AAAA"));
+        assert!(with_cache(|cache| cache.get("library-gym-cache").is_some_and(|entry| entry.images.contains_key("Gym/equipment/Barra.md"))));
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

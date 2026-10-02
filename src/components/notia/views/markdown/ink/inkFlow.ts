@@ -72,3 +72,27 @@ export function strokeInFlow(stroke: InkStroke, breaks: FlowBreak[], stride: num
 export function strokeOnPages(stroke: InkStroke, breaks: FlowBreak[]): InkStroke {
   return { ...stroke, points: mapPoints(stroke.points, (y) => flowToPage(y, breaks)) }
 }
+
+/**
+ * `strokeOnPages` that gives back the same stroke while the breaks above it
+ * stay the same: a new line moves every break after it, and only the
+ * strokes below it are drawn again. A stroke's place depends only on the
+ * breaks before its lowest point.
+ */
+export function createStrokesOnPages(): (stroke: InkStroke, breaks: FlowBreak[]) => InkStroke {
+  const placed = new WeakMap<InkStroke, { above: FlowBreak[]; shown: InkStroke }>()
+  return (stroke, breaks) => {
+    const lowest = stroke.points.reduce((bottom, [, y]) => Math.max(bottom, y), -Infinity)
+    let count = 0
+    while (count < breaks.length && breaks[count]!.flowTop <= lowest) count += 1
+    const previous = placed.get(stroke)
+    if (previous && previous.above.length === count && previous.above.every((pageBreak, index) => (
+      pageBreak.flowTop === breaks[index]!.flowTop && pageBreak.height === breaks[index]!.height
+    ))) {
+      return previous.shown
+    }
+    const shown = strokeOnPages(stroke, breaks)
+    placed.set(stroke, { above: breaks.slice(0, count), shown })
+    return shown
+  }
+}

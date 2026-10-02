@@ -17,6 +17,8 @@ interface ExerciseCardProps {
   onClose: () => void
   onEdit: () => void
   onNotice: (message: string) => void
+  /** Versión celular: la ficha ocupa toda la pantalla. */
+  phone?: boolean
 }
 
 /** Un video de Rust como URL que el `<video>` puede reproducir. */
@@ -25,7 +27,7 @@ function videoUrl(base64: string, mediaType: string): string {
   return URL.createObjectURL(new Blob([bytes], { type: mediaType }))
 }
 
-export function ExerciseCard({ library, exerciseId, editable, canEdit, groups, body, onClose, onEdit, onNotice }: ExerciseCardProps) {
+export function ExerciseCard({ library, exerciseId, editable, canEdit, groups, body, onClose, onEdit, onNotice, phone = false }: ExerciseCardProps) {
   const [detail, setDetail] = useState<ExerciseDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [video, setVideo] = useState<string | null>(null)
@@ -85,7 +87,7 @@ export function ExerciseCard({ library, exerciseId, editable, canEdit, groups, b
   const hasMedia = Boolean(detail && (detail.hasVideo || detail.image))
 
   return (
-    <NotiaModalShell open onClose={onClose} size="xl" fill panelClassName="gym-modal-panel gym-card-panel">
+    <NotiaModalShell open onClose={onClose} size="xl" fill panelClassName={`gym-modal-panel gym-card-panel${phone ? ' gym-card-panel--phone' : ''}`}>
       <div className="gym-exercise" role="dialog" aria-modal="true" aria-label={`Ficha de ${detail?.name ?? 'ejercicio'}`} data-group={detail?.group}>
         <header className="gym-exercise-head">
           <div className="gym-exercise-titles">

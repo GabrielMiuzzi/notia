@@ -1,15 +1,18 @@
 package com.gabriel.notia
 
+import android.Manifest
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
@@ -35,6 +38,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * when a long operation begins and stopped when the last one finishes; the
  * type (`microphone` for voice capture, `dataSync` for network work) is chosen
  * by the caller and validated against the Android version.
+ *
+ * It also shows the fixed notification with the state of a client's link
+ * with its host (`showConnectionStatus`) while the app is open. Rust decides
+ * what it says; this only shows it.
  */
 @TauriPlugin
 class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
@@ -146,6 +153,95 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun showConnectionStatus(invoke: Invoke) {
+        try {
+            val args = invoke.getArgs()
+            val kind = args.getString("kind", null) ?: "connecting"
+            val title = args.getString("title", null) ?: "Notia"
+            val text = args.getString("text", null) ?: ""
+            askNotificationPermission()
+            val manager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CONNECTION_CHANNEL_ID,
+                    "Conexión con el host",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                channel.setShowBadge(false)
+                manager.createNotificationChannel(channel)
+            }
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(activity, CONNECTION_CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(activity)
+            }
+            builder
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(connectionIcon(kind))
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+            activity.packageManager.getLaunchIntentForPackage(activity.packageName)?.let { launch ->
+                val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                builder.setContentIntent(PendingIntent.getActivity(activity, 0, launch, flags))
+            }
+            manager.notify(CONNECTION_NOTIFICATION_ID, builder.build())
+            invoke.resolve(JSObject().put("ok", true))
+        } catch (_: Exception) {
+            invoke.resolve(JSObject().put("ok", false).put("error", "No se pudo mostrar el estado de la conexión."))
+        }
+    }
+
+    @Command
+    fun clearConnectionStatus(invoke: Invoke) {
+        cancelConnectionStatus()
+        invoke.resolve(JSObject().put("ok", true))
+    }
+
+    /** The notification lives while the app is open, not after it closes. */
+    override fun onDestroy() {
+        if (!activity.isChangingConfigurations) {
+            cancelConnectionStatus()
+        }
+        super.onDestroy()
+    }
+
+    private fun cancelConnectionStatus() {
+        try {
+            val manager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(CONNECTION_NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Android 13 hides the app's notifications until the person allows them. */
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationsAsked.getAndSet(true)) {
+            return
+        }
+        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        activity.runOnUiThread {
+            try {
+                activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun connectionIcon(kind: String): Int = when (kind) {
+        "connected" -> android.R.drawable.presence_online
+        "syncing" -> android.R.drawable.stat_notify_sync
+        "failed" -> android.R.drawable.stat_notify_error
+        "offline" -> android.R.drawable.presence_offline
+        else -> android.R.drawable.stat_notify_sync_noanim
+    }
+
+    @Command
     fun workStatus(invoke: Invoke) {
         invoke.resolve(JSObject().put("activeWork", activeWork.get()))
     }
@@ -242,10 +338,14 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
         const val EXTRA_WORK_KIND = "workKind"
         const val CHANNEL_ID = "notia-continuity"
         const val SECRET_LABEL = "Notia ColdPass"
+        const val CONNECTION_CHANNEL_ID = "notia-host-connection"
+        const val CONNECTION_NOTIFICATION_ID = 0x4E0B
+        const val NOTIFICATION_PERMISSION_REQUEST = 0x4E0C
 
         // Shared with the service, which outlives the plugin's calls.
         val activeWork = AtomicInteger(0)
         val inForeground = AtomicBoolean(false)
+        val notificationsAsked = AtomicBoolean(false)
     }
 }
 

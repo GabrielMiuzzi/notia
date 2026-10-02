@@ -33,6 +33,13 @@ export interface MarkdownCollabOptions {
   onLost: (message: string) => void
 }
 
+/** The clients whose awareness changed, as `Awareness` reports them. */
+interface AwarenessChanges {
+  added: number[]
+  updated: number[]
+  removed: number[]
+}
+
 export interface MarkdownCollabSession {
   awareness: Awareness
   destroy: () => void
@@ -94,9 +101,11 @@ export async function startMarkdownCollab(options: MarkdownCollabOptions): Promi
     if (origin !== REMOTE) awarenessTimer ??= setTimeout(sendAwareness, AWARENESS_THROTTLE_MS)
   }
   awareness.on('update', onAwarenessUpdate)
-  // The marks of the others' blocks follow their cursors.
-  const refreshBlocks = () => {
+  // The marks of the others' blocks follow their cursors. This editor's own
+  // cursor (it moves with every keystroke) marks nothing, so it redraws nothing.
+  const refreshBlocks = ({ added, updated, removed }: AwarenessChanges) => {
     if (!active) return
+    if ([...added, ...updated, ...removed].every((clientId) => clientId === awareness.clientID)) return
     crepe.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       view.dispatch(view.state.tr.setMeta(collabBlocksKey, true))

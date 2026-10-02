@@ -27,7 +27,7 @@ const DAY_LETTERS: [&str; 7] = ["L", "M", "X", "J", "V", "S", "D"];
 const MONTHS: [&str; 12] = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const MONTHS_SHORT: [&str; 12] = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Screen {
     #[default]
@@ -59,11 +59,14 @@ pub struct GymQuery {
     pub group: Option<String>,
     #[serde(default = "yes")]
     pub only_mine: bool,
+    /// Al abrir Gimnasio: un entrenamiento en curso vuelve a su pantalla.
+    #[serde(default)]
+    pub resume: bool,
 }
 
 impl Default for GymQuery {
     fn default() -> Self {
-        Self { screen: Screen::Panel, routine_id: None, day: None, search: String::new(), group: None, only_mine: true }
+        Self { screen: Screen::Panel, routine_id: None, day: None, search: String::new(), group: None, only_mine: true, resume: false }
     }
 }
 
@@ -101,6 +104,8 @@ pub struct SessionBadge {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GymView {
+    /// La pantalla armada: la pedida, o Entrenar al retomar un entrenamiento.
+    pub screen: Screen,
     pub sex: String,
     pub sex_from_profile: bool,
     pub routines: Vec<RoutineRow>,
@@ -1214,9 +1219,18 @@ pub fn selected_routine<'a>(data: &'a GymData, query: &GymQuery) -> Option<&'a R
 }
 
 pub fn build_view(data: &GymData, catalog: &Catalog, query: &GymQuery, today: Date, now_ms: i64) -> GymView {
+    // Al abrir, un entrenamiento en curso sigue donde estaba.
+    let resumed = data.session.as_ref().filter(|session| query.resume && session.active()).map(|session| GymQuery {
+        screen: Screen::Entrenar,
+        routine_id: Some(session.routine_id.clone()),
+        resume: false,
+        ..query.clone()
+    });
+    let query = resumed.as_ref().unwrap_or(query);
     let selected = selected_routine(data, query);
     let routine_view = selected.filter(|_| matches!(query.screen, Screen::Rutinas | Screen::Editar)).map(|routine| routine_view(data, catalog, routine));
     GymView {
+        screen: query.screen,
         sex: data.sex.id().to_string(),
         sex_from_profile: data.sex_from_profile,
         routines: routine_rows(data, selected.map(|routine| routine.id.as_str())),

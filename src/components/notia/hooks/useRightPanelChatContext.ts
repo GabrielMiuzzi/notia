@@ -8,8 +8,11 @@ import type { ChatComposerContext } from '../views/chat/ChatWorkspaceViewTypes'
 
 const EMPTY_CONTEXT_PATHS: string[] = []
 
+/** What the side chat reads of the open document: never its text. */
+export type RightPanelDocument = Pick<OpenFileDocument, 'path' | 'name' | 'viewKind'>
+
 interface UseRightPanelChatContextParams {
-  activeDocument: OpenFileDocument | null
+  activeDocument: RightPanelDocument | null
   activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'gym' | 'home'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
@@ -21,7 +24,7 @@ interface UseRightPanelChatContextParams {
 
 export function resolveRightPanelPreferredContextMode(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
-  activeDocument: OpenFileDocument | null,
+  activeDocument: RightPanelDocument | null,
 ): ChatFileContextMode | null {
   void activeDocument
   if (activeWorkspaceView === 'task-manager') {
@@ -37,7 +40,7 @@ export function resolveGraphChatContextMode(hasExplicitSelection: boolean): Chat
 
 export function resolveRightPanelAgentScope(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
-  activeDocument: OpenFileDocument | null,
+  activeDocument: RightPanelDocument | null,
 ): ChatAgentScope | null {
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
@@ -57,7 +60,7 @@ export function resolveGraphAttachedContextPaths(
 
 export function resolveRightPanelAttachedContextPaths(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
-  activeDocument: OpenFileDocument | null,
+  activeDocument: RightPanelDocument | null,
 ): string[] {
   void activeWorkspaceView
   void activeDocument
@@ -66,7 +69,7 @@ export function resolveRightPanelAttachedContextPaths(
 
 export function resolveRightPanelContextScopeKey(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
-  activeDocument: OpenFileDocument | null,
+  activeDocument: RightPanelDocument | null,
   taskManagerScopeKey: string | null,
   taskManagerPanelId = '',
 ): string | null {
@@ -99,7 +102,7 @@ function viewChip(label: string): RightPanelChatContextChip {
 
 export function buildRightPanelChatContextChip(
   activeWorkspaceView: UseRightPanelChatContextParams['activeWorkspaceView'],
-  activeDocument: OpenFileDocument | null,
+  activeDocument: RightPanelDocument | null,
   taskManagerPanelId: string,
   markdownSelection: MarkdownSelectionContext | null,
 ): RightPanelChatContextChip {

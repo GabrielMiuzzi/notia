@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Check, ChevronLeft, ImageIcon, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { NotiaModalShell } from '../../../components/notia/NotiaModalShell'
 import type { NotiaLibrary } from '../../../types/notia'
 import { applyCatalogMutation, asGymError, getEquipmentImages, readMedia } from '../services/gymService'
 import type { EquipmentRow, EquipmentView, GymMutation, MediaInput } from '../types/gymTypes'
+import { PhoneSheet } from './GymPhone'
 
 interface EquipmentScreenProps {
   library: NotiaLibrary
@@ -11,6 +12,8 @@ interface EquipmentScreenProps {
   apply: (mutation: GymMutation) => void
   onBack: () => void
   onNotice: (message: string) => void
+  /** Versión celular: sin «Panel de entrenamiento» (está abajo) y el formulario como hoja. */
+  phone?: boolean
 }
 
 interface FormState {
@@ -21,7 +24,17 @@ interface FormState {
   preview: string | null
 }
 
-export function EquipmentScreen({ library, equipment, apply, onBack, onNotice }: EquipmentScreenProps) {
+/** El formulario: una ventana en la computadora, una hoja que sube en el celular. */
+function FormFrame({ phone, label, onClose, children }: { phone: boolean; label: string; onClose: () => void; children: ReactNode }) {
+  if (phone) return <PhoneSheet label={label} onClose={onClose}>{children}</PhoneSheet>
+  return (
+    <NotiaModalShell open onClose={onClose} size="md" panelClassName="gym-modal-panel" panelStyle={{ width: 'min(560px, calc(100vw - 24px))' }}>
+      {children}
+    </NotiaModalShell>
+  )
+}
+
+export function EquipmentScreen({ library, equipment, apply, onBack, onNotice, phone = false }: EquipmentScreenProps) {
   const [images, setImages] = useState<Record<string, string>>({})
   const [form, setForm] = useState<FormState | null>(null)
   const [saving, setSaving] = useState(false)
@@ -82,9 +95,11 @@ export function EquipmentScreen({ library, equipment, apply, onBack, onNotice }:
   return (
     <main className="gym-main gym-equipment">
       <header className="gym-title-block">
-        <button type="button" className="gym-back" onClick={onBack}><ChevronLeft size={16} aria-hidden="true" />Panel de entrenamiento</button>
+        {phone ? null : <button type="button" className="gym-back" onClick={onBack}><ChevronLeft size={16} aria-hidden="true" />Panel de entrenamiento</button>}
         <h1 className="gym-h1">Equipamiento</h1>
-        <p className="gym-muted gym-lead">Marcá con qué contás para entrenar. La lista de ejercicios y tus rutinas se ajustan a lo que elijas.</p>
+        <p className="gym-muted gym-lead">
+          {phone ? 'Marcá con qué contás. La lista de ejercicios y tus rutinas se ajustan.' : 'Marcá con qué contás para entrenar. La lista de ejercicios y tus rutinas se ajustan a lo que elijas.'}
+        </p>
       </header>
       <div role="group" aria-label="Atajos de equipamiento" className="gym-presets">
         <span className="gym-muted">Atajos</span>
@@ -132,7 +147,7 @@ export function EquipmentScreen({ library, equipment, apply, onBack, onNotice }:
       </div>
 
       {form ? (
-        <NotiaModalShell open onClose={() => setForm(null)} size="md" panelClassName="gym-modal-panel" panelStyle={{ width: 'min(560px, calc(100vw - 24px))' }}>
+        <FormFrame phone={phone} label={form.editId ? 'Editar equipamiento' : 'Agregar equipamiento'} onClose={() => setForm(null)}>
           <div className="gym-dialog" role="dialog" aria-modal="true" aria-label={form.editId ? 'Editar equipamiento' : 'Agregar equipamiento'}>
             <header className="gym-dialog-head">
               <h2 className="gym-h2">{form.editId ? 'Editar equipamiento' : 'Agregar equipamiento'}</h2>
@@ -182,7 +197,7 @@ export function EquipmentScreen({ library, equipment, apply, onBack, onNotice }:
               <button type="button" className="gym-button gym-button--primary" disabled={!form.name.trim() || saving} onClick={() => void save()}>{form.editId ? 'Guardar cambios' : 'Agregar'}</button>
             </footer>
           </div>
-        </NotiaModalShell>
+        </FormFrame>
       ) : null}
     </main>
   )

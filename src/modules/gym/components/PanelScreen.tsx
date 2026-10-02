@@ -11,37 +11,60 @@ interface PanelScreenProps {
   onRoutines: () => void
   onStart: (routineId: string) => void
   onPickDay: (date: string) => void
+  /** Versión celular: sin los accesos del encabezado (están en la barra de abajo). */
+  phone?: boolean
 }
 
 const STAT_ICONS = { streak: Flame, week: CalendarCheck, kcal: Zap, time: Clock }
 const STAT_TITLES = { streak: 'Racha', week: 'Esta semana', kcal: 'Calorías de la semana', time: 'Tiempo entrenando' }
 const DAY_LETTERS = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+/** Semanas del mapa de días que entran en un celular. */
+const PHONE_WEEKS = 12
 
-export function PanelScreen({ panel, body, equipmentOwned, equipmentTotal, onEquipment, onRoutines, onStart, onPickDay }: PanelScreenProps) {
+export function PanelScreen({ panel, body, equipmentOwned, equipmentTotal, onEquipment, onRoutines, onStart, onPickDay, phone = false }: PanelScreenProps) {
   const next = panel.nextRoutineId
+  const weeks = phone ? panel.weeks.slice(-PHONE_WEEKS) : panel.weeks
   return (
     <main className="gym-main gym-panel">
-      <header className="gym-panel-header">
-        <div className="gym-title-block">
-          <h1 className="gym-h1">Entrenamiento</h1>
-          <span className="gym-muted">{panel.weekLabel}</span>
-        </div>
-        <div className="gym-header-actions">
-          <span className="gym-muted gym-next-label">{panel.nextLabel}</span>
-          <button type="button" className="gym-button" onClick={onEquipment}>
-            <Dumbbell size={16} aria-hidden="true" />
-            Equipamiento
-            <span className="gym-count">{equipmentOwned}/{equipmentTotal}</span>
-          </button>
-          <button type="button" className="gym-button" onClick={onRoutines}>Ver rutinas</button>
-          {next ? (
-            <button type="button" className="gym-button gym-button--primary" onClick={() => onStart(next)}>
-              <Play size={14} fill="currentColor" aria-hidden="true" />
-              Empezar {panel.nextName}
+      {phone ? (
+        <>
+          <header className="gym-title-block">
+            <h1 className="gym-h1">Entrenamiento</h1>
+            <span className="gym-muted">{panel.weekLabel}</span>
+          </header>
+          <section aria-label="Próximo entrenamiento" className="gym-card gym-next-card">
+            <span className="gym-next-text">{panel.nextLabel}</span>
+            {next ? (
+              <button type="button" className="gym-button gym-button--primary gym-button--big" onClick={() => onStart(next)}>
+                <Play size={14} fill="currentColor" aria-hidden="true" />
+                Empezar {panel.nextName}
+              </button>
+            ) : null}
+          </section>
+        </>
+      ) : (
+        <header className="gym-panel-header">
+          <div className="gym-title-block">
+            <h1 className="gym-h1">Entrenamiento</h1>
+            <span className="gym-muted">{panel.weekLabel}</span>
+          </div>
+          <div className="gym-header-actions">
+            <span className="gym-muted gym-next-label">{panel.nextLabel}</span>
+            <button type="button" className="gym-button" onClick={onEquipment}>
+              <Dumbbell size={16} aria-hidden="true" />
+              Equipamiento
+              <span className="gym-count">{equipmentOwned}/{equipmentTotal}</span>
             </button>
-          ) : null}
-        </div>
-      </header>
+            <button type="button" className="gym-button" onClick={onRoutines}>Ver rutinas</button>
+            {next ? (
+              <button type="button" className="gym-button gym-button--primary" onClick={() => onStart(next)}>
+                <Play size={14} fill="currentColor" aria-hidden="true" />
+                Empezar {panel.nextName}
+              </button>
+            ) : null}
+          </div>
+        </header>
+      )}
 
       <section className="gym-stats" aria-label="Resumen de la semana">
         {panel.stats.map((stat) => {
@@ -102,7 +125,7 @@ export function PanelScreen({ panel, body, equipmentOwned, equipmentTotal, onEqu
             <div className="gym-section-head gym-section-head--row">
               <div>
                 <h2 className="gym-h2">Días entrenados</h2>
-                <span className="gym-muted">Últimas 24 semanas. Tocá un día para ver el detalle.</span>
+                <span className="gym-muted">Últimas {weeks.length} semanas. Tocá un día para ver el detalle.</span>
               </div>
               <div className="gym-routine-legend">
                 {panel.routineLegend.map((routine) => (
@@ -118,10 +141,10 @@ export function PanelScreen({ panel, body, equipmentOwned, equipmentTotal, onEqu
               </div>
               <div className="gym-heat-grid">
                 <div className="gym-heat-months" aria-hidden="true">
-                  {panel.weeks.map((week, index) => <span key={index}>{week.month}</span>)}
+                  {weeks.map((week, index) => <span key={index}>{week.month}</span>)}
                 </div>
                 <div className="gym-heat-weeks">
-                  {panel.weeks.map((week, index) => (
+                  {weeks.map((week, index) => (
                     <div key={index} className="gym-heat-week">
                       {week.days.map((day) => (
                         <button

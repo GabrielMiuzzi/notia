@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type Point
 import type { PenPreferences } from '../../../../../services/preferences/editorPreferences'
 import type { InkPoint, InkStroke, InkStrokeDraft, InkTool } from '../../../../../services/markdown/noteInkRuntime'
 import type { FlowBreak } from '../paginationPlugin'
-import { estimatedBreaks, isPageStroke, pageToFlow, strokeInFlow, strokeOnPages } from './inkFlow'
+import { createStrokesOnPages, estimatedBreaks, isPageStroke, pageToFlow, strokeInFlow } from './inkFlow'
 import { INK_COLOR_TOKENS, inkShape, widthAt } from './inkPaths'
 
 /*
@@ -106,7 +106,8 @@ function strokeId(): string {
   return `${random}-${strokeCounter}`.slice(0, 64)
 }
 
-function StrokePath({ stroke }: { stroke: Pick<InkStroke, 'points' | 'width' | 'color' | 'tool'> }) {
+/** Drawn again only when its stroke changes: a page break moving below it leaves it as it is. */
+const StrokePath = memo(function StrokePath({ stroke }: { stroke: Pick<InkStroke, 'points' | 'width' | 'color' | 'tool'> }) {
   const shape = inkShape(stroke)
   const color = INK_COLOR_TOKENS[stroke.color]
   const opacity = stroke.tool === 'highlighter' ? HIGHLIGHTER_OPACITY : undefined
@@ -123,7 +124,7 @@ function StrokePath({ stroke }: { stroke: Pick<InkStroke, 'points' | 'width' | '
         opacity={opacity}
       />
     )
-}
+})
 
 /** A stroke still on its page is drawn on that page; the others are already placed. */
 const StoredStrokes = memo(function StoredStrokes({ strokes, stride }: { strokes: InkStroke[]; stride: number }) {
@@ -150,18 +151,20 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
   const flushTimerRef = useRef<number | null>(null)
   const drawing = tool !== 'selector'
   const stride = sheet.pageHeight + sheet.pageGap
+  // Keeps each stroke's object while the breaks above it stay the same.
+  const [placeOnPages] = useState(createStrokesOnPages)
 
   // What each mode shows. Pages: flow strokes below the breaks, strokes still
   // on a page where they were drawn. Continuous sheet: flow strokes as they
   // are, strokes still on a page with the breaks of full pages (their real
   // place is known once the pages are laid out and they move into the flow).
   const shown = useMemo(() => {
-    if (sheet.paged) return strokes.map((stroke) => (isPageStroke(stroke) ? stroke : strokeOnPages(stroke, breaks)))
+    if (sheet.paged) return strokes.map((stroke) => (isPageStroke(stroke) ? stroke : placeOnPages(stroke, breaks)))
     const lastPage = strokes.reduce((last, stroke) => Math.max(last, stroke.page ?? -1), -1)
     if (lastPage < 0) return strokes
     const estimated = estimatedBreaks(lastPage + 1, sheet)
     return strokes.map((stroke) => strokeInFlow(stroke, estimated, stride))
-  }, [breaks, sheet, stride, strokes])
+  }, [breaks, placeOnPages, sheet, stride, strokes])
 
   const selected = useMemo(() => {
     const ids = new Set(selectedIds)

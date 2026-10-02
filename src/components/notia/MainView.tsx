@@ -12,6 +12,7 @@ import { setDialogState } from '../../features/documents/documentsSlice'
 import type { MarkdownExportFormat } from '../../modules/markdown-export/markdownExportEngine'
 import type { MarkdownPageLayout } from '../../services/preferences/editorPreferences'
 import { readNotePageMode, setNotePageMode } from '../../services/markdown/notePageModeRuntime'
+import { leadingFrontmatterBlock } from '../../engines/markdown/frontmatterEngine'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { NotiaLibrary } from '../../types/notia'
@@ -22,7 +23,7 @@ const DEFAULT_MARKDOWN_ZOOM = 1
 interface MainViewProps {
   activeDocument: OpenFileDocument | null
   saveStatus: NotiaDocumentSaveStatus
-  onTextDocumentChange: (nextSource: string) => void
+  onTextDocumentChange: (nextSource: string, documentPath?: string) => void
   onSharedTextDocumentChange?: (path: string, nextSource: string) => void
   markdownWikiLinkTargets: MarkdownWikiLinkTarget[]
   onOpenLinkedFile: (filePath: string) => void
@@ -69,8 +70,10 @@ function MainViewComponent({
   const { editorPage, editorPageSetup } = useEditorPreferences()
   const isMarkdownOpen = activeDocument?.viewKind === 'markdown'
   const markdownSource = activeDocument && isTextFileDocument(activeDocument) && isMarkdownOpen ? activeDocument.source : null
+  // Only the frontmatter is read again while the body is typed.
+  const markdownFrontmatter = useMemo(() => (markdownSource === null ? null : leadingFrontmatterBlock(markdownSource)), [markdownSource])
   /** Page mode belongs to the note (`pageMode` property); without it the note opens in the normal editor. */
-  const notePageMode = useMemo(() => (markdownSource === null ? false : readNotePageMode(markdownSource)), [markdownSource])
+  const notePageMode = useMemo(() => (markdownFrontmatter === null ? false : readNotePageMode(markdownFrontmatter)), [markdownFrontmatter])
   const latestDocumentRef = useRef({ path: activeDocument?.path ?? null, source: markdownSource })
   latestDocumentRef.current = { path: activeDocument?.path ?? null, source: markdownSource }
 

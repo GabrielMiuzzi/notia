@@ -420,6 +420,12 @@ pub fn plan_change(data: &GymData, catalog: &Catalog, mutation: &GymMutation, cl
             if *index >= item.sets.len() {
                 return Err(GymError::not_found("La serie ya no existe."));
             }
+            // Un entrenamiento terminado queda terminado: un toque que llega
+            // tarde (la pantalla se trabó y los toques se encolaron) no arranca
+            // otro desde cero encima.
+            if data.session.as_ref().is_some_and(|session| session.status == SessionStatus::Done && &session.routine_id == routine_id) {
+                return Err(GymError::validation("Ya terminaste este entrenamiento. Tocá «Empezar de nuevo» para entrenar otra vez."));
+            }
             let mut session = session_for(data, routine_id, now)?;
             let was_done = session.is_done(item_id, *index);
             if session.status == SessionStatus::Paused && !was_done {

@@ -135,6 +135,29 @@ fn a_routine_is_edited_trained_and_logged() {
     assert_eq!((workout.sets, workout.minutes, workout.date.as_str()), (2, 21.0, today));
     assert_eq!(workout.volume, 605.0, "only the first set has a weight");
     assert_eq!(data.session.as_ref().map(|session| session.status), Some(SessionStatus::Done));
+    // Al abrir Gimnasio con un entrenamiento terminado no hay nada que retomar.
+    let opened = build_view(&data, &catalog, &GymQuery { resume: true, ..GymQuery::default() }, parse_date(today).expect("date"), 1_400_000);
+    assert_eq!(opened.screen, Screen::Panel);
+    // Una serie marcada después de terminar no arranca otro entrenamiento encima.
+    let mut clock_ids = 0;
+    let mut new_id = || {
+        clock_ids += 1;
+        format!("t-{clock_ids}")
+    };
+    let mut clock = Clock { now_ms: 1_400_000, today: today.into(), new_id: &mut new_id };
+    let late = GymMutation::ToggleSetDone { routine_id: routine.clone(), item_id: bench.clone(), index: 2 };
+    assert!(plan_change(&data, &catalog, &late, &mut clock).expect_err("finished").message.contains("Empezar de nuevo"));
+
+    // Un entrenamiento en curso se retoma al abrir, en su pantalla, mientras tenga actividad reciente.
+    apply(&mut data, &catalog, GymMutation::RestartSession, 1_500_000, today);
+    apply(&mut data, &catalog, GymMutation::ToggleSetDone { routine_id: routine.clone(), item_id: bench.clone(), index: 0 }, 1_600_000, today);
+    let resumed = build_view(&data, &catalog, &GymQuery { resume: true, ..GymQuery::default() }, parse_date(today).expect("date"), 1_700_000);
+    assert_eq!((resumed.screen, resumed.routine_id.as_deref()), (Screen::Entrenar, Some(routine.as_str())));
+    assert_eq!(resumed.training.as_ref().map(|training| (training.status.as_str(), training.done_sets)), Some(("running", 1)));
+    let session = data.session.clone().expect("session");
+    assert!(session.resumable(1_600_000 + RESUME_WINDOW_MS - 1));
+    assert!(!session.resumable(1_600_000 + RESUME_WINDOW_MS), "a forgotten workout does not take over the app");
+    apply(&mut data, &catalog, GymMutation::FinishSession, 1_800_000, today);
 
     // Otra rutina no pisa una sesión en curso.
     let other = apply(&mut data, &catalog, GymMutation::DuplicateRoutine { routine_id: routine.clone() }, 2_000_000, today).expect("copy");

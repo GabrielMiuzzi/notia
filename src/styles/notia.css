@@ -5089,6 +5089,16 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   z-index: 120;
 }
 
+/* Touch screens: blurring everything behind a modal was painted again with
+   each change under it (an editor inside the modal, while typing); the
+   backdrop color alone dims the page. */
+@media (pointer: coarse) {
+  .notia-modal-backdrop,
+  .notia-modal-engine-backdrop {
+    backdrop-filter: none;
+  }
+}
+
 /* A panel takes the width of its size and the height of its content, up to
    the screen minus a margin; taller content scrolls inside the panel. */
 .notia-modal-engine-panel {

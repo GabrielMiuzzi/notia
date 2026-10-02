@@ -2367,6 +2367,28 @@ pub async fn finance_salary_savings(app: crate::host::AppHandle, payload: MonthP
 mod tests {
     use super::*;
 
+    /// Dumps the four tabs of a real library for the visual preview of the
+    /// screen: `FIN_LIBRARY` (a folder with `.notia/notia.db`, a copy),
+    /// `FIN_OUT` and `FIN_MONTH` (`AAAA-MM`). The salary tab asks the
+    /// quote services, so it needs the network.
+    #[test]
+    #[ignore]
+    fn dump_preview_fixtures() {
+        let (Ok(library), Ok(out), Ok(month)) = (std::env::var("FIN_LIBRARY"), std::env::var("FIN_OUT"), std::env::var("FIN_MONTH")) else { return };
+        let app = crate::create_app(crate::host::AppPaths::new(Some(std::path::Path::new(&out).join("app")), None), crate::host::HostPorts::default());
+        let context = serde_json::json!({ "libraryPath": library, "androidDirectoryUri": null, "actorLibraryUserId": "user-owner", "source": "app" });
+        let write = |name: &str, value: serde_json::Value| std::fs::write(std::path::Path::new(&out).join(name), value.to_string()).expect("write");
+        let month_payload = || serde_json::from_value::<MonthPayload>(serde_json::json!({ "context": context, "month": month })).expect("month");
+        write("overview.json", serde_json::to_value(finance_overview(app.clone(), month_payload()).expect("overview")).expect("json"));
+        let movements = serde_json::from_value::<MovementsPayload>(serde_json::json!({ "context": context, "month": month })).expect("movements");
+        write("movements.json", serde_json::to_value(finance_movements(app.clone(), movements).expect("movements")).expect("json"));
+        let products = serde_json::from_value::<ProductsPayload>(serde_json::json!({ "context": context })).expect("products");
+        let list = finance_products(app.clone(), products).expect("products");
+        write("products.json", serde_json::to_value(&list).expect("json"));
+        let salary = crate::host::async_runtime::block_on(finance_salary_savings(app.clone(), month_payload())).expect("salary");
+        write("salary.json", serde_json::to_value(salary).expect("json"));
+    }
+
     fn seeded() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         crate::database::migrate(&connection).expect("finance migrations");

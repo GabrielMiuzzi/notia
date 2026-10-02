@@ -5,7 +5,9 @@ import type {
   CatalogMutation,
   CatalogResult,
   ExerciseDetail,
+  GymApplyContext,
   GymApplyResult,
+  GymChangedEvent,
   GymContext,
   GymError,
   GymMutation,
@@ -14,7 +16,7 @@ import type {
   MediaInput,
 } from '../types/gymTypes'
 
-/** Rust avisa con el id de la biblioteca cuando cambian los datos o el catálogo. */
+/** Rust avisa cuando cambian los datos o el catálogo (ver `GymChangedEvent`). */
 export const GYM_CHANGED_EVENT = 'notia://gym-changed'
 /** En la app, Gimnasio es del Owner que inició sesión, como Salud. */
 const OWNER_LIBRARY_USER_ID = 'user-owner'
@@ -25,9 +27,18 @@ export function getGymView(library: NotiaLibrary, query: GymQuery): Promise<GymV
   return callBackend<GymView>('gym_view', { context: context(library), query })
 }
 
-/** Rust valida y guarda el cambio, y devuelve la vista actualizada. */
-export function applyGymMutation(library: NotiaLibrary, mutation: GymMutation, query: GymQuery): Promise<GymApplyResult> {
-  return callBackend<GymApplyResult>('gym_apply', { context: context(library), mutation, query })
+/** La rutina del entrenamiento en curso que se retoma al abrir la app, si hay. */
+export function getResumableWorkout(library: NotiaLibrary): Promise<string | null> {
+  return callBackend<string | null>('gym_resume', { context: context(library) })
+}
+
+/**
+ * Rust valida y guarda el cambio, y devuelve la vista actualizada. `origin`
+ * marca la vista que lo pide: el aviso del cambio vuelve con esa marca.
+ */
+export function applyGymMutation(library: NotiaLibrary, mutation: GymMutation, query: GymQuery, origin: string): Promise<GymApplyResult> {
+  const applyContext: GymApplyContext = { ...context(library), origin }
+  return callBackend<GymApplyResult>('gym_apply', { context: applyContext, mutation, query })
 }
 
 export function getExercise(library: NotiaLibrary, exerciseId: string): Promise<ExerciseDetail> {
@@ -55,9 +66,12 @@ export function getBody(library: NotiaLibrary): Promise<BodyView> {
   return callBackend<BodyView>('gym_body', { context: context(library) })
 }
 
-export function subscribeToGym(library: NotiaLibrary, listener: () => void): Promise<Unsubscribe> {
-  return subscribeBackend(GYM_CHANGED_EVENT, (libraryId: unknown) => {
-    if (libraryId === library.id) listener()
+/** Avisa los cambios de esta biblioteca, con la marca de la vista que los pidió. */
+export function subscribeToGym(library: NotiaLibrary, listener: (origin: string | null) => void): Promise<Unsubscribe> {
+  return subscribeBackend(GYM_CHANGED_EVENT, (payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return
+    const event = payload as Partial<GymChangedEvent>
+    if (event.libraryId === library.id) listener(typeof event.origin === 'string' ? event.origin : null)
   })
 }
 

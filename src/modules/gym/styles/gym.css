@@ -136,6 +136,8 @@
 }
 .gym-button:hover { background: color-mix(in srgb, var(--gym-ink) 5%, transparent); }
 .gym-button:disabled { opacity: 0.45; cursor: default; }
+/* Un entrenamiento terminado muestra sus series hechas, sin tomar toques. */
+.gym-check:disabled { cursor: default; }
 .gym-button--primary { border: none; background: var(--gym-teal); color: var(--gym-on-teal); }
 .gym-button--primary:hover { background: color-mix(in srgb, var(--gym-teal) 88%, var(--gym-ink)); }
 .gym-button--wide { width: 100%; }
@@ -566,3 +568,166 @@ button.gym-day-chip { cursor: pointer; }
   .gym-mini-stats--three { grid-template-columns: minmax(0, 1fr); }
   .gym-body-pair { padding: 10px 6px 6px; }
 }
+
+/* ------------------------------------------------- versión celular
+   Canvas «Munin — Rutinas», tablero «Versión celular». Se usa cuando el
+   espacio de Gimnasio es de celular (usePhoneLayout): cada pantalla es lo
+   que se desplaza y las barras (secciones, descanso, agregar ejercicio)
+   quedan fijas abajo. */
+.gym-view[data-layout="phone"] .gym-banner { padding: 10px 16px; }
+.gym-view[data-layout="phone"] .gym-notice { margin: 8px 16px 0; }
+.gym-view[data-layout="phone"] .gym-main { padding: 8px 16px 24px; gap: 14px; }
+.gym-view[data-layout="phone"] .gym-h1 { font-size: 28px; }
+.gym-view[data-layout="phone"] .gym-card { padding: 16px; gap: 14px; }
+
+/* Panel */
+.gym-view[data-layout="phone"] .gym-title-block { gap: 2px; }
+.gym-next-card { border-radius: 14px; gap: 12px; }
+.gym-view[data-layout="phone"] .gym-next-card { padding: 14px; }
+.gym-next-text { font-size: 14px; line-height: 1.4; }
+.gym-view[data-layout="phone"] .gym-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gym-view[data-layout="phone"] .gym-stat { padding: 12px 14px; }
+.gym-view[data-layout="phone"] .gym-stat-value { font-size: 22px; }
+.gym-view[data-layout="phone"] .gym-panel-grid,
+.gym-view[data-layout="phone"] .gym-panel-side { gap: 14px; }
+.gym-view[data-layout="phone"] .gym-muscles-top { flex-direction: column; gap: 14px; }
+.gym-view[data-layout="phone"] .gym-body-pair { gap: 24px; padding: 14px 12px 8px; }
+.gym-view[data-layout="phone"] .gym-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.gym-view[data-layout="phone"] .gym-advice { grid-column: 1 / -1; }
+.gym-view[data-layout="phone"] .gym-muscle-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.gym-view[data-layout="phone"] .gym-section-head--row { flex-direction: column; gap: 10px; }
+.gym-view[data-layout="phone"] .gym-routine-legend { justify-content: flex-start; }
+.gym-view[data-layout="phone"] .gym-heat-scroll { gap: 4px; }
+.gym-view[data-layout="phone"] .gym-day-detail { padding: 12px 14px; }
+.gym-view[data-layout="phone"] .gym-bars { height: 104px; gap: 5px; }
+.gym-view[data-layout="phone"] .gym-bar-labels { gap: 5px; }
+.gym-view[data-layout="phone"] .gym-bar-value { font-size: 9px; }
+
+/* Rutinas: la lista es su propia pantalla */
+.gym-phone-list-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.gym-phone-routine {
+  width: 100%; flex-shrink: 0; padding: 14px; border-radius: 12px; border: 1px solid var(--gym-line); background: var(--gym-panel);
+  color: var(--gym-ink); text-align: left; display: flex; align-items: center; gap: 12px; cursor: pointer;
+}
+.gym-phone-routine > .gym-swatch { width: 12px; height: 12px; border-radius: 4px; }
+.gym-phone-routine > svg { color: var(--gym-muted); flex-shrink: 0; }
+.gym-phone-routine-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gym-phone-routine-text > .gym-muted { font-size: 13px; }
+.gym-phone-routine-name { font-family: var(--gym-font-display); font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* Ver y editar una rutina: todo en una columna que se desplaza */
+.gym-view[data-layout="phone"] .gym-routines { display: flex; flex-direction: column; overflow-y: auto; }
+.gym-view[data-layout="phone"] .gym-routines > .gym-main { flex: 0 0 auto; overflow: visible; }
+.gym-view[data-layout="phone"] .gym-routines > .gym-side {
+  margin: 0 16px 24px; padding: 16px; gap: 18px; border: 1px solid var(--gym-line); border-radius: 14px; overflow: visible;
+}
+.gym-view[data-layout="phone"] .gym-routines > .gym-side .gym-h2 { font-size: 20px; }
+.gym-view[data-layout="phone"] .gym-routine-header { gap: 14px; }
+.gym-view[data-layout="phone"] .gym-routine-titles .gym-h1,
+.gym-view[data-layout="phone"] .gym-title-input { font-size: 26px; }
+.gym-view[data-layout="phone"] .gym-title-input { border-bottom: 1px solid var(--gym-line); padding: 4px 0; }
+.gym-view[data-layout="phone"] .gym-focus-input { font-size: 14px; padding: 6px 0; }
+.gym-view[data-layout="phone"] .gym-routine-header-row--wrap { flex-direction: column; align-items: stretch; gap: 14px; }
+.gym-view[data-layout="phone"] .gym-days { flex-wrap: nowrap; }
+.gym-view[data-layout="phone"] .gym-days > .gym-muted { display: none; }
+.gym-view[data-layout="phone"] .gym-inline-stats { gap: 18px; font-size: 13px; }
+.gym-view[data-layout="phone"] .gym-inline-stats strong { font-size: 17px; margin-right: 4px; }
+.gym-phone-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gym-phone-edit-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gym-phone-edit-actions { display: flex; align-items: center; gap: 8px; }
+.gym-view[data-layout="phone"] .gym-item { border-radius: 12px; }
+.gym-view[data-layout="phone"] .gym-item-toggle { align-items: flex-start; gap: 12px; padding: 12px 6px 12px 14px; }
+.gym-view[data-layout="phone"] .gym-item-name { font-size: 16px; }
+.gym-item-summary-line { font-size: 12px; }
+.gym-view[data-layout="phone"] .gym-routines .gym-item-head { align-items: flex-start; }
+.gym-view[data-layout="phone"] .gym-routines .gym-item-head > .gym-icon-button { margin-top: 6px; }
+.gym-view[data-layout="phone"] .gym-set-row--train { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr) 48px; }
+.gym-view[data-layout="phone"] .gym-bodyweight { padding: 0 10px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gym-view[data-layout="phone"] .gym-sets { padding: 8px 14px 10px; }
+.gym-view[data-layout="phone"] .gym-set-row:not(.gym-set-row--edit):not(.gym-set-row--train) { grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr) auto; }
+.gym-view[data-layout="phone"] .gym-set-row:not(.gym-set-row--edit):not(.gym-set-row--train) > .gym-right { display: block; }
+.gym-view[data-layout="phone"] .gym-set-actions { flex-direction: column; align-items: stretch; gap: 8px; }
+.gym-view[data-layout="phone"] .gym-rest-stepper { padding-top: 8px; border-top: 1px solid var(--gym-line-soft); }
+.gym-view[data-layout="phone"] .gym-rest-stepper > .gym-muted { margin-right: auto; }
+
+/* Entrenar: el reloj en una tarjeta y el descanso en la barra de abajo */
+.gym-view[data-layout="phone"] .gym-training { display: flex; flex-direction: column; overflow: hidden; }
+.gym-view[data-layout="phone"] .gym-training > .gym-main { flex: 1 1 auto; overflow-y: auto; }
+.gym-view[data-layout="phone"] .gym-training-main { gap: 14px; }
+.gym-view[data-layout="phone"] .gym-training-header { gap: 8px; }
+.gym-view[data-layout="phone"] .gym-training .gym-h1 { font-size: 24px; }
+.gym-view[data-layout="phone"] .gym-progress-text { font-size: 13px; }
+.gym-view[data-layout="phone"] .gym-progress-text strong { font-family: inherit; font-size: inherit; }
+.gym-view[data-layout="phone"] .gym-training-main > .gym-timer-block {
+  padding: 16px; gap: 12px; border: 1px solid var(--gym-line); border-radius: 14px; background: var(--gym-panel);
+}
+.gym-view[data-layout="phone"] .gym-clock { font-size: 52px; }
+.gym-restbar {
+  flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 16px;
+  background: var(--gym-panel); border-top: 1px solid var(--gym-line);
+}
+.gym-restbar-row { display: flex; align-items: center; gap: 14px; }
+.gym-ring--small { width: 64px; height: 64px; flex-shrink: 0; }
+.gym-ring--small .gym-ring-track,
+.gym-ring--small .gym-ring-fill { stroke-width: 16; }
+.gym-ring-center--small { font-family: var(--gym-font-display); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gym-ring--small[data-ready] .gym-ring-center--small { color: var(--gym-teal); }
+.gym-ring-center--small[data-idle] { color: var(--gym-off); }
+.gym-restbar-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 1.35; }
+.gym-restbar-title { font-size: 14px; font-weight: 600; }
+.gym-restbar-title > .gym-muted { font-size: 12px; font-weight: 400; }
+
+/* Equipamiento */
+.gym-view[data-layout="phone"] .gym-equipment-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.gym-view[data-layout="phone"] .gym-equipment-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gym-view[data-layout="phone"] .gym-equipment-image { height: 80px; }
+.gym-view[data-layout="phone"] .gym-equipment-name { font-size: 14px; }
+.gym-view[data-layout="phone"] .gym-equipment-add { min-height: 160px; padding: 14px; }
+.gym-view[data-layout="phone"] .gym-lead { font-size: 14px; line-height: 1.45; }
+
+/* Barras de abajo */
+.gym-phone-bar { flex-shrink: 0; padding: 12px 16px 16px; background: var(--gym-panel); border-top: 1px solid var(--gym-line); }
+.gym-tabbar {
+  flex-shrink: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 4px 8px;
+  background: var(--gym-panel); border-top: 1px solid var(--gym-line);
+}
+.gym-tab {
+  height: 52px; border: none; background: transparent; color: var(--gym-muted); font-size: 11px; font-weight: 600;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer;
+}
+.gym-tab[aria-current="page"] { color: var(--gym-teal); }
+
+/* Hojas que suben desde abajo (agregar ejercicio, equipamiento propio) */
+.notia-modal-engine-backdrop:has(> .gym-sheet) { align-items: flex-end; }
+.notia-modal-engine-panel.gym-modal-panel.gym-sheet {
+  width: 100%; max-width: 100%; max-height: calc(92dvh - var(--safe-area-top, 0px)); padding: 0 0 var(--safe-area-bottom, 0px);
+  border-radius: 18px 18px 0 0; border-bottom: none; display: flex; flex-direction: column; overflow: hidden;
+}
+.notia-modal-engine-panel.gym-modal-panel.gym-sheet--tall { height: calc(88dvh - var(--safe-area-top, 0px)); }
+.gym-sheet-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.gym-sheet--tall .gym-sheet-body { overflow: hidden; }
+.gym-sheet-handle { align-self: center; flex-shrink: 0; width: 40px; height: 4px; margin-top: 8px; border-radius: 2px; background: color-mix(in srgb, var(--gym-muted) 50%, transparent); }
+.gym-sheet-top { display: flex; justify-content: flex-end; padding: 4px 16px 0; }
+.gym-sheet .gym-library { flex: 1 1 auto; min-height: 0; padding: 0; border: none; background: transparent; overflow: hidden; }
+.gym-sheet .gym-library-head { padding: 4px 16px 12px; }
+.gym-sheet .gym-library-head .gym-h2 { font-size: 20px; }
+.gym-sheet .gym-library-list { flex: 1 1 auto; min-height: 0; max-height: none; }
+.gym-sheet .gym-library-foot { padding: 12px 16px 16px; }
+.gym-sheet .gym-dialog-head { padding: 12px 16px 14px; }
+.gym-sheet .gym-dialog-body { padding: 16px; gap: 16px; }
+.gym-sheet .gym-dialog-foot { padding: 12px 16px 16px; }
+
+/* La ficha ocupa toda la pantalla */
+.notia-modal-engine-backdrop:has(> .gym-card-panel--phone) { align-items: stretch; }
+.notia-modal-engine-panel.gym-modal-panel.gym-card-panel--phone {
+  width: 100%; max-width: 100%; height: 100dvh; max-height: 100dvh; padding-top: var(--safe-area-top, 0px);
+  border: none; border-radius: 0;
+}
+.gym-card-panel--phone .gym-exercise-head { padding: 14px 16px; gap: 10px; justify-content: flex-end; }
+.gym-card-panel--phone .gym-exercise-titles { flex-basis: 100%; order: 2; }
+.gym-card-panel--phone .gym-exercise-head > .gym-button,
+.gym-card-panel--phone .gym-exercise-head > .gym-icon-button { order: 1; }
+.gym-card-panel--phone .gym-h1--card,
+.gym-card-panel--phone .gym-title-input--card { font-size: 22px; }
+.gym-card-panel--phone .gym-exercise-body { grid-template-columns: minmax(0, 1fr); padding: 18px 16px 32px; gap: 28px; }
+.gym-card-panel--phone .gym-media { height: 200px; }

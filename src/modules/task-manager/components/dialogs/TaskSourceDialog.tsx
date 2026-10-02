@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useRef, useState, type ReactNode } from 'react'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { useWikiLinkTargets } from '../../../../components/notia/hooks/useWikiLinkTargets'
+import { flushPendingEditorChanges } from '../../../../services/markdown/pendingEditorChanges'
 import type { LibraryContext } from '../../../../services/contexts/libraryContexts'
 import type { NotiaFileNode } from '../../../../types/notia'
 import type { TaskItem } from '../../types/taskManagerTypes'
@@ -122,7 +123,8 @@ export function TaskSourceDialog({ state, libraryId, contexts, onSourceChange, o
         )}
       </div>
       {notice ? <p className="tareas-source-dialog-notice" role="status">{notice}</p> : null}
-      <div className="tareas-dialog-actions">
+      {/* The editor writes its text once typing pauses: pressing «Guardar» takes what it still holds. */}
+      <div className="tareas-dialog-actions" onPointerDownCapture={flushPendingEditorChanges}>
         <NotiaButton onClick={onClose}>Cancelar</NotiaButton>
         <NotiaButton variant="primary" onClick={onSave} disabled={!canEdit || state.isSaving || !isDirty}>
           {state.isSaving ? 'Guardando…' : 'Guardar'}

@@ -132,6 +132,37 @@ pub fn copy_android_secret(state: &ContinuityState, text: &str, clear_after_ms: 
     }
 }
 
+/// Shows, or updates, the fixed notification with the state of a client's
+/// link with its host. `kind` picks its icon.
+#[cfg(target_os = "android")]
+pub fn show_android_connection_status(state: &ContinuityState, kind: &str, title: &str, text: &str) -> bool {
+    let payload = serde_json::json!({ "kind": kind, "title": title, "text": text });
+    run_connection_status(state, "showConnectionStatus", payload)
+}
+
+/// Removes the notification of the link with the host.
+#[cfg(target_os = "android")]
+pub fn clear_android_connection_status(state: &ContinuityState) -> bool {
+    run_connection_status(state, "clearConnectionStatus", serde_json::json!({}))
+}
+
+#[cfg(target_os = "android")]
+fn run_connection_status(state: &ContinuityState, command: &str, payload: serde_json::Value) -> bool {
+    let Ok(guard) = state.handle.lock() else {
+        return false;
+    };
+    let Some(handle) = guard.as_ref() else {
+        return false;
+    };
+    match handle.run_mobile_plugin::<ContinuityResponse>(command, payload) {
+        Ok(response) => response.ok,
+        Err(_) => {
+            log::warn!("[notia:continuity] {command} failed");
+            false
+        }
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn begin_android_work(_state: &ContinuityState, _work_kind: Option<&str>) -> bool {
     true
