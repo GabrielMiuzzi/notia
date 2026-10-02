@@ -12,6 +12,9 @@ vi.mock('../../../services/coldpass/coldpassStorage', () => ({
 vi.mock('../../../services/transport', () => ({
   backendSupports: (command: string) => command === 'coldpass_pick_csv_import',
 }))
+// happy-dom has no layout: the tests choose the width of the view.
+const layout = vi.hoisted(() => ({ phone: false }))
+vi.mock('../../../hooks/useNarrowContainer', () => ({ useNarrowContainer: () => layout.phone }))
 
 const DAY = 24 * 60 * 60 * 1000
 const NOW = new Date(2026, 8, 28, 12).getTime()
@@ -131,6 +134,109 @@ describe('ColdPassView', () => {
   })
 })
 
+describe('ColdPassView on a phone', () => {
+  afterEach(() => {
+    cleanup()
+    copyColdPassSecret.mockReset()
+    layout.phone = false
+  })
+
+  function renderPhone(entries = ENTRIES, isUnlocked = true) {
+    layout.phone = true
+    const props = {
+      entries,
+      isUnlocked,
+      onCreateCredential: vi.fn(),
+      onImportVault: vi.fn(),
+      onEditCredential: vi.fn(),
+      onDeleteCredential: vi.fn(),
+    }
+    render(<ColdPassView {...props} />)
+    return props
+  }
+
+  it('lists the credentials with the short summary, filters and the floating button', () => {
+    const props = renderPhone()
+    expect(screen.getByText('4 credenciales, 1 débil y 1 para rotar')).toBeTruthy()
+    expect(screen.queryByRole('region', { name: 'Detalle de la credencial' })).toBeNull()
+    expect(screen.getByRole('searchbox', { name: 'Buscar credenciales' }).getAttribute('placeholder')).toBe('Buscar')
+    fireEvent.click(screen.getByRole('button', { name: /Antiguas/ }))
+    expect(list().getByText('AWS')).toBeTruthy()
+    expect(list().queryByText('GitHub')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Importar vault' }))
+    expect(props.onImportVault).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Nueva credencial' }))
+    expect(props.onCreateCredential).toHaveBeenCalled()
+  })
+
+  it('opens the detail in place of the list and comes back', () => {
+    const props = renderPhone()
+    fireEvent.click(list().getByText('AWS'))
+    expect(screen.queryByRole('navigation', { name: 'Credenciales' })).toBeNull()
+    expect(detail().getByRole('heading', { name: 'AWS' })).toBeTruthy()
+    expect(detail().getByText(/^Cambiada hace \d+ meses$/)).toBeTruthy()
+    expect(detail().getByText('Sin notas.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Editar' }))
+    expect(props.onEditCredential).toHaveBeenCalledWith(0, undefined)
+    fireEvent.click(detail().getByRole('button', { name: 'Generar nueva' }))
+    expect(props.onEditCredential).toHaveBeenCalledWith(0, { generate: true })
+    fireEvent.click(detail().getByRole('button', { name: 'Eliminar credencial' }))
+    expect(props.onDeleteCredential).toHaveBeenCalledWith(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Contraseñas' }))
+    expect(list().getByText('GitHub')).toBeTruthy()
+  })
+
+  it('copies the password through the backend clipboard and the user as text', async () => {
+    copyColdPassSecret.mockResolvedValue({ clearsAfterSeconds: 30 })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    renderPhone()
+    fireEvent.click(list().getByText('GitHub'))
+    expect(detail().queryByText('r9$Lk2@pWz7!eN')).toBeNull()
+    fireEvent.click(detail().getByRole('button', { name: 'Mostrar contraseña' }))
+    expect(detail().getByText('r9$Lk2@pWz7!eN')).toBeTruthy()
+    fireEvent.click(detail().getByRole('button', { name: 'Copiar contraseña' }))
+    expect(copyColdPassSecret).toHaveBeenCalledWith('r9$Lk2@pWz7!eN')
+    expect(await screen.findByText('Contraseña copiada. Se borra del portapapeles en 30 s.')).toBeTruthy()
+    fireEvent.click(detail().getByRole('button', { name: 'Copiar usuario' }))
+    expect(writeText).toHaveBeenCalledWith('gabmiuzzi')
+    expect(detail().queryByRole('button', { name: 'Copiar usuario secundario' })).toBeNull()
+  })
+
+  it('shows three previous passwords and the rest on demand', () => {
+    renderPhone()
+    fireEvent.click(list().getByText('test'))
+    expect(detail().getAllByText(/^Reemplazada el/)).toHaveLength(3)
+    fireEvent.click(detail().getByRole('button', { name: /Ver las 2 anteriores/ }))
+    expect(detail().getAllByText(/^Reemplazada el/)).toHaveLength(5)
+    expect(detail().getByRole('button', { name: /Mostrar solo las 3 más recientes/ })).toBeTruthy()
+  })
+
+  it('goes back to the list when the opened credential is deleted', () => {
+    layout.phone = true
+    const props = {
+      isUnlocked: true,
+      onCreateCredential: vi.fn(),
+      onImportVault: vi.fn(),
+      onEditCredential: vi.fn(),
+      onDeleteCredential: vi.fn(),
+    }
+    const { rerender } = render(<ColdPassView entries={ENTRIES} {...props} />)
+    fireEvent.click(list().getByText('AWS'))
+    rerender(<ColdPassView entries={ENTRIES.slice(1)} {...props} />)
+    expect(screen.queryByRole('region', { name: 'Detalle de la credencial' })).toBeNull()
+    expect(list().getByText('GitHub')).toBeTruthy()
+  })
+
+  it('says when the vault is locked and keeps the actions off', () => {
+    renderPhone([], false)
+    expect(screen.getByText('ColdPass está bloqueado')).toBeTruthy()
+    expect(list().getByText('ColdPass está bloqueado. Desbloquealo con la contraseña del Owner.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Nueva credencial' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Importar vault' }).hasAttribute('disabled')).toBe(true)
+  })
+})
+
 describe('coldPassFormat', () => {
   it('writes relative change dates like the design', () => {
     expect(formatAgo(NOW - 3 * DAY, NOW)).toBe('hace 3 días')
@@ -153,5 +259,6 @@ describe('coldPassFormat', () => {
   it('pluralizes the summary', () => {
     expect(vaultSummary([entry({ health: 'weak' })])).toBe('1 credencial en el vault, 1 débil')
     expect(vaultSummary([entry({}), entry({})])).toBe('2 credenciales en el vault')
+    expect(vaultSummary([entry({}), entry({ health: 'old' })], { short: true })).toBe('2 credenciales, 1 para rotar')
   })
 })

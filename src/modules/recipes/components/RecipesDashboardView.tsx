@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import type { NotiaLibrary } from '../../../types/notia'
 import { useRecipeGrid } from '../hooks/useRecipes'
 import { asRecipesError, deleteRecipe, getRecipeDetail } from '../services/recipesService'
@@ -7,16 +8,18 @@ import type { MealTime, RecipeDetail, RecipeSort } from '../types/recipesTypes'
 import { RecipeCardView } from './RecipeCardView'
 import { RecipeDetailSheet } from './RecipeDetailSheet'
 import { RecipeFormModal } from './RecipeFormModal'
+import { RECIPE_SORTS } from './recipeSorts'
+import { NO_CHECKS, type RecipeChecks } from './phone/recipeChecks'
+import { RecipePhoneDetail } from './phone/RecipePhoneDetail'
+import { RecipePhoneForm } from './phone/RecipePhoneForm'
+import { RecipesPhoneList } from './phone/RecipesPhoneList'
 import '../styles/recipes.css'
+import '../styles/recipesPhone.css'
 
 const SEARCH_DELAY_MS = 150
 const TOAST_DURATION_MS = 3000
-const SORTS: Array<{ sort: RecipeSort; label: string }> = [
-  { sort: 'recent', label: 'Más recientes' },
-  { sort: 'kcal', label: 'Menos calorías' },
-  { sort: 'protein', label: 'Más proteína' },
-  { sort: 'name', label: 'Nombre (A–Z)' },
-]
+/** Ancho de Recetas (no de la ventana) por debajo del cual se usa la versión celular del canvas. */
+const PHONE_MAX_WIDTH = 600
 
 type FormTarget = { mode: 'create' } | { mode: 'edit'; detail: RecipeDetail }
 
@@ -29,6 +32,9 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
   const [form, setForm] = useState<FormTarget | null>(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [checks, setChecks] = useState<Record<string, RecipeChecks>>({})
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = useNarrowContainer(root, PHONE_MAX_WIDTH)
   const query = useMemo(() => ({ meal, query: debouncedSearch, sort }), [meal, debouncedSearch, sort])
   const { grid, status, loadError, reload } = useRecipeGrid(library, query)
 
@@ -64,6 +70,17 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
     setMeal(null)
   }
 
+  // On a phone, closing the recipe gives the focus back to its row.
+  const closeDetail = useCallback(() => {
+    const id = detail?.id
+    setDetail(null)
+    if (!phone || !id) return
+    window.requestAnimationFrame(() => {
+      const rows = root?.querySelectorAll<HTMLElement>('[data-recipe-id]') ?? []
+      Array.from(rows).find((row) => row.dataset.recipeId === id)?.focus({ preventScroll: true })
+    })
+  }, [detail?.id, phone, root])
+
   const remove = async () => {
     if (!detail) return
     setBusy(true)
@@ -81,13 +98,74 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
 
   const saved = (id: string, created: boolean) => {
     setForm(null)
+    // An edited recipe may have other lines: its checks start over.
+    if (!created) {
+      setChecks((current) => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+    }
     setToast(created ? 'Receta guardada: la IA completó los datos que faltaban' : 'Receta actualizada')
     void reload()
     void openDetail(id)
   }
 
+  const openRecipe = (id: string) => {
+    setForm(null)
+    void openDetail(id)
+  }
+
+  if (phone) {
+    return (
+      <main ref={setRoot} className="notia-main recipes-view recipes-view--phone">
+        <RecipesPhoneList
+          library={library}
+          grid={grid}
+          status={status}
+          loadError={loadError}
+          search={search}
+          sort={sort}
+          onSearch={setSearch}
+          onMeal={setMeal}
+          onSort={setSort}
+          onOpen={(id) => { void openDetail(id) }}
+          onCreate={() => setForm({ mode: 'create' })}
+          onClear={clearFilters}
+          onRetry={() => { void reload() }}
+          covered={detail !== null || form !== null}
+        />
+        {detail && (
+          <RecipePhoneDetail
+            key={detail.id}
+            library={library}
+            detail={detail}
+            busy={busy}
+            covered={form !== null}
+            checks={checks[detail.id] ?? NO_CHECKS}
+            onChecks={(next) => setChecks((current) => ({ ...current, [detail.id]: next }))}
+            onClose={closeDetail}
+            onEdit={() => setForm({ mode: 'edit', detail })}
+            onDelete={() => { void remove() }}
+          />
+        )}
+        {form && (
+          <RecipePhoneForm
+            library={library}
+            detail={form.mode === 'edit' ? form.detail : null}
+            defaultMeal={meal}
+            onClose={() => setForm(null)}
+            onSaved={saved}
+            onOpenRecipe={openRecipe}
+          />
+        )}
+        <div className="rcp-toast-region" role="status" aria-live="polite">{toast && <div className="rcp-toast">{toast}</div>}</div>
+      </main>
+    )
+  }
+
   return (
-    <main className="notia-main recipes-view">
+    <main ref={setRoot} className="notia-main recipes-view">
       <div className="rcp-page">
         <header className="rcp-top">
           <div>
@@ -115,7 +193,7 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
           </div>
           <label className="rcp-sort">Ordenar
             <select className="rcp-input" value={sort} onChange={(event) => setSort(event.target.value as RecipeSort)}>
-              {SORTS.map((option) => <option key={option.sort} value={option.sort}>{option.label}</option>)}
+              {RECIPE_SORTS.map((option) => <option key={option.sort} value={option.sort}>{option.label}</option>)}
             </select>
           </label>
         </div>
@@ -153,7 +231,7 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
           library={library}
           detail={detail}
           busy={busy}
-          onClose={() => setDetail(null)}
+          onClose={closeDetail}
           onEdit={() => setForm({ mode: 'edit', detail })}
           onDelete={() => { void remove() }}
         />
@@ -165,7 +243,7 @@ export function RecipesDashboardView({ library }: { library: NotiaLibrary }) {
           defaultMeal={meal}
           onClose={() => setForm(null)}
           onSaved={saved}
-          onOpenRecipe={(id) => { setForm(null); void openDetail(id) }}
+          onOpenRecipe={openRecipe}
         />
       )}
       <div className="rcp-toast-region" role="status" aria-live="polite">{toast && <div className="rcp-toast">{toast}</div>}</div>

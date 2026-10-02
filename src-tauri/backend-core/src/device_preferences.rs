@@ -50,7 +50,7 @@ pub fn normalize_publication(value: &Value) -> Value {
     json!({ "publishedBoardNames": boards, "port": port, "maxClients": clients })
 }
 
-/// Speech recognition switch and language (Parakeet is the only model).
+/// Speech recognition switch and language (Whisper is the only model).
 pub fn normalize_asr(value: &Value) -> Value {
     json!({
         "enabled": value.get("enabled").and_then(Value::as_bool) != Some(false),

@@ -17,6 +17,8 @@ export interface MacroShare {
   gramsLabel: string
   percent: number
   percentLabel: string
+  /** «24% kcal», como lo muestra la versión celular. */
+  shortPercentLabel: string
 }
 
 export interface RecipeCard {
@@ -47,6 +49,8 @@ export interface EmptyState {
 export interface RecipeGrid {
   total: number
   countLabel: string
+  /** «8 recetas», como lo muestra la versión celular. */
+  shortCountLabel: string
   filters: MealFilter[]
   sort: RecipeSort
   cards: RecipeCard[]
@@ -91,6 +95,9 @@ export interface RecipeDetail {
   kcalShareLabel: string
   macros: MacroShare[]
   fiberLabel: string
+  /** La fibra separada para la versión celular: «10 g» y «36% VD». */
+  fiberAmountLabel: string
+  fiberDailyLabel: string
   sugarLabel: string
   vitamins: NutrientRow[]
   minerals: NutrientRow[]

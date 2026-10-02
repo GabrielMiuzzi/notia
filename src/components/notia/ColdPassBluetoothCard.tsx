@@ -62,9 +62,33 @@ function resolveViewStatus(status: ColdPassBluetoothStatus | null): ColdPassBlue
   return 'idle'
 }
 
-function resolveStatusMessage(status: ColdPassBluetoothStatus | null): string {
+const CHECKING_MESSAGE = 'Consultando estado Bluetooth de ColdPass...'
+
+/** What the card says in each state when the device has nothing to add. */
+const STATE_MESSAGES: Record<'idle' | 'searching' | 'connected', { wide: string; compact: string }> = {
+  idle: {
+    wide: 'Tocá Vincular y confirmá el PIN en el dispositivo para iniciar el pairing seguro.',
+    compact: 'Vinculá y confirmá el PIN en el dispositivo.',
+  },
+  searching: {
+    wide: 'Buscando ColdPass por Bluetooth. Mantenelo encendido y cerca de la computadora.',
+    compact: 'Mantenelo encendido y cerca del celular.',
+  },
+  connected: {
+    wide: 'ColdPass conectado. El pairing por PIN se verificó correctamente.',
+    compact: 'Pairing por PIN verificado.',
+  },
+}
+
+function stateMessage(status: ColdPassBluetoothViewStatus, compact: boolean): string {
+  const messages = STATE_MESSAGES[status === 'searching' || status === 'connected' ? status : 'idle']
+  return compact ? messages.compact : messages.wide
+}
+
+/** The device's own message, or `null` to say the one of its state. */
+function resolveStatusMessage(status: ColdPassBluetoothStatus | null): string | null {
   if (!status) {
-    return 'Consultando estado Bluetooth de ColdPass...'
+    return CHECKING_MESSAGE
   }
 
   if (status.errorMessage) {
@@ -79,15 +103,7 @@ function resolveStatusMessage(status: ColdPassBluetoothStatus | null): string {
     return 'Este dispositivo no tiene un Bluetooth compatible para buscar ColdPass.'
   }
 
-  if (status.connected) {
-    return 'ColdPass conectado. El pairing por PIN se verificó correctamente.'
-  }
-
-  if (status.phase === 'searching' || status.phase === 'pairing' || status.phase === 'awaiting-pin') {
-    return 'Buscando ColdPass por Bluetooth. Mantenelo encendido y cerca de la computadora.'
-  }
-
-  return 'Tocá Vincular y confirmá el PIN en el dispositivo para iniciar el pairing seguro.'
+  return null
 }
 
 function resolveUnknownErrorMessage(error: unknown, fallbackMessage: string): string {
@@ -112,13 +128,15 @@ function resolveUnknownErrorMessage(error: unknown, fallbackMessage: string): st
 interface ColdPassBluetoothCardProps {
   /** Shows the view's confirmation after copying the service UUID. */
   onCopied?: (message: string) => void
+  /** Phone board: shorter copy, «Vincular» and no service details. */
+  compact?: boolean
 }
 
 /** The ColdPass Bluetooth device: pairing by PIN and its secure channel. */
-export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps = {}) {
+export function ColdPassBluetoothCard({ onCopied, compact = false }: ColdPassBluetoothCardProps = {}) {
   const [connectionStatus, setConnectionStatus] = useState<ColdPassBluetoothStatus | null>(null)
   const [viewStatus, setViewStatus] = useState<ColdPassBluetoothViewStatus>('idle')
-  const [message, setMessage] = useState('Consultando estado Bluetooth de ColdPass...')
+  const [message, setMessage] = useState<string | null>(CHECKING_MESSAGE)
   const [isPinModalOpen, setIsPinModalOpen] = useState(false)
   const [pinErrorMessage, setPinErrorMessage] = useState<string | null>(null)
   const [isSubmittingPin, setIsSubmittingPin] = useState(false)
@@ -174,7 +192,7 @@ export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps =
 
   const handleSearchDevice = async () => {
     setViewStatus('searching')
-    setMessage('Buscando ColdPass por Bluetooth. Mantenelo encendido y cerca de la computadora.')
+    setMessage(null)
     setPinErrorMessage(null)
 
     try {
@@ -271,6 +289,11 @@ export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps =
         ? 'Esperando la confirmación del mensaje cifrado…'
         : null
   const showsSpinner = viewStatus === 'searching' || isBusy
+  const showsLink = viewStatus === 'idle' || viewStatus === 'error'
+  const showsCancel = viewStatus === 'searching'
+  const showsSendMessage = viewStatus === 'connected' && Boolean(connectionStatus?.applicationAuthenticated)
+  const showsDisconnect = viewStatus === 'connected'
+  const actionCount = [showsLink, showsCancel, showsSendMessage, showsDisconnect].filter(Boolean).length
 
   const handleCopyUuid = async () => {
     try {
@@ -282,10 +305,15 @@ export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps =
   }
 
   return (
-    <section className="cp-device" data-status={viewStatus} aria-label="Dispositivo ColdPass">
+    <section
+      className={compact ? 'cp-device cp-device--compact' : 'cp-device'}
+      data-status={viewStatus}
+      data-actions={actionCount}
+      aria-label="Dispositivo ColdPass"
+    >
       <div className="cp-device__stripe" aria-hidden="true" />
       <div className="cp-device__icon" aria-hidden="true">
-        <Bluetooth size={22} strokeWidth={1.75} />
+        <Bluetooth size={compact ? 20 : 22} strokeWidth={1.75} />
       </div>
       <div className="cp-device__copy">
         <div className="cp-device__title">
@@ -297,30 +325,32 @@ export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps =
             {getStatusLabel(viewStatus)}
           </span>
         </div>
-        <p>{busyMessage ?? message}</p>
+        <p>{busyMessage ?? message ?? stateMessage(viewStatus, compact)}</p>
       </div>
-      <div className="cp-device__meta">
-        <div className="cp-device__service">
-          <span className="cp-muted">Servicio</span>
-          <span className="cp-device__uuid" title={serviceUuid}>{shortUuid(serviceUuid)}</span>
-          <button type="button" className="cp-icon cp-icon--small" aria-label="Copiar UUID del servicio" onClick={() => void handleCopyUuid()}>
-            <Copy size={16} strokeWidth={1.75} aria-hidden="true" />
-          </button>
+      {compact ? null : (
+        <div className="cp-device__meta">
+          <div className="cp-device__service">
+            <span className="cp-muted">Servicio</span>
+            <span className="cp-device__uuid" title={serviceUuid}>{shortUuid(serviceUuid)}</span>
+            <button type="button" className="cp-icon cp-icon--small" aria-label="Copiar UUID del servicio" onClick={() => void handleCopyUuid()}>
+              <Copy size={16} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </div>
+          <span className="cp-device__firmware">Firmware BLE con PIN y servicio cifrado</span>
         </div>
-        <span className="cp-device__firmware">Firmware BLE con PIN y servicio cifrado</span>
-      </div>
+      )}
       <div className="cp-device__actions">
-        {viewStatus === 'idle' || viewStatus === 'error' ? (
+        {showsLink ? (
           <button type="button" className="cp-btn cp-btn--primary" onClick={() => void handleSearchDevice()} disabled={isBusy}>
-            Vincular dispositivo
+            {compact ? 'Vincular' : 'Vincular dispositivo'}
           </button>
         ) : null}
-        {viewStatus === 'searching' ? (
+        {showsCancel ? (
           <button type="button" className="cp-btn cp-btn--ghost" onClick={() => void handleDisconnect()} disabled={isBusy}>
             Cancelar
           </button>
         ) : null}
-        {viewStatus === 'connected' && connectionStatus?.applicationAuthenticated ? (
+        {showsSendMessage ? (
           <button
             type="button"
             className="cp-btn cp-btn--ghost"
@@ -333,7 +363,7 @@ export function ColdPassBluetoothCard({ onCopied }: ColdPassBluetoothCardProps =
             Mandar mensaje
           </button>
         ) : null}
-        {viewStatus === 'connected' ? (
+        {showsDisconnect ? (
           <button type="button" className="cp-btn cp-btn--ghost" onClick={() => void handleDisconnect()} disabled={isBusy}>
             Desconectar
           </button>

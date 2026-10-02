@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import type { AgendaNote } from '../types/agendaTypes'
 
 interface AgendaNotesCardProps {
+  /** Celular: el botón de agregar es un «+» cuadrado de 48 px. */
+  phone: boolean
   notes: AgendaNote[]
   pendingLabel: string
   disabled: boolean
@@ -13,7 +15,7 @@ interface AgendaNotesCardProps {
   onDelete: (note: AgendaNote) => void
 }
 
-export function AgendaNotesCard({ notes, pendingLabel, disabled, error, onAdd, onToggle, onDelete }: AgendaNotesCardProps) {
+export function AgendaNotesCard({ phone, notes, pendingLabel, disabled, error, onAdd, onToggle, onDelete }: AgendaNotesCardProps) {
   const [draft, setDraft] = useState('')
 
   const submit = async () => {
@@ -36,7 +38,13 @@ export function AgendaNotesCard({ notes, pendingLabel, disabled, error, onAdd, o
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
         />
-        <button type="submit" className="agenda-primary" disabled={disabled || !draft.trim()}>Agregar</button>
+        {phone ? (
+          <button type="submit" className="agenda-primary agenda-primary--square" aria-label="Agregar tarea" disabled={disabled || !draft.trim()}>
+            <Plus size={20} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        ) : (
+          <button type="submit" className="agenda-primary" disabled={disabled || !draft.trim()}>Agregar</button>
+        )}
       </form>
       {error ? <p className="agenda-error" role="alert">{error}</p> : null}
       {notes.length === 0 ? (

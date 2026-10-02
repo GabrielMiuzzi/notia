@@ -4,7 +4,7 @@
 /// Sample rate of the speech recognizer.
 pub const RECOGNIZER_SAMPLE_RATE: u32 = 16_000;
 // Everything above this frequency is removed before downsampling, so it does
-// not fold back into the speech band. Parakeet's features reach 8 kHz.
+// not fold back into the speech band. Whisper's log-mel features reach 8 kHz.
 const CUTOFF_HZ: f64 = 7_300.0;
 // Taps per unit of the downsampling ratio: 127 taps at 48 kHz, whose
 // transition band ends before 8 kHz.

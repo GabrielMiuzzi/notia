@@ -21,6 +21,15 @@ export interface ChatAgentLook {
 
 const AGENT_COLOR_COUNT = 6
 
+/** An agent's look, or the one its file name gives while the catalog loads. */
+export function chatAgentLookOf(fileName: string, index: number, looks: Record<string, ChatAgentLook>): ChatAgentLook {
+  return looks[fileName] ?? {
+    name: fileName.replace(/\.md$/i, ''),
+    initials: fileName.slice(0, 2).toUpperCase(),
+    colorIndex: index % AGENT_COLOR_COUNT,
+  }
+}
+
 interface UseChatAgentSettingsInput {
   library: NotiaLibrary | null
   selectedChatFilePath: string | null

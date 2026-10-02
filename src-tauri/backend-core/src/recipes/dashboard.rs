@@ -40,6 +40,8 @@ pub struct MacroShare {
     /// Share of the calories, 0 to 100.
     pub percent: f64,
     pub percent_label: String,
+    /// «24% kcal», the share as the phone layout shows it.
+    pub short_percent_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,6 +82,8 @@ pub struct EmptyState {
 pub struct RecipeGrid {
     pub total: usize,
     pub count_label: String,
+    /// «8 recetas», the count as the phone layout shows it.
+    pub short_count_label: String,
     pub filters: Vec<MealFilter>,
     pub sort: RecipeSort,
     pub cards: Vec<RecipeCard>,
@@ -125,6 +129,9 @@ pub struct RecipeDetail {
     pub kcal_share_label: String,
     pub macros: Vec<MacroShare>,
     pub fiber_label: String,
+    /// The fiber split for the phone layout: «10 g» and «36% VD».
+    pub fiber_amount_label: String,
+    pub fiber_daily_label: String,
     pub sugar_label: String,
     pub vitamins: Vec<NutrientRow>,
     pub minerals: Vec<NutrientRow>,
@@ -157,6 +164,7 @@ fn macro_shares(recipe: &Recipe) -> Vec<MacroShare> {
                 grams_label: format!("{} g", format_number(recipe.value(key))),
                 percent,
                 percent_label: format!("{}% de las calorías", percent.round()),
+                short_percent_label: format!("{}% kcal", percent.round()),
             }
         })
         .collect()
@@ -168,10 +176,14 @@ fn matches_query(recipe: &Recipe, query: &str) -> bool {
 }
 
 fn count_label(total: usize) -> String {
+    format!("{} en tu recetario", short_count_label(total))
+}
+
+fn short_count_label(total: usize) -> String {
     if total == 1 {
-        "1 receta en tu recetario".to_string()
+        "1 receta".to_string()
     } else {
-        format!("{total} recetas en tu recetario")
+        format!("{total} recetas")
     }
 }
 
@@ -214,6 +226,7 @@ pub fn build_grid(recipes: &[Recipe], query: &RecipeQuery) -> RecipeGrid {
     RecipeGrid {
         total: recipes.len(),
         count_label: count_label(recipes.len()),
+        short_count_label: short_count_label(recipes.len()),
         filters,
         sort: query.sort,
         cards: list
@@ -281,6 +294,8 @@ fn servings_label(recipe: &Recipe) -> Option<String> {
 pub fn build_detail(recipe: &Recipe) -> RecipeDetail {
     let kcal = recipe.kcal();
     let fiber = recipe.value("fibra");
+    let fiber_amount_label = format!("{} g", format_number(fiber));
+    let fiber_daily_label = format!("{}% VD", (fiber / 28.0 * 100.0).round());
     RecipeDetail {
         id: recipe.id.clone(),
         name: recipe.name.clone(),
@@ -294,7 +309,9 @@ pub fn build_detail(recipe: &Recipe) -> RecipeDetail {
         kcal_label: format_number(kcal),
         kcal_share_label: format!("{}% de una dieta de 2000 kcal", (kcal / REFERENCE_KCAL * 100.0).round()),
         macros: macro_shares(recipe),
-        fiber_label: format!("{} g · {}% VD", format_number(fiber), (fiber / 28.0 * 100.0).round()),
+        fiber_label: format!("{fiber_amount_label} · {fiber_daily_label}"),
+        fiber_amount_label,
+        fiber_daily_label,
         sugar_label: format!("{} g", format_number(recipe.value("azucar"))),
         vitamins: nutrient_rows(recipe, NutrientGroup::Vitamin),
         minerals: nutrient_rows(recipe, NutrientGroup::Mineral),

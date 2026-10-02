@@ -426,6 +426,16 @@ button.home-wx-chip--quiet { cursor: pointer; }
   .home-view .home-kbd { display: none; }
 }
 
+/* The greeting with the weather chip and the ask box with its buttons fit
+   side by side from about 1320 px; narrower, the actions go under the
+   greeting instead of squeezing the ask box out of the view. */
+@container home (max-width: 1320px) {
+  .home-header { flex-direction: column; align-items: stretch; gap: 16px; }
+  .home-header__actions { max-width: none; }
+  .home-sent,
+  .home-refresh-error { margin-top: -8px; align-self: flex-start; }
+}
+
 /* Two columns: the cards take their own height and the lists scroll inside. */
 @container home (max-width: 1100px) {
   .home-grid { flex: none; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; }
@@ -436,30 +446,17 @@ button.home-wx-chip--quiet { cursor: pointer; }
   .home-card--notes,
   .home-card--recent { grid-column: auto; }
   .home-scroll { flex: none; max-height: 320px; }
+  /* Fonts other than the canvas's may not fit a head on one line: the
+     shortcut goes under the title instead of over it. */
+  .home-card__head { flex-wrap: wrap; row-gap: 4px; }
+  .home-card__head > :last-child:not(:first-child) { margin-left: auto; }
 }
 
+/* From the phone (641 px) to 900 px — a tablet with the Explorer or the
+   Assistant open — two columns squeeze the heads, the rings and the
+   Pomodoro into each other: the cards go in one column. */
 @container home (max-width: 900px) {
-  .home-header { flex-direction: column; align-items: stretch; gap: 16px; }
-  .home-header__actions { max-width: none; }
-  .home-sent,
-  .home-refresh-error { margin-top: -8px; align-self: flex-start; }
-}
-
-/* One column, as on a phone. */
-@container home (max-width: 640px) {
-  .home-wx-sep,
-  .home-wx-mini,
-  .home-wx-range { display: none; }
-  .home-wx { width: 100%; }
-  .home-wx-pop { width: calc(100cqi - 32px); }
-  .home-wrap { padding: 16px 16px 24px; gap: 16px; }
-  .home-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .home-header h1 { font-size: 24px; }
-  .home-header__actions { flex-direction: column; align-items: stretch; }
-  .home-header__buttons > * { flex: 1; }
-  .home-card { padding: 14px 14px 16px; }
-  .home-stat b { font-size: 20px; }
-  .home-card__head { flex-wrap: wrap; }
+  .home-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @container home-routine (max-width: 470px) {
@@ -467,3 +464,168 @@ button.home-wx-chip--quiet { cursor: pointer; }
   .home-week__divider { display: none; }
   .home-week__summary { width: auto; }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Phone: the canvas board «Inicio — celular (Android)» (Mobile.dc.html). The
+   view switches to it by its own width (`useNarrowContainer` in
+   HomeDashboardView, below 641 px), so the components render the phone
+   markup. These rules come last: they win over the touch rules above where
+   the board is already large enough for a finger. The board's status bar,
+   theme switch and bottom navigation belong to the device and the shell. */
+
+/* The view stays put and the list scrolls inside it, so the forecast sheet
+   and the recording pill are placed against the view. */
+.notia-main.home-view--phone { display: flex; flex-direction: column; overflow: hidden; }
+.home-phone {
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.home-phone > * { flex-shrink: 0; }
+.home-phone:has(.home-rec-pill) { padding-bottom: 80px; }
+.home-phone__header { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-top: 6px; }
+.home-phone__header .home-eyebrow { font-size: 11px; }
+.home-phone__header h1 { margin: 0; font-size: 28px; line-height: 1.15; font-weight: 600; letter-spacing: -0.01em; color: var(--home-text); }
+.home-phone > .home-summary { margin-top: -2px; }
+.home-phone > .home-refresh-error { margin: 0; }
+
+/* Weather card and its forecast sheet */
+.home-mwx { box-sizing: border-box; width: 100%; display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid var(--home-line); border-radius: 16px; background: var(--home-panel); color: var(--home-text); text-align: left; font-size: 13px; cursor: pointer; }
+.home-mwx:active { border-color: var(--home-teal); }
+.home-mwx--quiet { min-height: 44px; flex-direction: row; align-items: center; color: var(--home-muted); cursor: default; }
+button.home-mwx--quiet { cursor: pointer; }
+.home-mwx__now { display: flex; align-items: center; gap: 12px; }
+.home-mwx__temp { font-size: 30px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.home-mwx__text { display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0; }
+.home-mwx__cond { font-size: 14px; font-weight: 500; }
+.home-mwx__text .home-wx-range { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-mwx__next { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 12px; border-top: 1px solid var(--home-line); }
+.home-mwx__day { display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; }
+.home-mwx__temps { font-size: 12px; }
+/* A phone narrower than the board (360 px) puts the temperatures under the day. */
+.home-mwx { container: home-mwx / inline-size; }
+@container home-mwx (max-width: 335px) {
+  .home-mwx__day { display: grid; grid-template-columns: auto auto; gap: 2px 6px; }
+  .home-mwx__temps { grid-column: 1 / -1; text-align: center; }
+}
+.home-view .home-mwx:focus-visible { outline: 2px solid var(--home-teal); outline-offset: -2px; }
+
+.home-sheet-scrim { position: absolute; inset: 0; z-index: 40; padding: 0; border: 0; background: var(--color-modal-backdrop); cursor: pointer; touch-action: none; }
+.home-wx-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  box-sizing: border-box;
+  max-height: 86%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 18px 28px;
+  border-top: 1px solid var(--home-line);
+  border-radius: 22px 22px 0 0;
+  background: var(--home-elev);
+  box-shadow: 0 -18px 40px var(--color-menu-shadow);
+  color: var(--home-text);
+}
+.home-wx-sheet__grab { flex-shrink: 0; align-self: center; width: 40px; height: 4px; margin-bottom: 4px; border-radius: 2px; background: var(--home-line); }
+.home-wx-sheet .home-wx-pop__temp { font-size: 34px; }
+.home-wx-sheet .home-wx-pop__cond { font-size: 14px; }
+.home-wx-sheet .home-wx-close { margin: 0; border-radius: 6px; }
+.home-wx-sheet .home-wx-day { height: 40px; font-size: 14px; }
+.home-wx-sheet .home-wx-day__rain { width: 36px; }
+.home-wx-sheet .home-wx-day__max { font-size: 13px; }
+
+/* Ask box, its confirmation and the two buttons */
+.home-phone__ask { display: flex; flex-direction: column; gap: 6px; }
+.home-view--phone .home-ask { height: 52px; border-radius: 14px; }
+.home-view--phone .home-ask input { font-size: 15px; }
+.home-view--phone .home-agent { height: 40px; }
+.home-view--phone .home-send { width: 40px; height: 40px; border-radius: 10px; }
+@media (pointer: coarse) {
+  .home-view--phone .home-send { width: 44px; height: 44px; }
+}
+.home-phone__sent { margin: 0; padding-left: 4px; font-size: 12.5px; color: var(--home-teal); }
+.home-phone__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.home-phone__actions > :only-child { grid-column: 1 / -1; }
+.home-button--phone { width: 100%; min-width: 0; height: 48px; border-radius: 12px; font-size: 14px; }
+
+/* Recording pill: over the bottom of the view while a meeting records. */
+.home-rec-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 21;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px 0 16px;
+  border: 1px solid var(--home-urgent);
+  border-radius: 22px;
+  background: var(--home-elev);
+  box-shadow: 0 10px 30px var(--color-menu-shadow);
+  color: var(--home-text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.home-rec-pill__dot { width: 9px; height: 9px; border-radius: 50%; background: var(--home-urgent); flex-shrink: 0; }
+.home-view--phone .home-rec-pill__stop { position: relative; height: 34px; min-height: 34px; padding: 0 12px; border-radius: 17px; }
+/* The finger gets 44 px without making the pill taller. */
+.home-rec-pill__stop::after { content: ''; position: absolute; inset: -5px -4px; }
+
+/* Cards */
+.home-view--phone .home-card { gap: 14px; padding: 16px; border-radius: 16px; }
+.home-view--phone .home-scroll { flex: none; max-height: none; overflow: visible; }
+/* 44 px for the finger, 28 px in the head, as on the board. */
+.home-view--phone .home-more { height: 44px; min-height: 44px; margin-block: -8px; }
+.home-view--phone .home-rows--agenda .home-row,
+.home-view--phone .home-rows--tasks .home-row { min-height: 52px; }
+.home-view--phone .home-days { gap: 3px; }
+.home-view--phone .home-day { height: 58px; }
+.home-view--phone .home-event-time { width: 64px; }
+.home-view--phone .home-stats { gap: 8px; }
+.home-view--phone .home-pomodoro { gap: 8px; padding: 8px 8px 8px 12px; }
+.home-view--phone .home-pomodoro .home-icon-button { width: 44px; height: 44px; }
+.home-view--phone .home-pomodoro__toggle { min-width: 96px; height: 44px; }
+.home-pomodoro__note { margin: -6px 0 0; overflow-wrap: anywhere; }
+
+/* Routine */
+.home-routine__stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.home-routine__stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.home-routine__stat--week { gap: 6px; }
+.home-routine__month-name { text-transform: capitalize; }
+.home-routine__figure { font-size: 16px; font-variant-numeric: tabular-nums; }
+.home-routine__figure--accent { color: var(--home-teal); }
+.home-routine__week-pct { color: var(--home-text); }
+.home-view--phone .home-rtabs { flex-wrap: nowrap; overflow-x: auto; margin: 0 -16px; padding: 0 16px; scrollbar-width: none; }
+.home-view--phone .home-rtabs::-webkit-scrollbar { display: none; }
+.home-view--phone .home-rtab { flex-shrink: 0; height: 36px; }
+.home-view--phone .home-checklist--habits .home-check-row { min-height: 52px; }
+.home-view--phone .home-habit { padding: 6px 0; }
+
+/* Notes */
+.home-view--phone .home-field { height: 44px; font-size: 15px; }
+.home-view--phone .home-note-form__add { height: 44px; }
+.home-view--phone .home-check-row { min-height: 48px; }
+.home-view--phone .home-check-row input[type="checkbox"] { width: 20px; height: 20px; }
+.home-view--phone .home-card--notes .home-check-row label { padding: 12px 0; }
+.home-view--phone .home-card--notes .home-icon-button { width: 44px; height: 44px; }
+
+/* Finance and recent */
+.home-view--phone .home-spacer { display: none; }
+.home-view--phone .home-finance__review { height: 48px; }
+.home-view--phone .home-folder { height: 40px; }

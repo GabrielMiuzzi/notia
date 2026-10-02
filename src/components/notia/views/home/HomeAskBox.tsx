@@ -8,6 +8,8 @@ interface HomeAskBoxProps {
   library: NotiaLibrary
   /** Sends `text` to the side chat, in a new chat with the agent. */
   onSend: (text: string, agent: ChatAgentOption | null) => void
+  /** Phone board: shorter copy, no chevron and no keyboard hint. */
+  phone?: boolean
 }
 
 function isFocusShortcut(event: KeyboardEvent): boolean {
@@ -18,7 +20,7 @@ function isFocusShortcut(event: KeyboardEvent): boolean {
  * «Preguntale al asistente»: the message goes to the side chat with the
  * agent of the chip, which is the side chat's own agent.
  */
-export function HomeAskBox({ library, onSend }: HomeAskBoxProps) {
+export function HomeAskBox({ library, onSend, phone = false }: HomeAskBoxProps) {
   const [agents, setAgents] = useState<ChatAgentOption[]>([])
   const [agentFileName, setAgentFileName] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -78,20 +80,20 @@ export function HomeAskBox({ library, onSend }: HomeAskBoxProps) {
       >
         <Sparkle size={13} strokeWidth={2} aria-hidden="true" />
         <span className="home-agent__name">{agent?.name ?? 'Notia'}</span>
-        <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
+        {phone ? null : <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />}
       </button>
-      <label htmlFor="home-ask-input" className="home-sr">Preguntale al asistente o capturá una idea</label>
+      <label htmlFor="home-ask-input" className="home-sr">{phone ? 'Preguntale al asistente' : 'Preguntale al asistente o capturá una idea'}</label>
       <input
         ref={inputRef}
         id="home-ask-input"
         type="text"
-        placeholder="Preguntale al asistente o capturá una idea…"
+        placeholder={phone ? 'Preguntale al asistente…' : 'Preguntale al asistente o capturá una idea…'}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
       />
-      <span className="home-kbd" aria-hidden="true">Ctrl K</span>
+      {phone ? null : <span className="home-kbd" aria-hidden="true">Ctrl K</span>}
       <button type="submit" className="home-send" aria-label="Enviar al asistente">
-        <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+        <ArrowRight size={phone ? 16 : 15} strokeWidth={2} aria-hidden="true" />
       </button>
     </form>
   )

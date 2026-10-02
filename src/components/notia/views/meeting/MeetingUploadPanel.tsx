@@ -1,10 +1,10 @@
 import { useRef } from 'react'
-import { AlignLeft, FileAudio, Film, Music, Upload, X } from 'lucide-react'
+import { AlignLeft, Upload, X } from 'lucide-react'
 import { MEETING_MEDIA_ACCEPT } from '../../../../services/meeting/meetingMediaService'
 import type { MeetingMediaFile } from '../../../../services/meeting/meetingTypes'
 import { MeetingOptions, type MeetingOptionsProps } from './MeetingOptions'
 import { MEETING_SOURCE_PANEL_ID } from './MeetingSourceTabs'
-import { formatBytes, formatClock } from './meetingDisplay'
+import { fileDetail, fileIdentity } from './meetingDisplay'
 
 /** The file of the upload tab, as the view follows it. */
 export type MeetingFileState =
@@ -15,7 +15,8 @@ export type MeetingFileState =
 
 const WAVEFORM_MAX_HEIGHT = 26
 
-interface MeetingUploadPanelProps extends MeetingOptionsProps {
+/** The file to transcribe and what can be done with it. */
+export interface MeetingFileSetupProps {
   file: MeetingFileState
   isDragging: boolean
   canTranscribe: boolean
@@ -25,14 +26,7 @@ interface MeetingUploadPanelProps extends MeetingOptionsProps {
   onTranscribe: () => void
 }
 
-function fileDetail(file: Exclude<MeetingFileState, { status: 'empty' }>): string {
-  if (file.status === 'uploading') return `Cargando… ${Math.round(file.progress * 100)}% · ${formatBytes(file.byteLength)}`
-  if (file.status === 'reading') return `Leyendo el audio… · ${formatBytes(file.byteLength)}`
-  const { media } = file
-  const parts = [media.kind === 'video' ? 'Video' : 'Audio', formatClock(media.durationMs), formatBytes(media.byteLength)]
-  if (media.kind === 'video') parts.push('se usa solo el audio')
-  return parts.join(' · ')
-}
+type MeetingUploadPanelProps = MeetingOptionsProps & MeetingFileSetupProps
 
 /** Upload tab of Meeting: a file that already exists, transcribed like a recording. */
 export function MeetingUploadPanel({
@@ -46,8 +40,7 @@ export function MeetingUploadPanel({
   ...options
 }: MeetingUploadPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const name = file.status === 'empty' ? null : file.status === 'ready' ? file.media.name : file.name
-  const Icon = file.status !== 'ready' ? FileAudio : file.media.kind === 'video' ? Film : Music
+  const identity = fileIdentity(file)
 
   return (
     <div className="notia-meeting-ready" id={MEETING_SOURCE_PANEL_ID} role="tabpanel">
@@ -78,11 +71,11 @@ export function MeetingUploadPanel({
             />
           </div>
 
-          {file.status !== 'empty' && name ? (
+          {file.status !== 'empty' && identity ? (
             <div className="notia-meeting-file" data-kind={file.status === 'ready' ? file.media.kind : undefined}>
-              <span className="notia-meeting-file-icon" aria-hidden="true"><Icon size={18} /></span>
+              <span className="notia-meeting-file-icon" aria-hidden="true"><identity.Icon size={18} /></span>
               <div className="notia-meeting-file-text">
-                <strong title={name}>{name}</strong>
+                <strong title={identity.name}>{identity.name}</strong>
                 <small role="status">{fileDetail(file)}</small>
               </div>
               {file.status === 'ready' ? (

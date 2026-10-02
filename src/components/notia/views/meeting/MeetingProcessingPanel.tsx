@@ -1,16 +1,10 @@
 import { useState } from 'react'
 import { Check } from 'lucide-react'
-import { formatClock } from './meetingDisplay'
+import { describeMeetingProcessing, formatClock } from './meetingDisplay'
 import type { SpeechFinalizingStage } from '../../../../services/speech/speechTypes'
 import type { MeetingLine, MeetingSourceFile } from '../../../../services/meeting/meetingTypes'
 
-const STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'assigning-turns']
-const LATER_STEP_LABELS: Record<Exclude<SpeechFinalizingStage, 'transcribing'>, string> = {
-  'detecting-speakers': 'Detectando voces',
-  'assigning-turns': 'Asignando intervenciones',
-}
-
-interface MeetingProcessingPanelProps {
+export interface MeetingProcessingPanelProps {
   durationMs: number
   progress: number | undefined
   stage: SpeechFinalizingStage | undefined
@@ -34,19 +28,7 @@ export function MeetingProcessingPanel({
   onCancelFile,
 }: MeetingProcessingPanelProps) {
   const [showText, setShowText] = useState(false)
-  const currentStage = stage ?? 'transcribing'
-  const current = STAGES.indexOf(currentStage)
-  const percent = Math.round((progress ?? 0) * 100)
-  // A file is transcribed here; a recording was already transcribed live.
-  const transcribingFile = Boolean(sourceFile) && currentStage === 'transcribing'
-  const steps = STAGES.map((step) => ({
-    stage: step,
-    label: step !== 'transcribing' ? LATER_STEP_LABELS[step]
-      : !sourceFile ? 'Transcripción completa'
-        : transcribingFile ? 'Transcribiendo el archivo' : 'Archivo transcripto',
-  }))
-  const title = transcribingFile ? 'Transcribiendo el archivo…'
-    : isSkipping ? 'Terminando sin separar hablantes…' : 'Separando hablantes…'
+  const { transcribingFile, steps, title, percent } = describeMeetingProcessing({ progress, stage, sourceFile, isSkipping })
 
   return (
     <section className="notia-meeting-card notia-meeting-processing" aria-labelledby="meeting-processing-title">
@@ -78,9 +60,9 @@ export function MeetingProcessingPanel({
           <span className="notia-meeting-mono">{progress === undefined ? '—' : `${percent}%`}</span>
         </div>
         <ol className="notia-meeting-processing-steps">
-          {steps.map((step, index) => (
-            <li key={step.stage} data-state={index < current ? 'done' : index === current ? 'current' : 'pending'}>
-              <span aria-hidden="true">{index < current ? <Check size={16} /> : <i />}</span>
+          {steps.map((step) => (
+            <li key={step.stage} data-state={step.state}>
+              <span aria-hidden="true">{step.state === 'done' ? <Check size={16} /> : <i />}</span>
               {step.label}
             </li>
           ))}

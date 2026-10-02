@@ -160,13 +160,10 @@ fn validate_bundled_speech_models() {
         .map(std::path::PathBuf::from)
         .expect("CARGO_MANIFEST_DIR is required");
     let models = manifest_dir.join("resources").join("speech").join("models");
-    let parakeet = models.join("es-parakeet-tdt-v3");
+    let whisper = models.join("whisper-large-v3-turbo");
     let required = [
-        parakeet.join("encoder.onnx"),
-        parakeet.join("decoder.onnx"),
-        parakeet.join("joiner.onnx"),
-        parakeet.join("tokens.txt"),
-        parakeet.join("silero_vad.onnx"),
+        whisper.join("ggml-large-v3-turbo-q8_0.bin"),
+        whisper.join("silero_vad.onnx"),
         models
             .join("speaker-diarization-v1")
             .join("segmentation.onnx"),
@@ -175,7 +172,7 @@ fn validate_bundled_speech_models() {
     for path in required {
         if !path.is_file() {
             panic!(
-                "missing bundled speech model: {}. Run scripts/install-speech.sh parakeet.",
+                "missing bundled speech model: {}. Run scripts/install-speech.sh.",
                 path.display()
             );
         }
@@ -276,6 +273,34 @@ fn prepare_android_speech_runtime() {
                     }
                 }
             }
+        }
+    }
+    // whisper.cpp: the bridge and its ggml backends, loaded by library name.
+    let whisper_runtime_dir = manifest_dir
+        .join("resources")
+        .join("whisper")
+        .join("runtime")
+        .join("android-arm64-v8a");
+    if !whisper_runtime_dir.join("libnotia_whisper.so").is_file() {
+        panic!(
+            "missing Android whisper.cpp runtime in {}. Run scripts/build-whisper-runtime.ps1 -Platform android.",
+            whisper_runtime_dir.display()
+        );
+    }
+    let destination_dir = generated_app
+        .join("src")
+        .join("main")
+        .join("jniLibs")
+        .join("arm64-v8a");
+    std::fs::create_dir_all(&destination_dir)
+        .expect("failed to create the Android whisper.cpp native library directory");
+    for entry in std::fs::read_dir(&whisper_runtime_dir).expect("failed to list Android whisper.cpp libraries") {
+        let source = entry.expect("failed to read Android whisper.cpp library entry").path();
+        if source.extension().and_then(|value| value.to_str()) == Some("so") {
+            let file_name = source.file_name().expect("whisper.cpp library without filename");
+            println!("cargo:rerun-if-changed={}", source.display());
+            std::fs::copy(&source, destination_dir.join(file_name))
+                .expect("failed to copy an Android whisper.cpp library");
         }
     }
     let qwen_runtime_dir = manifest_dir

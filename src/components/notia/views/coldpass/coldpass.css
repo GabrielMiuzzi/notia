@@ -3,7 +3,8 @@
    the Explorer and the Assistant, not on the window. Wide, it follows the
    design canvas: header, device card, then the list and the detail side by
    side, each scrolling on its own. Narrow, the page scrolls and the list and
-   the detail take turns. */
+   the detail take turns. Below 600 px ColdPassView renders the phone boards
+   instead (`.cp-view--phone`, at the end of this file). */
 .notia-main.cp-view {
   container: coldpass / inline-size;
   --cp-ink: var(--color-app-bg);
@@ -418,12 +419,12 @@ a.cp-site:hover { color: var(--cp-text); }
   .cp-search { flex-basis: 100%; width: 100%; }
   .cp-header__actions { flex-basis: 100%; }
   .cp-header__actions .cp-btn { flex: 1 1 0; }
-  .cp-device { flex-wrap: wrap; }
-  .cp-device__copy { flex-basis: calc(100% - 60px); }
+  .cp-wrap .cp-device { flex-wrap: wrap; }
+  .cp-wrap .cp-device__copy { flex-basis: calc(100% - 60px); }
   .cp-device__meta { flex-basis: 100%; align-items: flex-start; margin: 0; padding: 0; border-right: 0; }
   .cp-device__firmware { padding-right: 0; }
-  .cp-device__actions { flex-basis: 100%; flex-wrap: wrap; }
-  .cp-device__actions .cp-btn { flex: 1 1 auto; }
+  .cp-wrap .cp-device__actions { flex-basis: 100%; flex-wrap: wrap; }
+  .cp-wrap .cp-device__actions .cp-btn { flex: 1 1 auto; }
   .cp-split { flex-direction: column; flex-grow: 0; }
   .cp-list { width: auto; }
   .cp-rows { overflow: visible; }
@@ -431,18 +432,6 @@ a.cp-site:hover { color: var(--cp-text); }
   .cp-back { display: inline-flex; }
   .cp-split[data-detail-open="true"] .cp-list { display: none; }
   .cp-split:not([data-detail-open="true"]) .cp-detail { display: none; }
-}
-
-@container coldpass (max-width: 520px) {
-  .cp-detail { padding: 16px; }
-  .cp-detail__head { flex-wrap: wrap; }
-  .cp-detail__title { flex: 1 1 calc(100% - 84px); }
-  .cp-password__value { font-size: 17px; letter-spacing: 0.04em; }
-  .cp-detail__head .cp-btn { flex: 1 1 auto; }
-  .cp-alert { flex-direction: column; align-items: flex-start; }
-  .cp-card--access { padding: 4px 16px; }
-  .cp-field { grid-template-columns: minmax(0, 1fr) 40px; row-gap: 2px; padding: 10px 0; }
-  .cp-field__label { grid-column: 1 / -1; }
 }
 
 /* Touch: every target is at least 44 px. */
@@ -455,3 +444,275 @@ a.cp-site:hover { color: var(--cp-text); }
   .cp-search input { height: 44px; }
   .cp-search svg { top: 13px; }
 }
+
+.cp-icon:disabled { opacity: 0.5; cursor: default; }
+
+/* Phone: the boards «Celular — lista» and «Celular — detalle» of the canvas,
+   rendered by ColdPassView when the view is narrower than 600 px. The list
+   scrolls under a floating «Nueva credencial»; the detail scrolls under a
+   fixed bar with «Contraseñas» (back) and «Editar». Every target is 44 px or
+   more: the filters (36 px) and «Vincular» (40 px) keep the canvas size and
+   reach 44 px with an invisible margin. */
+.notia-main.cp-view--phone { display: flex; flex-direction: column; }
+.cp-view--phone .cp-icon { width: 44px; height: 44px; border-radius: 12px; }
+.cp-view--phone .cp-icon:active:not(:disabled) { background: var(--cp-line); color: var(--cp-text); }
+.cp-view--phone .cp-icon[aria-pressed="true"] { color: var(--cp-teal); }
+.cp-view--phone .cp-health { gap: 5px; font-size: 11px; }
+.cp-view--phone .cp-btn--ghost:active:not(:disabled) { background: var(--cp-elev); }
+
+.cp-phone-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.cp-phone-scroll::-webkit-scrollbar { display: none; }
+/* In the canvas the scrolling column squeezes «Eliminar credencial» to 24 px;
+   nothing shrinks here, so it keeps its 48 px. */
+.cp-phone-scroll > * { flex-shrink: 0; }
+.cp-phone-scroll--list { padding: 16px 0 112px; }
+.cp-phone-scroll--detail { padding: 20px 16px 40px; }
+
+/* List */
+.cp-phone-head { display: flex; align-items: flex-start; gap: 4px; padding: 0 16px 0 20px; }
+.cp-phone-head__intro { display: flex; flex-direction: column; gap: 4px; flex-grow: 1; min-width: 0; padding-top: 4px; }
+.cp-phone-head h1 { margin: 0; font-family: var(--cp-display); font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+.cp-phone-head p { margin: 0; font-size: 13px; color: var(--cp-muted); }
+.cp-phone-head .cp-spin { width: 18px; height: 18px; }
+
+.cp-device--compact { gap: 12px; margin: 0 16px; padding: 14px; }
+.cp-device--compact .cp-device__icon { width: 40px; height: 40px; border-radius: 11px; }
+.cp-device--compact .cp-device__title { flex-wrap: nowrap; gap: 8px; }
+.cp-device--compact .cp-device__title h2 { font-size: 15px; }
+.cp-device--compact .cp-device__status { gap: 5px; height: 22px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
+.cp-device--compact .cp-device__dot { width: 6px; height: 6px; }
+.cp-device--compact .cp-spin { width: 11px; height: 11px; }
+.cp-device--compact .cp-device__copy p { font-size: 13px; line-height: 1.35; }
+.cp-device--compact .cp-device__actions .cp-btn { position: relative; height: 40px; min-height: 0; padding: 0 12px; font-size: 14px; }
+.cp-device--compact .cp-device__actions .cp-btn--primary { padding: 0 14px; }
+.cp-device--compact .cp-device__actions .cp-btn::before { content: ''; position: absolute; inset: -2px 0; }
+.cp-device--compact .cp-device__actions .cp-btn:active:not(:disabled) { opacity: 0.85; }
+/* «Mandar mensaje» and «Desconectar» do not fit beside the text. */
+.cp-device--compact[data-actions="2"] { flex-wrap: wrap; }
+.cp-device--compact[data-actions="2"] .cp-device__copy { flex-basis: calc(100% - 52px); }
+.cp-device--compact[data-actions="2"] .cp-device__actions { flex-basis: 100%; }
+.cp-device--compact[data-actions="2"] .cp-device__actions .cp-btn { flex: 1 1 0; }
+
+.cp-phone-search { position: relative; margin: 0 16px; }
+.cp-phone-search svg { position: absolute; top: 13px; left: 14px; color: var(--cp-muted); pointer-events: none; }
+.cp-phone-search input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 14px 0 42px;
+  background: var(--cp-panel);
+  border: 1px solid var(--cp-line);
+  border-radius: 12px;
+  color: var(--cp-text);
+  font-size: 16px;
+}
+
+.cp-phone-filters {
+  display: flex;
+  gap: 8px;
+  margin: -4px 0;
+  padding: 4px 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cp-phone-filters::-webkit-scrollbar { display: none; }
+.cp-view--phone .cp-chip { position: relative; flex-shrink: 0; height: 36px; padding: 0 14px; font-size: 14px; }
+.cp-view--phone .cp-chip::before { content: ''; position: absolute; inset: -4px 0; }
+
+.cp-phone-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 16px;
+  padding: 4px;
+  background: var(--cp-panel);
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+}
+.cp-view--phone .cp-row { gap: 12px; min-height: 64px; padding: 10px; }
+.cp-view--phone .cp-row:active { background: var(--cp-elev); }
+.cp-view--phone .cp-row__tile { width: 42px; height: 42px; border: 1px solid var(--cp-line); border-radius: 11px; }
+.cp-row__chevron { color: var(--cp-muted); }
+.cp-view--phone .cp-empty { padding: 24px 16px; }
+.cp-view--phone .cp-empty p { line-height: normal; }
+.cp-view--phone .cp-empty .cp-btn { height: 44px; padding: 0 16px; }
+
+.cp-phone-fab {
+  position: absolute;
+  right: 16px;
+  bottom: 28px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 20px 0 18px;
+  background: var(--cp-teal);
+  border: 0;
+  border-radius: 16px;
+  color: var(--cp-on-teal);
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 10px 28px var(--color-menu-shadow);
+  cursor: pointer;
+}
+.cp-phone-fab:disabled { opacity: 0.5; cursor: default; }
+.cp-phone-fab:active:not(:disabled) { opacity: 0.85; }
+
+.cp-view--phone .cp-toast {
+  right: 16px;
+  bottom: 100px;
+  left: 16px;
+  max-width: none;
+  padding: 14px 16px;
+  transform: none;
+  border-radius: 14px;
+  line-height: 1.4;
+}
+.cp-view--phone .cp-toast[data-screen="detail"] { bottom: 24px; }
+
+/* Detail */
+.cp-phone-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 6px;
+  background: var(--cp-ink);
+  border-bottom: 1px solid var(--cp-line);
+}
+.cp-phone-bar button {
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.cp-phone-bar button:active { opacity: 0.85; }
+.cp-phone-bar__back { gap: 2px; padding: 0 10px 0 4px; color: var(--cp-teal); }
+.cp-phone-bar__edit { gap: 6px; margin-left: auto; padding: 0 12px; color: var(--cp-text); }
+
+.cp-phone-ident { display: flex; align-items: center; gap: 14px; padding: 0 4px 4px; }
+.cp-phone-ident__tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  background: var(--cp-elev);
+  border: 1px solid var(--cp-line);
+  border-radius: 15px;
+  font-family: var(--cp-display);
+  font-size: 24px;
+  font-weight: 600;
+}
+.cp-phone-ident__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cp-phone-ident__title h2 {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--cp-display);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cp-phone-site {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  color: var(--cp-muted);
+  font-size: 14px;
+  text-decoration: none;
+}
+.cp-phone-site > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+a.cp-phone-site::before { content: ''; position: absolute; inset: -8px 0; }
+
+.cp-phone-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  background: var(--cp-elev);
+  border: 1px solid var(--cp-line);
+  border-radius: 14px;
+}
+.cp-phone-card--password { gap: 12px; }
+.cp-phone-card--access { padding: 2px 6px 2px 16px; }
+.cp-phone-card--history { gap: 10px; }
+.cp-phone-card--notes { gap: 8px; }
+.cp-phone-card__row { display: flex; align-items: center; gap: 8px; }
+.cp-phone-password { display: flex; align-items: center; gap: 4px; }
+.cp-phone-password__value { flex-grow: 1; min-width: 0; overflow: hidden; font-size: 19px; letter-spacing: 0.05em; white-space: nowrap; text-overflow: ellipsis; }
+.cp-phone-changed { font-size: 13px; color: var(--cp-muted); }
+.cp-phone-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 48px;
+  background: var(--cp-teal);
+  border: 0;
+  border-radius: 12px;
+  color: var(--cp-on-teal);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cp-phone-copy:disabled { opacity: 0.5; cursor: default; }
+.cp-phone-copy:active:not(:disabled) { opacity: 0.85; }
+.cp-view--phone .cp-alert { flex-direction: column; align-items: stretch; gap: 10px; }
+.cp-view--phone .cp-alert p { font-size: 14px; }
+.cp-view--phone .cp-alert .cp-btn,
+.cp-view--phone .cp-phone-card--history .cp-btn { height: 44px; font-size: 14px; }
+
+.cp-phone-field { display: flex; align-items: center; gap: 8px; min-height: 64px; border-bottom: 1px solid var(--cp-line); }
+.cp-phone-field:last-child { border-bottom: 0; }
+.cp-phone-field__text { display: flex; flex-direction: column; flex-grow: 1; gap: 3px; min-width: 0; }
+.cp-phone-field__label { font-size: 12px; color: var(--cp-muted); }
+.cp-phone-field__value { overflow: hidden; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; }
+
+.cp-phone-history {
+  display: flex;
+  align-items: center;
+  padding: 6px 2px 6px 14px;
+  background: var(--cp-panel);
+  border: 1px solid var(--cp-line);
+  border-radius: 10px;
+}
+.cp-phone-history__value { overflow: hidden; font-size: 15px; letter-spacing: 0.04em; white-space: nowrap; text-overflow: ellipsis; }
+.cp-phone-note { margin: 0; font-size: 14px; line-height: 1.5; }
+.cp-phone-notes { margin: 0; font-size: 14px; line-height: 1.55; }
+
+.cp-phone-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 48px;
+  margin-top: 6px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--cp-weak) 35%, transparent);
+  border-radius: 12px;
+  color: var(--cp-weak);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.cp-phone-delete:active { background: color-mix(in srgb, var(--cp-weak) 10%, transparent); }

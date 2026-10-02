@@ -1,5 +1,6 @@
-import { memo, useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useCallback, useState, type CSSProperties } from 'react'
 import { useAppDispatch } from '../../../../store/hooks'
+import { useNarrowContainer } from '../../../../hooks/useNarrowContainer'
 import { openSettingsToSection } from '../../../../features/ui/uiSlice'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 import { NotiaSubmenuPanel } from '../../NotiaSubmenuPanel'
@@ -12,6 +13,18 @@ import { ChatHistoryPanel } from './ChatHistoryPanel'
 import { ChatPanelHeader, type ChatPanelAgent, type ChatPanelAgentLook } from './ChatPanelHeader'
 import { ChatPanelWelcome } from './ChatPanelWelcome'
 import { ChatContextPanel, ChatStarterCards, ChatTopBar, ChatWelcomeHero } from './ChatWorkspacePanels'
+import { ChatPhoneAgentsBar, ChatPhoneHeader, ChatPhoneWelcome } from './ChatPhone'
+import {
+  ChatPhoneAgentsSheet,
+  ChatPhoneAttachSheet,
+  ChatPhoneContextSheet,
+  ChatPhoneDynamicSheet,
+  type ChatPhoneSheetKind,
+} from './ChatPhoneSheets'
+import { ChatPhoneHistoryDrawer } from './ChatPhoneHistory'
+import { useKeyboardInset } from './useKeyboardInset'
+import { chatAgentLookOf } from './useChatAgentSettings'
+import './chatPhone.css'
 import { buildAttachmentDisplayName } from '../../../../services/chat/chatAttachmentRuntime'
 import { deleteChatDraftFile } from '../../../../services/chat/chatSessionStorage'
 import { writeAgentMemories } from '../../../../services/ai/agentPromptRuntime'
@@ -64,6 +77,13 @@ const DEFAULT_SUGGESTIONS: ChatStarter[] = [
 ]
 /** The context panel starts open only where it fits beside the conversation. */
 const CONTEXT_PANEL_DOCKED_QUERY = '(min-width: 1280px)'
+/** Width of the view below which the phone boards of the canvas apply. */
+const PHONE_LAYOUT_MAX_WIDTH = 600
+const CHAT_MENU_WIDTH = 184
+const CHAT_MENU_MARGIN = 12
+
+/** What the phone layout shows over the conversation; a sheet may open over another. */
+type ChatPhoneSurface = 'history' | ChatPhoneSheetKind
 
 function isNaturalUndoRequest(value: string): boolean {
   const normalized = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -136,6 +156,16 @@ export function ChatWorkspaceViewComponent({
   const [isContextPanelOpen, setIsContextPanelOpen] = useState(
     () => typeof window === 'undefined' || window.matchMedia(CONTEXT_PANEL_DOCKED_QUERY).matches,
   )
+  // The full chat view follows the phone boards when its own width is a
+  // phone's (the side chat keeps its layout).
+  const [rootElement, setRootElement] = useState<HTMLElement | null>(null)
+  const isPhone = useNarrowContainer(showHistoryPanel ? rootElement : null, PHONE_LAYOUT_MAX_WIDTH) && showHistoryPanel
+  const keyboardInset = useKeyboardInset(isPhone ? rootElement : null)
+  const [phoneSurfaces, setPhoneSurfaces] = useState<ChatPhoneSurface[]>([])
+  const phoneSurface = isPhone ? phoneSurfaces[phoneSurfaces.length - 1] ?? null : null
+  const openPhoneSurface = (surface: ChatPhoneSurface) => setPhoneSurfaces([surface])
+  const stackPhoneSurface = (surface: ChatPhoneSurface) => setPhoneSurfaces((current) => [...current, surface])
+  const closePhoneSurface = () => setPhoneSurfaces((current) => current.slice(0, -1))
   const [pendingAgentQuestion, setPendingAgentQuestion] = useState<{
     question: string
     choices: string[]
@@ -217,6 +247,7 @@ export function ChatWorkspaceViewComponent({
     setIsClearingAgentMemory,
     chatContextMenuState,
     setChatContextMenuState,
+    locallyDeletedChatPaths,
     setLocallyDeletedChatPaths,
 
     isAttachmentMenuOpen,
@@ -740,6 +771,31 @@ export function ChatWorkspaceViewComponent({
     setIsAttachmentMenuOpen((current) => !current)
   }
 
+  const handleOpenPhoneAttachSheet = () => {
+    if (!library || !isAiAvailable) {
+      return
+    }
+    openPhoneSurface('attach')
+  }
+
+  const startNewChat = () => {
+    // A new chat starts empty; the file is created with its first message.
+    setSelectedChatFilePath(null)
+    setMatchedPreferredChatFilePath(null)
+    setActiveChatDocument(null)
+  }
+
+  /** Opens a chat's options (delete) under the button that asked for them. */
+  const openChatOptions = (chat: { id: string; filePath: string; title: string }, anchor: DOMRect) => {
+    setChatContextMenuState({
+      chatId: chat.id,
+      filePath: chat.filePath,
+      title: chat.title,
+      top: anchor.bottom + 4,
+      left: Math.min(Math.max(CHAT_MENU_MARGIN, anchor.right - CHAT_MENU_WIDTH), window.innerWidth - CHAT_MENU_WIDTH - CHAT_MENU_MARGIN),
+    })
+  }
+
   const handleViewAiOperationDiff = (operationId: string): void => {
     if (!library) return
     void loadAiOperationDiff(library, operationId).then((diff) => {
@@ -773,6 +829,21 @@ export function ChatWorkspaceViewComponent({
     && !pendingAgentQuestion
     && !pendingAgentConfirmation
     && agentExecutionPlan.length === 0
+
+  // On a phone the virtual keyboard shrinks the conversation; its end stays in view.
+  const isPhoneThreadShown = isPhone && !isWelcomeState
+  useEffect(() => {
+    const thread = chatThreadRef.current
+    if (!isPhoneThreadShown || !thread || typeof ResizeObserver === 'undefined') return undefined
+    let lastHeight = thread.clientHeight
+    const observer = new ResizeObserver(() => {
+      const wasAtEnd = thread.scrollHeight - thread.scrollTop - lastHeight < 24
+      if (thread.clientHeight < lastHeight && wasAtEnd) thread.scrollTop = thread.scrollHeight
+      lastHeight = thread.clientHeight
+    })
+    observer.observe(thread)
+    return () => observer.disconnect()
+  }, [isPhoneThreadShown])
 
   // The side chat answers with a prompt file of `.agent/promps`; the catalog
   // brings its name, description and initials.
@@ -955,6 +1026,7 @@ export function ChatWorkspaceViewComponent({
       variant={showHistoryPanel ? 'workspace' : 'panel'}
       libraryRagEnabled={libraryRagEnabled}
       onLibraryRagChange={showHistoryPanel ? setLibraryRagEnabled : undefined}
+      libraryRagLabel={isPhone ? 'Librería' : undefined}
       selectedLibraryFolderPaths={showHistoryPanel ? selectedLibraryFolderPaths : []}
       onRemoveFolder={handleRemoveSelectedFolder}
       onOpenLibraryFoldersModal={showHistoryPanel
@@ -984,14 +1056,15 @@ export function ChatWorkspaceViewComponent({
       transientContextSummaryLabel={transientContextSummaryLabel}
       transientContextDisplayPaths={transientContextDisplayPaths}
       hasTransientContext={hasTransientContext}
-      isAttachmentMenuOpen={isAttachmentMenuOpen}
+      // On a phone the attach options open as a sheet instead of a menu.
+      isAttachmentMenuOpen={!isPhone && isAttachmentMenuOpen}
       attachmentMenuPosition={attachmentMenuPosition}
       onRemoveImage={(index) => {
         setSelectedImageAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))
       }}
       onRemoveFile={handleRemoveSelectedFile}
       onTransientContextPathRemove={onTransientContextPathRemove}
-      onToggleAttachmentMenu={handleOpenAttachmentMenu}
+      onToggleAttachmentMenu={isPhone ? handleOpenPhoneAttachSheet : handleOpenAttachmentMenu}
       onSelectImage={() => {
         setIsAttachmentMenuOpen(false)
         imageInputRef.current?.click()
@@ -1060,24 +1133,154 @@ export function ChatWorkspaceViewComponent({
     />
   )
 
+  const chatSettings = agentSettings.settings
+  const updateChatSettings = (next: typeof chatSettings) => void agentSettings.updateSettings(next)
+  const areChatSettingsDisabled = !library || isSubmitting
+  const phoneDynamicName = chatSettings.dynamic
+    ? agentSettings.catalog.dynamics.find((dynamic) => dynamic.fileName === chatSettings.dynamic)?.name
+      ?? chatSettings.dynamic.replace(/\.md$/i, '')
+    : 'Sin dinámica'
+
+  const phoneMain = isPhone ? (
+    <section className="notia-chat-main">
+      <ChatPhoneHeader
+        title={activeChatDocument?.title ?? 'Nuevo chat'}
+        modelLabel={activeModelLabel ?? (isResolvingActiveModel ? 'Resolviendo modelo…' : 'Modelo por defecto')}
+        isAiAvailable={isAiAvailable}
+        agentCount={chatSettings.agents.length}
+        onOpenHistory={() => openPhoneSurface('history')}
+        onOpenModelSettings={handleOpenAiSettings}
+        onOpenContext={() => openPhoneSurface('context')}
+        onNewChat={startNewChat}
+      />
+      {chatSettings.agents.length > 0 ? (
+        <ChatPhoneAgentsBar
+          dynamicName={phoneDynamicName}
+          agents={chatSettings.agents.map((fileName, index) => chatAgentLookOf(fileName, index, agentSettings.agentLooks))}
+          onOpen={() => openPhoneSurface('agents')}
+        />
+      ) : null}
+      {isWelcomeState ? (
+        <ChatPhoneWelcome libraryName={library?.name ?? null} starters={visibleSuggestions} onSelectStarter={setDraft} />
+      ) : thread}
+      <div className="notia-chat-composer-dock">{composer}</div>
+    </section>
+  ) : null
+
+  const phoneOverlay = phoneSurface === 'history' ? (
+    <ChatPhoneHistoryDrawer
+      library={library}
+      selectedChatFilePath={selectedChatFilePath}
+      hiddenChatPaths={locallyDeletedChatPaths}
+      onPickChat={(chat) => {
+        setSelectedChatFilePath(chat.filePath)
+        setPhoneSurfaces([])
+      }}
+      onNewChat={() => {
+        startNewChat()
+        setPhoneSurfaces([])
+      }}
+      onOpenChatOptions={openChatOptions}
+      onClose={closePhoneSurface}
+    />
+  ) : phoneSurface === 'context' ? (
+    <ChatPhoneContextSheet
+      key="context"
+      libraryName={library?.name ?? null}
+      libraryRagEnabled={libraryRagEnabled}
+      contextFiles={workspaceContextFiles}
+      contextFolders={workspaceContextFolders}
+      contextMode={selectedFileContextMode}
+      starters={visibleSuggestions}
+      isDisabled={!library || !isAiAvailable}
+      onChooseFiles={() => setIsLibraryFilesModalOpen(true)}
+      onChooseFolders={() => setIsLibraryFoldersModalOpen(true)}
+      onRemoveFile={handleRemoveSelectedFile}
+      onRemoveFolder={handleRemoveSelectedFolder}
+      onSelectStarter={(prompt) => {
+        setDraft(prompt)
+        setPhoneSurfaces([])
+      }}
+      agentMemoryEnabled={agentMemoryEnabled}
+      isAgentMemoryChoiceLocked={isAgentMemoryChoiceLocked}
+      onAgentMemoryChange={setNewChatAgentMemoryEnabled}
+      onOpenMemory={() => setIsChatToolsModalOpen(true)}
+      catalog={agentSettings.catalog}
+      settings={chatSettings}
+      looks={agentSettings.agentLooks}
+      areSettingsDisabled={areChatSettingsDisabled}
+      onSettingsChange={updateChatSettings}
+      settingsError={agentSettings.settingsError}
+      onDismissSettingsError={agentSettings.dismissSettingsError}
+      onOpenDynamic={() => stackPhoneSurface('dynamic')}
+      onOpenAgents={() => stackPhoneSurface('agents')}
+      onClose={closePhoneSurface}
+    />
+  ) : phoneSurface === 'attach' ? (
+    <ChatPhoneAttachSheet
+      key="attach"
+      libraryName={library?.name ?? null}
+      libraryRagEnabled={libraryRagEnabled}
+      isRagDisabled={!library || isSubmitting}
+      onSelectFile={() => {
+        setPhoneSurfaces([])
+        imageInputRef.current?.click()
+      }}
+      onOpenLibraryFiles={() => {
+        setPhoneSurfaces([])
+        setIsLibraryFilesModalOpen(true)
+      }}
+      onOpenLibraryFolders={() => {
+        setPhoneSurfaces([])
+        setIsLibraryFoldersModalOpen(true)
+      }}
+      onLibraryRagChange={setLibraryRagEnabled}
+      onClose={closePhoneSurface}
+    />
+  ) : phoneSurface === 'agents' ? (
+    <ChatPhoneAgentsSheet
+      key="agents"
+      agents={agentSettings.catalog.agents}
+      selected={chatSettings.agents}
+      looks={agentSettings.agentLooks}
+      isDisabled={areChatSettingsDisabled}
+      onChange={(agents) => updateChatSettings({ ...chatSettings, agents })}
+      settingsError={agentSettings.settingsError}
+      onDismissSettingsError={agentSettings.dismissSettingsError}
+      onClose={closePhoneSurface}
+    />
+  ) : phoneSurface === 'dynamic' ? (
+    <ChatPhoneDynamicSheet
+      key="dynamic"
+      dynamics={agentSettings.catalog.dynamics}
+      selected={chatSettings.dynamic}
+      isDisabled={areChatSettingsDisabled}
+      onSelect={(dynamic) => {
+        updateChatSettings({ ...chatSettings, dynamic })
+        closePhoneSurface()
+      }}
+      settingsError={agentSettings.settingsError}
+      onDismissSettingsError={agentSettings.dismissSettingsError}
+      onClose={closePhoneSurface}
+    />
+  ) : null
+
   return (
     <main
-      className={`notia-main notia-chat-view${showHistoryPanel ? ' notia-chat-view--workspace' : ''}`}
+      ref={setRootElement}
+      className={`notia-main notia-chat-view${showHistoryPanel ? ' notia-chat-view--workspace' : ''}${isPhone ? ' notia-chat-view--phone' : ''}`}
+      style={isPhone ? { '--notia-chat-keyboard-inset': `${keyboardInset}px` } as CSSProperties : undefined}
       data-notia-prevent-menu-close
     >
       <section className="notia-chat-shell" data-notia-prevent-menu-close>
         <div className="notia-chat-layout" data-notia-prevent-menu-close>
-          {showHistoryPanel ? (
+          {phoneMain}
+          {!isPhone && showHistoryPanel ? (
             <ChatHistoryPanel
               library={library}
               selectedChatFilePath={selectedChatFilePath}
               setSelectedChatFilePath={setSelectedChatFilePath}
-              onCreateChat={() => {
-                // A new chat starts empty; the file is created with its first message.
-                setSelectedChatFilePath(null)
-                setMatchedPreferredChatFilePath(null)
-                setActiveChatDocument(null)
-              }}
+              onCreateChat={startNewChat}
               setChatContextMenuState={setChatContextMenuState}
               isHistoryPanelOpen={isHistoryPanelOpen}
               setIsHistoryPanelOpen={setIsHistoryPanelOpen}
@@ -1093,7 +1296,7 @@ export function ChatWorkspaceViewComponent({
             />
           ) : null}
 
-          <section className="notia-chat-main">
+          {isPhone ? null : <section className="notia-chat-main">
             {showHistoryPanel ? (
               <ChatTopBar
                 title={activeChatDocument?.title ?? 'Nuevo chat'}
@@ -1153,9 +1356,9 @@ export function ChatWorkspaceViewComponent({
                 <p className="notia-chat-panel-hint">Enter para enviar · Shift + Enter para salto de línea</p>
               </>
             )}
-          </section>
+          </section>}
 
-          {showHistoryPanel && isContextPanelOpen ? (
+          {!isPhone && showHistoryPanel && isContextPanelOpen ? (
             <ChatContextPanel
               libraryName={library?.name ?? null}
               contextFiles={workspaceContextFiles}
@@ -1198,6 +1401,7 @@ export function ChatWorkspaceViewComponent({
             </ChatContextPanel>
           ) : null}
         </div>
+        {phoneOverlay}
 
         <ChatLibraryFilesModal
           open={isLibraryFilesModalOpen}

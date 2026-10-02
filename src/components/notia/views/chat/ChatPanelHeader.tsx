@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Check, ChevronDown, History, MessageSquarePlus, PenLine, Pin, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
 import type { NotiaLibrary } from '../../../../types/notia'
-import type { ChatHistoryGroup, ChatListItem } from '../../../../services/chat/chatDocumentStorage'
+import type { ChatListItem } from '../../../../services/chat/chatDocumentStorage'
 import { ChatAgentAvatar } from './ChatAgentPanel'
+import { HISTORY_GROUP_LABELS, HISTORY_GROUP_ORDER } from './chatContextText'
 import { useChatHistoryList } from './useChatHistoryList'
 import { useDismissablePopover } from './useDismissablePopover'
 
@@ -102,15 +103,6 @@ function AgentMenu({
     </div>
   )
 }
-
-const HISTORY_GROUP_LABELS: Record<ChatHistoryGroup, string> = {
-  pinned: 'Fijados',
-  today: 'Hoy',
-  yesterday: 'Ayer',
-  thisWeek: 'Esta semana',
-  earlier: 'Anteriores',
-}
-const HISTORY_GROUP_ORDER: ChatHistoryGroup[] = ['pinned', 'today', 'yesterday', 'thisWeek', 'earlier']
 
 function HistoryRow({
   item,

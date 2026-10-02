@@ -2,11 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { NotiaLibrary } from '../../../../types/notia'
-import type { HomeAgenda, HomeFocus, HomeNotes, HomeRecent } from '../../../../services/home/homeTypes'
+import type { HomeAgenda, HomeFocus, HomeNotes, HomeRecent, HomeRoutine } from '../../../../services/home/homeTypes'
 import { HomeAgendaCard } from './HomeAgendaCard'
 import { HomeNotesCard } from './HomeNotesCard'
 import { HomePomodoro } from './HomePomodoro'
 import { HomeRecentCard } from './HomeRecentCard'
+import { HomeRoutineCard } from './HomeRoutineCard'
 
 const callBackend = vi.hoisted(() => vi.fn())
 vi.mock('../../../../services/transport', () => ({ callBackend, subscribeBackend: vi.fn(async () => () => undefined) }))
@@ -119,6 +120,41 @@ describe('Home cards', () => {
       { kind: 'select-task', taskPath: 'task-manager/Performance.md' },
       { kind: 'start' },
     ])
+  })
+
+  it('shows the countdown under «Pomodoro» and the focus below the panel on a phone', async () => {
+    const focus: HomeFocus = { filePath: 'task-manager/Performance.md', title: 'Performance', selected: false }
+    callBackend.mockResolvedValue({ state: idleTimer, changed: false })
+    render(<HomePomodoro library={library} focus={focus} phone />)
+    const note = await screen.findByText('Foco: Performance')
+    expect(note.classList.contains('home-pomodoro__note')).toBe(true)
+    const panel = document.querySelector('.home-pomodoro') as HTMLElement
+    expect(panel.contains(note)).toBe(false)
+    expect(panel.querySelector('.home-pomodoro__text')?.textContent).toBe('Pomodoro25:00')
+  })
+
+  it('lays the routine out as the phone board: month, week and best streak under the rings', () => {
+    const routine: HomeRoutine = {
+      today: '2026-09-26', monthLabel: 'septiembre', monthPct: 75, weekPct: 76, bestStreak: 13, pendingToday: 1,
+      week: [{ letter: 'S', label: 'Sábado 26: 1 de 2', done: 1, total: 2, pct: 50, isToday: true, isFuture: false }],
+      routines: [{ id: 'r1', name: 'Mañana', done: 1, total: 2, habits: [
+        { id: 'h1', name: 'Tomar agua', category: 'Salud', done: true, streak: 3 },
+        { id: 'h2', name: 'Leer', category: '', done: false, streak: 0 },
+      ] }],
+    }
+    render(<HomeRoutineCard card={{ data: routine }} library={library} onOpenRoutine={vi.fn()} onChanged={vi.fn(async () => undefined)} phone />)
+    expect(screen.queryByText(/completado en/)).toBeNull()
+    const stats = [...document.querySelectorAll('.home-routine__stat')].map((stat) => stat.textContent)
+    expect(stats).toEqual(['septiembre75 %', 'Semana · 76 %', 'Mejor racha13 días'])
+    expect(screen.getByRole('button', { name: 'Abrir Rutinas' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Mañana/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText('3 d')).toBeTruthy()
+  })
+
+  it('names the Agenda shortcut «Calendario» and leaves the divider out on a phone', () => {
+    render(<HomeAgendaCard card={{ data: agenda }} onOpenAgenda={vi.fn()} phone />)
+    expect(screen.getByRole('button', { name: 'Calendario' })).toBeTruthy()
+    expect(document.querySelector('.home-divider')).toBeNull()
   })
 
   it('opens each recent item the way it was left', () => {

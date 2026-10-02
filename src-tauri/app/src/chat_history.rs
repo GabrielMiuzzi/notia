@@ -348,6 +348,9 @@ pub(crate) struct ChatListItem {
     pinned: bool,
     /// Prompt file that answered last; `None` for Notia (`default.md`).
     agent: Option<String>,
+    /// The person's last message on one line; absent for an unread or empty chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,7 +430,7 @@ fn file_stem(logical_path: &str) -> String {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_string()
 }
 
-/// Chats of the library with their titles, pinned state and last agent.
+/// Chats of the library with their titles, pinned state, last agent and preview.
 /// With the device's clock they come grouped by day of last activity,
 /// pinned first; without it, newest first.
 pub(crate) async fn backend_list_chats(app: AppHandle, payload: ListChatsPayload) -> Result<Vec<ChatListItem>, BackendError> {
@@ -447,6 +450,7 @@ pub(crate) async fn backend_list_chats(app: AppHandle, payload: ListChatsPayload
                     title: document.as_ref().map(|document| document.title.clone()).unwrap_or_else(|| file_stem(&file.logical_path)),
                     group: payload.clock.map(|clock| chat_list::chat_group(clock, pinned, activity)),
                     agent: document.as_ref().and_then(chat_list::last_agent),
+                    preview: document.as_ref().and_then(chat_list::preview),
                     pinned,
                     id: file.logical_path,
                     file_path: file.file_path,

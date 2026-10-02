@@ -284,10 +284,13 @@ mod tests {
         std::fs::write(root.join("Notas/idea.md"), "hola").expect("note");
         std::fs::write(root.join(".git/config"), "x").expect("git file");
         std::fs::write(root.join(".notia/notia.db"), "db").expect("db");
+        std::fs::write(root.join(".notia/notia.db.pre-v26.sqlite"), "old db").expect("db backup");
         std::fs::write(root.join(".notia/notiaConfig.json"), "{}").expect("config");
+        std::fs::create_dir_all(root.join(".notia/ink/Notas")).expect("ink");
+        std::fs::write(root.join(".notia/ink/Notas/idea.md.json"), "{}").expect("ink file");
 
         let files: Vec<String> = synced_files(&root).expect("files").into_iter().map(|file| file.path).collect();
-        assert_eq!(files, vec![".notia/notiaConfig.json", "Notas/idea.md"]);
+        assert_eq!(files, vec![".notia/ink/Notas/idea.md.json", ".notia/notiaConfig.json", "Notas/idea.md"]);
 
         let target = synced_target(&root, "Nueva/carpeta/a.md").expect("target");
         let stamp = write_synced(&target, b"texto", 1_700_000_000_000).expect("write");

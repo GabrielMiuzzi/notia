@@ -60,6 +60,8 @@ impl<T> HomeCard<T> {
 pub(crate) struct HomeDashboardDto {
     /// «Sábado 26 de septiembre · gaia».
     date_label: String,
+    /// «Sábado 26 de septiembre»: the phone layout leaves the library out.
+    today_label: String,
     greeting: &'static str,
     /// «3 eventos en los próximos 7 días · 4 hábitos pendientes hoy · …».
     summary: String,
@@ -558,11 +560,16 @@ fn greeting(hour: u32) -> &'static str {
     }
 }
 
-fn date_label(today: NaiveDate, library_name: &str) -> String {
+/// «Sábado 26 de septiembre».
+fn today_label(today: NaiveDate) -> String {
     let weekday = WEEKDAY_LONG[weekday_index(today)];
     let mut letters = weekday.chars();
     let capitalized = letters.next().map(|first| first.to_uppercase().collect::<String>() + letters.as_str()).unwrap_or_default();
-    format!("{capitalized} {} de {} · {library_name}", today.day(), month_name(today))
+    format!("{capitalized} {} de {}", today.day(), month_name(today))
+}
+
+fn date_label(today: NaiveDate, library_name: &str) -> String {
+    format!("{} · {library_name}", today_label(today))
 }
 
 fn counted(count: usize, one: &str, many: &str) -> String {
@@ -680,6 +687,7 @@ fn build(
     );
     HomeDashboardDto {
         date_label: date_label(today, &library.name),
+        today_label: today_label(today),
         greeting: greeting(now.hour()),
         summary,
         agenda,
@@ -781,6 +789,7 @@ mod tests {
         assert_eq!(greeting(23), "Buenas noches");
         assert_eq!(greeting(3), "Buenas noches");
         assert_eq!(date_label(date("2026-09-26"), "gaia"), "Sábado 26 de septiembre · gaia");
+        assert_eq!(today_label(date("2026-10-01")), "Jueves 1 de octubre");
         assert_eq!(
             summary_line(Some(3), Some((4, 7)), Some(3)),
             "3 eventos en los próximos 7 días · 4 hábitos pendientes hoy · 3 tareas urgentes"

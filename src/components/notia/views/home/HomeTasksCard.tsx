@@ -10,20 +10,22 @@ interface HomeTasksCardProps {
   library: NotiaLibrary
   onOpenBoard: () => void
   onOpenTask: (path: string) => void
+  /** Phone board: no «completadas» count and «Task Manager» alone. */
+  phone?: boolean
 }
 
 /** The usual columns of the Task Manager, the most urgent tickets and the Pomodoro. */
-export function HomeTasksCard({ card, library, onOpenBoard, onOpenTask }: HomeTasksCardProps) {
+export function HomeTasksCard({ card, library, onOpenBoard, onOpenTask, phone = false }: HomeTasksCardProps) {
   const tasks = card.data
   return (
     <HomeCardShell
       id="home-tasks-title"
       title="Tareas"
-      note={tasks ? countLabel(tasks.completed, 'completada', 'completadas') : undefined}
+      note={tasks && !phone ? countLabel(tasks.completed, 'completada', 'completadas') : undefined}
       icon={<ListChecks size={15} strokeWidth={1.75} />}
       className="home-card--tasks"
       error={card.error}
-      action={<HomeMoreButton label="Abrir Task Manager" onClick={onOpenBoard} />}
+      action={<HomeMoreButton label={phone ? 'Task Manager' : 'Abrir Task Manager'} onClick={onOpenBoard} />}
     >
       {tasks ? (
         <>
@@ -54,7 +56,7 @@ export function HomeTasksCard({ card, library, onOpenBoard, onOpenTask }: HomeTa
               </button>
             ))}
           </div>
-          <HomePomodoro library={library} focus={tasks.focus ?? null} />
+          <HomePomodoro library={library} focus={tasks.focus ?? null} phone={phone} />
         </>
       ) : null}
     </HomeCardShell>

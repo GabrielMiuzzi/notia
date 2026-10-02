@@ -140,7 +140,8 @@ fn the_grid_filters_searches_and_sorts() {
     ];
     let grid = build_grid(&recipes, &RecipeQuery::default());
     assert_eq!(grid.cards.iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["s1", "s2", "s6"]);
-    assert_eq!(grid.count_label, "3 recetas en tu recetario");
+    assert_eq!((grid.count_label.as_str(), grid.short_count_label.as_str()), ("3 recetas en tu recetario", "3 recetas"));
+    assert_eq!(build_grid(&recipes[..1], &RecipeQuery::default()).short_count_label, "1 receta");
     // Calories from the macros when they were not stored.
     assert_eq!(grid.cards[2].kcal_label, "313 kcal");
     let by_kcal = build_grid(&recipes, &RecipeQuery { sort: RecipeSort::Kcal, ..RecipeQuery::default() });
@@ -161,12 +162,14 @@ fn the_detail_shows_daily_values_and_the_sodium_limit() {
     let detail = build_detail(&salty);
     assert_eq!((detail.kcal_label.as_str(), detail.kcal_share_label.as_str()), ("610", "31% de una dieta de 2000 kcal"));
     assert_eq!(detail.fiber_label, "10 g · 36% VD");
+    assert_eq!((detail.fiber_amount_label.as_str(), detail.fiber_daily_label.as_str()), ("10 g", "36% VD"));
     let row = |rows: &[super::dashboard::NutrientRow], key: &str| rows.iter().find(|row| row.key == key).cloned().expect(key);
     let b12 = row(&detail.vitamins, "b12");
     assert_eq!((b12.amount_label.as_str(), b12.percent_label.as_str(), b12.bar, b12.tone), ("3,2 µg", "133% VD", 100, NutrientTone::Over));
     let sodium = row(&detail.minerals, "sodio");
     assert_eq!((sodium.percent_label.as_str(), sodium.tone), ("31% del límite diario, alto", NutrientTone::Limit));
     assert_eq!(detail.macros.iter().map(|share| share.percent_label.as_str()).collect::<Vec<_>>(), ["24% de las calorías", "32% de las calorías", "45% de las calorías"]);
+    assert_eq!(detail.macros.iter().map(|share| share.short_percent_label.as_str()).collect::<Vec<_>>(), ["24% kcal", "32% kcal", "45% kcal"]);
     assert_eq!(detail.servings_label.as_deref(), Some("2 porciones de 350 g"));
     assert_eq!((format_number(1_150.0), format_number(0.3), format_number(4.0)), ("1.150".into(), "0,3".into(), "4".into()));
 }

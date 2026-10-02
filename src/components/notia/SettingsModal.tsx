@@ -1335,7 +1335,7 @@ export function SettingsModal({
                       inline
                       label="Reconocimiento de voz"
                       htmlFor="notia-settings-stt"
-                      description="Parakeet TDT 0.6B v3 en CPU mediante sherpa-onnx. Detecta el idioma automáticamente."
+                      description="Whisper large-v3-turbo con whisper.cpp: en Windows usa la GPU por Vulkan y en Android la CPU. El idioma es un código como «es»; «auto» lo detecta."
                     >
                       <span className="notia-settings-row-meta">{speechRecognitionPreferences.enabled ? 'Activo' : 'Inactivo'}</span>
                       <SettingsSwitch

@@ -103,6 +103,8 @@ export interface ChatListItem {
   pinned: boolean
   /** Prompt file that answered last; `null` for Notia (`default.md`). */
   agent: string | null
+  /** The person's last message on one line; absent for an unread or empty chat. */
+  preview?: string
 }
 
 /** Context a view asks its chat to keep. */

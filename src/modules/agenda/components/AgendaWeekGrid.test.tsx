@@ -19,10 +19,14 @@ const week: AgendaWeek = {
   days: DATES.map((date, index) => ({
     date,
     shortName: 'Día',
+    initials: 'Dí',
     day: 21 + index,
     longLabel: `${NAMES[index]} ${21 + index} de septiembre`,
     isToday: index === 3,
     isSelected: index === 3,
+    hasEvents: index === 0,
+    holidayKind: null,
+    ariaLabel: `${NAMES[index]} ${21 + index} de septiembre`,
   })),
   events: [{
     id: 'event-1',
@@ -57,12 +61,13 @@ const week: AgendaWeek = {
   }],
 }
 
-function renderGrid(selectedSlots: ReadonlySet<string> = new Set()) {
+function renderGrid(selectedSlots: ReadonlySet<string> = new Set(), dayOnly = false, gridWeek: AgendaWeek = week) {
   const onSlotChange = vi.fn()
   const onPickEvent = vi.fn()
   render(
     <AgendaWeekGrid
-      week={week}
+      week={gridWeek}
+      dayOnly={dayOnly}
       timeSlots={timeSlots}
       slotMinutes={15}
       selectedSlots={selectedSlots}
@@ -150,5 +155,30 @@ describe('AgendaWeekGrid', () => {
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowRight' })
     expect(document.activeElement).toBe(slot('martes 22 de septiembre, 09:30'))
     expect(slot('martes 22 de septiembre, 09:30').tabIndex).toBe(0)
+  })
+
+  it('shows only the selected day on a phone, without the week header', () => {
+    const monday = { ...week, days: week.days.map((day, index) => ({ ...day, isSelected: index === 0 })) }
+    const { onSlotChange, onPickEvent } = renderGrid(new Set(), true, monday)
+    expect(screen.getByRole('group', { name: 'lunes 21 de septiembre en bloques de 15 minutos' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /martes 22 de septiembre/ })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /^lunes 21 de septiembre, / })).toHaveLength(96)
+    expect(document.querySelector('.agenda-grid__head')).toBeNull()
+    fireEvent.click(slot('lunes 21 de septiembre, 10:00'), { detail: 0 })
+    expect(onSlotChange).toHaveBeenCalledWith('2026-09-21|600', 'add')
+    fireEvent.click(screen.getByRole('button', { name: /Llamada, prioridad Urgente/ }))
+    expect(onPickEvent).toHaveBeenCalledWith('event-2')
+  })
+
+  it('keeps the arrow keys inside the one day of a phone', () => {
+    renderGrid(new Set(), true)
+    const start = slot('jueves 24 de septiembre, 08:00')
+    expect(start.tabIndex).toBe(0)
+    start.focus()
+    fireEvent.keyDown(start, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(start)
+    fireEvent.keyDown(start, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(slot('jueves 24 de septiembre, 08:15'))
+    expect(start.tabIndex).toBe(-1)
   })
 })

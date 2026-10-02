@@ -6,6 +6,11 @@
 //! modified, whatever device it came from (a tie keeps the host's). A
 //! modification wins over a deletion, so no edit is lost.
 //!
+//! A file on both sides that the copy never synced (no base) and that
+//! differs keeps the host's: it is most likely a download that was cut
+//! short (the app closed during the first copy), and its time is the
+//! moment it was written, not an edit.
+//!
 //! The copy's side keeps its own times in the base: some file systems
 //! cannot take the host's modification time.
 
@@ -66,22 +71,37 @@ pub fn plan(base: Option<&SyncBase>, local: Option<&FileStamp>, remote: Option<&
             (Some(_), None) => SyncAction::Upload,
             (None, Some(_)) => SyncAction::Download,
             (Some(local), Some(remote)) if local == remote => SyncAction::Adopt,
+            // Never synced: the host's is the reference (see the module).
+            (Some(_), Some(_)) if base.is_none() => SyncAction::Download,
             (Some(local), Some(remote)) if local.modified_ms > remote.modified_ms => SyncAction::Upload,
             (Some(_), Some(_)) => SyncAction::Download,
         },
     }
 }
 
-/// Library files the copy keeps: the visible ones, the agent's folder and
-/// the configuration of `.notia`. The database travels apart, as a
-/// read-only snapshot.
+/// Mark a copy keeps in `.notia` with the host library it belongs to.
+pub const COPY_MARK_PATH: &str = ".notia/notia-copy.json";
+
+/// Library files the copy keeps: the whole library, with the agent's
+/// folder and `.notia` (configuration, link cache, the handwriting of the
+/// notes). Hidden files and folders inside it do not travel. The database
+/// travels apart, as a snapshot, and its backups and journals stay on the
+/// host; the copy's mark stays on the copy.
 pub fn is_synced_path(path: &str) -> bool {
     let mut segments = path.split('/');
-    match segments.next() {
-        Some(".notia") => matches!(path, ".notia/notiaConfig.json" | ".notia/linkCache.md"),
-        Some(".agent") => path.split('/').skip(1).all(|segment| !segment.starts_with('.')),
-        Some(first) => !first.starts_with('.') && path.split('/').all(|segment| !segment.starts_with('.')),
-        None => false,
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    let rest: Vec<&str> = segments.collect();
+    let visible = rest.iter().all(|segment| !segment.is_empty() && !segment.starts_with('.'));
+    match first {
+        ".notia" => {
+            visible
+                && rest.first().is_some_and(|name| !name.starts_with("notia.db"))
+                && path != COPY_MARK_PATH
+        }
+        ".agent" => visible && !rest.is_empty(),
+        first => !first.is_empty() && !first.starts_with('.') && visible,
     }
 }
 
@@ -122,11 +142,43 @@ mod tests {
     }
 
     #[test]
-    fn the_copy_keeps_visible_files_the_agent_and_the_configuration() {
-        for kept in ["Notas/idea.md", "a.png", ".agent/memory/thoughts.md", ".notia/notiaConfig.json", ".notia/linkCache.md"] {
+    fn a_file_the_copy_never_synced_keeps_the_hosts() {
+        // A download cut short: newer (written now) and maybe incomplete.
+        assert_eq!(plan(None, Some(&stamp(2, 900)), Some(&stamp(5, 100))), SyncAction::Download);
+        assert_eq!(plan(None, Some(&stamp(5, 900)), Some(&stamp(5, 100))), SyncAction::Download);
+        // Once synced, the last modified wins again.
+        let base = SyncBase { remote: stamp(5, 100), local: stamp(5, 900) };
+        assert_eq!(plan(Some(&base), Some(&stamp(6, 950)), Some(&stamp(7, 120))), SyncAction::Upload);
+    }
+
+    #[test]
+    fn the_copy_keeps_the_whole_library_but_the_database_and_hidden_files() {
+        for kept in [
+            "Notas/idea.md",
+            "a.png",
+            ".agent/memory/thoughts.md",
+            ".notia/notiaConfig.json",
+            ".notia/linkCache.md",
+            ".notia/ink/Cursos/Ingles/anotaciones.md.json",
+        ] {
             assert!(is_synced_path(kept), "{kept}");
         }
-        for skipped in [".notia/notia.db", ".notia/notia.db-wal", ".git/config", "Notas/.oculto.md", ".agent/.tmp", ".obsidian/app.json"] {
+        for skipped in [
+            ".notia/notia.db",
+            ".notia/notia.db-wal",
+            ".notia/notia.db.backup-before-august-recovery-20260902",
+            ".notia/notia.db.pre-v26.sqlite",
+            ".notia/notia-copy.json",
+            ".notia/.linkCache.md.notia-tmp-1",
+            ".notia/ink/.notia-sync-1.tmp",
+            ".notia",
+            ".agent",
+            ".git/config",
+            "Notas/.oculto.md",
+            ".agent/.tmp",
+            ".obsidian/app.json",
+            "",
+        ] {
             assert!(!is_synced_path(skipped), "{skipped}");
         }
     }

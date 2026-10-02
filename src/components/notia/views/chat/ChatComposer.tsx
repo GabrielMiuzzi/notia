@@ -19,6 +19,8 @@ interface ChatComposerProps {
   /** Workspace only: whether the agent may search the whole library (RAG). */
   libraryRagEnabled?: boolean
   onLibraryRagChange?: (enabled: boolean) => void
+  /** Text of the library search switch; the phone layout shortens it. */
+  libraryRagLabel?: string
   /** Folders whose files the chat uses as context. */
   selectedLibraryFolderPaths?: string[]
   onRemoveFolder?: (path: string) => void
@@ -70,6 +72,7 @@ function ChatComposerComponent({
   variant = 'panel',
   libraryRagEnabled = true,
   onLibraryRagChange,
+  libraryRagLabel = 'Toda la librería',
   selectedLibraryFolderPaths = [],
   onRemoveFolder,
   onOpenLibraryFoldersModal,
@@ -495,7 +498,7 @@ function ChatComposerComponent({
               disabled={!library || isSubmitting}
             >
               <Library size={14} aria-hidden="true" />
-              <span>Toda la librería</span>
+              <span>{libraryRagLabel}</span>
               <span className="notia-chat-switch" aria-hidden="true">
                 <span className="notia-chat-switch-thumb" />
               </span>

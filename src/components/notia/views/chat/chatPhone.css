@@ -1,0 +1,1351 @@
+/*
+ * Chat IA, phone layout (canvas «Notia · Chat IA rediseño», mobile boards).
+ * Applies while the view itself is narrower than 600 px; the classes shared
+ * with the desktop layout are overridden only under `.notia-chat-view--phone`.
+ * The canvas's 44 px status bar and 24 px home indicator are the app shell's
+ * safe areas, so the view starts at the header and ends at the composer.
+ */
+
+/* Shell: the keyboard inset lifts the composer and the sheets. */
+.notia-chat-view.notia-chat-view--phone .notia-chat-shell {
+  position: relative;
+  padding: 0 0 var(--notia-chat-keyboard-inset, 0px);
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-layout {
+  flex-direction: column;
+}
+
+/* Header */
+.notia-chat-phone-header {
+  height: 60px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.notia-chat-phone-icon {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-heading-text);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-icon--muted {
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-icon:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.notia-chat-phone-heading {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 2px;
+}
+
+.notia-chat-phone-title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-heading-text);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 21px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-model {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The line is small; its touch area reaches 44 px without moving it. */
+.notia-chat-phone-model::before {
+  content: '';
+  position: absolute;
+  inset: -14px 0;
+}
+
+.notia-chat-phone-model .notia-chat-model-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.notia-chat-phone-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-model svg {
+  flex-shrink: 0;
+}
+
+.notia-chat-phone-badge-anchor {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+}
+
+.notia-chat-phone-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* Agents bar: the chat's dynamic and agents */
+.notia-chat-phone-agents-bar {
+  height: 44px;
+  min-width: 0;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 12px 0;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-sidebar-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-agents-bar > svg {
+  flex-shrink: 0;
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-agents-bar > svg:first-child {
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-agents-bar-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-agents-bar-count {
+  flex-shrink: 0;
+  color: var(--color-muted-text);
+  white-space: nowrap;
+}
+
+.notia-chat-phone-agents-bar-stack {
+  flex-shrink: 0;
+  display: flex;
+  margin-left: auto;
+}
+
+/* Agent avatars: initials on the agent's solid color. */
+.notia-chat-view .notia-chat-agent-avatar.notia-chat-phone-avatar {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  background: var(--agent-color);
+  color: var(--color-on-accent);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* 22 px of color inside a 2 px ring of the page, as the board draws it. */
+.notia-chat-view .notia-chat-agent-avatar.notia-chat-phone-avatar--stack {
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--color-main-bg);
+  border-radius: 7px;
+  font-size: 9.5px;
+}
+
+.notia-chat-phone-avatar--stack + .notia-chat-phone-avatar--stack {
+  margin-left: -6px;
+}
+
+.notia-chat-view .notia-chat-agent-avatar.notia-chat-phone-avatar--row {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+
+.notia-chat-view .notia-chat-agent-avatar.notia-chat-phone-avatar--option {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+
+/* Conversation, anchored to the composer like the board. */
+.notia-chat-view.notia-chat-view--phone .notia-chat-thread {
+  gap: 16px;
+  padding: 12px 16px 0;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-thread > :first-child {
+  margin-top: auto;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--user {
+  max-width: 80%;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--user .notia-chat-message-bubble {
+  padding: 10px 14px;
+  border-radius: 18px 18px 6px 18px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--user .notia-chat-markdown {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant {
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 8px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant .notia-chat-message-avatar,
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant > .notia-chat-agent-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant .notia-chat-message-avatar svg {
+  width: 14px;
+  height: 14px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant > .notia-chat-message-bubble:not(.notia-chat-message-bubble--thinking, .notia-chat-agent-confirmation, .notia-chat-agent-plan) > .notia-chat-message-role {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant .notia-chat-markdown {
+  color: color-mix(in srgb, var(--color-heading-text) 80%, var(--color-muted-text));
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message--assistant .notia-chat-markdown strong {
+  color: var(--color-heading-text);
+  font-weight: 600;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-markdown :is(p, ul, ol) {
+  margin: 0 0 8px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-markdown :is(ul, ol) {
+  padding-left: 18px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message-actions {
+  gap: 4px;
+  margin: 0 0 0 -10px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message-actions .notia-chat-icon-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--color-muted-text);
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-message-actions .notia-chat-icon-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* Composer: 24 px over the bottom of the screen, counting its safe area. */
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-dock {
+  padding: 8px 12px max(0px, calc(24px - var(--safe-area-bottom, 0px)));
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer.notia-chat-composer--workspace {
+  gap: 8px;
+  padding: 12px 8px 8px 16px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 22px;
+  background: var(--color-card-bg);
+  box-shadow: none;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer--workspace .notia-chat-composer-field textarea {
+  min-height: 1.4em;
+  max-height: 132px;
+  font-size: 16px;
+  line-height: 1.4;
+  field-sizing: content;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-toolbar {
+  gap: 4px;
+  margin-left: -8px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-hint {
+  display: none;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-tool,
+.notia-chat-view.notia-chat-view--phone .notia-chat-send-button {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+}
+
+/* The buttons are 40 px as in the board; their touch area reaches 44 px. */
+.notia-chat-view.notia-chat-view--phone :is(.notia-chat-composer-tool, .notia-chat-send-button, .notia-chat-rag-switch)::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-tool {
+  background: var(--color-sidebar-bg);
+  color: var(--color-heading-text);
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-tool svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-tool.notia-chat-composer-tool--plain {
+  margin-left: auto;
+  background: transparent;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-composer-tool--plain svg {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.75;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-send-button svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.2;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch {
+  position: relative;
+  height: 40px;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--color-border-soft);
+  font-size: 13px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch[aria-checked='true'] {
+  background: var(--color-active-item-bg);
+  box-shadow: none;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch > svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.75;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch .notia-chat-switch {
+  width: 32px;
+  height: 20px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch .notia-chat-switch-thumb {
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch[aria-checked='true'] .notia-chat-switch {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-text);
+}
+
+.notia-chat-view.notia-chat-view--phone .notia-chat-rag-switch[aria-checked='true'] .notia-chat-switch .notia-chat-switch-thumb {
+  transform: translateX(12px);
+  background: var(--color-on-accent);
+}
+
+/* Empty conversation: greeting and starters above the composer. */
+.notia-chat-phone-welcome {
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px 16px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.notia-chat-phone-welcome > :first-child {
+  margin-top: auto;
+}
+
+.notia-chat-phone-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.notia-chat-phone-hero-mark {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-hero h2 {
+  margin: 0;
+  color: var(--color-heading-text);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: normal;
+  text-wrap: balance;
+}
+
+.notia-chat-phone-hero p {
+  margin: 0;
+  color: var(--color-muted-text);
+  font-size: 14.5px;
+  line-height: normal;
+}
+
+.notia-chat-phone-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notia-chat-phone-starter {
+  width: 100%;
+  min-height: 60px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 14px;
+  background: var(--color-sidebar-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-starter > svg {
+  flex-shrink: 0;
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-starter-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-starter-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notia-chat-phone-starter-text strong {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: normal;
+}
+
+/* One line, as the board shows it; the prompt is what the tap sends. */
+.notia-chat-phone-starter-text span {
+  overflow: hidden;
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sheets and drawer: they cover the view, never the whole window. */
+.notia-chat-phone-layer {
+  position: absolute;
+  inset: 0 0 var(--notia-chat-keyboard-inset, 0px);
+  z-index: 20;
+}
+
+.notia-chat-phone-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--color-modal-backdrop);
+}
+
+.notia-chat-phone-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: calc(100% - 28px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border-soft);
+  border-radius: 22px 22px 0 0;
+  background: var(--color-sidebar-bg);
+  box-shadow: 0 -12px 40px var(--color-menu-shadow);
+  color: var(--color-heading-text);
+  outline: none;
+}
+
+.notia-chat-phone-sheet--context {
+  top: 28px;
+}
+
+.notia-chat-phone-sheet--agents {
+  top: min(126px, 25%);
+}
+
+.notia-chat-phone-sheet--attach {
+  min-height: min(calc(421px - var(--safe-area-bottom, 0px)), calc(100% - 28px));
+}
+
+.notia-chat-phone-sheet--dynamic {
+  min-height: min(calc(521px - var(--safe-area-bottom, 0px)), calc(100% - 28px));
+}
+
+.notia-chat-phone-sheet-handle {
+  width: 40px;
+  height: 5px;
+  flex-shrink: 0;
+  margin: 8px auto 4px;
+  border-radius: 3px;
+  background: var(--color-border-soft);
+}
+
+.notia-chat-phone-sheet-head {
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 20px;
+}
+
+.notia-chat-phone-sheet-head h2 {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--color-heading-text);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.notia-chat-phone-sheet-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px max(4px, calc(28px - var(--safe-area-bottom, 0px)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.notia-chat-phone-sheet--context .notia-chat-phone-sheet-body {
+  gap: 26px;
+  padding-bottom: max(8px, calc(32px - var(--safe-area-bottom, 0px)));
+}
+
+.notia-chat-phone-sheet--agents .notia-chat-phone-sheet-body {
+  gap: 6px;
+  padding-bottom: 12px;
+}
+
+.notia-chat-phone-sheet-foot {
+  flex-shrink: 0;
+  padding: 12px 16px max(4px, calc(28px - var(--safe-area-bottom, 0px)));
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.notia-chat-phone-done {
+  width: 100%;
+  height: 50px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notia-chat-phone-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notia-chat-phone-sheet .notia-chat-context-section {
+  gap: 10px;
+}
+
+:is(.notia-chat-phone-sheet, .notia-chat-phone-drawer) .notia-chat-section-label {
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  line-height: 15px;
+}
+
+.notia-chat-phone-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notia-chat-phone-section-count {
+  color: var(--color-muted-text);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.notia-chat-phone-hint {
+  margin: 0;
+  color: var(--color-muted-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notia-chat-phone-hint--lead {
+  margin-bottom: 4px;
+  line-height: normal;
+}
+
+.notia-chat-phone-note {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--color-muted-text);
+  font-size: 14px;
+  text-align: center;
+}
+
+.notia-chat-phone-scope {
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  color: var(--color-muted-text);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-phone-scope.is-active {
+  border-color: color-mix(in srgb, var(--color-accent-text) 50%, transparent);
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-scope svg {
+  flex-shrink: 0;
+}
+
+/* A row that opens or picks something: icon, text, chevron. */
+.notia-chat-phone-row {
+  width: 100%;
+  min-height: 52px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-row > svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-row > svg.notia-chat-phone-row-chevron {
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-row:disabled,
+.notia-chat-phone-agent-option:disabled,
+.notia-chat-phone-add-agent:disabled,
+.notia-chat-phone-new:disabled,
+.notia-chat-phone-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notia-chat-phone-row-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: normal;
+}
+
+.notia-chat-phone-row-detail {
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+}
+
+.notia-chat-phone-context-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notia-chat-phone-context-items li {
+  min-height: 52px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 4px 4px 14px;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font-size: 15px;
+}
+
+.notia-chat-phone-context-items li > svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-context-items li > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+}
+
+.notia-chat-phone-card--spaced {
+  margin-top: 8px;
+}
+
+.notia-chat-phone-switch-row {
+  width: 100%;
+  min-height: 76px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notia-chat-phone-switch-row > svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-switch-row > svg.notia-chat-phone-lock {
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-switch-row:disabled {
+  cursor: default;
+}
+
+/* A locked choice keeps its color: the lock says it cannot change. */
+.notia-chat-phone-switch-row:disabled:not(:has(.notia-chat-phone-lock)) .notia-chat-switch {
+  opacity: 0.6;
+}
+
+.notia-chat-phone-switch-label {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Switches of the sheets: 40 × 24, solid teal when on. */
+.notia-chat-phone-sheet .notia-chat-switch {
+  width: 40px;
+  height: 24px;
+}
+
+.notia-chat-phone-sheet .notia-chat-switch-thumb {
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+}
+
+.notia-chat-phone-sheet [aria-checked='true'] > .notia-chat-switch {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-text);
+}
+
+.notia-chat-phone-sheet [aria-checked='true'] > .notia-chat-switch > .notia-chat-switch-thumb {
+  transform: translateX(16px);
+  background: var(--color-on-accent);
+}
+
+.notia-chat-phone-sheet .notia-chat-permissions {
+  border: 0;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+}
+
+.notia-chat-phone-sheet .notia-chat-permission-row {
+  min-height: 76px;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 15px;
+}
+
+.notia-chat-phone-sheet .notia-chat-permission-row > svg {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.75;
+}
+
+.notia-chat-phone-sheet .notia-chat-permission-text {
+  gap: 2px;
+  font-size: 15px;
+  line-height: normal;
+}
+
+.notia-chat-phone-sheet .notia-chat-permission-hint {
+  font-size: 12.5px;
+}
+
+.notia-chat-phone-sheet .notia-chat-permissions-divider {
+  margin: 0 14px;
+}
+
+.notia-chat-phone-sheet .notia-chat-permanent-context {
+  min-height: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-main-bg);
+  font-size: 15px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.notia-chat-phone-link {
+  text-align: left;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.notia-chat-phone-add-agent {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed color-mix(in srgb, var(--color-accent-text) 55%, transparent);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.notia-chat-phone-agent {
+  min-height: 76px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px 8px 12px;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+}
+
+.notia-chat-phone-agent-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-chat-phone-agent-option {
+  width: 100%;
+  min-height: 64px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-agent-state {
+  height: 34px;
+  flex-shrink: 0;
+  box-sizing: content-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  color: var(--color-heading-text);
+  font-size: 13px;
+}
+
+.notia-chat-phone-agent-state.is-added {
+  padding: 0 12px;
+  border: 0;
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-search {
+  height: 48px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-main-bg);
+  color: var(--color-muted-text);
+}
+
+.notia-chat-phone-search--agents {
+  height: 50px;
+  margin-bottom: 6px;
+  padding: 0 14px;
+}
+
+.notia-chat-phone-search:focus-within {
+  border-color: var(--color-focus-ring);
+}
+
+.notia-chat-phone-search svg {
+  flex-shrink: 0;
+}
+
+.notia-chat-phone-search input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.notia-chat-view--workspace .notia-chat-phone-search input:focus-visible {
+  outline: none;
+}
+
+.notia-chat-phone-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notia-chat-phone-radio {
+  position: relative;
+  min-height: 80px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-radio.is-checked {
+  background: var(--color-active-item-bg);
+}
+
+.notia-chat-phone-radio.is-disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notia-chat-phone-radio input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.notia-chat-phone-radio:has(input:focus-visible) {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.notia-chat-phone-radio-mark {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  box-sizing: content-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-border-soft);
+  border-radius: 50%;
+}
+
+.notia-chat-phone-radio.is-checked .notia-chat-phone-radio-mark {
+  border-color: var(--color-accent-text);
+}
+
+.notia-chat-phone-radio.is-checked .notia-chat-phone-radio-mark::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent-text);
+}
+
+.notia-chat-phone-radio-name {
+  color: var(--color-heading-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-chat-phone-radio.is-checked .notia-chat-phone-radio-name {
+  color: var(--color-accent-text);
+}
+
+/* History drawer */
+.notia-chat-phone-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(316px, calc(100% - 44px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 14px max(0px, calc(24px - var(--safe-area-bottom, 0px)));
+  border-right: 1px solid var(--color-border-soft);
+  background: var(--color-sidebar-bg);
+  box-shadow: 12px 0 40px var(--color-menu-shadow);
+  color: var(--color-heading-text);
+  outline: none;
+}
+
+.notia-chat-phone-drawer-head {
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.notia-chat-phone-drawer-head h2 {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  padding-left: 4px;
+  color: var(--color-heading-text);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.notia-chat-phone-new {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notia-chat-phone-drawer-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.notia-chat-phone-drawer-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-chat-phone-chat {
+  display: flex;
+  align-items: stretch;
+  border-radius: 12px;
+}
+
+.notia-chat-phone-chat.is-current {
+  background: var(--color-card-bg);
+}
+
+.notia-chat-phone-chat-open {
+  min-width: 0;
+  min-height: 76px;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.notia-chat-phone-chat-title,
+.notia-chat-phone-chat-preview {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-chat-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: normal;
+}
+
+.notia-chat-phone-chat-preview {
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+  line-height: normal;
+}
+
+.notia-chat-phone-chat-more {
+  width: 44px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-muted-text);
+  cursor: pointer;
+}
+
+.notia-chat-phone-drawer-library {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+}
+
+.notia-chat-phone-drawer-library-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-chat-phone-drawer-library-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.notia-chat-phone-drawer-library-copy strong {
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notia-chat-phone-drawer-library-copy small {
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(.notia-chat-phone-icon, .notia-chat-phone-chat-more, .notia-chat-phone-agent-option):hover:not(:disabled) {
+    background: var(--color-row-hover);
+  }
+
+  :is(.notia-chat-phone-starter, .notia-chat-phone-agents-bar):hover {
+    border-color: color-mix(in srgb, var(--color-accent-text) 45%, var(--color-border-soft));
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .notia-chat-phone-link {
+    min-height: 44px;
+  }
+}

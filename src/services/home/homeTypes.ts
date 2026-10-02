@@ -168,6 +168,8 @@ export interface HomeRecent {
 export interface HomeDashboard {
   /** «Sábado 26 de septiembre · gaia». */
   dateLabel: string
+  /** «Sábado 26 de septiembre»: the phone layout leaves the library out. */
+  todayLabel: string
   greeting: string
   summary: string
   agenda: HomeCard<HomeAgenda>

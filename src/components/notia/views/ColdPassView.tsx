@@ -1,33 +1,34 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, Copy, Download, ExternalLink, Eye, EyeOff, Pencil, Plus, Search, Trash2 } from 'lucide-react'
-import type { ColdPassEntryView, ColdPassHealth } from '../../../types/coldpass'
+import type { ColdPassEntryView } from '../../../types/coldpass'
 import { ColdPassBiometricButton } from '../ColdPassBiometricButton'
 import { ColdPassBluetoothCard } from '../ColdPassBluetoothCard'
 import { backendSupports } from '../../../services/transport'
 import { copyColdPassSecret } from '../../../services/coldpass/coldpassStorage'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import {
-  HEALTH_LABELS,
+  HEALTH_FILTERS,
+  HISTORY_PREVIEW,
+  MASK,
+  credentialInitial,
   displaySite,
   formatChanged,
   formatReplaced,
+  historyCount,
+  historyToggleLabel,
   matchesSearch,
   siteHref,
   vaultSummary,
+  type HealthFilter,
 } from './coldpass/coldPassFormat'
+import { ColdPassHealthChip as HealthChip } from './coldpass/ColdPassHealthChip'
+import { ColdPassPhoneDetail, ColdPassPhoneList } from './coldpass/ColdPassPhone'
 import './coldpass/coldpass.css'
 
-const MASK = '••••••••••••'
-const HISTORY_PREVIEW = 3
 const TOAST_MS = 2600
 const ICON = { size: 16, strokeWidth: 1.75 } as const
-
-type HealthFilter = 'all' | 'weak' | 'old'
-
-const FILTERS: { id: HealthFilter; label: string }[] = [
-  { id: 'all', label: 'Todas' },
-  { id: 'weak', label: 'Débiles' },
-  { id: 'old', label: 'Antiguas' },
-]
+/** Width of the view below which the phone boards of the canvas apply. */
+const PHONE_MAX_WIDTH = 600
 
 interface ColdPassViewProps {
   entries: ColdPassEntryView[]
@@ -39,19 +40,6 @@ interface ColdPassViewProps {
   onDeleteCredential: (index: number) => void
 }
 
-function HealthChip({ health }: { health: ColdPassHealth }) {
-  return (
-    <span className="cp-health" data-health={health}>
-      <span className="cp-health__dot" aria-hidden="true" />
-      {HEALTH_LABELS[health]}
-    </span>
-  )
-}
-
-function initialOf(entry: ColdPassEntryView): string {
-  return (entry.name.trim() || entry.website.trim() || '?').charAt(0).toUpperCase()
-}
-
 function ColdPassViewComponent({
   entries,
   isUnlocked,
@@ -61,6 +49,8 @@ function ColdPassViewComponent({
   onEditCredential,
   onDeleteCredential,
 }: ColdPassViewProps) {
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = useNarrowContainer(root, PHONE_MAX_WIDTH)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<HealthFilter>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -71,6 +61,12 @@ function ColdPassViewComponent({
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [toast, setToast] = useState('')
   const toastTimer = useRef<number | undefined>(undefined)
+  // The phone list unmounts while the detail is open: where it was scrolled.
+  const phoneListScrollTop = useRef(0)
+  const readPhoneListScrollTop = useCallback(() => phoneListScrollTop.current, [])
+  const savePhoneListScrollTop = useCallback((scrollTop: number) => {
+    phoneListScrollTop.current = scrollTop
+  }, [])
   // «Cambiada hace…» is relative to when the view opened.
   const [now] = useState(() => Date.now())
 
@@ -124,14 +120,74 @@ function ColdPassViewComponent({
     setFilter('all')
   }
 
+  const toggleHistoryReveal = (key: string) => {
+    setRevealedHistory((current) => ({ ...current, [key]: !current[key] }))
+  }
+
   const entry = selected?.entry ?? null
   const history = entry?.passwordHistory ?? []
   const shownHistory = isHistoryOpen ? history : history.slice(0, HISTORY_PREVIEW)
   const href = entry ? siteHref(entry.website) : null
   const site = entry ? displaySite(entry.website) : ''
+  // The phone detail shows only the credential that was opened; once it is
+  // gone (deleted), the list comes back.
+  const opened = isDetailOpen ? indexed.find(({ entry: item }) => item.id === selectedId) ?? null : null
+
+  if (phone) {
+    return (
+      <main ref={setRoot} className="notia-main cp-view cp-view--phone" data-notia-prevent-menu-close>
+        {opened ? (
+          <ColdPassPhoneDetail
+            entry={opened.entry}
+            now={now}
+            isRevealed={isRevealed}
+            onToggleReveal={() => setIsRevealed((current) => !current)}
+            revealedHistory={revealedHistory}
+            onToggleHistoryReveal={toggleHistoryReveal}
+            isHistoryOpen={isHistoryOpen}
+            onToggleHistory={() => setIsHistoryOpen((current) => !current)}
+            onCopySecret={(text, copied) => void copySecret(text, copied)}
+            onCopyText={(text, copied) => void copyText(text, copied)}
+            onBack={() => {
+              setIsDetailOpen(false)
+              setIsRevealed(false)
+            }}
+            onEdit={(options) => onEditCredential(opened.index, options)}
+            onDelete={() => onDeleteCredential(opened.index)}
+          />
+        ) : (
+          <ColdPassPhoneList
+            summary={isUnlocked ? vaultSummary(entries, { short: true }) : 'ColdPass está bloqueado'}
+            isUnlocked={isUnlocked}
+            isImportingVault={isImportingVault}
+            hasEntries={entries.length > 0}
+            rows={visible.map(({ entry: item }) => item)}
+            counts={counts}
+            query={query}
+            onQueryChange={setQuery}
+            filter={filter}
+            onFilterChange={setFilter}
+            onClearSearch={clearSearch}
+            onSelect={select}
+            onCreate={onCreateCredential}
+            onImport={onImportVault}
+            onToast={showToast}
+            readScrollTop={readPhoneListScrollTop}
+            onScrollTopChange={savePhoneListScrollTop}
+          />
+        )}
+        {toast ? (
+          <div className="cp-toast" role="status" data-screen={opened ? 'detail' : 'list'}>
+            <Check size={18} strokeWidth={2} aria-hidden="true" />
+            {toast}
+          </div>
+        ) : null}
+      </main>
+    )
+  }
 
   return (
-    <main className="notia-main cp-view" data-notia-prevent-menu-close>
+    <main ref={setRoot} className="notia-main cp-view" data-notia-prevent-menu-close>
       <div className="cp-wrap">
         <header className="cp-header">
           <div className="cp-header__intro">
@@ -169,7 +225,7 @@ function ColdPassViewComponent({
         <div className="cp-split" data-detail-open={isDetailOpen && Boolean(entry)}>
           <nav className="cp-list" aria-label="Credenciales">
             <div className="cp-filters">
-              {FILTERS.map((item) => (
+              {HEALTH_FILTERS.map((item) => (
                 <button
                   key={item.id}
                   type="button"
@@ -191,7 +247,7 @@ function ColdPassViewComponent({
                   aria-pressed={item.id === entry?.id}
                   onClick={() => select(item.id)}
                 >
-                  <span className="cp-row__tile" aria-hidden="true">{initialOf(item)}</span>
+                  <span className="cp-row__tile" aria-hidden="true">{credentialInitial(item)}</span>
                   <span className="cp-row__text">
                     <span className="cp-row__name">{item.name || 'Sin nombre'}</span>
                     <span className="cp-row__sub">{displaySite(item.website) || item.username || 'Sin sitio'}</span>
@@ -225,7 +281,7 @@ function ColdPassViewComponent({
                   Credenciales
                 </button>
                 <div className="cp-detail__head">
-                  <span className="cp-detail__tile" aria-hidden="true">{initialOf(entry)}</span>
+                  <span className="cp-detail__tile" aria-hidden="true">{credentialInitial(entry)}</span>
                   <div className="cp-detail__title">
                     <h2>{entry.name || 'Sin nombre'}</h2>
                     {href ? (
@@ -321,7 +377,7 @@ function ColdPassViewComponent({
                     <section className="cp-card" aria-label="Historial de contraseñas">
                       <div className="cp-card__heading">
                         <h3>Historial</h3>
-                        <span className="cp-muted">{history.length === 1 ? '1 anterior' : `${history.length} anteriores`}</span>
+                        <span className="cp-muted">{historyCount(history.length)}</span>
                       </div>
                       {history.length > 0 ? (
                         <div className="cp-history" data-open={isHistoryOpen && history.length > 5}>
@@ -338,7 +394,7 @@ function ColdPassViewComponent({
                                   type="button"
                                   className="cp-icon"
                                   aria-label={revealed ? 'Ocultar contraseña anterior' : 'Mostrar contraseña anterior'}
-                                  onClick={() => setRevealedHistory((current) => ({ ...current, [key]: !revealed }))}
+                                  onClick={() => toggleHistoryReveal(key)}
                                 >
                                   {revealed ? <EyeOff {...ICON} aria-hidden="true" /> : <Eye {...ICON} aria-hidden="true" />}
                                 </button>
@@ -364,7 +420,7 @@ function ColdPassViewComponent({
                           aria-expanded={isHistoryOpen}
                           onClick={() => setIsHistoryOpen((current) => !current)}
                         >
-                          {isHistoryOpen ? `Mostrar solo las ${HISTORY_PREVIEW} más recientes` : `Ver las ${history.length - HISTORY_PREVIEW} anteriores`}
+                          {historyToggleLabel(isHistoryOpen, history.length)}
                           <ChevronDown size={14} strokeWidth={2} aria-hidden="true" className="cp-chevron" data-open={isHistoryOpen} />
                         </button>
                       ) : null}

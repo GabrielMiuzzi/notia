@@ -18,6 +18,13 @@
 //! chooses (a SAF tree), because Android libraries are SAF folders. The
 //! record of the last sync stays in the app data folder, and a mark in the
 //! copy (`.notia/notia-copy.json`) keeps another library from mixing in.
+//!
+//! The first copy of a library can take minutes on a phone. The record is
+//! saved as the sync goes (`Pass::save`), with each file as the copy's
+//! folder has it after writing it, so a sync cut short (the app closed or
+//! was frozen) goes on where it stopped instead of starting over. While a
+//! long sync runs, Android keeps the process going with a foreground
+//! service (`KeepRunning`), and the status shows how far it went.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -29,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::backend::connection::ClientKind;
-use crate::backend::mirror_sync::{plan, FileStamp, SyncAction, SyncBase};
+use crate::backend::mirror_sync::{plan, FileStamp, SyncAction, SyncBase, COPY_MARK_PATH};
 use crate::backend::{BackendError, BackendErrorCode};
 use crate::host::{AppHandle, Emitter, Manager};
 use crate::host_sync::{
@@ -42,8 +49,13 @@ pub(crate) const COPY_EVENT: &str = "notia:copy-sync";
 const DIRECTORY: &str = "mirror";
 const CURRENT_FILE: &str = "current.json";
 /// Mark of a copy, with the host library it belongs to.
-const MARK_PATH: &str = ".notia/notia-copy.json";
+const MARK_PATH: &str = COPY_MARK_PATH;
 const DATABASE_PATH: &str = ".notia/notia.db";
+/// How often a running sync saves its record and shows how far it went.
+const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// A sync with at least this many files keeps an Android process running
+/// with the window hidden; shorter ones end in a few seconds.
+const LONG_SYNC_FILES: usize = 20;
 /// How often a changed database of the host is copied again. The copy only
 /// serves offline, and the host's database changes every minute (its
 /// scheduled actions renew a lease): copying it on every change moved the
@@ -59,6 +71,8 @@ pub(crate) struct MirrorState {
     transferring: AtomicBool,
     /// When this run last copied the host's database.
     database_copied_at: Mutex<Option<std::time::Instant>>,
+    /// Files done and to do of the running sync.
+    progress: Mutex<Option<(usize, usize)>>,
     offline: AtomicBool,
     /// The copy was listed since this device last worked offline: on
     /// Android, where listing a SAF folder is slow, later syncs trust the
@@ -223,6 +237,16 @@ pub(crate) fn is_transferring(app: &AppHandle) -> bool {
     state(app).is_some_and(|state| state.transferring.load(Ordering::SeqCst))
 }
 
+/// Files done and to do of the running sync.
+pub(crate) fn progress(app: &AppHandle) -> Option<(usize, usize)> {
+    state(app).and_then(|state| state.progress.lock().ok().and_then(|progress| *progress))
+}
+
+/// Files that did not travel in the last sync (they are tried again).
+pub(crate) fn last_skipped(app: &AppHandle) -> usize {
+    last_status(app).map_or(0, |status| status.skipped.len())
+}
+
 /// The error of the last sync, when it failed.
 pub(crate) fn last_error(app: &AppHandle) -> Option<String> {
     last_status(app).and_then(|status| status.error)
@@ -266,8 +290,10 @@ enum CopyStore {
     /// A folder of the app data (Windows and Linux), by canonical path.
     Folder(PathBuf),
     /// The SAF folder the person chose (Android). Its tree URI is kept as
-    /// received; files resolve to their own document URIs.
-    Saf(String),
+    /// received; files resolve to their own document URIs. `folders`
+    /// remembers the document URI of each folder written in this sync, so
+    /// a file is created with one query instead of one per folder.
+    Saf { tree_uri: String, folders: Mutex<BTreeMap<String, String>> },
 }
 
 fn copy_read_error() -> BackendError {
@@ -283,24 +309,25 @@ impl CopyStore {
     fn list(&self, app: &AppHandle) -> Result<BTreeMap<String, FileStamp>, BackendError> {
         match self {
             Self::Folder(root) => Ok(synced_files(root)?.into_iter().map(|file| (file.path, file.stamp)).collect()),
-            Self::Saf(tree_uri) => saf::list(app, tree_uri),
+            Self::Saf { tree_uri, .. } => saf::list(app, tree_uri),
         }
     }
 
     fn read(&self, app: &AppHandle, path: &str) -> Result<Vec<u8>, BackendError> {
         match self {
             Self::Folder(root) => std::fs::read(synced_target(root, path)?).map_err(|_| copy_read_error()),
-            Self::Saf(tree_uri) => saf::read(app, tree_uri, path)?.ok_or_else(copy_read_error),
+            Self::Saf { tree_uri, .. } => saf::read(app, tree_uri, path)?.ok_or_else(copy_read_error),
         }
     }
 
-    /// Writes a file that travels; the folder keeps the host's time.
-    fn write(&self, app: &AppHandle, path: &str, bytes: &[u8], modified_ms: i64) -> Result<(), BackendError> {
+    /// Writes a file that travels (a desktop folder keeps the host's time)
+    /// and returns it as the folder has it now, when the folder says.
+    fn write(&self, app: &AppHandle, path: &str, bytes: &[u8], modified_ms: i64) -> Result<Option<FileStamp>, BackendError> {
         match self {
-            Self::Folder(root) => write_synced(&synced_target(root, path)?, bytes, modified_ms).map(|_| ()),
-            Self::Saf(tree_uri) => {
+            Self::Folder(root) => write_synced(&synced_target(root, path)?, bytes, modified_ms).map(Some),
+            Self::Saf { tree_uri, folders } => {
                 crate::host_sync::check_synced_path(path)?;
-                saf::write(app, tree_uri, path, bytes)
+                saf::write(app, tree_uri, folders, path, bytes)
             }
         }
     }
@@ -308,7 +335,7 @@ impl CopyStore {
     fn delete(&self, app: &AppHandle, path: &str) -> Result<(), BackendError> {
         match self {
             Self::Folder(root) => delete_synced(root, &synced_target(root, path)?),
-            Self::Saf(tree_uri) => {
+            Self::Saf { tree_uri, .. } => {
                 crate::host_sync::check_synced_path(path)?;
                 saf::delete(app, tree_uri, path)
             }
@@ -330,7 +357,9 @@ impl CopyStore {
                     storage("No se pudo guardar la copia de la base de datos.")
                 })
             }
-            Self::Saf(tree_uri) => saf::write(app, tree_uri, DATABASE_PATH, bytes).map(|_| saf::database_replaced(app)),
+            Self::Saf { tree_uri, folders } => {
+                saf::write(app, tree_uri, folders, DATABASE_PATH, bytes).map(|_| saf::database_replaced(app))
+            }
         }
     }
 
@@ -338,7 +367,7 @@ impl CopyStore {
     fn mark(&self, app: &AppHandle) -> Option<String> {
         let bytes = match self {
             Self::Folder(root) => std::fs::read(root.join(".notia").join("notia-copy.json")).ok()?,
-            Self::Saf(tree_uri) => saf::read(app, tree_uri, MARK_PATH).ok()??,
+            Self::Saf { tree_uri, .. } => saf::read(app, tree_uri, MARK_PATH).ok()??,
         };
         let mark: CopyMark = serde_json::from_slice(&bytes).ok()?;
         (!mark.host_library_id.is_empty()).then_some(mark.host_library_id)
@@ -348,13 +377,13 @@ impl CopyStore {
         let text = serde_json::to_vec(&CopyMark { host_library_id: host_library_id.to_string() }).map_err(|_| copy_write_error())?;
         match self {
             Self::Folder(root) => std::fs::write(root.join(".notia").join("notia-copy.json"), text).map_err(|_| copy_write_error()),
-            Self::Saf(tree_uri) => saf::write(app, tree_uri, MARK_PATH, &text),
+            Self::Saf { tree_uri, folders } => saf::write(app, tree_uri, folders, MARK_PATH, &text).map(|_| ()),
         }
     }
 
     /// The folder changed: what shows it again reads it fresh.
     fn changed(&self, app: &AppHandle) {
-        if let Self::Saf(tree_uri) = self {
+        if let Self::Saf { tree_uri, .. } = self {
             saf::changed(app, tree_uri);
         }
     }
@@ -370,7 +399,7 @@ fn copy_store(app: &AppHandle, record: &mut CopyRecord, library_id: &str, librar
         if record.folder_uri.as_deref() != Some(folder.uri.as_str()) {
             *record = CopyRecord { folder_uri: Some(folder.uri.clone()), ..CopyRecord::default() };
         }
-        return Ok(CopyStore::Saf(folder.uri));
+        return Ok(CopyStore::Saf { tree_uri: folder.uri, folders: Mutex::default() });
     }
     let folder = match &record.folder {
         Some(folder) => folder.clone(),
@@ -398,6 +427,9 @@ pub(crate) async fn sync(app: &AppHandle) -> Result<CopyStatus, BackendError> {
         .ok_or_else(|| unavailable("Todavía no se sabe qué biblioteca comparte el host."))?;
     let result = sync_library(app, &state, &library_id, &library_name).await;
     state.transferring.store(false, Ordering::SeqCst);
+    if let Ok(mut progress) = state.progress.lock() {
+        *progress = None;
+    }
     let status = match &result {
         Ok(status) => status.clone(),
         Err(error) => CopyStatus { at_ms: now_ms(), error: Some(error.message.clone()), ..CopyStatus::default() },
@@ -480,23 +512,33 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
             .and_then(|copied| *copied)
             .is_none_or(|copied| copied.elapsed() >= DATABASE_REFRESH);
     let database_changed = database_due && manifest.database.map(|database| database.modified_ms) != record.database_ms;
+    let first_database = record.database_ms.is_none() && database_changed;
     if !plans.is_empty() || database_changed {
         state.transferring.store(true, Ordering::SeqCst);
+        if let Ok(mut progress) = state.progress.lock() {
+            *progress = Some((0, plans.len()));
+        }
         crate::client_status::refresh(app);
     }
+    let _running = (plans.len() >= LONG_SYNC_FILES || first_database).then(|| KeepRunning::begin(app));
     let (outgoing, incoming) = plans.split_at(plans.partition_point(|(_, action)| is_outgoing(*action)));
 
     let mut pass = Pass {
         app,
+        state,
         store: &store,
         library_id,
         host_root: &manifest.root,
         local: &local,
         remote: &remote,
         record: &mut record,
+        record_file: &record_file,
         status: CopyStatus::default(),
         downloaded: Vec::new(),
         failure: None,
+        done: 0,
+        total: plans.len(),
+        saved_at: std::time::Instant::now(),
     };
     pass.run(outgoing).await;
     if pass.failure.is_none() && database_changed {
@@ -506,6 +548,9 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
                 if let Ok(mut copied) = state.database_copied_at.lock() {
                     *copied = Some(std::time::Instant::now());
                 }
+                // With the database recorded, the copy opens offline even if
+                // the rest of this sync is cut short.
+                pass.save();
             }
             Err(error) => pass.failure = Some(error),
         }
@@ -562,17 +607,23 @@ fn is_outgoing(action: SyncAction) -> bool {
 /// One run over the files of a sync, recording what travelled.
 struct Pass<'a> {
     app: &'a AppHandle,
+    state: &'a MirrorState,
     store: &'a CopyStore,
     library_id: &'a str,
     host_root: &'a str,
     local: &'a BTreeMap<String, FileStamp>,
     remote: &'a BTreeMap<String, FileStamp>,
     record: &'a mut CopyRecord,
+    record_file: &'a Path,
     status: CopyStatus,
-    /// Files written in the copy, whose folder stamps are read afterwards.
+    /// Files written in the copy whose folder did not say how it keeps
+    /// them: their stamps are read by listing the folder afterwards.
     downloaded: Vec<String>,
     /// Why the sync stopped (the host stopped answering).
     failure: Option<BackendError>,
+    done: usize,
+    total: usize,
+    saved_at: std::time::Instant,
 }
 
 impl Pass<'_> {
@@ -584,10 +635,13 @@ impl Pass<'_> {
             let (local, remote) = (self.local.get(path), self.remote.get(path));
             let applied = apply(self.app, self.store, self.library_id, self.host_root, path, *action, local, remote, &mut self.status).await;
             match applied {
-                Ok(Outcome::Base(next)) => {
-                    if *action == SyncAction::Download {
+                Ok(Outcome::Written { base, stamped }) => {
+                    if !stamped {
                         self.downloaded.push(path.clone());
                     }
+                    self.record.files.insert(path.clone(), base);
+                }
+                Ok(Outcome::Base(next)) => {
                     self.record.files.insert(path.clone(), next);
                 }
                 Ok(Outcome::Drop) => {
@@ -602,16 +656,62 @@ impl Pass<'_> {
                     self.status.skipped.push(path.clone());
                 }
             }
+            self.done += 1;
+            if self.saved_at.elapsed() >= SAVE_EVERY {
+                self.save();
+            }
         }
+    }
+
+    /// Saves what travelled so far and shows how far the sync went.
+    fn save(&mut self) {
+        if let Err(error) = write_json(self.record_file, &*self.record) {
+            log::error!("[notia:copy] the progress of the copy was not saved: {}", error.message);
+        }
+        if let Ok(mut progress) = self.state.progress.lock() {
+            *progress = Some((self.done, self.total));
+        }
+        crate::client_status::refresh(self.app);
+        self.saved_at = std::time::Instant::now();
     }
 }
 
 /// What one action leaves in the record of the file.
 enum Outcome {
     Base(SyncBase),
+    /// A file written in the copy; `stamped` when the folder said how it
+    /// keeps it (otherwise it is read by listing the folder afterwards).
+    Written { base: SyncBase, stamped: bool },
     Drop,
     /// Nothing changed, or the file did not travel: the next sync tries again.
     Unchanged,
+}
+
+/// Keeps an Android process running while a long sync moves files, even
+/// with the window hidden (a foreground service of type `dataSync`).
+struct KeepRunning<'a> {
+    app: &'a AppHandle,
+    started: bool,
+}
+
+impl<'a> KeepRunning<'a> {
+    fn begin(app: &'a AppHandle) -> Self {
+        let started = app
+            .try_state::<crate::mobile_continuity::ContinuityState>()
+            .is_some_and(|state| crate::mobile_continuity::begin_android_work(state.inner(), Some("dataSync")));
+        Self { app, started }
+    }
+}
+
+impl Drop for KeepRunning<'_> {
+    fn drop(&mut self) {
+        if !self.started {
+            return;
+        }
+        if let Some(state) = self.app.try_state::<crate::mobile_continuity::ContinuityState>() {
+            crate::mobile_continuity::end_android_work(state.inner());
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -634,10 +734,12 @@ async fn apply(
                 status.skipped.push(path.to_string());
                 return Ok(Outcome::Unchanged);
             };
-            store.write(app, path, &bytes, remote.modified_ms)?;
+            let written = store.write(app, path, &bytes, remote.modified_ms)?;
             status.downloaded += 1;
-            // The folder's own stamp replaces this one after the sync.
-            Ok(base(*remote, *remote))
+            Ok(Outcome::Written {
+                base: SyncBase { remote: *remote, local: written.unwrap_or(*remote) },
+                stamped: written.is_some(),
+            })
         }
         (SyncAction::Upload, Some(local), _) => {
             if local.size > MAX_SYNC_UPLOAD_BYTES {
@@ -688,6 +790,7 @@ async fn copy_database(app: &AppHandle, store: &CopyStore, payload: &serde_json:
 #[cfg(target_os = "android")]
 mod saf {
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use crate::backend::mirror_sync::{is_synced_path, FileStamp};
     use crate::backend::{BackendError, BackendErrorCode, LogicalPathDto};
@@ -741,13 +844,39 @@ mod saf {
     }
 
     /// Creates the file (and its folders) when missing and writes it.
-    pub(super) fn write(app: &AppHandle, tree_uri: &str, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+    /// Returns the file as the folder keeps it, when the provider says.
+    pub(super) fn write(
+        app: &AppHandle,
+        tree_uri: &str,
+        folders: &Mutex<BTreeMap<String, String>>,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<Option<FileStamp>, BackendError> {
         let state = picker_state(app);
-        let uri = picker::create_android_path_entry(state, tree_uri, &segments(path)?, "file", None)
-            .map_err(|_| failed("No se pudo crear un archivo en la copia."))?;
-        picker::write_android_content_bytes(state, &uri, bytes).map_err(|_| failed("No se pudo guardar un archivo en la copia."))?;
+        let segments = segments(path)?;
+        let create_failed = |_| failed("No se pudo crear un archivo en la copia.");
+        let uri = match segments.split_last() {
+            Some((name, parents)) if !parents.is_empty() => {
+                let folder = parents.join("/");
+                let known = folders.lock().ok().and_then(|folders| folders.get(&folder).cloned());
+                let parent = match known {
+                    Some(uri) => uri,
+                    None => {
+                        let uri = picker::create_android_path_entry(state, tree_uri, parents, "folder", None).map_err(create_failed)?;
+                        if let Ok(mut folders) = folders.lock() {
+                            folders.insert(folder, uri.clone());
+                        }
+                        uri
+                    }
+                };
+                picker::create_android_tree_entry(state, &parent, name, "file", None).map_err(create_failed)?
+            }
+            _ => picker::create_android_path_entry(state, tree_uri, &segments, "file", None).map_err(create_failed)?,
+        };
+        let stamp = picker::write_android_content_bytes_stamped(state, &uri, bytes)
+            .map_err(|_| failed("No se pudo guardar un archivo en la copia."))?;
         picker::put_android_path_lru(state, format!("{}/{path}", tree_uri.trim_end_matches('/')), uri);
-        Ok(())
+        Ok(stamp.map(|(size, modified_ms)| FileStamp { size, modified_ms }))
     }
 
     pub(super) fn delete(app: &AppHandle, tree_uri: &str, path: &str) -> Result<(), BackendError> {
@@ -795,6 +924,7 @@ mod saf {
 #[cfg(not(target_os = "android"))]
 mod saf {
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use crate::backend::mirror_sync::FileStamp;
     use crate::backend::BackendError;
@@ -812,7 +942,13 @@ mod saf {
         Err(unavailable())
     }
 
-    pub(super) fn write(_app: &AppHandle, _tree_uri: &str, _path: &str, _bytes: &[u8]) -> Result<(), BackendError> {
+    pub(super) fn write(
+        _app: &AppHandle,
+        _tree_uri: &str,
+        _folders: &Mutex<BTreeMap<String, String>>,
+        _path: &str,
+        _bytes: &[u8],
+    ) -> Result<Option<FileStamp>, BackendError> {
         Err(unavailable())
     }
 
@@ -984,6 +1120,9 @@ mod tests {
         let base_ms = 1_750_000_000_000_i64;
         write(&library.join("Notas/a.md"), "uno", base_ms);
         write(&library.join("b.md"), "dos", base_ms);
+        // The handwriting of a note is part of the library.
+        std::fs::create_dir_all(library.join(".notia/ink/Notas")).expect("ink folder");
+        write(&library.join(".notia/ink/Notas/a.md.json"), "{\"strokes\":[]}", base_ms);
 
         let client = crate::create_app(AppPaths::new(Some(root.join("client")), None), HostPorts::default());
         let settings = ConnectionSettings { mode: RunMode::Client, host_address: format!("127.0.0.1:{port}"), ..ConnectionSettings::default() };
@@ -996,7 +1135,23 @@ mod tests {
         });
         let copy = directory(&client).expect("directory").join(folder_name(&library_id, "x")).join("Biblioteca");
         assert_eq!(std::fs::read_to_string(copy.join("Notas/a.md")).expect("a"), "uno");
+        assert_eq!(std::fs::read_to_string(copy.join(".notia/ink/Notas/a.md.json")).expect("ink"), "{\"strokes\":[]}");
         assert!(copy.join(".notia/notia.db").is_file(), "the database snapshot is kept");
+
+        // A first copy cut short: the record lost the files and one of them
+        // was written halfway (newer and shorter). The host's comes back and
+        // nothing goes up.
+        let record_file = record_path(&client, &library_id).expect("record");
+        let mut record: CopyRecord = read_json(&record_file);
+        record.files.clear();
+        write_json(&record_file, &record).expect("cut short");
+        write(&copy.join("Notas/a.md"), "u", base_ms + 5_000);
+        crate::host::async_runtime::block_on(async {
+            let resumed = sync(&client).await.expect("resumed");
+            assert_eq!((resumed.uploaded, resumed.downloaded), (0, 1), "{resumed:?}");
+        });
+        assert_eq!(std::fs::read_to_string(copy.join("Notas/a.md")).expect("a again"), "uno");
+        assert_eq!(std::fs::read_to_string(library.join("Notas/a.md")).expect("host a"), "uno");
 
         // Offline: the copy edits a.md and adds c.md; the host edits b.md.
         write(&copy.join("Notas/a.md"), "uno en la copia", base_ms + 10_000);

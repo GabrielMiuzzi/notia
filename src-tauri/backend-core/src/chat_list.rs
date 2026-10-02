@@ -1,6 +1,7 @@
 //! The chat history list: each chat's day of last activity, the group it
-//! falls in (pinned, today, yesterday, this week, earlier) and the agent that
-//! answered it last. The interface only draws the list.
+//! falls in (pinned, today, yesterday, this week, earlier), the agent that
+//! answered it last and the line that previews it. The interface only draws
+//! the list.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,8 @@ use crate::chat_history::{ChatRole, StoredChatDocument};
 const DAY_MS: i64 = 86_400_000;
 /// A week counts the six days before today.
 const WEEK_DAYS: i64 = 7;
+/// Characters of a chat's preview line; the row cuts it to its width.
+const PREVIEW_CHARS: usize = 120;
 
 /// The device's clock, so days are the person's local days.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -94,6 +97,22 @@ pub fn last_agent(document: &StoredChatDocument) -> Option<String> {
         .and_then(|message| message.agent.clone())
 }
 
+/// The person's last message with text, on one line and cut to
+/// `PREVIEW_CHARS`, for the history row; `None` until the person writes.
+pub fn preview(document: &StoredChatDocument) -> Option<String> {
+    let line = document
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == ChatRole::User)
+        .map(|message| message.content.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())?;
+    if line.chars().count() <= PREVIEW_CHARS {
+        return Some(line);
+    }
+    Some(format!("{}…", line.chars().take(PREVIEW_CHARS).collect::<String>().trim_end()))
+}
+
 /// Order of the history: pinned first, then the most recently active.
 pub fn history_order(left: (ChatGroup, Option<i64>), right: (ChatGroup, Option<i64>)) -> std::cmp::Ordering {
     let pinned = |group: ChatGroup| group != ChatGroup::Pinned;
@@ -148,6 +167,25 @@ mod tests {
         assert_eq!(last_agent(&document).as_deref(), Some("tasks.md"));
         document.messages.push(message(ChatRole::Assistant, None));
         assert_eq!(last_agent(&document), None);
+    }
+
+    #[test]
+    fn the_preview_is_the_last_thing_the_person_wrote_on_one_line() {
+        let mut document = StoredChatDocument::new("x".into(), true, true, 10);
+        assert_eq!(preview(&document), None);
+        let message = |role, content: &str| StoredChatMessage { role, content: content.into(), attachments: Vec::new(), agent: None };
+        document.messages = vec![
+            message(ChatRole::User, "¿Con qué tareas\n  está   Leandro?"),
+            message(ChatRole::Assistant, "Con lo que hay en la biblioteca…"),
+        ];
+        assert_eq!(preview(&document).as_deref(), Some("¿Con qué tareas está Leandro?"));
+        // A message with only files keeps the text written before it.
+        document.messages.push(message(ChatRole::User, "  \n "));
+        assert_eq!(preview(&document).as_deref(), Some("¿Con qué tareas está Leandro?"));
+        document.messages.push(message(ChatRole::User, &"ñ".repeat(PREVIEW_CHARS + 5)));
+        let long = preview(&document).unwrap_or_default();
+        assert_eq!(long.chars().count(), PREVIEW_CHARS + 1);
+        assert!(long.ends_with('…'));
     }
 }
 

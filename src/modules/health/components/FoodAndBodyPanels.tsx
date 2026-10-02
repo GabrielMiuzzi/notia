@@ -5,12 +5,14 @@ import { categoryIcon } from './healthUi'
 
 interface FoodPanelProps {
   panel: FoodPanel
+  /** En el celular «Agregar comida» es el botón flotante de la pantalla. */
+  phone?: boolean
   onDate: (date: string) => void
   onAdd: (category: string | null) => void
   onEdit: (meal: { id: string; values: RecentMeal }) => void
 }
 
-export function FoodPanelView({ panel, onDate, onAdd, onEdit }: FoodPanelProps) {
+export function FoodPanelView({ panel, phone = false, onDate, onAdd, onEdit }: FoodPanelProps) {
   return (
     <section className="hl-panel hl-food" aria-labelledby="hl-food-title">
       <div className="hl-panel__top hl-panel__top--center">
@@ -21,7 +23,7 @@ export function FoodPanelView({ panel, onDate, onAdd, onEdit }: FoodPanelProps) 
             <span className="hl-day__label">{panel.dayLabel}</span>
             <button type="button" onClick={() => panel.nextDate && onDate(panel.nextDate)} disabled={!panel.nextDate} aria-label="Día siguiente"><ChevronRight size={16} aria-hidden="true" /></button>
           </div>
-          <button type="button" className="hl-button hl-button--primary" onClick={() => onAdd(null)}><Plus size={16} aria-hidden="true" />Agregar comida</button>
+          {!phone && <button type="button" className="hl-button hl-button--primary" onClick={() => onAdd(null)}><Plus size={16} aria-hidden="true" />Agregar comida</button>}
         </div>
       </div>
 

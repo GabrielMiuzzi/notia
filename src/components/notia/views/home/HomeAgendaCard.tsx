@@ -7,10 +7,12 @@ import { countLabel } from './homeDisplay'
 interface HomeAgendaCardProps {
   card: HomeCard<HomeAgenda>
   onOpenAgenda: () => void
+  /** Phone board: «Calendario» and no divider under the days. */
+  phone?: boolean
 }
 
 /** The next seven days of the Agenda; a day shows only its events. */
-export function HomeAgendaCard({ card, onOpenAgenda }: HomeAgendaCardProps) {
+export function HomeAgendaCard({ card, onOpenAgenda, phone = false }: HomeAgendaCardProps) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const agenda = card.data
   const selectedDay = agenda?.days.find((day) => day.date === selectedDate) ?? null
@@ -23,7 +25,7 @@ export function HomeAgendaCard({ card, onOpenAgenda }: HomeAgendaCardProps) {
       icon={<Calendar size={15} strokeWidth={1.75} />}
       className="home-card--agenda"
       error={card.error}
-      action={<HomeMoreButton label="Abrir calendario" onClick={onOpenAgenda} />}
+      action={<HomeMoreButton label={phone ? 'Calendario' : 'Abrir calendario'} onClick={onOpenAgenda} />}
     >
       {agenda ? (
         <>
@@ -46,7 +48,7 @@ export function HomeAgendaCard({ card, onOpenAgenda }: HomeAgendaCardProps) {
               )
             })}
           </div>
-          <div className="home-divider" />
+          {phone ? null : <div className="home-divider" />}
           <div className="home-list-head">
             <span className="home-label">{selectedDay ? `Eventos del ${selectedDay.label}` : 'Próximos 7 días'}</span>
             <span className="home-card__sub">{countLabel(events.length, 'evento', 'eventos')}</span>

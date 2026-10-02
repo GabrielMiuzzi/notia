@@ -28,6 +28,8 @@ interface DragState {
 
 interface AgendaWeekGridProps {
   week: AgendaWeek
+  /** Celular: solo la columna del día elegido, sin encabezado (lo elige la tira de días). */
+  dayOnly: boolean
   timeSlots: AgendaTimeSlot[]
   slotMinutes: number
   selectedSlots: ReadonlySet<string>
@@ -67,6 +69,7 @@ const SlotButton = memo(function SlotButton({ slotId, day, row, isHour, label, s
 
 export function AgendaWeekGrid({
   week,
+  dayOnly,
   timeSlots,
   slotMinutes,
   selectedSlots,
@@ -83,10 +86,11 @@ export function AgendaWeekGrid({
   // again through the click that follows.
   const suppressClickRef = useRef(false)
   const selectedRef = useRef(selectedSlots)
+  const days = dayOnly ? week.days.filter((day) => day.isSelected) : week.days
   const rowCount = timeSlots.length
   const initialRow = Math.min(rowCount - 1, Math.floor(INITIAL_SCROLL_MINUTE / slotMinutes))
   const [focusPosition, setFocusPosition] = useState<GridPosition>(() => ({
-    day: Math.max(0, week.days.findIndex((day) => day.isSelected)),
+    day: Math.max(0, days.findIndex((day) => day.isSelected)),
     row: initialRow,
   }))
 
@@ -94,10 +98,12 @@ export function AgendaWeekGrid({
 
   useLayoutEffect(() => {
     const grid = gridRef.current
-    const row = grid?.querySelector<HTMLElement>(`[data-time-row="${initialRow}"]`)
-    const head = headRef.current
+    // A block, not the hour label: the labels are moved up to sit on the line.
+    const row = grid?.querySelector<HTMLElement>(`.agenda-slot[data-row="${initialRow}"]`)
+    if (!grid || !row) return
     // The hour column is sticky, so offsetTop would not count the header.
-    if (grid && row && head) grid.scrollTop += row.getBoundingClientRect().top - head.getBoundingClientRect().bottom
+    const top = headRef.current?.getBoundingClientRect().bottom ?? grid.getBoundingClientRect().top + grid.clientTop
+    grid.scrollTop += row.getBoundingClientRect().top - top
   }, [initialRow])
 
   // While a long press selects, the finger must not scroll the grid: scrolling
@@ -212,7 +218,7 @@ export function AgendaWeekGrid({
             : null
     if (!next) return
     event.preventDefault()
-    if (next.day < 0 || next.day >= week.days.length || next.row < 0 || next.row >= rowCount) return
+    if (next.day < 0 || next.day >= days.length || next.row < 0 || next.row >= rowCount) return
     focusCell(next)
   }
 
@@ -223,16 +229,18 @@ export function AgendaWeekGrid({
     setFocusPosition((current) => (current.day === position.day && current.row === position.row ? current : position))
   }
 
-  const gridStyle = { '--agenda-slots': rowCount } as CSSProperties
+  const gridStyle = { '--agenda-slots': rowCount, '--agenda-days': days.length } as CSSProperties
+  const scope = dayOnly && days[0] ? days[0].longLabel : `Semana ${week.label}`
 
   return (
     <div
       ref={gridRef}
       className="agenda-grid"
       data-dragging="false"
+      data-day-only={dayOnly}
       style={gridStyle}
       role="group"
-      aria-label={`Semana ${week.label} en bloques de ${slotMinutes} minutos`}
+      aria-label={`${scope} en bloques de ${slotMinutes} minutos`}
       aria-describedby="agenda-grid-help"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -246,15 +254,17 @@ export function AgendaWeekGrid({
       <p id="agenda-grid-help" className="agenda-visually-hidden">
         Usá las flechas para moverte entre bloques y Enter o Espacio para seleccionarlos.
       </p>
-      <div ref={headRef} className="agenda-grid__head">
-        <div className="agenda-grid__corner" />
-        {week.days.map((day) => (
-          <div key={day.date} className="agenda-grid__day" data-today={day.isToday} data-selected={day.isSelected}>
-            <span className="agenda-grid__day-name">{day.shortName}</span>
-            <span className="agenda-grid__day-num">{day.day}</span>
-          </div>
-        ))}
-      </div>
+      {dayOnly ? null : (
+        <div ref={headRef} className="agenda-grid__head">
+          <div className="agenda-grid__corner" />
+          {days.map((day) => (
+            <div key={day.date} className="agenda-grid__day" data-today={day.isToday} data-selected={day.isSelected}>
+              <span className="agenda-grid__day-name">{day.shortName}</span>
+              <span className="agenda-grid__day-num">{day.day}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="agenda-grid__body">
         <div className="agenda-grid__times" aria-hidden="true">
           {timeSlots.map((slot, row) => (
@@ -263,7 +273,7 @@ export function AgendaWeekGrid({
             </div>
           ))}
         </div>
-        {week.days.map((day, dayIndex) => (
+        {days.map((day, dayIndex) => (
           <div key={day.date} className="agenda-grid__column" data-today={day.isToday}>
             {timeSlots.map((slot, row) => {
               const id = slotKey(day.date, slot.minute)

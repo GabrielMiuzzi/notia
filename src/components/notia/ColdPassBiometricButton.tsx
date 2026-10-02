@@ -15,6 +15,8 @@ import { ColdPassOwnerPasswordModal } from './ColdPassOwnerPasswordModal'
 interface ColdPassBiometricButtonProps {
   /** Shows the result in the view's toast. */
   onChanged: (message: string) => void
+  /** Phone header: an icon button that is pressed while the fingerprint is on. */
+  compact?: boolean
 }
 
 interface EnablePromptState {
@@ -29,7 +31,7 @@ const CLOSED_PROMPT: EnablePromptState = { open: false, errorMessage: null, isSu
  * Turns this device's fingerprint on or off for ColdPass while the vault is
  * open. Hidden where there is no compatible sensor (Windows, older Android).
  */
-export function ColdPassBiometricButton({ onChanged }: ColdPassBiometricButtonProps) {
+export function ColdPassBiometricButton({ onChanged, compact = false }: ColdPassBiometricButtonProps) {
   const library = useAppSelector(selectActiveLibrary)
   const libraryId = library?.id ?? null
   const { confirm } = useConfirmationEngine()
@@ -100,12 +102,15 @@ export function ColdPassBiometricButton({ onChanged }: ColdPassBiometricButtonPr
     }
   }
 
+  const label = status.enabled ? 'Huella activada' : 'Activar huella'
+
   return (
     <>
       <button
         type="button"
-        className="cp-btn cp-btn--ghost"
+        className={compact ? 'cp-icon' : 'cp-btn cp-btn--ghost'}
         aria-pressed={status.enabled}
+        aria-label={compact ? label : undefined}
         disabled={notEnrolled || isDisabling}
         title={notEnrolled ? 'Registrá una huella en los ajustes de Android para usarla en ColdPass.' : undefined}
         onClick={() => {
@@ -116,8 +121,8 @@ export function ColdPassBiometricButton({ onChanged }: ColdPassBiometricButtonPr
           }
         }}
       >
-        <Fingerprint size={18} strokeWidth={1.75} aria-hidden="true" />
-        {status.enabled ? 'Huella activada' : 'Activar huella'}
+        <Fingerprint size={compact ? 20 : 18} strokeWidth={1.75} aria-hidden="true" />
+        {compact ? null : label}
       </button>
       <ColdPassOwnerPasswordModal
         open={prompt.open}

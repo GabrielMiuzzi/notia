@@ -1,4 +1,4 @@
-/** Parakeet is the only recognition model: it runs on CPU and detects the language; the language selects the text normalization. */
+/** Whisper is the only recognition model: it transcribes in the configured language ("auto" detects it). */
 export interface SpeechRecognitionPreferences {
   enabled: boolean
   language: string

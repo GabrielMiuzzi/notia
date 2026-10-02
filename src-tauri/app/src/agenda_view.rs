@@ -25,6 +25,8 @@ pub(crate) const MONTH_NAMES: [&str; 12] = [
     "diciembre",
 ];
 pub(crate) const WEEKDAY_SHORT: [&str; 7] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+/// The two letters of the day strip of the phone layout.
+const WEEKDAY_INITIALS: [&str; 7] = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
 pub(crate) const WEEKDAY_LONG: [&str; 7] = [
     "lunes",
     "martes",
@@ -89,9 +91,16 @@ impl AgendaFrame {
         self.week_start + Duration::days(6)
     }
 
-    /// Years whose holidays the month grid and the countdown show.
+    /// Years whose holidays the month grid, the week and the countdown show.
+    /// The week can fall outside the grid while browsing other months.
     pub fn holiday_years(&self) -> Vec<i32> {
-        let mut years = vec![self.grid_start.year(), self.grid_end().year(), self.today.year()];
+        let mut years = vec![
+            self.grid_start.year(),
+            self.grid_end().year(),
+            self.week_start.year(),
+            self.week_end().year(),
+            self.today.year(),
+        ];
         years.sort_unstable();
         years.dedup();
         years
@@ -199,6 +208,27 @@ pub struct AgendaView {
     pub upcoming: AgendaUpcoming,
     pub notes: AgendaNotes,
     pub holidays: AgendaHolidays,
+    pub selected_day: AgendaSelectedDay,
+}
+
+/// The selected day under the month of the phone layout, with every holiday
+/// it has.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgendaSelectedDay {
+    /// «Jueves 24 de septiembre».
+    pub label: String,
+    /// The most important first.
+    pub holidays: Vec<AgendaDayHoliday>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgendaDayHoliday {
+    pub name: String,
+    pub kind: HolidayKind,
+    /// «Feriado inamovible», «Feriado bancario»…
+    pub kind_label: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,10 +274,16 @@ pub struct AgendaWeek {
 pub struct AgendaWeekDay {
     pub date: String,
     pub short_name: &'static str,
+    /// «Lu», for the day strip of the phone layout.
+    pub initials: &'static str,
     pub day: u32,
     pub long_label: String,
     pub is_today: bool,
     pub is_selected: bool,
+    pub has_events: bool,
+    /// The day's most important holiday kind, when it has one.
+    pub holiday_kind: Option<HolidayKind>,
+    pub aria_label: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,6 +403,19 @@ fn event_view(event: &EventRecord) -> AgendaEventView {
     }
 }
 
+/// «lunes 12 de octubre, Feriado trasladable: …, con tareas».
+fn day_aria_label(date: NaiveDate, day_holidays: &[Holiday], has_events: bool) -> String {
+    let aria_holidays: String = day_holidays
+        .iter()
+        .map(|holiday| format!(", {}: {}", holiday.label(), holiday.name))
+        .collect();
+    format!(
+        "{}{aria_holidays}{}",
+        long_day_label(date),
+        if has_events { ", con tareas" } else { "" }
+    )
+}
+
 fn month_cell(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCalendar, date: NaiveDate) -> AgendaMonthCell {
     let has_events = data.event_dates.contains(&date);
     let day_holidays = holidays.on(date);
@@ -375,10 +424,6 @@ fn month_cell(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCalendar
         .map(|holiday| format!("{} ({})", holiday.name, holiday.label()))
         .collect::<Vec<_>>()
         .join(" · ");
-    let aria_holidays: String = day_holidays
-        .iter()
-        .map(|holiday| format!(", {}: {}", holiday.label(), holiday.name))
-        .collect();
     AgendaMonthCell {
         date: date_key(date),
         day: date.day(),
@@ -389,11 +434,7 @@ fn month_cell(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCalendar
         holiday_name: day_holidays.first().map(|holiday| holiday.name.clone()).unwrap_or_default(),
         holiday_kind: day_holidays.first().map(|holiday| holiday.kind),
         holiday_title,
-        aria_label: format!(
-            "{}{aria_holidays}{}",
-            long_day_label(date),
-            if has_events { ", con tareas" } else { "" }
-        ),
+        aria_label: day_aria_label(date, day_holidays, has_events),
     }
 }
 
@@ -415,17 +456,23 @@ fn month_view(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCalendar
     }
 }
 
-fn week_view(frame: &AgendaFrame, data: &AgendaData) -> AgendaWeek {
+fn week_view(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCalendar) -> AgendaWeek {
     let days = (0..7)
         .map(|offset| {
             let date = frame.week_start + Duration::days(offset);
+            let has_events = data.week_events.iter().any(|event| event.date == date);
+            let day_holidays = holidays.on(date);
             AgendaWeekDay {
                 date: date_key(date),
                 short_name: WEEKDAY_SHORT[offset as usize],
+                initials: WEEKDAY_INITIALS[offset as usize],
                 day: date.day(),
                 long_label: long_day_label(date),
                 is_today: date == frame.today,
                 is_selected: date == frame.selected,
+                has_events,
+                holiday_kind: day_holidays.first().map(|holiday| holiday.kind),
+                aria_label: day_aria_label(date, day_holidays, has_events),
             }
         })
         .collect();
@@ -592,7 +639,7 @@ pub fn build_view(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCale
         selected_date: date_key(frame.selected),
         slot_minutes: SLOT_MINUTES,
         month: month_view(frame, data, holidays),
-        week: week_view(frame, data),
+        week: week_view(frame, data, holidays),
         time_slots: (0..DAY_MINUTES)
             .step_by(SLOT_MINUTES as usize)
             .map(|minute| AgendaTimeSlot {
@@ -628,6 +675,22 @@ pub fn build_view(frame: &AgendaFrame, data: &AgendaData, holidays: &HolidayCale
             pending_label: count_label(pending, "pendiente", "pendientes"),
         },
         holidays: holidays_view(frame, holidays),
+        selected_day: selected_day_view(frame, holidays),
+    }
+}
+
+fn selected_day_view(frame: &AgendaFrame, holidays: &HolidayCalendar) -> AgendaSelectedDay {
+    AgendaSelectedDay {
+        label: capitalized(&long_day_label(frame.selected)),
+        holidays: holidays
+            .on(frame.selected)
+            .iter()
+            .map(|holiday| AgendaDayHoliday {
+                name: holiday.name.clone(),
+                kind: holiday.kind,
+                kind_label: holiday.label(),
+            })
+            .collect(),
     }
 }
 
@@ -734,8 +797,14 @@ mod tests {
         assert_eq!((week.prev_date.as_str(), week.next_date.as_str()), ("2026-09-24", "2026-10-08"));
         assert_eq!(week.days[0].date, "2026-09-28");
         assert_eq!(week.days[3].short_name, "Jue");
+        assert_eq!(week.days[5].initials, "Sá");
         assert!(week.days[3].is_selected);
         assert_eq!(week.days[3].long_label, "jueves 1 de octubre");
+        let with_events: Vec<_> = week.days.iter().filter(|day| day.has_events).map(|day| day.day).collect();
+        assert_eq!(with_events, vec![29]);
+        assert_eq!(week.days[1].aria_label, "martes 29 de septiembre, con tareas");
+        assert_eq!(week.days[2].aria_label, "miércoles 30 de septiembre");
+        assert_eq!(week.days[2].holiday_kind, None);
         assert_eq!(week.events[0].event.time_label, "09:00–10:00");
         assert_eq!(week.events[0].event.when_label, "Mar 29 sep · 09:00–10:00");
         assert_eq!(week.events[0].event.priority_label, "Urgente");
@@ -851,6 +920,43 @@ mod tests {
     }
 
     #[test]
+    fn the_week_and_the_selected_day_show_their_holidays() {
+        let holidays = crate::holidays::tests::calendar_of(
+            2026,
+            &[("2026-10-12", "trasladable", "Día del Respeto a la Diversidad Cultural")],
+            &[("2026-10-12", "Día de la Raza"), ("2026-10-14", "Día del Bancario")],
+        );
+        let frame = AgendaFrame::resolve(&request(Some("2026-10-12"), Some("2026-11")), date("2026-09-27"), 0).unwrap();
+        let view = build_view(&frame, &AgendaData::default(), &holidays);
+        let monday = &view.week.days[0];
+        assert_eq!(monday.holiday_kind, Some(HolidayKind::Movable));
+        assert_eq!(
+            monday.aria_label,
+            "lunes 12 de octubre, Feriado trasladable: Día del Respeto a la Diversidad Cultural"
+        );
+        assert_eq!(view.week.days[2].holiday_kind, Some(HolidayKind::NonWorking));
+        assert_eq!(view.week.days[1].holiday_kind, None);
+
+        // The selected day is outside the November grid and still lists its holidays.
+        assert_eq!(view.selected_day.label, "Lunes 12 de octubre");
+        let names: Vec<_> = view
+            .selected_day
+            .holidays
+            .iter()
+            .map(|holiday| (holiday.kind, holiday.kind_label, holiday.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![(HolidayKind::Movable, "Feriado trasladable", "Día del Respeto a la Diversidad Cultural")]
+        );
+
+        let plain = AgendaFrame::resolve(&request(Some("2026-10-13"), None), date("2026-09-27"), 0).unwrap();
+        let day = build_view(&plain, &AgendaData::default(), &holidays).selected_day;
+        assert_eq!(day.label, "Martes 13 de octubre");
+        assert!(day.holidays.is_empty());
+    }
+
+    #[test]
     fn the_holidays_card_explains_why_it_is_empty() {
         let frame = AgendaFrame::resolve(&request(None, None), date("2026-09-27"), 0).unwrap();
         let mut offline = HolidayCalendar::default();
@@ -870,6 +976,9 @@ mod tests {
         assert_eq!(january.holiday_years(), vec![2026, 2027]);
         let may = AgendaFrame::resolve(&request(None, Some("2027-05")), date("2026-09-27"), 0).unwrap();
         assert_eq!(may.holiday_years(), vec![2026, 2027]);
+        // Browsing back while the selected week crosses into the next year.
+        let crossing = AgendaFrame::resolve(&request(Some("2026-12-31"), Some("2026-06")), date("2026-09-27"), 0).unwrap();
+        assert_eq!(crossing.holiday_years(), vec![2026, 2027]);
     }
 
     #[test]
@@ -879,6 +988,12 @@ mod tests {
         assert_eq!(value["defaultPriority"], "medium");
         assert_eq!(value["month"]["cells"][0]["inMonth"], false);
         assert_eq!(value["week"]["days"][0]["shortName"], "Lun");
+        assert_eq!(value["week"]["days"][0]["initials"], "Lu");
+        assert_eq!(value["week"]["days"][3]["hasEvents"], false);
+        assert!(value["week"]["days"][3]["holidayKind"].is_null());
+        assert_eq!(value["week"]["days"][3]["ariaLabel"], "jueves 24 de septiembre");
+        assert_eq!(value["selectedDay"]["label"], "Jueves 24 de septiembre");
+        assert_eq!(value["selectedDay"]["holidays"], serde_json::json!([]));
         assert_eq!(value["priorities"][0]["key"], "urgent");
         assert_eq!(value["slotMinutes"], 15);
     }

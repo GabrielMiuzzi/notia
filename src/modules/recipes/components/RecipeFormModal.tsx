@@ -1,66 +1,8 @@
-import { useMemo, useState } from 'react'
 import { ImageIcon, Sparkles, X } from 'lucide-react'
 import { NotiaModalShell } from '../../../components/notia/NotiaModalShell'
 import type { NotiaLibrary } from '../../../types/notia'
-import { useRecipePhoto } from '../hooks/useRecipes'
-import { asRecipesError, createRecipe, updateRecipe } from '../services/recipesService'
-import type { FieldError, MealTime, PhotoEdit, RecipeDetail, RecipeInput, RecipesError } from '../types/recipesTypes'
-
-/** Campos del formulario (etiquetas y unidades para mostrar; Rust valida). */
-const MEALS: Array<{ meal: MealTime; label: string }> = [
-  { meal: 'breakfast', label: 'Desayuno' },
-  { meal: 'lunch', label: 'Almuerzo' },
-  { meal: 'dinner', label: 'Cena' },
-  { meal: 'snack', label: 'Snack' },
-]
-type NutrientField = [key: string, label: string, unit: string]
-const MACROS: NutrientField[] = [['kcal', 'Calorías', 'kcal'], ['prot', 'Proteína', 'g'], ['carb', 'Carbohidratos', 'g'], ['grasa', 'Grasas', 'g'], ['fibra', 'Fibra', 'g'], ['azucar', 'Azúcares', 'g']]
-const VITAMINS: NutrientField[] = [['vitA', 'Vitamina A', 'µg'], ['vitC', 'Vitamina C', 'mg'], ['vitD', 'Vitamina D', 'µg'], ['vitE', 'Vitamina E', 'mg'], ['vitK', 'Vitamina K', 'µg'], ['b6', 'Vitamina B6', 'mg'], ['b12', 'Vitamina B12', 'µg'], ['folato', 'Folato (B9)', 'µg']]
-const MINERALS: NutrientField[] = [['calcio', 'Calcio', 'mg'], ['hierro', 'Hierro', 'mg'], ['magnesio', 'Magnesio', 'mg'], ['potasio', 'Potasio', 'mg'], ['zinc', 'Zinc', 'mg'], ['sodio', 'Sodio', 'mg']]
-const MAX_PHOTO_BYTES = 15 * 1024 * 1024
-
-interface FormState {
-  name: string
-  meal: MealTime
-  minutes: string
-  servings: string
-  description: string
-  ingredients: string
-  steps: string
-  nutrition: Record<string, string>
-}
-
-function initialState(detail: RecipeDetail | null, meal: MealTime | null): FormState {
-  const form = detail?.form
-  return {
-    name: form?.name ?? '',
-    meal: form?.meal ?? meal ?? 'lunch',
-    minutes: form?.minutes ? String(form.minutes) : '',
-    servings: form?.servings ? String(form.servings) : '',
-    description: form?.description ?? '',
-    ingredients: form?.ingredients.join('\n') ?? '',
-    steps: form?.steps.join('\n') ?? '',
-    nutrition: Object.fromEntries(Object.entries(form?.nutrition ?? {}).map(([key, value]) => [key, String(value)])),
-  }
-}
-
-function toInput(state: FormState): RecipeInput {
-  const whole = (value: string) => (value.trim() ? Math.round(Number(value.replace(',', '.'))) : null)
-  const nutrition: Record<string, number> = {}
-  for (const [key, value] of Object.entries(state.nutrition)) {
-    if (value.trim()) nutrition[key] = Number(value.replace(',', '.'))
-  }
-  return {
-    name: state.name,
-    meal: state.meal,
-    minutes: whole(state.minutes),
-    servings: whole(state.servings),
-    description: state.description,
-    ingredients: state.ingredients.split('\n'),
-    steps: state.steps.split('\n'),
-    nutrition,
-  }
-}
+import { MACROS, MEALS, MINERALS, PHOTO_ACCEPT, VITAMINS, useRecipeForm, type NutrientField } from '../hooks/useRecipeForm'
+import type { MealTime, RecipeDetail } from '../types/recipesTypes'
 
 interface RecipeFormModalProps {
   library: NotiaLibrary
@@ -73,54 +15,7 @@ interface RecipeFormModalProps {
 }
 
 export function RecipeFormModal({ library, detail, defaultMeal, onClose, onSaved, onOpenRecipe }: RecipeFormModalProps) {
-  const editing = detail !== null
-  const [state, setState] = useState<FormState>(() => initialState(detail, defaultMeal))
-  const [photoEdit, setPhotoEdit] = useState<PhotoEdit>({ kind: 'keep' })
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<RecipesError | null>(null)
-  const [localError, setLocalError] = useState<string | null>(null)
-  const storedPhoto = useRecipePhoto(library, detail?.id ?? '', detail?.photoKey ?? '', Boolean(detail?.hasPhoto))
-  const preview = photoEdit.kind === 'replace' ? photoEdit.value : photoEdit.kind === 'remove' ? null : storedPhoto
-  const fieldErrors = useMemo(() => new Map((error?.fields ?? []).map((field: FieldError) => [field.field, field.message])), [error])
-
-  const set = (changes: Partial<FormState>) => {
-    setState((current) => ({ ...current, ...changes }))
-    setError(null)
-  }
-  const setNutrient = (key: string, value: string) => set({ nutrition: { ...state.nutrition, [key]: value } })
-
-  const pickPhoto = (file: File | undefined) => {
-    setLocalError(null)
-    if (!file) return
-    if (!file.type.startsWith('image/')) {
-      setLocalError('Elegí un archivo de imagen (JPG, PNG o WebP).')
-      return
-    }
-    if (file.size > MAX_PHOTO_BYTES) {
-      setLocalError('La foto tiene que pesar menos de 15 MB.')
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => typeof reader.result === 'string' && setPhotoEdit({ kind: 'replace', value: reader.result })
-    reader.onerror = () => setLocalError('No se pudo leer la imagen. Probá con otro archivo.')
-    reader.readAsDataURL(file)
-  }
-
-  const submit = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const input = toInput(state)
-      const saved = editing && detail
-        ? await updateRecipe(library, detail.id, input, photoEdit)
-        : await createRecipe(library, input, photoEdit.kind === 'replace' ? photoEdit.value : null)
-      onSaved(saved.id, !editing)
-    } catch (reason) {
-      setError(asRecipesError(reason))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const { editing, state, set, setNutrient, preview, pickPhoto, removePhoto, localError, busy, error, fieldErrors, submit } = useRecipeForm(library, detail, defaultMeal, onSaved)
 
   const nutrientInput = ([key, label, unit]: NutrientField) => (
     <label key={key} className="rcp-field">
@@ -197,10 +92,10 @@ export function RecipeFormModal({ library, detail, defaultMeal, onClose, onSaved
               </div>
               <div className="rcp-photo__actions">
                 <label className="rcp-button rcp-button--file">
-                  <input type="file" accept="image/jpeg,image/png,image/webp" className="rcp-visually-hidden" onChange={(event) => { pickPhoto(event.target.files?.[0]); event.target.value = '' }} />
+                  <input type="file" accept={PHOTO_ACCEPT} className="rcp-visually-hidden" onChange={(event) => { pickPhoto(event.target.files?.[0]); event.target.value = '' }} />
                   Elegir foto
                 </label>
-                {preview && <button type="button" className="rcp-button rcp-button--ghost" onClick={() => setPhotoEdit(editing ? { kind: 'remove' } : { kind: 'keep' })}>Quitar foto</button>}
+                {preview && <button type="button" className="rcp-button rcp-button--ghost" onClick={removePhoto}>Quitar foto</button>}
                 <span className="rcp-hint">{localError ?? 'Sin foto, se muestra una ilustración del plato. Con foto, la IA la usa para revisar la receta.'}</span>
               </div>
             </div>

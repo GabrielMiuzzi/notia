@@ -182,6 +182,11 @@ struct ReadFileResponse {
 #[serde(rename_all = "camelCase")]
 struct WriteFileResponse {
     ok: bool,
+    /// The document as the provider has it after the write, when it says.
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    last_modified: Option<i64>,
 }
 
 #[cfg(target_os = "android")]
@@ -1125,6 +1130,17 @@ pub fn write_android_content_bytes(
     content_uri: &str,
     data: &[u8],
 ) -> Result<(), String> {
+    write_android_content_bytes_stamped(state, content_uri, data).map(|_| ())
+}
+
+/// [`write_android_content_bytes`], returning the size and modification
+/// time (ms) the provider reports after the write, when it reports them.
+#[cfg(target_os = "android")]
+pub(crate) fn write_android_content_bytes_stamped(
+    state: &AndroidDirectoryPickerState,
+    content_uri: &str,
+    data: &[u8],
+) -> Result<Option<(u64, i64)>, String> {
     let guard = state
         .handle
         .lock()
@@ -1149,7 +1165,7 @@ pub fn write_android_content_bytes(
         return Err("No se pudo escribir el archivo Android.".to_string());
     }
 
-    Ok(())
+    Ok(response.size.zip(response.last_modified))
 }
 
 #[cfg(target_os = "android")]

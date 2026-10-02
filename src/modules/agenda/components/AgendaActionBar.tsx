@@ -2,6 +2,8 @@ import { useId } from 'react'
 import type { AgendaEvent, AgendaPriority, AgendaPriorityOption } from '../types/agendaTypes'
 
 interface AgendaActionBarProps {
+  /** Celular: todo en columna, botones de 48 px y el orden del diseño de celular. */
+  phone: boolean
   selectionCount: number
   slotMinutes: number
   draftTitle: string
@@ -28,7 +30,17 @@ function selectionLabel(count: number, slotMinutes: number): string {
   return `${count} ${count === 1 ? 'bloque' : 'bloques'} · ${duration}`
 }
 
+function OverlapIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="12" height="12" rx="2" />
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+    </svg>
+  )
+}
+
 export function AgendaActionBar({
+  phone,
   selectionCount,
   slotMinutes,
   draftTitle,
@@ -47,6 +59,9 @@ export function AgendaActionBar({
 }: AgendaActionBarProps) {
   const inputId = useId()
   const priorityLabelId = useId()
+
+  const scheduleButton = <button type="submit" className="agenda-primary" disabled={disabled}>Agendar</button>
+  const cancelButton = <button type="button" className="agenda-ghost" onClick={onClearSelection}>Cancelar</button>
 
   return (
     <div className="agenda-bar-wrap">
@@ -80,10 +95,22 @@ export function AgendaActionBar({
               ))}
             </div>
             <div className="agenda-bar__buttons">
-              <button type="submit" className="agenda-primary" disabled={disabled}>Agendar</button>
-              <button type="button" className="agenda-ghost" onClick={onClearSelection}>Cancelar</button>
+              {phone ? <>{cancelButton}{scheduleButton}</> : <>{scheduleButton}{cancelButton}</>}
             </div>
           </form>
+        ) : activeEvent && phone ? (
+          <div className="agenda-bar__group agenda-bar__group--event">
+            <span className="agenda-bar__meta">
+              <span className="agenda-chip" data-priority={activeEvent.priority}>{activeEvent.priorityLabel}</span>
+              <span className="agenda-bar__time">{activeEvent.whenLabel}</span>
+            </span>
+            <span className="agenda-bar__title">{activeEvent.title}</span>
+            {activeOverlapLabel ? <span className="agenda-overlap">{activeOverlapLabel}</span> : null}
+            <div className="agenda-bar__buttons">
+              <button type="button" className="agenda-ghost" onClick={onCloseActive}>Cerrar</button>
+              <button type="button" className="agenda-danger" disabled={disabled} onClick={onDeleteActive}>Eliminar</button>
+            </div>
+          </div>
         ) : activeEvent ? (
           <div className="agenda-bar__group">
             <span className="agenda-chip" data-priority={activeEvent.priority}>{activeEvent.priorityLabel}</span>
@@ -92,10 +119,7 @@ export function AgendaActionBar({
               <span>{activeEvent.whenLabel}</span>
               {activeOverlapLabel ? (
                 <span className="agenda-overlap">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <rect x="3" y="3" width="12" height="12" rx="2" />
-                    <rect x="9" y="9" width="12" height="12" rx="2" />
-                  </svg>
+                  <OverlapIcon />
                   <span className="agenda-overlap__text">{activeOverlapLabel}</span>
                 </span>
               ) : null}
@@ -105,6 +129,8 @@ export function AgendaActionBar({
               <button type="button" className="agenda-ghost" onClick={onCloseActive}>Cerrar</button>
             </div>
           </div>
+        ) : phone ? (
+          <p className="agenda-hint">Tocá los bloques de 15 minutos para elegir el horario. Usá la franja de la derecha para agendar encima de otra reunión.</p>
         ) : (
           <p className="agenda-hint">
             <span className="agenda-hint--pointer">Hacé clic o arrastrá sobre los bloques de 15 minutos para agendar una tarea.</span>

@@ -3,6 +3,7 @@ import { Maximize, Minus, Plus, SlidersHorizontal } from 'lucide-react'
 import {
   DEFAULT_GRAPH_FORCES,
   GRAPH_FORCE_LIMITS,
+  GRAPH_FORCE_ROWS,
   type GraphForces,
   type GraphPreferences,
 } from './useGraphPreferences'
@@ -16,12 +17,6 @@ interface GraphDockProps {
   preferences: GraphPreferences
   onChange: (change: Partial<GraphPreferences>) => void
 }
-
-const FORCE_ROWS: Array<{ key: keyof GraphForces; name: string; format: (value: number) => string }> = [
-  { key: 'repulsion', name: 'Repulsión', format: (value) => `−${value}` },
-  { key: 'linkDistance', name: 'Distancia de enlace', format: (value) => String(value) },
-  { key: 'cohesion', name: 'Cohesión por carpeta', format: (value) => (value / 100).toFixed(2) },
-]
 
 function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
@@ -82,7 +77,7 @@ export function GraphDock({ zoomPercent, onZoomIn, onZoomOut, onZoomReset, onFit
               Restablecer
             </button>
           </div>
-          {FORCE_ROWS.map((row) => {
+          {GRAPH_FORCE_ROWS.map((row) => {
             const [min, max] = GRAPH_FORCE_LIMITS[row.key]
             const value = preferences.forces[row.key]
             return (

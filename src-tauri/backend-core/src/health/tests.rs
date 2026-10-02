@@ -220,6 +220,57 @@ fn food_plan_protein(data: &HealthData) -> f64 {
 }
 
 #[test]
+fn the_phone_cards_summarize_today_and_the_last_month() {
+    let mut data = overweight();
+    // Las calorías de hoy no siguen al día que muestra la alimentación.
+    let yesterday = build_dashboard(&data, &DashboardQuery { food_date: Some("2026-09-27".into()), ..DashboardQuery::default() }, TODAY, 13);
+    let today = yesterday.today_calories.expect("today");
+    assert_eq!((yesterday.food.expect("food").total_label.as_str(), today.total_label.as_str(), today.target_label.as_str()), ("640", "840", "de 2.436 kcal"));
+    assert_eq!((today.over, today.remaining_label.as_str()), (false, "Quedan 1.596 kcal"));
+    assert_eq!(today.macros.iter().map(|indicator| format!("{} {}", indicator.value_label, indicator.target_label)).collect::<Vec<_>>()[0], format!("40 / {} g", fmt(food_plan_protein(&data), 0)));
+
+    // Un solo peso en el mes: sin cambio ni línea, pero con lo que falta.
+    let trend = |data: &HealthData| build_dashboard(data, &DashboardQuery::default(), TODAY, 13).weight_trend;
+    let lone = trend(&data);
+    assert_eq!((lone.change_label, lone.goal_label.as_deref(), lone.line), (None, Some("Objetivo 76 kg, faltan 6,4"), None));
+
+    // De 81,9 a 84,1 kg (medio kilo de aire), en una caja de 100 con y hacia abajo.
+    data.weights.insert(2, WeightEntry { date: "2026-09-10".into(), kg: 83.6 });
+    let pair = trend(&data);
+    assert_eq!((pair.change_label.as_deref(), pair.line.as_deref()), (Some("-1,2 kg en 30 días"), Some("M0,22.73L100,77.27")));
+    data.weights.insert(3, WeightEntry { date: "2026-09-20".into(), kg: 83.0 });
+    assert_eq!(trend(&data).line.as_deref(), Some("M0,22.73C16.67,31.82 33.33,40.91 50,50C66.67,59.09 83.33,68.18 100,77.27"));
+    // Con subidas y bajadas la curva no se pasa de la caja.
+    data.weights.insert(4, WeightEntry { date: "2026-09-25".into(), kg: 83.9 });
+    let wavy = trend(&data).line.expect("line");
+    let numbers = wavy.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter(|text| !text.is_empty()).map(|text| text.parse::<f64>().expect("number")).collect::<Vec<_>>();
+    assert_eq!(wavy.matches('C').count(), 3);
+    assert!(numbers.iter().all(|value| (0.0..=100.0).contains(value)), "{wavy}");
+
+    // Sin objetivo, o ya en él, no hay «faltan».
+    data.objective.target_kg = Some(82.4);
+    assert_eq!(trend(&data).goal_label, None);
+    let empty = build_dashboard(&HealthData::default(), &DashboardQuery::default(), TODAY, 13);
+    assert!(empty.today_calories.is_none() && empty.weight_trend == super::dashboard::WeightTrend { change_label: None, goal_label: None, line: None });
+}
+
+/// Los tableros de las pruebas de Vitest (`src/modules/health/components/__fixtures__`):
+/// «Sobrepeso» con el plan calculado, y sin perfil.
+/// `HEALTH_FIXTURES=<carpeta> cargo test -p notia-backend-core dump_dashboard_fixtures -- --ignored`.
+#[test]
+#[ignore]
+fn dump_dashboard_fixtures() {
+    let Ok(out) = std::env::var("HEALTH_FIXTURES") else { return };
+    let out = std::path::Path::new(&out);
+    let mut planned = overweight();
+    planned.plan = change::calculated_plan(&planned, TODAY).ok();
+    for (name, data) in [("dashboard.json", planned), ("dashboard-empty.json", HealthData::default())] {
+        let dashboard = build_dashboard(&data, &DashboardQuery::default(), TODAY, 13);
+        std::fs::write(out.join(name), serde_json::to_string_pretty(&dashboard).expect("json") + "\n").expect("write");
+    }
+}
+
+#[test]
 fn reference_states_follow_sex_and_age() {
     assert_eq!(state("grasaPct", 30.0, Sex::Female, None), Some(("Normal", Tone::Ok)));
     assert_eq!(state("grasaPct", 30.0, Sex::Male, None), Some(("Muy alto", Tone::High)));

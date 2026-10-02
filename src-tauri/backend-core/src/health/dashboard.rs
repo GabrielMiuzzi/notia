@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use super::reference::{bmi_range, bmi_state, range_for, state, Range, Tone};
 use super::{
     active_plan, activity_label, day_label, day_month, days_ago, fmt, long_date, meals_of, parse_date, shift_days, short_date,
-    signed, total, vitals, weekday_narrow, HealthData, MacroKey, MealCategory, MetricGroup, Plan, PlanSource, Sex, Vitals,
-    ACTIVITIES, METRICS, PACES,
+    signed, total, vitals, weekday_narrow, HealthData, MacroKey, MealCategory, MetricGroup, Nutrition, Plan, PlanSource, Sex,
+    Vitals, ACTIVITIES, METRICS, PACES,
 };
 
 // ---------------------------------------------------------------------------
@@ -297,6 +297,33 @@ pub struct FoodPanel {
     pub groups: Vec<MealGroup>,
 }
 
+/// Las calorías y los macros de un día frente al plan que rige.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaloriesSummary {
+    pub total_label: String,
+    pub target_label: String,
+    /// 0 a 100.
+    pub progress: f64,
+    pub over: bool,
+    pub remaining_label: String,
+    pub macros: Vec<MacroIndicator>,
+}
+
+/// El peso de los últimos 30 días (la tarjeta «Peso» del celular), sin
+/// importar el período que muestra el gráfico.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeightTrend {
+    /// «-1,2 kg en 30 días»; con dos pesos o más en el mes.
+    pub change_label: Option<String>,
+    /// «Objetivo 76 kg, faltan 6,4».
+    pub goal_label: Option<String>,
+    /// La línea del mes como trazo SVG en una caja de 100 × 100 (y hacia
+    /// abajo) que se estira a la tarjeta; sin línea con menos de dos pesos.
+    pub line: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaterDay {
@@ -420,6 +447,9 @@ pub struct HealthDashboard {
     pub weight: WeightPanel,
     pub objective: ObjectivePanel,
     pub food: Option<FoodPanel>,
+    /// Las calorías de hoy aunque la alimentación muestre otro día.
+    pub today_calories: Option<CaloriesSummary>,
+    pub weight_trend: WeightTrend,
     pub water: Option<WaterPanel>,
     pub composition: Option<CompositionPanel>,
     pub profile_form: ProfileForm,
@@ -442,6 +472,8 @@ pub fn build_dashboard(data: &HealthData, query: &DashboardQuery, today: Date, h
         weight: weight_panel(data, &vitals, query.weight_range, today),
         objective: objective_panel(data, &vitals),
         food: food_panel(data, &vitals, query.food_date.as_deref(), today),
+        today_calories: active_plan(data, &vitals).map(|plan| calories_summary(&total(&meals_of(data, &today.to_string())), plan)),
+        weight_trend: weight_trend(data, &vitals, today),
         water: water_panel(data, &vitals, today),
         composition: composition_panel(data, &vitals, sex, query.measurement_date.as_deref()),
         profile_form: profile_form(data, &vitals),
@@ -630,6 +662,77 @@ fn weight_panel(data: &HealthData, vitals: &Vitals, range: WeightRange, today: D
     }
 }
 
+/// Los pesos del último mes en una línea con medio kilo de aire arriba y abajo.
+fn weight_trend(data: &HealthData, vitals: &Vitals, today: Date) -> WeightTrend {
+    let from = days_ago(today, 30);
+    let month = data
+        .weights
+        .iter()
+        .filter_map(|entry| parse_date(&entry.date).map(|date| (date, entry.kg)))
+        .filter(|(date, _)| *date >= from)
+        .map(|(_, kg)| kg)
+        .collect::<Vec<_>>();
+    let goal_label = data
+        .objective
+        .target_kg
+        .zip(vitals.current_kg)
+        .filter(|(target, current)| (current - target).abs() >= 0.1)
+        .map(|(target, current)| format!("Objetivo {} kg, faltan {}", fmt(target, 1), fmt((current - target).abs(), 1)));
+    if month.len() < 2 {
+        return WeightTrend { change_label: None, goal_label, line: None };
+    }
+    let (low, high) = month.iter().fold((f64::MAX, f64::MIN), |(low, high), kg| (low.min(*kg), high.max(*kg)));
+    let (top, span) = (high + 0.5, high - low + 1.0);
+    let last = (month.len() - 1) as f64;
+    let points = month.iter().enumerate().map(|(index, kg)| (index as f64 / last * 100.0, (top - kg) / span * 100.0)).collect::<Vec<_>>();
+    WeightTrend {
+        change_label: Some(format!("{} kg en 30 días", signed(month[month.len() - 1] - month[0], 1))),
+        goal_label,
+        line: Some(monotone_path(&points)),
+    }
+}
+
+fn svg_number(value: f64) -> String {
+    let text = format!("{value:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" { "0".to_string() } else { text.to_string() }
+}
+
+/// Un trazo suave que no se pasa de los puntos (la curva «monótona en x» de
+/// d3, la del canvas). Escalar los ejes no la cambia, así que se arma en la
+/// caja de 100 × 100. `points` va de izquierda a derecha, con dos o más.
+fn monotone_path(points: &[(f64, f64)]) -> String {
+    let point = |(x, y): (f64, f64)| format!("{},{}", svg_number(x), svg_number(y));
+    let mut path = format!("M{}", point(points[0]));
+    if points.len() == 2 {
+        return format!("{path}L{}", point(points[1]));
+    }
+    let slope = |index: usize| (points[index + 1].1 - points[index].1) / (points[index + 1].0 - points[index].0);
+    let sign = |value: f64| if value < 0.0 { -1.0 } else { 1.0 };
+    let last = points.len() - 1;
+    let mut tangents = vec![0.0; points.len()];
+    for index in 1..last {
+        let (before, after) = (points[index].0 - points[index - 1].0, points[index + 1].0 - points[index].0);
+        let (s0, s1) = (slope(index - 1), slope(index));
+        let mean = (s0 * after + s1 * before) / (before + after);
+        let tangent = (sign(s0) + sign(s1)) * s0.abs().min(s1.abs()).min(0.5 * mean.abs());
+        tangents[index] = if tangent.is_nan() { 0.0 } else { tangent };
+    }
+    tangents[0] = (3.0 * slope(0) - tangents[1]) / 2.0;
+    tangents[last] = (3.0 * slope(last - 1) - tangents[last - 1]) / 2.0;
+    for index in 0..last {
+        let ((x0, y0), (x1, y1)) = (points[index], points[index + 1]);
+        let third = (x1 - x0) / 3.0;
+        path.push_str(&format!(
+            "C{} {} {}",
+            point((x0 + third, y0 + third * tangents[index])),
+            point((x1 - third, y1 - third * tangents[index + 1])),
+            point((x1, y1))
+        ));
+    }
+    path
+}
+
 fn plan_view(plan: &Plan) -> PlanView {
     PlanView {
         kcal_label: fmt(plan.kcal, 0),
@@ -703,13 +806,28 @@ fn pills(nutrition: &super::Nutrition) -> Vec<MacroPill> {
         .collect()
 }
 
+fn calories_summary(sum: &Nutrition, plan: &Plan) -> CaloriesSummary {
+    let over = sum.kcal > plan.kcal;
+    CaloriesSummary {
+        total_label: fmt(sum.kcal, 0),
+        target_label: format!("de {} kcal", fmt(plan.kcal, 0)),
+        progress: if plan.kcal > 0.0 { (sum.kcal / plan.kcal * 100.0).min(100.0) } else { 0.0 },
+        over,
+        remaining_label: if over {
+            format!("{} kcal por encima del objetivo", fmt(sum.kcal - plan.kcal, 0))
+        } else {
+            format!("Quedan {} kcal", fmt(plan.kcal - sum.kcal, 0))
+        },
+        macros: MacroKey::ALL.iter().map(|key| macro_indicator(*key, sum.get(*key), key.of_plan(plan))).collect(),
+    }
+}
+
 fn food_panel(data: &HealthData, vitals: &Vitals, date: Option<&str>, today: Date) -> Option<FoodPanel> {
     let plan = active_plan(data, vitals)?;
     let date = date.and_then(parse_date).filter(|date| *date <= today).unwrap_or(today);
     let key = date.to_string();
     let meals = meals_of(data, &key);
-    let sum = total(&meals);
-    let over = sum.kcal > plan.kcal;
+    let CaloriesSummary { total_label, target_label, progress, over, remaining_label, macros } = calories_summary(&total(&meals), plan);
     let footnote = format!(
         "{}{}",
         if vitals.bmr_from_scale {
@@ -724,22 +842,18 @@ fn food_panel(data: &HealthData, vitals: &Vitals, date: Option<&str>, today: Dat
         day_label: day_label(date, today),
         previous_date: shift_days(date, -1).to_string(),
         next_date: (date < today).then(|| shift_days(date, 1).to_string()),
-        total_label: fmt(sum.kcal, 0),
-        target_label: format!("de {} kcal", fmt(plan.kcal, 0)),
-        progress: if plan.kcal > 0.0 { (sum.kcal / plan.kcal * 100.0).min(100.0) } else { 0.0 },
+        total_label,
+        target_label,
+        progress,
         over,
-        remaining_label: if over {
-            format!("{} kcal por encima del objetivo", fmt(sum.kcal - plan.kcal, 0))
-        } else {
-            format!("Quedan {} kcal", fmt(plan.kcal - sum.kcal, 0))
-        },
+        remaining_label,
         stats: vec![
             StatRow { label: "Gasto diario estimado".into(), value: format!("{} kcal", fmt(vitals.tdee.unwrap_or_default(), 0)) },
             StatRow { label: "Objetivo del día".into(), value: format!("{} kcal", fmt(plan.kcal, 0)) },
             StatRow { label: "Metabolismo basal".into(), value: format!("{} kcal", fmt(vitals.bmr.unwrap_or_default(), 0)) },
         ],
         footnote,
-        macros: MacroKey::ALL.iter().map(|key| macro_indicator(*key, sum.get(*key), key.of_plan(plan))).collect(),
+        macros,
         groups: MealCategory::ALL
             .iter()
             .map(|category| {

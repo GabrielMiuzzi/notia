@@ -9,17 +9,26 @@ interface HealthModalProps {
   title: string
   wide?: boolean
   busy?: boolean
+  /** En el celular el modal es una hoja que sube desde abajo, con su manija. */
+  phone?: boolean
   onClose: () => void
   children: ReactNode
 }
 
-export function HealthModal({ title, wide = false, busy = false, onClose, children }: HealthModalProps) {
+export function HealthModal({ title, wide = false, busy = false, phone = false, onClose, children }: HealthModalProps) {
   return (
-    <NotiaModalShell open onClose={busy ? () => undefined : onClose} size="lg" panelClassName="hl-modal-panel" panelStyle={{ width: `min(${wide ? 720 : 460}px, calc(100vw - 24px))` }}>
+    <NotiaModalShell
+      open
+      onClose={busy ? () => undefined : onClose}
+      size="lg"
+      panelClassName={phone ? 'hl-modal-panel hl-sheet' : 'hl-modal-panel'}
+      panelStyle={phone ? undefined : { width: `min(${wide ? 720 : 460}px, calc(100vw - 24px))` }}
+    >
       <div className="hl-modal">
+        {phone && <span className="hl-sheet__handle" aria-hidden="true" />}
         <div className="hl-modal__head">
           <h2 className="hl-mid">{title}</h2>
-          <button type="button" className="hl-icon-button" onClick={onClose} disabled={busy} aria-label="Cerrar"><X size={20} strokeWidth={1.8} /></button>
+          <button type="button" className="hl-icon-button" onClick={onClose} disabled={busy} aria-label="Cerrar"><X size={20} strokeWidth={phone ? 2 : 1.8} /></button>
         </div>
         <div className="hl-modal__body">{children}</div>
       </div>
@@ -55,11 +64,12 @@ async function attempt(save: () => Promise<void>, setError: (error: HealthError 
 
 interface ProfileFormProps {
   dashboard: HealthDashboard
+  phone?: boolean
   onSave: (input: ProfileInput) => Promise<void>
   onClose: () => void
 }
 
-export function ProfileFormView({ dashboard, onSave, onClose }: ProfileFormProps) {
+export function ProfileFormView({ dashboard, phone = false, onSave, onClose }: ProfileFormProps) {
   const initial = dashboard.profileForm
   const [birthDate, setBirthDate] = useState(initial.birthDate)
   const [sex, setSex] = useState(initial.sex)
@@ -78,7 +88,7 @@ export function ProfileFormView({ dashboard, onSave, onClose }: ProfileFormProps
     if (saved) onClose()
   }
   return (
-    <HealthModal title="Tu perfil" busy={busy} onClose={onClose}>
+    <HealthModal title="Tu perfil" busy={busy} phone={phone} onClose={onClose}>
       <form className="hl-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <FormAlert error={error && error.fields.length === 0 ? error : null} />
         <div className="hl-grid-2">
@@ -123,11 +133,12 @@ export function ProfileFormView({ dashboard, onSave, onClose }: ProfileFormProps
 
 interface MeasurementFormProps {
   dashboard: HealthDashboard
+  phone?: boolean
   onSave: (input: MeasurementInput) => Promise<void>
   onClose: () => void
 }
 
-export function MeasurementFormView({ dashboard, onSave, onClose }: MeasurementFormProps) {
+export function MeasurementFormView({ dashboard, phone = false, onSave, onClose }: MeasurementFormProps) {
   const [date, setDate] = useState(dashboard.today)
   const [weight, setWeight] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
@@ -141,7 +152,7 @@ export function MeasurementFormView({ dashboard, onSave, onClose }: MeasurementF
     if (saved) onClose()
   }
   return (
-    <HealthModal title="Registrar medición de la balanza" wide busy={busy} onClose={onClose}>
+    <HealthModal title="Registrar medición de la balanza" wide busy={busy} phone={phone} onClose={onClose}>
       <form className="hl-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <FormAlert error={error} />
         <div className="hl-grid-2">
@@ -194,6 +205,7 @@ export interface MealTarget {
 interface MealFormProps {
   dashboard: HealthDashboard
   target: MealTarget
+  phone?: boolean
   onSave: (id: string | null, input: MealInput) => Promise<void>
   onDelete: (id: string) => Promise<void>
   onEstimate: (description: string) => Promise<MealEstimate>
@@ -218,7 +230,7 @@ function valuesText(values: RecentMeal | MealEstimate | null): Record<MacroField
   }
 }
 
-export function MealFormView({ dashboard, target, onSave, onDelete, onEstimate, onClose }: MealFormProps) {
+export function MealFormView({ dashboard, target, phone = false, onSave, onDelete, onEstimate, onClose }: MealFormProps) {
   const [category, setCategory] = useState(target.values?.category ?? target.category ?? dashboard.mealForm.suggestedCategory)
   const [name, setName] = useState(target.values?.name ?? '')
   const [numbers, setNumbers] = useState(valuesText(target.values))
@@ -259,7 +271,7 @@ export function MealFormView({ dashboard, target, onSave, onDelete, onEstimate, 
     if (removed) onClose()
   }
   return (
-    <HealthModal title={target.id ? 'Editar comida' : 'Agregar comida'} wide busy={busy} onClose={onClose}>
+    <HealthModal title={target.id ? 'Editar comida' : 'Agregar comida'} wide busy={busy} phone={phone} onClose={onClose}>
       <form className="hl-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <div className="hl-field">
           <span id="hl-meal-category">Categoría</span>

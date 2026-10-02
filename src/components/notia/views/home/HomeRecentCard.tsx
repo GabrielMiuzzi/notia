@@ -13,17 +13,19 @@ interface HomeRecentCardProps {
   onOpenHistory: () => void
   onOpenItem: (item: HomeRecentItem) => void
   onOpenFolder: (folder: HomeFolder) => void
+  /** Phone board: no «Ver historial» and no divider over the folders. */
+  phone?: boolean
 }
 
 /** The chats, notes and meeting to go back to, and the library's folders. */
-export function HomeRecentCard({ recent, onOpenHistory, onOpenItem, onOpenFolder }: HomeRecentCardProps) {
+export function HomeRecentCard({ recent, onOpenHistory, onOpenItem, onOpenFolder, phone = false }: HomeRecentCardProps) {
   return (
     <HomeCardShell
       id="home-recent-title"
       title="Seguir donde quedaste"
       icon={<Clock size={15} strokeWidth={1.75} />}
       className="home-card--recent"
-      action={<HomeMoreButton label="Ver historial" onClick={onOpenHistory} />}
+      action={phone ? undefined : <HomeMoreButton label="Ver historial" onClick={onOpenHistory} />}
     >
       <div className="home-scroll home-rows home-rows--recent">
         {recent.items.length === 0 ? <p className="home-empty">Todavía no hay chats, notas ni reuniones para retomar.</p> : null}
@@ -43,7 +45,7 @@ export function HomeRecentCard({ recent, onOpenHistory, onOpenItem, onOpenFolder
       </div>
       {recent.folders.length > 0 ? (
         <>
-          <div className="home-divider" />
+          {phone ? null : <div className="home-divider" />}
           <div className="home-folders">
             {recent.folders.map((folder) => (
               <button key={folder.path} type="button" className="home-folder" onClick={() => onOpenFolder(folder)}>

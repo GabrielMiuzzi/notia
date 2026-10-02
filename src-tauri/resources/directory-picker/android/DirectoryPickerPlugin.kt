@@ -194,8 +194,30 @@ class DirectoryPickerPlugin(private val activity: Activity) : Plugin(activity) {
             activity.contentResolver.openOutputStream(documentUri, "wt")?.use { output ->
                 output.write(bytes)
             } ?: throw IOException("No se pudo abrir el archivo para escritura.")
-            JSObject().put("ok", true)
+            val result = JSObject().put("ok", true)
+            // The copy of a «Con copia» client records the file as the
+            // folder has it now, so an interrupted sync does not take its
+            // own download for an edit.
+            queryDocumentStamp(documentUri)?.let { (size, lastModified) ->
+                result.put("size", size).put("lastModified", lastModified)
+            }
+            result
         }
+    }
+
+    private fun queryDocumentStamp(documentUri: Uri): Pair<Long, Long>? = try {
+        activity.contentResolver.query(
+            documentUri,
+            arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (!cursor.moveToFirst() || cursor.isNull(0) || cursor.isNull(1)) null
+            else Pair(cursor.getLong(0), cursor.getLong(1))
+        }
+    } catch (_: Exception) {
+        null
     }
 
     @Command

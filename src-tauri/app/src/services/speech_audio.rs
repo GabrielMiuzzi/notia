@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const SPEECH_SAMPLE_RATE: u32 = notia_backend_core::audio_resample::RECOGNIZER_SAMPLE_RATE;
-// The recognizer decodes on the worker thread and can temporarily fall behind
-// real-time capture on mid-range hardware. A two-second queue silently
-// discarded speech while a decode was in progress, which surfaced as clipped
-// words.
-const MAX_BUFFERED_SECONDS: usize = 15;
+// The recognizer decodes on the worker thread and falls behind real-time
+// capture while a decode is in progress: Whisper on a tablet CPU takes about
+// 10 s per decode. A two-second queue silently discarded speech, which
+// surfaced as clipped words; 60 s (3.8 MB) absorb several slow decodes.
+const MAX_BUFFERED_SECONDS: usize = 60;
 const MAX_BUFFERED_SAMPLES: usize = SPEECH_SAMPLE_RATE as usize * MAX_BUFFERED_SECONDS;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

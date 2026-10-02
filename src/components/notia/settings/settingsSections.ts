@@ -44,7 +44,7 @@ export const SETTINGS_SECTION_META: Record<SettingsSection, SettingsSectionMeta>
   'Panel desplegable': { description: 'Cada cuánto el panel busca cambios en la biblioteca.', icon: PanelRight, keywords: 'explorador chequeo cooldown refresco' },
   InkMath: { description: 'Reconocimiento de fórmulas manuscritas con Ollama.', icon: PenLine, keywords: 'ocr debounce formula' },
   IA: { description: 'Conexión con Ollama, modelo y cómo informa su progreso el agente.', icon: Sparkles, keywords: 'ollama api key modelo thinking host' },
-  Voz: { description: 'Reconocimiento y síntesis de voz locales.', icon: Mic, keywords: 'dictado parakeet qwen tts idioma' },
+  Voz: { description: 'Reconocimiento y síntesis de voz locales.', icon: Mic, keywords: 'dictado whisper qwen tts idioma' },
   Telegram: { description: 'Bot de esta biblioteca y usuarios vinculados.', icon: Send, keywords: 'bot token' },
   'Cuentas asociadas': { description: 'Credenciales de Google Cloud y cuenta de Gmail de la biblioteca activa.', icon: AtSign, keywords: 'gmail correo mail email google cloud gcp client id secret oauth' },
   Backups: { description: 'Copias automáticas de la biblioteca activa.', icon: Archive, keywords: 'copia zip carpeta' },

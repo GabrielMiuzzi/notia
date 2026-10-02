@@ -1,13 +1,14 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { ArrowDown, ChevronDown, MessageSquare, Mic, MonitorSpeaker, Sparkles, X } from 'lucide-react'
 import { MeetingLevelBars } from './MeetingLevelBars'
-import { formatClock } from './meetingDisplay'
+import { formatClock, lineAtMoment } from './meetingDisplay'
 import type { SpeechLevelHistory } from './useSpeechLevels'
-import type { MeetingAnswer, MeetingLine, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
+import type { MeetingAnswer, MeetingLine, MeetingMark, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
 
 const LANE_BARS = 90
 const LANE_HIGHLIGHT = 12
-const FOLLOW_THRESHOLD_PX = 80
+/** Distance from the end of the transcript within which it keeps following new lines. */
+export const FOLLOW_THRESHOLD_PX = 80
 const NOTES_SAVE_DELAY_MS = 600
 
 interface MeetingRecordingPanelProps {
@@ -28,7 +29,7 @@ const NO_ANSWERS: MeetingAnswer[] = []
  * answer updates, so the levels and the preview do not render them again:
  * a long meeting has thousands.
  */
-const LiveLines = memo(function LiveLines({ lines, answers }: { lines: MeetingLine[]; answers: MeetingAnswer[] }) {
+export const LiveLines = memo(function LiveLines({ lines, answers }: { lines: MeetingLine[]; answers: MeetingAnswer[] }) {
   return lines.map((line) => {
     const answer = line.question ? answers.find((candidate) => candidate.askedAtMs === line.startMs) : undefined
     return (
@@ -39,7 +40,10 @@ const LiveLines = memo(function LiveLines({ lines, answers }: { lines: MeetingLi
           {answer ? (
             <span className="notia-meeting-question-chip">
               <Sparkles size={11} aria-hidden="true" />
-              Pregunta detectada · {answer.status === 'generating' ? 'respondiendo' : answer.status === 'ready' ? 'respondida' : 'sin respuesta'}
+              Pregunta detectada
+              <span className="notia-meeting-question-status">
+                {' '}· {answer.status === 'generating' ? 'respondiendo' : answer.status === 'ready' ? 'respondida' : 'sin respuesta'}
+              </span>
             </span>
           ) : null}
         </div>
@@ -76,7 +80,7 @@ export function MeetingRecordingPanel({
   }
 
   const showMoment = (atMs: number) => {
-    const line = [...lines].reverse().find((candidate) => candidate.startMs <= atMs) ?? lines[0]
+    const line = lineAtMoment(lines, atMs)
     if (!line) return
     setFollow(false)
     document.getElementById(`meeting-line-${line.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -145,37 +149,52 @@ export function MeetingRecordingPanel({
             initialNotes={snapshot?.notes ?? ''}
             onSave={onSaveNotes}
           />
-          <section className="notia-meeting-card notia-meeting-marks" aria-labelledby="meeting-marks-title">
-            <header>
-              <h2 id="meeting-marks-title">Momentos marcados</h2>
-              <span>{snapshot?.marks.length ?? 0}</span>
-            </header>
-            {snapshot?.marks.length ? (
-              <ul>
-                {snapshot.marks.map((mark) => (
-                  <li key={mark.id}>
-                    <button type="button" className="notia-meeting-mark" onClick={() => showMoment(mark.atMs)}>
-                      <time>{formatClock(mark.atMs)}</time>
-                      <span>{mark.label}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="notia-meeting-icon-button"
-                      aria-label={`Quitar el momento ${formatClock(mark.atMs)}`}
-                      onClick={() => onRemoveMark(mark.id)}
-                    >
-                      <X size={14} aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="notia-meeting-empty-text">Usá «Marcar momento» para volver después a una parte de la reunión.</p>
-            )}
-          </section>
+          <MeetingMarks marks={snapshot?.marks ?? []} onShow={showMoment} onRemove={onRemoveMark} />
         </aside>
       </div>
     </div>
+  )
+}
+
+interface MeetingMarksProps {
+  marks: MeetingMark[]
+  onShow: (atMs: number) => void
+  onRemove: (markId: string) => void
+  /** Name of the button that marks a moment, as the layout shows it. */
+  markButtonLabel?: string
+}
+
+/** Marked moments: each one goes back to its part of the transcript. */
+export function MeetingMarks({ marks, onShow, onRemove, markButtonLabel = 'Marcar momento' }: MeetingMarksProps) {
+  return (
+    <section className="notia-meeting-card notia-meeting-marks" aria-labelledby="meeting-marks-title">
+      <header>
+        <h2 id="meeting-marks-title">Momentos marcados</h2>
+        <span>{marks.length}</span>
+      </header>
+      {marks.length ? (
+        <ul>
+          {marks.map((mark) => (
+            <li key={mark.id}>
+              <button type="button" className="notia-meeting-mark" onClick={() => onShow(mark.atMs)}>
+                <time>{formatClock(mark.atMs)}</time>
+                <span>{mark.label}</span>
+              </button>
+              <button
+                type="button"
+                className="notia-meeting-icon-button"
+                aria-label={`Quitar el momento ${formatClock(mark.atMs)}`}
+                onClick={() => onRemove(mark.id)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="notia-meeting-empty-text">Usá «{markButtonLabel}» para volver después a una parte de la reunión.</p>
+      )}
+    </section>
   )
 }
 
@@ -186,25 +205,25 @@ interface LiveAnswersCardProps {
   onPin: (answerId: string, pinned: boolean) => void
 }
 
-function LiveAnswersCard({ snapshot, onToggle, onRegenerate, onPin }: LiveAnswersCardProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
-  const enabled = snapshot?.liveAnswers ?? false
-  const answers = snapshot?.answers ?? []
-  const current = answers[answers.length - 1]
-  const previous = answers.slice(0, -1).reverse()
+interface AnswerActionsProps {
+  answer: MeetingAnswer
+  onRegenerate: (answerId: string, shorter: boolean) => void
+  onPin: (answerId: string, pinned: boolean) => void
+}
 
-  const copy = (answer: MeetingAnswer) => {
+/** Copy, shorten or retry, and pin an answer to the meeting's note. */
+export function MeetingAnswerActions({ answer, onRegenerate, onPin }: AnswerActionsProps) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
     void navigator.clipboard?.writeText(answer.text).then(() => {
-      setCopiedId(answer.id)
-      window.setTimeout(() => setCopiedId((id) => id === answer.id ? null : id), 1_500)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1_500)
     }).catch(() => undefined)
   }
-
-  const renderActions = (answer: MeetingAnswer) => (
+  return (
     <div className="notia-meeting-answer-actions">
-      <button type="button" onClick={() => copy(answer)} disabled={!answer.text}>
-        {copiedId === answer.id ? 'Copiada' : 'Copiar'}
+      <button type="button" onClick={copy} disabled={!answer.text}>
+        {copied ? 'Copiada' : 'Copiar'}
       </button>
       <button type="button" onClick={() => onRegenerate(answer.id, answer.status === 'ready')} disabled={answer.status === 'generating'}>
         {answer.status === 'failed' ? 'Reintentar' : 'Más corta'}
@@ -214,6 +233,48 @@ function LiveAnswersCard({ snapshot, onToggle, onRegenerate, onPin }: LiveAnswer
       </button>
     </div>
   )
+}
+
+interface PreviousAnswersProps extends Omit<AnswerActionsProps, 'answer'> {
+  /** Answers before the current one, newest first. */
+  answers: MeetingAnswer[]
+}
+
+/** Earlier answers, each one opened on demand. */
+export function MeetingPreviousAnswers({ answers, onRegenerate, onPin }: PreviousAnswersProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  if (answers.length === 0) return null
+  return (
+    <div className="notia-meeting-answers-previous">
+      <div className="notia-meeting-answer-label">Anteriores</div>
+      {answers.map((answer) => (
+        <div key={answer.id} className="notia-meeting-previous-answer">
+          <button
+            type="button"
+            aria-expanded={expandedId === answer.id}
+            onClick={() => setExpandedId((id) => id === answer.id ? null : answer.id)}
+          >
+            <time>{formatClock(answer.askedAtMs)}</time>
+            <span>{answer.question}</span>
+            <ChevronDown size={13} aria-hidden="true" />
+          </button>
+          {expandedId === answer.id ? (
+            <div>
+              <p className="notia-meeting-answer-text">{answer.status === 'failed' ? answer.error : answer.text}</p>
+              <MeetingAnswerActions answer={answer} onRegenerate={onRegenerate} onPin={onPin} />
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function LiveAnswersCard({ snapshot, onToggle, onRegenerate, onPin }: LiveAnswersCardProps) {
+  const enabled = snapshot?.liveAnswers ?? false
+  const answers = snapshot?.answers ?? []
+  const current = answers[answers.length - 1]
+  const previous = answers.slice(0, -1).reverse()
 
   return (
     <section className="notia-meeting-card notia-meeting-answers" data-enabled={enabled ? 'true' : 'false'} aria-labelledby="meeting-answers-title">
@@ -266,32 +327,9 @@ function LiveAnswersCard({ snapshot, onToggle, onRegenerate, onPin }: LiveAnswer
                   {current.status === 'generating' ? <span className="notia-meeting-caret" aria-hidden="true" /> : null}
                 </p>
               )}
-              {renderActions(current)}
+              <MeetingAnswerActions key={current.id} answer={current} onRegenerate={onRegenerate} onPin={onPin} />
             </div>
-            {previous.length > 0 ? (
-              <div className="notia-meeting-answers-previous">
-                <div className="notia-meeting-answer-label">Anteriores</div>
-                {previous.map((answer) => (
-                  <div key={answer.id} className="notia-meeting-previous-answer">
-                    <button
-                      type="button"
-                      aria-expanded={expandedId === answer.id}
-                      onClick={() => setExpandedId((id) => id === answer.id ? null : answer.id)}
-                    >
-                      <time>{formatClock(answer.askedAtMs)}</time>
-                      <span>{answer.question}</span>
-                      <ChevronDown size={13} aria-hidden="true" />
-                    </button>
-                    {expandedId === answer.id ? (
-                      <div>
-                        <p className="notia-meeting-answer-text">{answer.status === 'failed' ? answer.error : answer.text}</p>
-                        {renderActions(answer)}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <MeetingPreviousAnswers answers={previous} onRegenerate={onRegenerate} onPin={onPin} />
           </>
         )}
       </div>
@@ -309,7 +347,7 @@ interface NotesCardProps {
  * Quick notes saved to the meeting a moment after the person stops typing.
  * Keyed by meeting, so another meeting starts from its own notes.
  */
-function NotesCard({ enabled, initialNotes, onSave }: NotesCardProps) {
+export function NotesCard({ enabled, initialNotes, onSave }: NotesCardProps) {
   const [notes, setNotes] = useState(initialNotes)
   const timerRef = useRef<number | null>(null)
   const pendingRef = useRef<string | null>(null)

@@ -59,7 +59,8 @@ function PermissionSwitch({
   )
 }
 
-function PermanentContextField({
+/** The chat's permanent context; saved after a pause in typing or on leaving the field. */
+export function PermanentContextField({
   value,
   disabled,
   onSave,
@@ -308,6 +309,42 @@ function AgentPicker({
   )
 }
 
+/** The chat's tools and write permissions; writing needs the tools. */
+export function ChatPermissionsSection({
+  settings,
+  isDisabled,
+  onChange,
+}: {
+  settings: ChatSettings
+  isDisabled: boolean
+  onChange: (settings: ChatSettings) => void
+}) {
+  return (
+    <section className="notia-chat-context-section">
+      <span className="notia-chat-section-label">Permisos</span>
+      <div className="notia-chat-permissions">
+        <PermissionSwitch
+          icon={<Wrench size={15} aria-hidden="true" />}
+          label="Uso de herramientas"
+          hint={settings.toolsEnabled ? 'Puede buscar y ejecutar acciones' : 'Responde sin herramientas'}
+          checked={settings.toolsEnabled}
+          disabled={isDisabled}
+          onChange={(toolsEnabled) => onChange({ ...settings, toolsEnabled })}
+        />
+        <div className="notia-chat-permissions-divider" />
+        <PermissionSwitch
+          icon={<PenLine size={15} aria-hidden="true" />}
+          label="Permisos de lectura/escritura"
+          hint={settings.writeEnabled ? 'Puede crear y editar notas' : 'Solo lectura'}
+          checked={settings.writeEnabled}
+          disabled={isDisabled || !settings.toolsEnabled}
+          onChange={(writeEnabled) => onChange({ ...settings, writeEnabled })}
+        />
+      </div>
+    </section>
+  )
+}
+
 /**
  * Sections of the context panel for the chat's permissions, permanent
  * context, dynamic and agents. They send the person's choice; the backend
@@ -329,28 +366,7 @@ export function ChatAgentPanelSections({
   const savePermanentContext = (permanentContext: string) => onChange({ ...settings, permanentContext })
   return (
     <>
-      <section className="notia-chat-context-section">
-        <span className="notia-chat-section-label">Permisos</span>
-        <div className="notia-chat-permissions">
-          <PermissionSwitch
-            icon={<Wrench size={15} aria-hidden="true" />}
-            label="Uso de herramientas"
-            hint={settings.toolsEnabled ? 'Puede buscar y ejecutar acciones' : 'Responde sin herramientas'}
-            checked={settings.toolsEnabled}
-            disabled={isDisabled}
-            onChange={(toolsEnabled) => onChange({ ...settings, toolsEnabled })}
-          />
-          <div className="notia-chat-permissions-divider" />
-          <PermissionSwitch
-            icon={<PenLine size={15} aria-hidden="true" />}
-            label="Permisos de lectura/escritura"
-            hint={settings.writeEnabled ? 'Puede crear y editar notas' : 'Solo lectura'}
-            checked={settings.writeEnabled}
-            disabled={isDisabled || !settings.toolsEnabled}
-            onChange={(writeEnabled) => onChange({ ...settings, writeEnabled })}
-          />
-        </div>
-      </section>
+      <ChatPermissionsSection settings={settings} isDisabled={isDisabled} onChange={onChange} />
       <PermanentContextField value={settings.permanentContext} disabled={isDisabled} onSave={savePermanentContext} />
       <DynamicPicker
         dynamics={catalog.dynamics}

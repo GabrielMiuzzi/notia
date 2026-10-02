@@ -11,7 +11,7 @@ use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 use crate::host::{AppHandle, Emitter, Manager};
 #[cfg(any(target_os = "windows", target_os = "android"))]
-use crate::services::sherpa_offline::{OfflineNemoTransducerConfig, OfflineVadRecognizer};
+use crate::services::whisper_recognizer::{WhisperAsrConfig, WhisperVadRecognizer};
 
 pub const MAX_SPEECH_SESSION_SECONDS: u32 = 12 * 60 * 60;
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -28,7 +28,7 @@ const WINDOW_MIN_PAUSE_SAMPLES: u64 = 16_000 / 5;
 #[cfg(any(target_os = "windows", target_os = "android"))]
 const GLOBAL_SPEAKER_MATCH_THRESHOLD: f32 = 0.72;
 #[cfg(any(target_os = "windows", target_os = "android"))]
-pub(crate) type PreloadedRecognizer = Arc<StdMutex<Option<OfflineVadRecognizer>>>;
+pub(crate) type PreloadedRecognizer = Arc<StdMutex<Option<WhisperVadRecognizer>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechPhase {
@@ -128,16 +128,18 @@ pub fn transcribe_external_audio(
 #[cfg(any(target_os = "windows", target_os = "android"))]
 fn load_recognizer(
     app: &AppHandle,
-    model: &OfflineNemoTransducerConfig,
-) -> Result<OfflineVadRecognizer, String> {
-    let runtime = crate::services::sherpa_runtime::resolve_platform_runtime_path(app)?;
-    OfflineVadRecognizer::load(&runtime, model)
+    model: &WhisperAsrConfig,
+) -> Result<WhisperVadRecognizer, String> {
+    let runtime = crate::services::whisper_runtime::runtime_path(app)?;
+    // Silero VAD runs on the sherpa-onnx runtime that diarization also uses.
+    let sherpa_runtime = crate::services::sherpa_runtime::resolve_platform_runtime_path(app)?;
+    WhisperVadRecognizer::load(&runtime, &sherpa_runtime, model)
 }
 
 /// The recognition model with the saved language, for audio that does not
 /// come from a session started by the interface.
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn preferred_asr_model(app: &AppHandle) -> Result<OfflineNemoTransducerConfig, String> {
+fn preferred_asr_model(app: &AppHandle) -> Result<WhisperAsrConfig, String> {
     let selection = SavedAsrSelection::read(app);
     crate::services::speech_model_repository::resolve_asr_model(app, &selection.language)
 }
@@ -359,7 +361,7 @@ pub fn start_platform_session(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: String,
-    model: OfflineNemoTransducerConfig,
+    model: WhisperAsrConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
     capture: SessionCapture,
 ) -> Result<(), String> {
@@ -430,7 +432,7 @@ pub fn start_file_session(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: String,
-    model: OfflineNemoTransducerConfig,
+    model: WhisperAsrConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
     file: FileCapture,
 ) -> Result<(), String> {
@@ -537,7 +539,7 @@ fn start_session_worker(
     app: &AppHandle,
     state: &SpeechRuntimeState,
     session_id: &str,
-    model: OfflineNemoTransducerConfig,
+    model: WhisperAsrConfig,
     diarization_model: Option<crate::services::speech_model_repository::ResolvedDiarizationModel>,
     buffer: crate::services::speech_audio::SharedPcmBuffer,
     max_duration_seconds: u32,
@@ -1763,7 +1765,7 @@ fn line_pieces(
 #[cfg(any(target_os = "windows", target_os = "android"))]
 struct BorrowedRecognizer {
     cache: PreloadedRecognizer,
-    recognizer: Option<OfflineVadRecognizer>,
+    recognizer: Option<WhisperVadRecognizer>,
     unavailable: bool,
 }
 
@@ -1822,7 +1824,7 @@ impl Drop for BorrowedRecognizer {
 
 /// Recognizes one piece of audio on its own.
 #[cfg(any(target_os = "windows", target_os = "android"))]
-fn transcribe_piece(recognizer: &mut OfflineVadRecognizer, samples: &[f32]) -> Result<String, String> {
+fn transcribe_piece(recognizer: &mut WhisperVadRecognizer, samples: &[f32]) -> Result<String, String> {
     use crate::services::speech_worker::StreamingRecognizer;
 
     const ASR_CHUNK_SAMPLES: usize = 3_200;

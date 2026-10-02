@@ -17,6 +17,8 @@ interface HomePomodoroProps {
   library: NotiaLibrary
   /** Ticket to work on, chosen by Rust. */
   focus: HomeFocus | null
+  /** Phone board: the countdown under «Pomodoro» and the focus below the panel. */
+  phone?: boolean
 }
 
 /**
@@ -24,7 +26,7 @@ interface HomePomodoroProps {
  * keeps it and advances its phases; this panel shows the countdown and sends
  * the actions. Starting with no ticket chosen works on the focus ticket.
  */
-export function HomePomodoro({ library, focus }: HomePomodoroProps) {
+export function HomePomodoro({ library, focus, phone = false }: HomePomodoroProps) {
   const context = useMemo(() => ({ libraryId: library.id, libraryUserId: TASK_MANAGER_LOCAL_LIBRARY_USER_ID }), [library.id])
   const [timer, setTimer] = useState<PomodoroState | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -92,21 +94,44 @@ export function HomePomodoro({ library, focus }: HomePomodoroProps) {
     void run(chooseFocus ? [{ kind: 'select-task', taskPath: focus.filePath }, { kind: 'start' }] : [{ kind: 'start' }])
   }
 
+  const time = (
+    <span className={`home-pomodoro__time${runState === 'running' ? ' is-running' : ''}`} aria-live="off">
+      {formatPomodoroCountdown(remaining)}
+    </span>
+  )
+  const controls = (
+    <>
+      <button type="button" className="home-icon-button" aria-label="Reiniciar pomodoro" disabled={!timer || isBusy} onClick={() => void run([{ kind: 'reset' }])}>
+        <RotateCcw size={phone ? 16 : 15} strokeWidth={1.75} aria-hidden="true" />
+      </button>
+      <button type="button" className="home-button home-button--primary home-pomodoro__toggle" disabled={!timer || isBusy} onClick={toggle}>
+        {runState === 'running' ? 'Pausar' : runState === 'paused' ? 'Seguir' : 'Iniciar'}
+      </button>
+    </>
+  )
+
+  if (phone) {
+    return (
+      <>
+        <div className="home-pomodoro">
+          <div className="home-pomodoro__text">
+            <span className="home-label home-label--small">Pomodoro</span>
+            {time}
+          </div>
+          {controls}
+        </div>
+        <p className="home-card__sub home-pomodoro__note">{error ?? label}</p>
+      </>
+    )
+  }
   return (
     <div className="home-pomodoro">
       <div className="home-pomodoro__text">
         <span className="home-label home-label--small">Pomodoro</span>
         <span className="home-pomodoro__focus">{error ?? label}</span>
       </div>
-      <span className={`home-pomodoro__time${runState === 'running' ? ' is-running' : ''}`} aria-live="off">
-        {formatPomodoroCountdown(remaining)}
-      </span>
-      <button type="button" className="home-icon-button" aria-label="Reiniciar pomodoro" disabled={!timer || isBusy} onClick={() => void run([{ kind: 'reset' }])}>
-        <RotateCcw size={15} strokeWidth={1.75} aria-hidden="true" />
-      </button>
-      <button type="button" className="home-button home-button--primary home-pomodoro__toggle" disabled={!timer || isBusy} onClick={toggle}>
-        {runState === 'running' ? 'Pausar' : runState === 'paused' ? 'Seguir' : 'Iniciar'}
-      </button>
+      {time}
+      {controls}
     </div>
   )
 }

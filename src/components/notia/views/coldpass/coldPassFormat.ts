@@ -7,6 +7,35 @@ export const HEALTH_LABELS: Record<ColdPassHealth, string> = {
   old: 'Antigua',
 }
 
+/** What a hidden password shows. */
+export const MASK = '••••••••••••'
+
+/** Previous passwords shown before «Ver las N anteriores». */
+export const HISTORY_PREVIEW = 3
+
+export type HealthFilter = 'all' | 'weak' | 'old'
+
+export const HEALTH_FILTERS: { id: HealthFilter; label: string }[] = [
+  { id: 'all', label: 'Todas' },
+  { id: 'weak', label: 'Débiles' },
+  { id: 'old', label: 'Antiguas' },
+]
+
+/** The letter of a credential's tile. */
+export function credentialInitial(entry: ColdPassEntryView): string {
+  return (entry.name.trim() || entry.website.trim() || '?').charAt(0).toUpperCase()
+}
+
+/** «1 anterior», «7 anteriores». */
+export function historyCount(count: number): string {
+  return count === 1 ? '1 anterior' : `${count} anteriores`
+}
+
+/** The button that shows the rest of the history or folds it back. */
+export function historyToggleLabel(isOpen: boolean, count: number): string {
+  return isOpen ? `Mostrar solo las ${HISTORY_PREVIEW} más recientes` : `Ver las ${count - HISTORY_PREVIEW} anteriores`
+}
+
 const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
 const DAY_MS = 24 * 60 * 60 * 1000
 const relative = new Intl.RelativeTimeFormat('es', { numeric: 'always' })
@@ -51,8 +80,11 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-/** «6 credenciales en el vault, 1 débil y 2 para rotar». */
-export function vaultSummary(entries: ColdPassEntryView[]): string {
+/**
+ * «6 credenciales en el vault, 1 débil y 2 para rotar»; the phone board
+ * (`short`) leaves out «en el vault».
+ */
+export function vaultSummary(entries: ColdPassEntryView[], { short = false }: { short?: boolean } = {}): string {
   if (entries.length === 0) return 'Todavía no hay credenciales en el vault'
   const weak = entries.filter((entry) => entry.health === 'weak').length
   const old = entries.filter((entry) => entry.health === 'old').length
@@ -60,7 +92,8 @@ export function vaultSummary(entries: ColdPassEntryView[]): string {
     weak > 0 ? plural(weak, 'débil', 'débiles') : null,
     old > 0 ? `${old} para rotar` : null,
   ].filter(Boolean)
-  const base = `${plural(entries.length, 'credencial', 'credenciales')} en el vault`
+  const count = plural(entries.length, 'credencial', 'credenciales')
+  const base = short ? count : `${count} en el vault`
   return issues.length > 0 ? `${base}, ${issues.join(' y ')}` : base
 }
 

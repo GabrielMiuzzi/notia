@@ -2,13 +2,8 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Check, Combine, Pencil, Search, Sparkles, X } from 'lucide-react'
 import { formatClock, speakerColorClass } from './meetingDisplay'
 import { MeetingAskPanel } from './MeetingAskPanel'
-import {
-  generateMeetingInsights,
-  listMeetingTaskBoards,
-  mergeMeetingSpeakers,
-  renameMeetingSpeaker,
-  sendMeetingTasks,
-} from '../../../../services/meeting/meetingService'
+import { useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit } from './useMeetingCompleted'
+import { listMeetingTaskBoards, sendMeetingTasks } from '../../../../services/meeting/meetingService'
 import type {
   MeetingFilter,
   MeetingInsightsRequest,
@@ -17,8 +12,6 @@ import type {
 } from '../../../../services/meeting/meetingTypes'
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
-
-const SEARCH_DELAY_MS = 250
 
 const errorText = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
 
@@ -56,38 +49,21 @@ export function MeetingCompletedPanel({ snapshot, filter, onFilterChange, aiPref
   )
 }
 
+export const NO_SPEAKERS_TEXT = 'Esta reunión quedó sin separar por hablante. La transcripción conserva el minuto de cada frase.'
+
 function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+  const { editingId, draft, setDraft, error, setError, startEditing, stopEditing, saveName, merge: mergeSpeakers } = useMeetingSpeakerEdit(snapshot.id)
   const [merging, setMerging] = useState(false)
   const [mergeSource, setMergeSource] = useState('')
   const [mergeTarget, setMergeTarget] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const speakers = snapshot.speakers
 
   if (speakers.length === 0) {
     return (
       <div className="notia-meeting-card notia-meeting-no-speakers" role="note">
-        Esta reunión quedó sin separar por hablante. La transcripción conserva el minuto de cada frase.
+        {NO_SPEAKERS_TEXT}
       </div>
     )
-  }
-
-  const startEditing = (speaker: MeetingSpeaker) => {
-    setEditingId(speaker.id)
-    setDraft(speaker.name)
-    setError(null)
-  }
-
-  const saveName = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!editingId) return
-    try {
-      await renameMeetingSpeaker(snapshot.id, editingId, draft)
-      setEditingId(null)
-    } catch (renameError) {
-      setError(errorText(renameError, 'No se pudo renombrar al hablante.'))
-    }
   }
 
   const openMerge = () => {
@@ -99,12 +75,7 @@ function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
 
   const merge = async (event: FormEvent) => {
     event.preventDefault()
-    try {
-      await mergeMeetingSpeakers(snapshot.id, mergeSource, mergeTarget)
-      setMerging(false)
-    } catch (mergeError) {
-      setError(errorText(mergeError, 'No se pudieron unir los hablantes.'))
-    }
+    if (await mergeSpeakers(mergeSource, mergeTarget)) setMerging(false)
   }
 
   return (
@@ -122,10 +93,10 @@ function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
                     maxLength={60}
                     aria-label={`Nombre de ${speaker.name}`}
                     onChange={(event) => setDraft(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === 'Escape') setEditingId(null) }}
+                    onKeyDown={(event) => { if (event.key === 'Escape') stopEditing() }}
                   />
                   <button type="submit" className="notia-meeting-icon-button" aria-label="Guardar nombre"><Check size={15} aria-hidden="true" /></button>
-                  <button type="button" className="notia-meeting-icon-button" aria-label="Cancelar" onClick={() => setEditingId(null)}><X size={15} aria-hidden="true" /></button>
+                  <button type="button" className="notia-meeting-icon-button" aria-label="Cancelar" onClick={stopEditing}><X size={15} aria-hidden="true" /></button>
                 </form>
               ) : (
                 <div className="notia-meeting-speaker-name">
@@ -177,14 +148,41 @@ interface TranscriptCardProps {
   onFilterChange: (filter: MeetingFilter) => void
 }
 
-function TranscriptCard({ snapshot, speakersById, filter, onFilterChange }: TranscriptCardProps) {
-  const [query, setQuery] = useState(filter.query)
+interface MeetingSpeakerFilterProps {
+  speakers: MeetingSpeaker[]
+  filter: MeetingFilter
+  onFilterChange: (filter: MeetingFilter) => void
+}
 
-  useEffect(() => {
-    if (query === filter.query) return
-    const timer = window.setTimeout(() => onFilterChange({ ...filter, query }), SEARCH_DELAY_MS)
-    return () => window.clearTimeout(timer)
-  }, [filter, onFilterChange, query])
+/** Everyone, or the turns of one speaker. */
+export function MeetingSpeakerFilter({ speakers, filter, onFilterChange }: MeetingSpeakerFilterProps) {
+  if (speakers.length === 0) return null
+  return (
+    <div className="notia-meeting-filter" role="group" aria-label="Filtrar por hablante">
+      <button
+        type="button"
+        aria-pressed={filter.speakerId === null}
+        onClick={() => onFilterChange({ ...filter, speakerId: null })}
+      >
+        Todos
+      </button>
+      {speakers.map((speaker) => (
+        <button
+          key={speaker.id}
+          type="button"
+          className={speakerColorClass(speaker.colorIndex)}
+          aria-pressed={filter.speakerId === speaker.id}
+          onClick={() => onFilterChange({ ...filter, speakerId: speaker.id })}
+        >
+          <span className="notia-meeting-dot" aria-hidden="true" />{speaker.name}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function TranscriptCard({ snapshot, speakersById, filter, onFilterChange }: TranscriptCardProps) {
+  const [query, setQuery] = useMeetingSearch(filter, onFilterChange)
 
   return (
     <section className="notia-meeting-card notia-meeting-transcript-card" aria-label="Transcripción por hablante">
@@ -199,51 +197,37 @@ function TranscriptCard({ snapshot, speakersById, filter, onFilterChange }: Tran
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        {snapshot.speakers.length > 0 ? (
-          <div className="notia-meeting-filter" role="group" aria-label="Filtrar por hablante">
-            <button
-              type="button"
-              aria-pressed={filter.speakerId === null}
-              onClick={() => onFilterChange({ ...filter, speakerId: null })}
-            >
-              Todos
-            </button>
-            {snapshot.speakers.map((speaker) => (
-              <button
-                key={speaker.id}
-                type="button"
-                className={speakerColorClass(speaker.colorIndex)}
-                aria-pressed={filter.speakerId === speaker.id}
-                onClick={() => onFilterChange({ ...filter, speakerId: speaker.id })}
-              >
-                <span className="notia-meeting-dot" aria-hidden="true" />{speaker.name}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <MeetingSpeakerFilter speakers={snapshot.speakers} filter={filter} onFilterChange={onFilterChange} />
       </div>
-      <div className="notia-meeting-turns">
-        {snapshot.turns.length === 0 ? (
-          <p className="notia-meeting-empty-text">
-            {snapshot.totalTurns === 0 ? 'No se reconoció texto en la grabación.' : 'Ninguna intervención coincide con la búsqueda.'}
-          </p>
-        ) : snapshot.turns.map((turn) => {
-          const speaker = turn.speakerId ? speakersById.get(turn.speakerId) : undefined
-          return (
-            <article key={turn.id} className={`notia-meeting-turn ${speaker ? speakerColorClass(speaker.colorIndex) : ''}`}>
-              {speaker ? <span className="notia-meeting-avatar notia-meeting-avatar--small" aria-hidden="true">{speaker.initials}</span> : null}
-              <div>
-                <div className="notia-meeting-turn-meta">
-                  {speaker ? <strong>{speaker.name}</strong> : null}
-                  <time>{formatClock(turn.startMs)}</time>
-                </div>
-                <p>{turn.text}</p>
-              </div>
-            </article>
-          )
-        })}
-      </div>
+      <MeetingTurns snapshot={snapshot} speakersById={speakersById} />
     </section>
+  )
+}
+
+/** The turns of the finished meeting, each with its speaker and minute. */
+export function MeetingTurns({ snapshot, speakersById }: { snapshot: MeetingSnapshot; speakersById: Map<string, MeetingSpeaker> }) {
+  return (
+    <div className="notia-meeting-turns">
+      {snapshot.turns.length === 0 ? (
+        <p className="notia-meeting-empty-text">
+          {snapshot.totalTurns === 0 ? 'No se reconoció texto en la grabación.' : 'Ninguna intervención coincide con la búsqueda.'}
+        </p>
+      ) : snapshot.turns.map((turn) => {
+        const speaker = turn.speakerId ? speakersById.get(turn.speakerId) : undefined
+        return (
+          <article key={turn.id} className={`notia-meeting-turn ${speaker ? speakerColorClass(speaker.colorIndex) : ''}`}>
+            {speaker ? <span className="notia-meeting-avatar notia-meeting-avatar--small" aria-hidden="true">{speaker.initials}</span> : null}
+            <div>
+              <div className="notia-meeting-turn-meta">
+                {speaker ? <strong>{speaker.name}</strong> : null}
+                <time>{formatClock(turn.startMs)}</time>
+              </div>
+              <p>{turn.text}</p>
+            </div>
+          </article>
+        )
+      })}
+    </div>
   )
 }
 
@@ -255,22 +239,7 @@ const INSIGHT_OPTIONS: Array<{ key: keyof MeetingInsightsRequest; label: string;
 ]
 
 function InsightsCard({ meetingId, aiPreferences }: { meetingId: string; aiPreferences: AiPreferences }) {
-  const [request, setRequest] = useState<MeetingInsightsRequest>({ summary: true, keyPoints: true, tasks: false, correct: false })
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const nothingChosen = !Object.values(request).some(Boolean)
-
-  const generate = async () => {
-    setIsGenerating(true)
-    setError(null)
-    try {
-      await generateMeetingInsights(meetingId, request, aiPreferences)
-    } catch (generateError) {
-      setError(errorText(generateError, 'No se pudo pasar la reunión por IA.'))
-    } finally {
-      setIsGenerating(false)
-    }
-  }
+  const { request, choose, isGenerating, error, nothingChosen, generate } = useMeetingInsights(meetingId, aiPreferences)
 
   return (
     <section className="notia-meeting-card notia-meeting-insights" aria-labelledby="meeting-insights-title">
@@ -286,7 +255,7 @@ function InsightsCard({ meetingId, aiPreferences }: { meetingId: string; aiPrefe
               type="checkbox"
               checked={request[option.key]}
               disabled={isGenerating}
-              onChange={(event) => setRequest((current) => ({ ...current, [option.key]: event.target.checked }))}
+              onChange={(event) => choose(option.key, event.target.checked)}
             />
             <span>{option.label}</span>
             {option.hint ? <small>{option.hint}</small> : null}
@@ -301,7 +270,7 @@ function InsightsCard({ meetingId, aiPreferences }: { meetingId: string; aiPrefe
   )
 }
 
-function InsightsResults({ snapshot, library }: { snapshot: MeetingSnapshot; library: NotiaLibrary | null }) {
+export function InsightsResults({ snapshot, library }: { snapshot: MeetingSnapshot; library: NotiaLibrary | null }) {
   const { summary, keyPoints, tasks, corrected } = snapshot.insights
   const [selected, setSelected] = useState<string[]>([])
   const [boards, setBoards] = useState<string[] | null>(null)

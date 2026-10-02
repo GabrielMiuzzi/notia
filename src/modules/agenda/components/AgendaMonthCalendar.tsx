@@ -1,8 +1,13 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import type { AgendaHolidayKind, AgendaMonth } from '../types/agendaTypes'
+import type { AgendaHolidayKind, AgendaMonth, AgendaSelectedDay } from '../types/agendaTypes'
+import { AgendaPhoneLegend } from './phone/AgendaPhoneLegend'
+import { AgendaPhoneSelectedDay } from './phone/AgendaPhoneSelectedDay'
 
 interface AgendaMonthCalendarProps {
   month: AgendaMonth
+  /** Celular: leyenda corta, sin nombres de feriado en los días y con el día elegido debajo. */
+  phone: boolean
+  selectedDay: AgendaSelectedDay
   onPickDate: (date: string) => void
   onShowMonth: (month: string) => void
   onToday: () => void
@@ -16,7 +21,7 @@ const HOLIDAY_LEGEND: Array<{ kind: AgendaHolidayKind; day: number; sample: stri
   { kind: 'nonwork', day: 6, sample: 'Día del Bancario', label: 'No laborable', detail: 'Optativo según el empleador o solo bancario' },
 ]
 
-export function AgendaMonthCalendar({ month, onPickDate, onShowMonth, onToday }: AgendaMonthCalendarProps) {
+export function AgendaMonthCalendar({ month, phone, selectedDay, onPickDate, onShowMonth, onToday }: AgendaMonthCalendarProps) {
   return (
     <section className="agenda-card" aria-labelledby="agenda-month-title">
       <div className="agenda-card__head">
@@ -49,12 +54,15 @@ export function AgendaMonthCalendar({ month, onPickDate, onShowMonth, onToday }:
             onClick={() => onPickDate(cell.date)}
           >
             <span>{cell.day}</span>
-            {cell.holidayName ? <span className="agenda-month__holiday">{cell.holidayName}</span> : null}
+            {cell.holidayName && !phone ? <span className="agenda-month__holiday">{cell.holidayName}</span> : null}
             <span className="agenda-month__dot" data-visible={cell.hasEvents} aria-hidden="true" />
           </button>
         ))}
       </div>
-      <div className="agenda-legend" aria-label="Referencias del calendario" role="group">
+      {phone ? <>
+        <AgendaPhoneLegend />
+        <AgendaPhoneSelectedDay day={selectedDay} />
+      </> : <div className="agenda-legend" aria-label="Referencias del calendario" role="group">
         <div className="agenda-legend__row">
           <span className="agenda-legend__title">Feriados</span>
           <ul className="agenda-legend__items agenda-legend__items--holidays">
@@ -90,7 +98,7 @@ export function AgendaMonthCalendar({ month, onPickDate, onShowMonth, onToday }:
             </li>
           </ul>
         </div>
-      </div>
+      </div>}
     </section>
   )
 }

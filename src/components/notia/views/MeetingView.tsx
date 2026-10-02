@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { shallowEqual } from 'react-redux'
-import { Check, ChevronDown, CircleStop, Download, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, X } from 'lucide-react'
+import { ArrowUpFromLine, Check, ChevronDown, CircleStop, Download, EllipsisVertical, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, Search, X } from 'lucide-react'
 import { useVoiceTranscription } from './chat/useVoiceTranscription'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import { useAppDispatch, useAppSelector } from '../../../store/hooks'
 import { selectAiSettings, selectSpeechRecognitionSettings } from '../../../features/preferences/preferencesSelectors'
 import { setSpeechRecognitionSettings } from '../../../features/preferences/preferencesSlice'
@@ -24,21 +25,29 @@ import { skipSpeechDiarization, startAudioMonitor, stopAudioMonitor } from '../.
 import { discardMeetingMedia, startMeetingFileSession, uploadMeetingMedia } from '../../../services/meeting/meetingMediaService'
 import { loadLibraryFolderOptions } from '../../../services/chat/chatAttachmentRuntime'
 import type { MeetingExportFormat, MeetingFilter } from '../../../services/meeting/meetingTypes'
-import { MeetingReadyPanel, type MeetingSource } from './meeting/MeetingReadyPanel'
-import { DEFAULT_MEETING_FOLDER } from './meeting/MeetingOptions'
+import { MeetingReadyPanel, type MeetingLiveSetupProps, type MeetingSource } from './meeting/MeetingReadyPanel'
+import { DEFAULT_MEETING_FOLDER, type MeetingOptionsProps } from './meeting/MeetingOptions'
 import { MeetingSourceTabs, type MeetingSourceTab } from './meeting/MeetingSourceTabs'
-import { MeetingUploadPanel, type MeetingFileState } from './meeting/MeetingUploadPanel'
+import { MeetingUploadPanel, type MeetingFileSetupProps, type MeetingFileState } from './meeting/MeetingUploadPanel'
 import { MeetingRecordingPanel } from './meeting/MeetingRecordingPanel'
-import { MeetingProcessingPanel } from './meeting/MeetingProcessingPanel'
+import { MeetingProcessingPanel, type MeetingProcessingPanelProps } from './meeting/MeetingProcessingPanel'
 import { MeetingCompletedPanel } from './meeting/MeetingCompletedPanel'
+import { MeetingPhoneSetup } from './meeting/MeetingPhoneSetup'
+import { MeetingPhoneRecording, type MeetingPhoneSheet } from './meeting/MeetingPhoneRecording'
+import { MeetingPhoneProcessing } from './meeting/MeetingPhoneProcessing'
+import { MeetingPhoneCompleted } from './meeting/MeetingPhoneCompleted'
+import { MeetingPhoneMenu } from './meeting/MeetingPhoneMenu'
 import { useMeetingSnapshot } from './meeting/useMeetingSnapshot'
 import { useFollowMeetingSession } from './meeting/useFollowMeetingSession'
 import { useSpeechLevels } from './meeting/useSpeechLevels'
 import { formatClock } from './meeting/meetingDisplay'
+import './meeting/meetingPhone.css'
 
 const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
 const LEVEL_HISTORY = 90
 const NO_FILTER: MeetingFilter = { query: '', speakerId: null }
+/** Width of the view below which the phone boards of the canvas apply. */
+const PHONE_MAX_WIDTH = 600
 
 type MeetingStage = 'ready' | 'recording' | 'processing' | 'completed'
 
@@ -79,6 +88,11 @@ function MeetingViewComponent() {
   const uploadRef = useRef<AbortController | null>(null)
   const readyMediaIdRef = useRef<string | null>(null)
   readyMediaIdRef.current = fileState.status === 'ready' ? fileState.media.mediaId : null
+  // The phone boards follow the width of the view, not the window's.
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = useNarrowContainer(root, PHONE_MAX_WIDTH)
+  const [phoneSheet, setPhoneSheet] = useState<MeetingPhoneSheet | null>(null)
+  const [phoneSearchOpen, setPhoneSearchOpen] = useState(false)
 
   const meetingOptions = useMemo(
     () => ({ liveAnswers, settings: meetingAiSettings(aiPreferences) }),
@@ -128,6 +142,8 @@ function MeetingViewComponent() {
   useEffect(() => {
     if (stage !== 'processing') setIsSkipping(false)
     setExportMenuOpen(false)
+    setPhoneSheet(null)
+    setPhoneSearchOpen(false)
   }, [stage])
 
   // A speaker merged into another no longer exists to filter by.
@@ -358,26 +374,224 @@ function MeetingViewComponent() {
   const modelLabel = voice.modelPreparationError ? 'No se pudo preparar el modelo de voz'
     : !voice.isModelReady ? 'Preparando voz al iniciar Notia…'
       : null
-  const readyLabel = sourceTab === 'file'
+  // The phone bar says «Lista» where the desktop says «Lista para grabar».
+  const readyLabelFor = (idleLabel: string) => (sourceTab === 'file'
     ? (fileState.status === 'uploading' ? `Cargando archivo… ${Math.round(fileState.progress * 100)}%`
       : fileState.status === 'reading' ? 'Leyendo el archivo…'
         : modelLabel ?? (fileState.status === 'ready' ? 'Archivo listo' : 'Esperando un archivo'))
     : status === 'preparing' ? 'Iniciando captura de audio…'
-      : modelLabel ?? 'Lista para grabar'
+      : modelLabel ?? idleLabel)
+  const readyLabel = readyLabelFor('Lista para grabar')
+  const fileReady = sourceTab === 'file' && fileState.status === 'ready'
   const transcribingFile = Boolean(snapshot?.sourceFile)
     && (voice.state.status !== 'finalizing' || (voice.state.stage ?? 'transcribing') === 'transcribing')
   const errorMessage = voice.state.status === 'error' ? voice.state.error.message
     : voice.modelPreparationError ?? actionError ?? snapshotError
 
+  const optionProps: MeetingOptionsProps = {
+    language: speechRecognition.language,
+    onLanguageChange: (language) => dispatch(setSpeechRecognitionSettings({ ...speechRecognition, language })),
+    expectedSpeakers,
+    onExpectedSpeakersChange: setExpectedSpeakers,
+    folder,
+    folderOptions,
+    libraryName: library?.name ?? null,
+    onFolderChange: setFolder,
+  }
+  const liveSetup: MeetingLiveSetupProps = {
+    canStart,
+    isStarting: status === 'preparing',
+    onStart: () => void start(),
+    systemAudioSupported,
+    sources: effectiveSources,
+    onToggleSource: toggleSource,
+    isChecking: monitorId !== null,
+    onToggleCheck: () => void toggleMonitor(),
+    levels,
+  }
+  const fileSetup: MeetingFileSetupProps = {
+    file: fileState,
+    isDragging: isDraggingFile,
+    canTranscribe: voice.isModelReady && status === 'idle',
+    isStarting: isStartingFile,
+    onChooseFile: (file) => void chooseFile(file),
+    onRemoveFile: removeFile,
+    onTranscribe: () => void transcribeFile(),
+  }
+  const answerActions = {
+    onToggleLiveAnswers: toggleLiveAnswers,
+    onRegenerateAnswer: (answerId: string, shorter: boolean) => meetingId && void run(
+      () => regenerateMeetingAnswer(meetingId, answerId, shorter, aiPreferences),
+      'No se pudo generar la respuesta.',
+    ),
+    onPinAnswer: (answerId: string, pinned: boolean) => meetingId && void run(
+      () => pinMeetingAnswer(meetingId, answerId, pinned),
+      'No se pudo fijar la respuesta.',
+    ),
+    onSaveNotes: saveNotes,
+    onRemoveMark: (markId: string) => meetingId && void run(() => removeMeetingMark(meetingId, markId), 'No se pudo quitar el momento.'),
+  }
+  const processingProps: MeetingProcessingPanelProps = {
+    durationMs: snapshot?.durationMs ?? 0,
+    progress: voice.state.status === 'finalizing' ? voice.state.progress : undefined,
+    stage: voice.state.status === 'finalizing' ? voice.state.stage : undefined,
+    lines: snapshot?.lines ?? [],
+    sourceFile: snapshot?.sourceFile,
+    isSkipping,
+    onSkip: skipSeparation,
+    onCancelFile: () => void voice.cancel(),
+  }
+  const rootProps = {
+    ref: setRoot,
+    'data-stage': stage,
+    'data-dragging': isDraggingFile ? 'true' : undefined,
+    onDragOver: handleDragOver,
+    onDragLeave: handleDragLeave,
+    onDrop: handleDrop,
+  }
+
+  const banners = (
+    <>
+      {errorMessage ? (
+        <div className="notia-meeting-banner notia-meeting-banner--error" role="alert">
+          <span>{errorMessage}</span>
+          {status === 'error' || actionError ? (
+            <button
+              type="button"
+              className="notia-meeting-icon-button"
+              aria-label="Cerrar aviso"
+              onClick={() => {
+                setActionError(null)
+                if (status === 'error') voice.dismissError()
+              }}
+            >
+              <X size={15} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="notia-meeting-banner" role="status">
+          <span>{notice}</span>
+          <button type="button" className="notia-meeting-icon-button" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+    </>
+  )
+
+  if (phone) {
+    const closePhoneSearch = () => {
+      setPhoneSearchOpen(false)
+      setFilter(NO_FILTER)
+    }
+    return (
+      <main className="notia-main notia-meeting-view notia-meeting-view--phone" {...rootProps}>
+        <header className="notia-meeting-phone-bar" data-stage={stage}>
+          {stage === 'ready' ? (
+            <>
+              <span className="notia-meeting-phone-title">Meeting</span>
+              <span className="notia-meeting-phone-pill" role="status" aria-live="polite" data-ready={fileReady ? 'true' : undefined}>
+                <span className="notia-meeting-pill-dot" aria-hidden="true" />
+                <span className="notia-meeting-phone-pill-text">{readyLabelFor('Lista')}</span>
+              </span>
+            </>
+          ) : stage === 'recording' ? (
+            <>
+              <h1 className="notia-meeting-phone-title">Meeting</h1>
+              <span className="notia-meeting-phone-pill notia-meeting-phone-pill--recording" role="status" data-paused={status === 'paused' ? 'true' : undefined}>
+                <span className="notia-meeting-pill-dot" aria-hidden="true" />
+                <span className={status === 'paused' ? undefined : 'notia-meeting-sr'}>{status === 'paused' ? 'En pausa' : 'Grabando'}</span>
+                <span className="notia-meeting-mono">{formatClock(elapsedMs)}</span>
+              </span>
+              <MeetingPhoneMenu
+                label="Más opciones"
+                icon={<EllipsisVertical size={18} aria-hidden="true" />}
+                items={[
+                  { label: 'Notas rápidas', onSelect: () => setPhoneSheet('notes'), disabled: !snapshot },
+                  { label: `Momentos marcados (${snapshot?.marks.length ?? 0})`, onSelect: () => setPhoneSheet('marks'), disabled: !snapshot },
+                  { label: 'Cancelar grabación', onSelect: () => void onSession(voice.cancel)() },
+                ]}
+              />
+            </>
+          ) : stage === 'processing' ? (
+            <>
+              <h1 className="notia-meeting-phone-title">Meeting</h1>
+              <span className="notia-meeting-phone-bar-detail" title={snapshot?.sourceFile?.name}>
+                {snapshot?.sourceFile ? snapshot.sourceFile.name : formatClock(snapshot?.durationMs ?? 0)}
+              </span>
+            </>
+          ) : (
+            <>
+              <h1 className="notia-meeting-phone-title">Meeting</h1>
+              <div className="notia-meeting-phone-bar-actions">
+                <button
+                  type="button"
+                  className="notia-meeting-phone-icon"
+                  aria-label="Buscar en la transcripción"
+                  aria-pressed={phoneSearchOpen}
+                  disabled={!snapshot}
+                  onClick={() => (phoneSearchOpen ? closePhoneSearch() : setPhoneSearchOpen(true))}
+                >
+                  <Search size={18} aria-hidden="true" />
+                </button>
+                <MeetingPhoneMenu
+                  label={busyAction === 'export' ? 'Exportando…' : 'Exportar'}
+                  icon={<ArrowUpFromLine size={18} aria-hidden="true" />}
+                  disabled={!library || busyAction !== null}
+                  items={[
+                    { label: 'PDF', onSelect: () => void exportAs('pdf') },
+                    { label: 'Word (.docx)', onSelect: () => void exportAs('docx') },
+                  ]}
+                />
+              </div>
+            </>
+          )}
+        </header>
+        {errorMessage || notice ? <div className="notia-meeting-phone-banners">{banners}</div> : null}
+        {stage === 'ready' ? (
+          <MeetingPhoneSetup tab={sourceTab} onSelectTab={setSourceTab} options={optionProps} live={liveSetup} upload={fileSetup} />
+        ) : stage === 'recording' ? (
+          <MeetingPhoneRecording
+            snapshot={snapshot}
+            partialText={voice.visiblePartialText}
+            levels={levels}
+            isPaused={status === 'paused'}
+            canMark={Boolean(meetingId) && status === 'recording'}
+            onMark={markMoment}
+            onPause={() => void onSession(voice.pause)()}
+            onResume={() => void voice.resume().catch(() => undefined)}
+            onStop={() => void onSession(voice.stop)()}
+            {...answerActions}
+            sheet={phoneSheet}
+            onCloseSheet={() => setPhoneSheet(null)}
+          />
+        ) : stage === 'processing' ? (
+          <MeetingPhoneProcessing {...processingProps} />
+        ) : snapshot ? (
+          <MeetingPhoneCompleted
+            key={snapshot.id}
+            snapshot={snapshot}
+            filter={filter}
+            onFilterChange={setFilter}
+            aiPreferences={aiPreferences}
+            library={library}
+            searchOpen={phoneSearchOpen}
+            onCloseSearch={closePhoneSearch}
+            isBusy={busyAction !== null}
+            isSaving={busyAction === 'save'}
+            onNewRecording={() => void newRecording()}
+            onSaveNote={() => void saveNote()}
+            onOpenNote={() => void openFile(snapshot.savedNotePath ?? '')}
+          />
+        ) : null}
+      </main>
+    )
+  }
+
   return (
-    <main
-      className="notia-main notia-meeting-view"
-      data-stage={stage}
-      data-dragging={isDraggingFile ? 'true' : undefined}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+    <main className="notia-main notia-meeting-view" {...rootProps}>
       {stage === 'ready' ? (
         <header className="notia-meeting-intro">
           <div>
@@ -387,7 +601,7 @@ function MeetingViewComponent() {
               ? 'Subí una grabación que ya tengas y Notia la transcribe entera, separada por hablante.'
               : 'Nombrá la reunión y elegí las fuentes. Al finalizar, Notia separa las intervenciones por hablante.'}</p>
           </div>
-          <span className="notia-meeting-pill" role="status" aria-live="polite" data-ready={sourceTab === 'file' && fileState.status === 'ready' ? 'true' : undefined}>
+          <span className="notia-meeting-pill" role="status" aria-live="polite" data-ready={fileReady ? 'true' : undefined}>
             <span className="notia-meeting-pill-dot" aria-hidden="true" />{readyLabel}
           </span>
         </header>
@@ -479,102 +693,18 @@ function MeetingViewComponent() {
         </header>
       )}
 
-      {errorMessage ? (
-        <div className="notia-meeting-banner notia-meeting-banner--error" role="alert">
-          <span>{errorMessage}</span>
-          {status === 'error' || actionError ? (
-            <button
-              type="button"
-              className="notia-meeting-icon-button"
-              aria-label="Cerrar aviso"
-              onClick={() => {
-                setActionError(null)
-                if (status === 'error') voice.dismissError()
-              }}
-            >
-              <X size={15} aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {notice ? (
-        <div className="notia-meeting-banner" role="status">
-          <span>{notice}</span>
-          <button type="button" className="notia-meeting-icon-button" aria-label="Cerrar aviso" onClick={() => setNotice(null)}>
-            <X size={15} aria-hidden="true" />
-          </button>
-        </div>
-      ) : null}
+      {banners}
 
       {stage === 'ready' ? <MeetingSourceTabs selected={sourceTab} onSelect={setSourceTab} /> : null}
 
       {stage === 'ready' && sourceTab === 'file' ? (
-        <MeetingUploadPanel
-          file={fileState}
-          isDragging={isDraggingFile}
-          canTranscribe={voice.isModelReady && status === 'idle'}
-          isStarting={isStartingFile}
-          onChooseFile={(file) => void chooseFile(file)}
-          onRemoveFile={removeFile}
-          onTranscribe={() => void transcribeFile()}
-          language={speechRecognition.language}
-          onLanguageChange={(language) => dispatch(setSpeechRecognitionSettings({ ...speechRecognition, language }))}
-          expectedSpeakers={expectedSpeakers}
-          onExpectedSpeakersChange={setExpectedSpeakers}
-          folder={folder}
-          folderOptions={folderOptions}
-          libraryName={library?.name ?? null}
-          onFolderChange={setFolder}
-        />
+        <MeetingUploadPanel {...fileSetup} {...optionProps} />
       ) : stage === 'ready' ? (
-        <MeetingReadyPanel
-          canStart={canStart}
-          isStarting={status === 'preparing'}
-          onStart={() => void start()}
-          microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'}
-          systemAudioSupported={systemAudioSupported}
-          sources={effectiveSources}
-          onToggleSource={toggleSource}
-          isChecking={monitorId !== null}
-          onToggleCheck={() => void toggleMonitor()}
-          levels={levels}
-          language={speechRecognition.language}
-          onLanguageChange={(language) => dispatch(setSpeechRecognitionSettings({ ...speechRecognition, language }))}
-          expectedSpeakers={expectedSpeakers}
-          onExpectedSpeakersChange={setExpectedSpeakers}
-          folder={folder}
-          folderOptions={folderOptions}
-          libraryName={library?.name ?? null}
-          onFolderChange={setFolder}
-        />
+        <MeetingReadyPanel {...liveSetup} {...optionProps} microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'} />
       ) : stage === 'recording' ? (
-        <MeetingRecordingPanel
-          snapshot={snapshot}
-          partialText={voice.visiblePartialText}
-          levels={levels}
-          onToggleLiveAnswers={toggleLiveAnswers}
-          onRegenerateAnswer={(answerId, shorter) => meetingId && void run(
-            () => regenerateMeetingAnswer(meetingId, answerId, shorter, aiPreferences),
-            'No se pudo generar la respuesta.',
-          )}
-          onPinAnswer={(answerId, pinned) => meetingId && void run(
-            () => pinMeetingAnswer(meetingId, answerId, pinned),
-            'No se pudo fijar la respuesta.',
-          )}
-          onSaveNotes={saveNotes}
-          onRemoveMark={(markId) => meetingId && void run(() => removeMeetingMark(meetingId, markId), 'No se pudo quitar el momento.')}
-        />
+        <MeetingRecordingPanel snapshot={snapshot} partialText={voice.visiblePartialText} levels={levels} {...answerActions} />
       ) : stage === 'processing' ? (
-        <MeetingProcessingPanel
-          durationMs={snapshot?.durationMs ?? 0}
-          progress={voice.state.status === 'finalizing' ? voice.state.progress : undefined}
-          stage={voice.state.status === 'finalizing' ? voice.state.stage : undefined}
-          lines={snapshot?.lines ?? []}
-          sourceFile={snapshot?.sourceFile}
-          isSkipping={isSkipping}
-          onSkip={skipSeparation}
-          onCancelFile={() => void voice.cancel()}
-        />
+        <MeetingProcessingPanel {...processingProps} />
       ) : snapshot ? (
         <MeetingCompletedPanel
           snapshot={snapshot}

@@ -15,7 +15,7 @@ const MODEL_DIRECTORY_NAME: &str = "speech-models";
 /// Marks a profile Android extracted from the APK and verified once.
 #[cfg(target_os = "android")]
 const ANDROID_VERIFIED_STAMP: &str = ".notia-verified";
-const PARAKEET_PROFILE_ID: &str = "es-parakeet-tdt-v3";
+const WHISPER_PROFILE_ID: &str = "whisper-large-v3-turbo";
 static MODEL_HASH_CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedModelHash>>> =
     OnceLock::new();
 
@@ -66,13 +66,8 @@ pub struct ResolvedDiarizationModel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum SpeechAsrConfig {
-    OfflineNemoTransducer {
-        encoder: String,
-        decoder: String,
-        joiner: String,
-        tokens: String,
-        vad: String,
-    },
+    /// A whisper.cpp model and the Silero VAD that delimits its utterances.
+    WhisperGgml { model: String, vad: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,37 +132,27 @@ fn profile_models_root<'a>(roots: &'a [PathBuf], profile: &SpeechModelProfile) -
         .map_or(Path::new(""), PathBuf::as_path)
 }
 
-/// The Parakeet profile, the only speech recognition model.
+/// The Whisper profile, the only speech recognition model.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 pub fn resolve_asr_model(
     app: &AppHandle,
     language: &str,
-) -> Result<crate::services::sherpa_offline::OfflineNemoTransducerConfig, String> {
+) -> Result<crate::services::whisper_recognizer::WhisperAsrConfig, String> {
     let manifest = parse_manifest()?;
     let profile = manifest
         .profiles
         .iter()
-        .find(|profile| profile.profile_id == PARAKEET_PROFILE_ID)
-        .ok_or_else(|| "No hay un modelo Parakeet TDT configurado.".to_string())?;
+        .find(|profile| profile.profile_id == WHISPER_PROFILE_ID)
+        .ok_or_else(|| "No hay un modelo Whisper configurado.".to_string())?;
     let profile_root = verified_profile_root(app, profile)?;
-    let Some(SpeechAsrConfig::OfflineNemoTransducer {
-        encoder,
-        decoder,
-        joiner,
-        tokens,
-        vad,
-    }) = profile.asr.as_ref()
-    else {
-        return Err("El perfil Parakeet no declara un modelo NeMo transducer.".to_string());
+    let Some(SpeechAsrConfig::WhisperGgml { model, vad }) = profile.asr.as_ref() else {
+        return Err("El perfil Whisper no declara un modelo whisper.cpp.".to_string());
     };
     let num_threads = std::thread::available_parallelism()
-        .map(|threads| threads.get().min(crate::services::sherpa_offline::MAX_ASR_THREADS as usize) as i32)
+        .map(|threads| threads.get().min(crate::services::whisper_recognizer::MAX_ASR_THREADS as usize) as i32)
         .unwrap_or(2);
-    Ok(crate::services::sherpa_offline::OfflineNemoTransducerConfig {
-        encoder: resolve_verified_role_path(&profile_root, encoder)?,
-        decoder: resolve_verified_role_path(&profile_root, decoder)?,
-        joiner: resolve_verified_role_path(&profile_root, joiner)?,
-        tokens: resolve_verified_role_path(&profile_root, tokens)?,
+    Ok(crate::services::whisper_recognizer::WhisperAsrConfig {
+        model: resolve_verified_role_path(&profile_root, model)?,
         vad: resolve_verified_role_path(&profile_root, vad)?,
         num_threads,
         language: language.to_string(),
@@ -204,7 +189,9 @@ fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Op
 /// copied to the app's private models folder (`speech-models`) and checked
 /// once by size and SHA-256. A stamp then spares the hashing (hundreds of
 /// megabytes) on later loads while every size still matches; a file that
-/// changed size is copied again.
+/// changed size is copied again. Before copying, the folders of profiles the
+/// manifest no longer declares are removed, so a replaced model does not keep
+/// its space on the device.
 #[cfg(target_os = "android")]
 fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Option<PathBuf>, String> {
     let root = app
@@ -221,6 +208,7 @@ fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Op
         return Ok(inspect_profile_with_hashes(&root, profile, false)?.ready.then_some(root));
     }
     let _ = fs::remove_file(&stamp);
+    remove_undeclared_profiles(&root, &parse_manifest()?);
     let state = app.state::<crate::mobile_speech_permission::AndroidSpeechPermissionState>();
     for file in profile.files.iter().filter(|file| !size_matches(file)) {
         let asset = format!("resources/speech/models/{}/{}", profile.profile_id, file.relative_path);
@@ -234,6 +222,29 @@ fn ready_models_root(app: &AppHandle, profile: &SpeechModelProfile) -> Result<Op
     }
     fs::write(&stamp, b"").map_err(|_| "No se pudo marcar los modelos de voz como verificados.".to_string())?;
     Ok(Some(root))
+}
+
+/// Removes the folders of `root` that no profile of `manifest` declares:
+/// models an older version extracted and no longer reads. Only Android
+/// writes this folder, and only with extracted models.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn remove_undeclared_profiles(root: &Path, manifest: &SpeechModelManifest) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let declared = manifest
+            .profiles
+            .iter()
+            .any(|profile| entry.file_name() == profile.profile_id.as_str());
+        // `file_type` does not follow links: a link is never followed into.
+        if declared || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(entry.path()) {
+            log::error!("[notia:speech] an unused model folder could not be removed: {error}");
+        }
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -383,15 +394,9 @@ fn validate_asr_roles(
     config: &SpeechAsrConfig,
     declared_paths: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
-    let SpeechAsrConfig::OfflineNemoTransducer {
-        encoder,
-        decoder,
-        joiner,
-        tokens,
-        vad,
-    } = config;
+    let SpeechAsrConfig::WhisperGgml { model, vad } = config;
     let mut unique_roles = std::collections::HashSet::new();
-    for path in [encoder, decoder, joiner, tokens, vad] {
+    for path in [model, vad] {
         validate_relative_path(path)?;
         if !declared_paths.contains(path.as_str()) {
             return Err(format!(
@@ -649,14 +654,42 @@ mod tests {
 
     #[test]
     fn rejects_asr_roles_that_are_not_declared_files() {
-        let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","asr":{"type":"offlineNemoTransducer","encoder":"encoder.onnx","decoder":"decoder.onnx","joiner":"joiner.onnx","tokens":"tokens.txt","vad":"silero_vad.onnx"},"files":[{"relativePath":"encoder.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#;
+        let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","asr":{"type":"whisperGgml","model":"model.bin","vad":"silero_vad.onnx"},"files":[{"relativePath":"model.bin","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#;
         assert!(inspect_manifest(manifest, &temporary_root()).is_err());
     }
 
     #[test]
-    fn accepts_declared_offline_nemo_transducer_roles() {
-        let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","asr":{"type":"offlineNemoTransducer","encoder":"encoder.onnx","decoder":"decoder.onnx","joiner":"joiner.onnx","tokens":"tokens.txt","vad":"silero_vad.onnx"},"files":[{"relativePath":"encoder.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"relativePath":"decoder.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"relativePath":"joiner.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"relativePath":"tokens.txt","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"relativePath":"silero_vad.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#;
+    fn accepts_declared_whisper_roles() {
+        let manifest = r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","asr":{"type":"whisperGgml","model":"model.bin","vad":"silero_vad.onnx"},"files":[{"relativePath":"model.bin","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"relativePath":"silero_vad.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#;
         let status = inspect_manifest(manifest, &temporary_root()).expect("valid ASR roles");
         assert!(!status.profiles[0].ready);
+    }
+
+    #[test]
+    fn removes_only_the_folders_of_undeclared_profiles() {
+        let manifest: super::SpeechModelManifest = serde_json::from_str(r#"{"schemaVersion":1,"profiles":[{"profileId":"es-test","language":"es","files":[{"relativePath":"model.onnx","bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}]}"#).expect("valid manifest");
+        let root = temporary_root();
+        fs::create_dir_all(root.join("es-test")).expect("create declared profile");
+        fs::create_dir_all(root.join("old-profile").join("nested")).expect("create undeclared profile");
+        fs::write(root.join("old-profile").join("encoder.onnx"), b"abc").expect("write old model");
+        fs::write(root.join("notes.txt"), b"abc").expect("write loose file");
+        super::remove_undeclared_profiles(&root, &manifest);
+        assert!(root.join("es-test").is_dir());
+        assert!(!root.join("old-profile").exists());
+        assert!(root.join("notes.txt").is_file());
+        // A missing folder is not an error.
+        super::remove_undeclared_profiles(&root.join("missing"), &manifest);
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn the_bundled_manifest_declares_the_whisper_profile() {
+        let manifest = super::parse_manifest().expect("bundled manifest is valid");
+        let whisper = manifest
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == super::WHISPER_PROFILE_ID)
+            .expect("Whisper profile");
+        assert!(matches!(whisper.asr, Some(super::SpeechAsrConfig::WhisperGgml { .. })));
     }
 }

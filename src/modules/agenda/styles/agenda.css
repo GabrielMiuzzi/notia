@@ -174,7 +174,7 @@
 /* Week grid */
 .agenda-grid { position: relative; box-sizing: border-box; height: clamp(360px, 65vh, 880px); height: clamp(360px, 65dvh, 880px); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--agenda-line); border-radius: 12px; background: var(--agenda-elev); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .agenda-grid__head,
-.agenda-grid__body { display: grid; grid-template-columns: var(--agenda-time-col) repeat(7, minmax(var(--agenda-col-min), 1fr)); min-width: calc(var(--agenda-time-col) + 7 * var(--agenda-col-min)); }
+.agenda-grid__body { display: grid; grid-template-columns: var(--agenda-time-col) repeat(var(--agenda-days, 7), minmax(var(--agenda-col-min), 1fr)); min-width: calc(var(--agenda-time-col) + var(--agenda-days, 7) * var(--agenda-col-min)); }
 .agenda-grid__head { position: sticky; top: 0; z-index: 3; border-bottom: 1px solid var(--agenda-line); background: var(--agenda-elev); }
 .agenda-grid__corner { position: sticky; left: 0; z-index: 1; background: var(--agenda-elev); }
 .agenda-grid__day { min-width: 0; padding: 8px 0 10px; border-left: 1px solid var(--agenda-line); display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--agenda-muted); }
@@ -196,9 +196,9 @@
   .agenda-slot[aria-pressed="false"]:hover { background: color-mix(in srgb, var(--agenda-teal) 8%, transparent); }
 }
 
-/* Overlapping events split the column in lanes; a 14px strip stays free on
-   the right so the blocks under them can still be picked. */
-.agenda-event { --agenda-lane-width: calc((100% - 14px) / var(--agenda-lanes, 1)); grid-column: 1; justify-self: start; position: relative; z-index: 1; box-sizing: border-box; width: calc(var(--agenda-lane-width) - 3px); min-width: 0; min-height: 0; margin: 1px 0 1px calc(var(--agenda-lane-width) * var(--agenda-lane, 0) + 2px); padding: 1px 6px 2px; border: 0; border-top: 3px solid var(--agenda-p); border-radius: 5px; background: color-mix(in srgb, var(--agenda-p) var(--agenda-tint), var(--agenda-elev)); color: var(--agenda-text); text-align: left; display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; cursor: pointer; box-shadow: 0 0 0 1px var(--agenda-elev); }
+/* Overlapping events split the column in lanes; a strip (14px, 32px on a
+   phone) stays free on the right so the blocks under them can still be picked. */
+.agenda-event { --agenda-lane-width: calc((100% - var(--agenda-free, 14px)) / var(--agenda-lanes, 1)); grid-column: 1; justify-self: start; position: relative; z-index: 1; box-sizing: border-box; width: calc(var(--agenda-lane-width) - 3px); min-width: 0; min-height: 0; margin: 1px 0 1px calc(var(--agenda-lane-width) * var(--agenda-lane, 0) + 2px); padding: 1px 6px 2px; border: 0; border-top: 3px solid var(--agenda-p); border-radius: 5px; background: color-mix(in srgb, var(--agenda-p) var(--agenda-tint), var(--agenda-elev)); color: var(--agenda-text); text-align: left; display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; cursor: pointer; box-shadow: 0 0 0 1px var(--agenda-elev); }
 .agenda-event[data-active="true"] { z-index: 2; box-shadow: inset 0 0 0 2px var(--agenda-text), 0 2px 8px color-mix(in srgb, var(--agenda-ink) 60%, transparent); }
 .agenda-grid[data-dragging="true"] .agenda-event { pointer-events: none; }
 .agenda-event__title,
@@ -260,3 +260,100 @@
   .agenda-month__day { padding: 4px 2px; }
   .agenda-legend__items--holidays { grid-template-columns: 1fr; }
 }
+
+/* Phone board of the canvas («Mobile», 390 px): below 600 px of the view's
+   own width (`useNarrowContainer`). The week shows one day at a time, picked
+   from a strip of days; the rest stacks in 16 px gaps. Declared last and
+   scoped to `.agenda-view--phone`, so it wins over the container queries. */
+.notia-main.agenda-view.agenda-view--phone { --agenda-row: 22px; --agenda-time-col: 52px; --agenda-swatch: 44px; }
+/* The board's text sits on the line heights of its sans font; 1.15 keeps the
+   app's font at the same heights (within a pixel). */
+.agenda-view--phone .agenda-wrap { padding: 20px 16px 32px; gap: 16px; line-height: 1.15; }
+.agenda-view--phone .agenda-wrap button { line-height: inherit; }
+.agenda-view--phone .agenda-header { flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 4px; padding: 4px 4px 0; }
+.agenda-view--phone .agenda-eyebrow { font-size: 12px; }
+.agenda-view--phone .agenda-header h1 { font-size: 30px; font-weight: 700; }
+.agenda-view--phone .agenda-summary { font-size: 13px; }
+
+.agenda-view--phone .agenda-card { gap: 12px; padding: 16px; border-radius: 18px; }
+/* The title takes the free width and wraps inside it; only when not even its
+   longest word fits beside the buttons do they move to a line of their own. */
+.agenda-view--phone .agenda-card__head { gap: 8px; }
+.agenda-view--phone .agenda-card__head > :first-child { flex: 1 1 0; }
+.agenda-view--phone .agenda-card__head h2 { font-size: 20px; font-weight: 600; }
+.agenda-view--phone .agenda-card__sub { font-size: 13px; }
+.agenda-view--phone .agenda-card__meta { flex-shrink: 0; font-size: 12px; }
+.agenda-view--phone .agenda-pill { padding: 0 14px; }
+.agenda-view--phone .agenda-empty { padding: 8px 0; }
+/* The board keeps the (empty) row of cards under the message: 12 px gap + 6 px. */
+.agenda-view--phone .agenda-card--upcoming .agenda-empty { padding: 0 0 18px; }
+/* The times and dates use the display font's taller lines in the board. */
+.agenda-view--phone .agenda-bar__time,
+.agenda-view--phone .agenda-upcoming__when,
+.agenda-view--phone .agenda-holiday__when { line-height: 1.33; }
+.agenda-view--phone .agenda-bottom { gap: 16px; }
+
+/* Month: compact days, a short legend and the selected day below. */
+.agenda-view--phone .agenda-month { gap: 2px; }
+.agenda-view--phone .agenda-month__weekday { padding: 2px 0 4px; font-size: 11px; letter-spacing: 0.04em; }
+.agenda-view--phone .agenda-month__day { height: 44px; padding: 2px; }
+.agenda-phone-legend { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.agenda-phone-legend__item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--agenda-text); }
+.agenda-phone-legend__swatch { flex-shrink: 0; width: 14px; height: 14px; border-radius: 4px; background: color-mix(in srgb, var(--agenda-h) 35%, var(--agenda-panel)); }
+.agenda-phone-legend__swatch[data-holiday="nonwork"] { outline: 1px dashed var(--agenda-h); outline-offset: -1px; }
+.agenda-day-box { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--agenda-line); border-radius: 12px; background: var(--agenda-elev); }
+.agenda-day-box__title { margin: 0; font-size: 14px; font-weight: 600; }
+.agenda-day-box__empty { margin: 0; font-size: 13px; color: var(--agenda-muted); }
+.agenda-day-box__list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.agenda-day-box__item { display: flex; align-items: flex-start; gap: 8px; }
+.agenda-day-box__chip { flex-shrink: 0; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: var(--agenda-h); background: color-mix(in srgb, var(--agenda-h) var(--agenda-tint), var(--agenda-elev)); }
+.agenda-day-box__chip[data-holiday="nonwork"] { outline: 1px dashed var(--agenda-h); outline-offset: -1px; }
+.agenda-day-box__name { min-width: 0; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+
+/* Week: the strip of days picks the day of the timeline. */
+.agenda-strip { display: flex; gap: 4px; }
+.agenda-strip__day { box-sizing: border-box; flex: 1 1 0; min-width: 0; height: 60px; padding: 0; border: none; border-radius: 14px; background: transparent; color: var(--agenda-text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; }
+.agenda-strip__day[data-holiday] { background: color-mix(in srgb, var(--agenda-h) var(--agenda-tint), var(--agenda-panel)); color: var(--agenda-h); }
+.agenda-strip__day[data-today="true"] { background: color-mix(in srgb, var(--agenda-teal) var(--agenda-tint), var(--agenda-elev)); color: var(--agenda-teal); box-shadow: inset 0 0 0 1.5px var(--agenda-teal); }
+.agenda-strip__day[data-selected="true"] { background: var(--agenda-teal); color: var(--agenda-on-teal); box-shadow: none; }
+.agenda-strip__name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.agenda-strip__num { font-family: var(--agenda-font-display); font-size: 17px; font-weight: 600; line-height: 1; }
+.agenda-strip__day[data-selected="true"] .agenda-month__dot[data-visible="true"] { background: var(--agenda-on-teal); }
+
+.agenda-view--phone .agenda-bar { flex-direction: column; align-items: stretch; gap: 10px; min-height: 0; padding: 12px 14px; }
+.agenda-view--phone .agenda-bar__group { flex: none; flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 10px; }
+.agenda-view--phone .agenda-bar__group--event { gap: 8px; }
+.agenda-view--phone .agenda-hint { font-size: 13px; line-height: 1.45; }
+.agenda-view--phone .agenda-input { height: 48px; border-radius: 12px; font-size: 16px; }
+.agenda-view--phone .agenda-input--in-bar { flex: none; width: 100%; }
+.agenda-view--phone .agenda-priority { gap: 0; margin-right: -4px; }
+.agenda-view--phone .agenda-priority__label { flex-grow: 1; }
+.agenda-view--phone .agenda-swatch { margin: -8px -4px; }
+.agenda-view--phone .agenda-swatch__dot { width: 28px; height: 28px; border-radius: 14px; }
+.agenda-view--phone .agenda-bar__buttons { width: auto; margin-left: 0; gap: 8px; }
+.agenda-view--phone .agenda-bar__buttons > button { flex: 1 1 0; min-width: 0; height: 48px; padding: 0 6px; border-radius: 12px; font-size: 15px; }
+.agenda-view--phone .agenda-bar__buttons > .agenda-primary { flex-grow: 2; justify-content: center; }
+.agenda-view--phone .agenda-bar__buttons > .agenda-ghost { border: 1px solid var(--agenda-line); color: var(--agenda-text); }
+.agenda-bar__meta { display: flex; align-items: center; gap: 8px; }
+.agenda-bar__time { min-width: 0; font-family: var(--agenda-font-mono); font-size: 13px; font-variant-numeric: tabular-nums; color: var(--agenda-muted); }
+.agenda-view--phone .agenda-bar__title { font-size: 16px; }
+.agenda-view--phone .agenda-overlap { align-self: flex-start; padding: 4px 10px; line-height: 1.4; }
+
+.agenda-view--phone .agenda-grid { --agenda-time-col: 52px; --agenda-free: 32px; height: 522px; }
+.agenda-view--phone .agenda-grid__time { padding-right: 10px; transform: translateY(-6px); }
+.agenda-view--phone .agenda-event__title { font-size: 12px; line-height: 15px; }
+.agenda-view--phone .agenda-event__time { font-size: 11px; line-height: 14px; }
+
+/* Quick notes, upcoming events and holidays. */
+.agenda-view--phone .agenda-note-form .agenda-input { flex: 1 1 0; }
+.agenda-primary--square { flex-shrink: 0; width: 48px; height: 48px; padding: 0; border-radius: 12px; justify-content: center; }
+.agenda-view--phone .agenda-notes { gap: 0; }
+.agenda-view--phone .agenda-note { min-height: 48px; }
+.agenda-view--phone .agenda-note input[type="checkbox"] { width: 20px; height: 20px; }
+.agenda-view--phone .agenda-upcoming { flex-wrap: nowrap; gap: 8px; margin: 0 -16px; padding: 0 16px 6px; overflow-x: auto; overscroll-behavior-x: contain; scroll-padding-inline: 16px; }
+.agenda-view--phone .agenda-upcoming li { flex-shrink: 0; }
+.agenda-view--phone .agenda-upcoming__item { width: 200px; min-height: 0; padding: 12px 14px; border-radius: 16px; flex-direction: column; align-items: flex-start; flex-wrap: nowrap; gap: 6px; }
+.agenda-view--phone .agenda-upcoming__title { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agenda-view--phone .agenda-upcoming__when { font-size: 12px; }
+.agenda-view--phone .agenda-holiday-after { padding-top: 0; }
+.agenda-view--phone .agenda-holiday-after__title { font-size: 11px; }

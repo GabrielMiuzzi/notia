@@ -34,6 +34,20 @@ export const GRAPH_FORCE_LIMITS: Record<keyof GraphForces, [number, number]> = {
   cohesion: [0, 30],
 }
 
+/** The forces as the view and the phone sheet list them, with how each value reads. */
+export const GRAPH_FORCE_ROWS: Array<{ key: keyof GraphForces; name: string; format: (value: number) => string }> = [
+  { key: 'repulsion', name: 'Repulsión', format: (value) => `−${value}` },
+  { key: 'linkDistance', name: 'Distancia de enlace', format: (value) => String(value) },
+  { key: 'cohesion', name: 'Cohesión por carpeta', format: (value) => (value / 100).toFixed(2) },
+]
+
+/** Whether the person changed the view from its defaults (the phone header marks it). */
+export function hasCustomGraphView(preferences: GraphPreferences): boolean {
+  return preferences.labels !== 'auto'
+    || !preferences.showOrphans
+    || (Object.keys(DEFAULT_GRAPH_FORCES) as Array<keyof GraphForces>).some((key) => preferences.forces[key] !== DEFAULT_GRAPH_FORCES[key])
+}
+
 const DEFAULT_PREFERENCES: GraphPreferences = {
   labels: 'auto',
   showOrphans: true,

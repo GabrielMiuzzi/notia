@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import type { NotiaLibrary } from '../../../types/notia'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import { AGENDA_TODAY_REQUEST, useAgendaView } from '../hooks/useAgendaView'
 import type { AgendaEvent, AgendaMutation, AgendaNote, AgendaPriority, AgendaSlotInput } from '../types/agendaTypes'
 import { AgendaActionBar } from './AgendaActionBar'
@@ -9,9 +10,13 @@ import { AgendaMonthCalendar } from './AgendaMonthCalendar'
 import { AgendaNotesCard } from './AgendaNotesCard'
 import { AgendaUpcomingCard } from './AgendaUpcomingCard'
 import { AgendaWeekGrid, type SlotMode } from './AgendaWeekGrid'
+import { AgendaDayStrip } from './phone/AgendaDayStrip'
 import '../styles/agenda.css'
 
 const NO_SLOTS: ReadonlySet<string> = new Set()
+
+/** Width of the view (not the window) below which the phone board of the canvas applies. */
+const AGENDA_PHONE_MAX_WIDTH = 600
 
 function slotInput(key: string): AgendaSlotInput {
   const [date, minute] = key.split('|')
@@ -20,6 +25,9 @@ function slotInput(key: string): AgendaSlotInput {
 
 export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
   const { view, status, loadError, isMutating, navigate, reload, mutate } = useAgendaView(library)
+  const [root, setRoot] = useState<HTMLElement | null>(null)
+  const phone = useNarrowContainer(root, AGENDA_PHONE_MAX_WIDTH)
+  const mainClass = `notia-main agenda-view${phone ? ' agenda-view--phone' : ''}`
   const [selectedSlots, setSelectedSlots] = useState<ReadonlySet<string>>(NO_SLOTS)
   const [activeEventId, setActiveEventId] = useState<string | null>(null)
   const [revealEventId, setRevealEventId] = useState<string | null>(null)
@@ -62,10 +70,10 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
 
   if (!view) {
     if (status === 'loading') {
-      return <main className="notia-main agenda-view" role="status" aria-live="polite"><p className="agenda-status">Cargando tu agenda…</p></main>
+      return <main ref={setRoot} className={mainClass} role="status" aria-live="polite"><p className="agenda-status">Cargando tu agenda…</p></main>
     }
     return (
-      <main className="notia-main agenda-view">
+      <main ref={setRoot} className={mainClass}>
         <div className="agenda-card agenda-load-error" role="alert">
           <p>{loadError ?? 'No se pudo cargar la agenda.'}</p>
           <button type="button" className="agenda-primary" onClick={() => void reload()}><RotateCcw size={16} aria-hidden="true" /> Reintentar</button>
@@ -119,7 +127,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
   }
 
   return (
-    <main className="notia-main agenda-view">
+    <main ref={setRoot} className={mainClass}>
       <div className="agenda-wrap">
         <header className="agenda-header">
           <div>
@@ -139,6 +147,8 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
 
         <AgendaMonthCalendar
           month={view.month}
+          phone={phone}
+          selectedDay={view.selectedDay}
           onPickDate={pickDate}
           onShowMonth={(month) => navigate({ selectedDate: view.selectedDate, month })}
           onToday={() => navigate(AGENDA_TODAY_REQUEST)}
@@ -159,7 +169,9 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
               </button>
             </div>
           </div>
+          {phone ? <AgendaDayStrip days={view.week.days} onPickDate={pickDate} /> : null}
           <AgendaActionBar
+            phone={phone}
             selectionCount={selectedSlots.size}
             slotMinutes={view.slotMinutes}
             draftTitle={draftTitle}
@@ -177,7 +189,9 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
             onCloseActive={() => { setActiveEventId(null); setWeekError(null) }}
           />
           <AgendaWeekGrid
+            key={phone ? 'day' : 'week'}
             week={view.week}
+            dayOnly={phone}
             timeSlots={view.timeSlots}
             slotMinutes={view.slotMinutes}
             selectedSlots={selectedSlots}
@@ -191,6 +205,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
 
         <div className="agenda-bottom">
           <AgendaNotesCard
+            phone={phone}
             notes={view.notes.items}
             pendingLabel={view.notes.pendingLabel}
             disabled={isMutating}
@@ -199,7 +214,7 @@ export function AgendaDashboardView({ library }: { library: NotiaLibrary }) {
             onToggle={toggleNote}
             onDelete={deleteNote}
           />
-          <AgendaUpcomingCard events={view.upcoming.events} label={view.upcoming.label} onPick={pickUpcoming} />
+          <AgendaUpcomingCard phone={phone} events={view.upcoming.events} label={view.upcoming.label} onPick={pickUpcoming} />
           <AgendaHolidaysCard holidays={view.holidays} onPickDate={pickDate} />
         </div>
       </div>

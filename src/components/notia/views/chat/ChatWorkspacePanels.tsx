@@ -16,12 +16,14 @@ import {
 } from 'lucide-react'
 import type { ChatFileContextMode } from '../../../../services/chat/chatAttachmentRuntime'
 import type { ChatStarter } from './ChatWorkspaceViewTypes'
+import { agentMemoryHint, libraryScopeHint, libraryScopeLabel } from './chatContextText'
 
 const STARTER_ICONS = [AlignLeft, Waypoints, ListChecks]
 
-function StarterIcon({ index, size }: { index: number; size: number }) {
+/** Icon of a conversation starter, by its position. */
+export function StarterIcon({ index, size, strokeWidth }: { index: number; size: number; strokeWidth?: number }) {
   const Icon = STARTER_ICONS[index % STARTER_ICONS.length]
-  return <Icon size={size} aria-hidden="true" />
+  return <Icon size={size} strokeWidth={strokeWidth} aria-hidden="true" />
 }
 
 export function ChatTopBar({
@@ -209,9 +211,7 @@ export function ChatContextPanel({
           <div className="notia-chat-scope-chips">
             <span className={`notia-chat-scope-chip${libraryRagEnabled ? ' notia-chat-scope-chip--active' : ''}`}>
               {libraryRagEnabled ? <Check size={12} aria-hidden="true" /> : null}
-              {libraryRagEnabled
-                ? `Búsqueda en ${libraryName ? `la librería ${libraryName}` : 'toda la librería'}`
-                : 'Sin búsqueda en la librería'}
+              {libraryScopeLabel(libraryRagEnabled, libraryName)}
             </span>
           </div>
           {contextFolders.length > 0 || contextFiles.length > 0 ? (
@@ -247,18 +247,12 @@ export function ChatContextPanel({
                 ))}
               </ul>
               <span className="notia-chat-context-hint">
-                {contextMode === 'index'
-                  ? libraryRagEnabled
-                    ? 'Referencia: la IA recibe nombres y rutas y lee los archivos si los necesita.'
-                    : 'Referencia sin búsqueda: la IA solo recibe nombres y rutas, no el contenido.'
-                  : 'Directo: se envía el contenido de los archivos, hasta 30.000 caracteres.'}
+                {libraryScopeHint(libraryRagEnabled, true, contextMode)}
               </span>
             </>
           ) : (
             <span className="notia-chat-context-hint">
-              {libraryRagEnabled
-                ? 'La IA busca en toda la librería. Podés sumar archivos o carpetas como contexto fijo.'
-                : 'La IA no tiene acceso a la librería. Sumá archivos o carpetas para darle contexto.'}
+              {libraryScopeHint(libraryRagEnabled, false, contextMode)}
             </span>
           )}
           <button
@@ -318,11 +312,7 @@ export function ChatContextPanel({
             </span>
           </button>
           <span id="notia-chat-memory-hint" className="notia-chat-context-hint">
-            {isAgentMemoryChoiceLocked
-              ? `Este chat ${agentMemoryEnabled ? 'usa' : 'no usa'} memory.md. Se elige al crear el chat.`
-              : agentMemoryEnabled
-                ? 'El chat nuevo usa memory.md y puede guardar reglas y memorias.'
-                : 'El chat nuevo no lee memory.md ni guarda reglas o memorias. Las reglas de rules.md se siguen aplicando.'}
+            {agentMemoryHint(isAgentMemoryChoiceLocked, agentMemoryEnabled)}
           </span>
           <button
             type="button"

@@ -42,10 +42,15 @@ export interface AgendaMonth {
 export interface AgendaWeekDay {
   date: string
   shortName: string
+  /** «Lu»: la tira de días del diseño de celular. */
+  initials: string
   day: number
   longLabel: string
   isToday: boolean
   isSelected: boolean
+  hasEvents: boolean
+  holidayKind: AgendaHolidayKind | null
+  ariaLabel: string
 }
 
 export interface AgendaEvent {
@@ -92,6 +97,18 @@ export interface AgendaHolidays {
   emptyLabel: string
 }
 
+export interface AgendaDayHoliday {
+  name: string
+  kind: AgendaHolidayKind
+  kindLabel: string
+}
+
+/** El día elegido con todos sus feriados, el más importante primero. */
+export interface AgendaSelectedDay {
+  label: string
+  holidays: AgendaDayHoliday[]
+}
+
 export interface AgendaTimeSlot {
   minute: number
   label: string
@@ -123,6 +140,7 @@ export interface AgendaView {
   upcoming: { events: AgendaEvent[]; total: number; label: string }
   notes: { items: AgendaNote[]; pending: number; pendingLabel: string }
   holidays: AgendaHolidays
+  selectedDay: AgendaSelectedDay
 }
 
 export interface AgendaSlotInput {

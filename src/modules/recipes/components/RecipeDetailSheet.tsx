@@ -15,7 +15,7 @@ interface RecipeDetailSheetProps {
   onDelete: () => void
 }
 
-function NutrientList({ rows }: { rows: NutrientRow[] }) {
+export function NutrientList({ rows }: { rows: NutrientRow[] }) {
   return (
     <div className="rcp-nutrients">
       {rows.map((row) => (

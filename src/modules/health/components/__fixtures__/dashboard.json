@@ -431,6 +431,56 @@
       }
     ]
   },
+  "todayCalories": {
+    "totalLabel": "840",
+    "targetLabel": "de 1.886 kcal",
+    "progress": 44.53870625662778,
+    "over": false,
+    "remainingLabel": "Quedan 1.046 kcal",
+    "macros": [
+      {
+        "key": "proteinaG",
+        "label": "Proteínas",
+        "valueLabel": "40",
+        "targetLabel": "/ 137 g",
+        "percentLabel": "29 %",
+        "progress": 29.1970802919708,
+        "status": "Faltan 97 g"
+      },
+      {
+        "key": "carbosG",
+        "label": "Carbohidratos",
+        "valueLabel": "60",
+        "targetLabel": "/ 206 g",
+        "percentLabel": "29 %",
+        "progress": 29.126213592233007,
+        "status": "Faltan 146 g"
+      },
+      {
+        "key": "grasasG",
+        "label": "Grasas",
+        "valueLabel": "20",
+        "targetLabel": "/ 57 g",
+        "percentLabel": "35 %",
+        "progress": 35.08771929824561,
+        "status": "Faltan 37 g"
+      },
+      {
+        "key": "fibraG",
+        "label": "Fibra",
+        "valueLabel": "8",
+        "targetLabel": "/ 26 g",
+        "percentLabel": "31 %",
+        "progress": 30.76923076923077,
+        "status": "Faltan 18 g"
+      }
+    ]
+  },
+  "weightTrend": {
+    "changeLabel": null,
+    "goalLabel": "Objetivo 76 kg, faltan 6,4",
+    "line": null
+  },
   "water": {
     "ml": 1250,
     "ratio": 0.4098360655737705,

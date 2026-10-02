@@ -46,7 +46,7 @@
 - Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
 - Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.
 - Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
-- Dictado y síntesis de voz offline, con reconocimiento Parakeet TDT.
+- Dictado y síntesis de voz offline, con reconocimiento Whisper large-v3-turbo y texto en vivo por LocalAgreement.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
 - Cuentas de Gmail asociadas por biblioteca (hasta 10, cada una laboral, personal o estudiantil), con las credenciales del propio proyecto de Google Cloud (escritas o importadas del JSON, y probadas contra Google), conectada con OAuth en el navegador (lectura, envío, borrado y movimiento de correos) y marcada como laboral, personal o estudiantil.
 - Agente sin límite de pasos: trabaja hasta terminar (con cancelación por botón o mensaje), resume los resultados viejos para no perder el pedido y responde si solo repite llamadas.
@@ -96,3 +96,4 @@
 - Soporte multiplataforma para Windows, macOS, Linux y Android.
 - Roles y usuarios por biblioteca persistidos en SQLite, con roles iniciales, alta, cambio de nombre/rol, contraseñas, acciones compactas por iconos y protección del usuario Owner.
 - Vinculación privada de Telegram con usuarios de la biblioteca y autenticación de Task Manager publicado mediante usuario y contraseña de biblioteca, sin contraseña adicional de tablero ni aprobación de dispositivos.
+- Versión celular según los lienzos de diseño en Inicio, Agenda, Meeting, Chat IA, Graph View, ColdPass, Recetas y Salud, cuando la vista mide menos de 600 a 700 px (también en una tableta angosta o con el Explorador abierto).

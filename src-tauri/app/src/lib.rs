@@ -114,11 +114,12 @@ mod services {
     pub mod coldpass_secure_link;
     pub mod finance_extraction;
     pub mod finance_external;
+    pub mod local_agreement;
     pub mod media_decoder;
     pub mod qwen3_tts_service;
     pub mod sherpa_diarization;
-    pub mod sherpa_offline;
     pub mod sherpa_runtime;
+    pub mod sherpa_vad;
     pub mod spanish_transcript;
     pub mod speech_audio;
     #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -130,6 +131,8 @@ mod services {
     pub mod speech_worker;
     pub mod telegram_audio;
     pub mod telegram_service;
+    pub mod whisper_recognizer;
+    pub mod whisper_runtime;
 }
 mod state {
     pub mod bluetooth_state;

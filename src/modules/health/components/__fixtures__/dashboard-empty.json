@@ -68,6 +68,12 @@
     "plan": null
   },
   "food": null,
+  "todayCalories": null,
+  "weightTrend": {
+    "changeLabel": null,
+    "goalLabel": null,
+    "line": null
+  },
   "water": null,
   "composition": null,
   "profileForm": {

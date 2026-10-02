@@ -18,7 +18,7 @@ function fold(text: string): string {
 }
 
 /** The label with the part that matches the search marked, when the match is in the title. */
-function HighlightedLabel({ label, query }: { label: string; query: string }) {
+export function HighlightedLabel({ label, query }: { label: string; query: string }) {
   const text = label.normalize('NFC')
   const index = fold(text).indexOf(fold(query.trim()))
   if (index < 0 || !query.trim()) return <>{text}</>

@@ -1,0 +1,822 @@
+/*
+ * Graph View in the space of a phone (the view narrower than 600px): the
+ * phone boards of the canvas. Header with search and view buttons, the note
+ * as a bottom sheet, the search over the graph and the view sheet. Colors are
+ * the theme tokens; every rule hangs from `.notia-gv--phone` so it outranks
+ * the view's base button rules.
+ */
+
+.notia-gv--phone {
+  font-size: 14px;
+}
+
+.notia-gv--phone .notia-gv-canvas {
+  background-size: 20px 20px;
+}
+
+.notia-gv--phone .notia-gv-phone-dot {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.notia-gv--phone .notia-gv-phone-section {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  padding: 8px 10px 6px;
+  font-size: 11.5px;
+  line-height: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-section-count {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.notia-gv--phone .notia-gv-phone-empty {
+  margin: 0;
+  padding: 16px 10px 18px;
+  font-size: 14px;
+  color: var(--color-muted-text);
+}
+
+/* ---------- Header ---------- */
+
+.notia-gv--phone .notia-gv-phone-header {
+  position: relative;
+  z-index: 3;
+  height: 56px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 14px;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-app-bg);
+}
+
+.notia-gv--phone .notia-gv-phone-header--search {
+  padding: 0 12px 0 4px;
+}
+
+.notia-gv--phone .notia-gv-phone-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 2px;
+}
+
+.notia-gv--phone .notia-gv-phone-heading h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+.notia-gv--phone .notia-gv-phone-stats {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-gv--phone .notia-gv-phone-icon {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-heading-text);
+}
+
+.notia-gv--phone .notia-gv-phone-icon:active {
+  background: var(--color-row-hover);
+}
+
+.notia-gv--phone .notia-gv-phone-icon--muted {
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-icon[aria-pressed='true'] {
+  color: var(--color-accent-text);
+}
+
+.notia-gv--phone .notia-gv-phone-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent-text);
+  box-shadow: 0 0 0 2px var(--color-app-bg);
+}
+
+.notia-gv--phone .notia-gv-phone-search-field {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--color-accent-text);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+}
+
+.notia-gv--phone .notia-gv-phone-search-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  appearance: none;
+  background: transparent;
+  color: var(--color-heading-text);
+  font: inherit;
+  font-size: 15px;
+}
+
+.notia-gv--phone .notia-gv-phone-search-field input:focus-visible {
+  outline: none;
+}
+
+.notia-gv--phone .notia-gv-phone-search-field input::placeholder {
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.notia-gv--phone .notia-gv-phone-clear {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted-text);
+}
+
+/* Small buttons keep a 44px touch area. */
+.notia-gv--phone .notia-gv-phone-clear::after,
+.notia-gv--phone .notia-gv-phone-local-exit::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+}
+
+/* ---------- Search results ---------- */
+
+.notia-gv--phone .notia-gv-phone-results {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  max-height: min(420px, calc(100% - 34px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-soft) transparent;
+  padding: 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 14px;
+  background: var(--color-sidebar-bg);
+  box-shadow: 0 16px 40px var(--color-modal-shadow);
+}
+
+.notia-gv--phone .notia-gv-phone-result {
+  width: 100%;
+  min-height: 56px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-heading-text);
+  text-align: left;
+}
+
+.notia-gv--phone .notia-gv-phone-result:active,
+.notia-gv--phone .notia-gv-phone-connection:active {
+  background: var(--color-row-hover);
+}
+
+.notia-gv--phone .notia-gv-phone-result-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notia-gv--phone .notia-gv-phone-result-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14.5px;
+  line-height: 17px;
+}
+
+.notia-gv--phone .notia-gv-phone-result-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 14px;
+  color: var(--color-muted-text);
+}
+
+/* ---------- Local chip and framing button ---------- */
+
+.notia-gv--phone .notia-gv-phone-local {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: var(--color-card-bg);
+  box-shadow: 0 8px 24px var(--color-menu-shadow);
+  white-space: nowrap;
+}
+
+.notia-gv--phone .notia-gv-phone-local-icon {
+  display: flex;
+  color: var(--color-accent-text);
+}
+
+.notia-gv--phone .notia-gv-phone-local-text {
+  padding-left: 4px;
+  font-size: 13px;
+}
+
+.notia-gv--phone .notia-gv-phone-local-exit {
+  position: relative;
+  height: 32px;
+  box-sizing: border-box;
+  margin-left: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+  color: var(--color-heading-text);
+  font-size: 13px;
+}
+
+.notia-gv--phone .notia-gv-phone-fit {
+  position: absolute;
+  z-index: 3;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  box-shadow: 0 8px 24px var(--color-menu-shadow);
+  transition: bottom 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------- Note sheet ---------- */
+
+.notia-gv--phone .notia-gv-phone-sheet {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  box-sizing: content-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--color-border-soft);
+  border-radius: 20px 20px 0 0;
+  background: var(--color-sidebar-bg);
+  box-shadow: 0 -12px 32px var(--color-menu-shadow);
+  transition: height 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The head is dragged up and down to expand or shrink the sheet. */
+.notia-gv--phone .notia-gv-phone-sheet-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  touch-action: none;
+}
+
+.notia-gv--phone .notia-gv-phone-handle {
+  width: 100%;
+  height: 24px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.notia-gv--phone .notia-gv-phone-handle > span,
+.notia-gv--phone .notia-gv-phone-grip > span {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-soft);
+}
+
+.notia-gv--phone .notia-gv-phone-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.notia-gv--phone .notia-gv-phone-sheet-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notia-gv--phone .notia-gv-phone-tag {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: var(--color-card-bg);
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-heading-text) 60%, var(--color-muted-text));
+  white-space: nowrap;
+}
+
+.notia-gv--phone .notia-gv-phone-tag-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.notia-gv--phone .notia-gv-phone-close {
+  margin-right: -10px;
+}
+
+.notia-gv--phone .notia-gv-phone-sheet-title {
+  display: -webkit-box;
+  height: 48px;
+  margin: 0;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.notia-gv--phone .notia-gv-phone-sheet-meta {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-gv--phone .notia-gv-phone-sheet-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.notia-gv--phone .notia-gv-phone-button {
+  height: 44px;
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.notia-gv--phone .notia-gv-phone-button svg {
+  flex-shrink: 0;
+}
+
+.notia-gv--phone .notia-gv-phone-button[aria-pressed='true'] {
+  border-color: var(--color-accent-text);
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-gv--phone .notia-gv-phone-button--primary {
+  border: 0;
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+
+.notia-gv--phone .notia-gv-phone-button:active {
+  opacity: 0.85;
+}
+
+.notia-gv--phone .notia-gv-phone-connections {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-soft) transparent;
+  padding: 12px 6px 16px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.notia-gv--phone .notia-gv-phone-connections .notia-gv-phone-section {
+  padding: 0 10px 6px;
+}
+
+.notia-gv--phone .notia-gv-phone-connection {
+  width: 100%;
+  min-height: 48px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-heading-text);
+  text-align: left;
+}
+
+.notia-gv--phone .notia-gv-phone-connection-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.notia-gv--phone .notia-gv-phone-connection-degree {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-gv--phone .notia-gv-phone-connection svg {
+  flex-shrink: 0;
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-empty--connections {
+  padding: 6px 10px;
+}
+
+/* ---------- View and filters sheet ---------- */
+
+.notia-gv--phone .notia-gv-phone-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  background: var(--color-modal-backdrop);
+  cursor: default;
+}
+
+.notia-gv--phone .notia-gv-phone-view {
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: min(720px, calc(100% - 24px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-soft) transparent;
+  padding: 0 16px 24px;
+  border-top: 1px solid var(--color-border-soft);
+  border-radius: 20px 20px 0 0;
+  background: var(--color-sidebar-bg);
+  box-shadow: 0 -12px 32px var(--color-modal-shadow);
+  outline: none;
+}
+
+/* As in the canvas, the grip gives up its room before the content when the sheet overflows. */
+.notia-gv--phone .notia-gv-phone-grip {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notia-gv--phone .notia-gv-phone-view-head {
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notia-gv--phone .notia-gv-phone-view-head h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.notia-gv--phone .notia-gv-phone-done {
+  height: 44px;
+  box-sizing: border-box;
+  padding: 0 4px 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.notia-gv--phone .notia-gv-phone-label,
+.notia-gv--phone .notia-gv-phone-label-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-label {
+  padding: 22px 0 6px;
+}
+
+.notia-gv--phone .notia-gv-phone-label--first {
+  padding: 14px 0 10px;
+}
+
+.notia-gv--phone .notia-gv-phone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notia-gv--phone .notia-gv-phone-chip {
+  height: 40px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+  font-size: 14px;
+}
+
+.notia-gv--phone .notia-gv-phone-chip[aria-pressed='false'] {
+  opacity: 0.55;
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-chip-dot {
+  width: 9px;
+  height: 9px;
+  box-sizing: border-box;
+  border: 1.5px solid;
+  border-radius: 50%;
+}
+
+.notia-gv--phone .notia-gv-phone-chip-count {
+  font-size: 12px;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-gv--phone .notia-gv-phone-names {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-soft);
+  font-size: 15px;
+}
+
+.notia-gv--phone .notia-gv-phone-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-app-bg);
+}
+
+.notia-gv--phone .notia-gv-phone-segmented button {
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: 13.5px;
+}
+
+.notia-gv--phone .notia-gv-phone-segmented button[aria-pressed='true'] {
+  background: var(--color-border-soft);
+  color: var(--color-heading-text);
+}
+
+.notia-gv--phone .notia-gv-phone-switch-row {
+  width: 100%;
+  min-height: 52px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: transparent;
+  color: var(--color-heading-text);
+  font-size: 15px;
+  text-align: left;
+}
+
+.notia-gv--phone .notia-gv-phone-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notia-gv--phone .notia-gv-phone-switch-hint {
+  font-size: 12px;
+  color: var(--color-muted-text);
+}
+
+.notia-gv--phone .notia-gv-phone-switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+}
+
+.notia-gv--phone .notia-gv-phone-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--color-heading-text);
+  transition: left 160ms ease;
+}
+
+.notia-theme-light .notia-gv--phone .notia-gv-phone-switch > span {
+  background: var(--color-card-bg);
+  box-shadow: 0 1px 2px var(--color-menu-shadow);
+}
+
+.notia-gv--phone .notia-gv-phone-switch-row[aria-checked='true'] .notia-gv-phone-switch {
+  background: var(--color-accent-text);
+}
+
+.notia-gv--phone .notia-gv-phone-switch-row[aria-checked='true'] .notia-gv-phone-switch > span {
+  left: 21px;
+}
+
+.notia-gv--phone .notia-gv-phone-forces-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 0 6px;
+}
+
+.notia-gv--phone .notia-gv-phone-reset {
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 2px 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: 13px;
+}
+
+.notia-gv--phone .notia-gv-phone-forces {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notia-gv--phone .notia-gv-phone-force {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notia-gv--phone .notia-gv-phone-force-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  line-height: 16px;
+}
+
+.notia-gv--phone .notia-gv-phone-force-value {
+  font-size: 13px;
+  color: var(--color-muted-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.notia-gv--phone .notia-gv-phone-force input {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-gv--phone .notia-gv-phone-hint {
+  margin: 0;
+  padding-top: 14px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--color-muted-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notia-gv--phone .notia-gv-phone-sheet,
+  .notia-gv--phone .notia-gv-phone-fit,
+  .notia-gv--phone .notia-gv-phone-switch > span {
+    transition: none;
+  }
+}

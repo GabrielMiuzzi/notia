@@ -5,20 +5,37 @@ import { selectTheme } from '../../../features/preferences/preferencesSelectors'
 import type { GraphSearchResult } from '../../../hooks/useLibraryGraphData'
 import type { LibraryGraphModel, LibraryGraphNode } from '../../../types/graph/libraryGraph'
 import { notiaTimer } from '../../../services/runtime/notiaLogger'
-import { drawFolderHalos, drawNode, nodeRadius, readGraphPalette, withAlpha, type GraphPalette, type HaloGroup } from './graph/graphCanvas'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
+import {
+  DESKTOP_GRAPH_PAINT,
+  PHONE_GRAPH_PAINT,
+  drawFolderHalos,
+  drawNode,
+  readGraphPalette,
+  withAlpha,
+  type GraphPalette,
+  type HaloGroup,
+} from './graph/graphCanvas'
 import { GraphTopBar, type GraphContextChip } from './graph/GraphTopBar'
 import { GraphSearchPanel } from './graph/GraphSearchPanel'
 import { GraphInspector, type GraphContextLook } from './graph/GraphInspector'
 import { GraphDock } from './graph/GraphDock'
 import { GraphMinimap, type MinimapNode, type MinimapViewport } from './graph/GraphMinimap'
-import { useGraphPreferences } from './graph/useGraphPreferences'
+import { hasCustomGraphView, useGraphPreferences } from './graph/useGraphPreferences'
+import { GraphPhoneHeader, GraphPhoneSearchHeader } from './graph/phone/GraphPhoneHeader'
+import { GraphPhoneSearchResults } from './graph/phone/GraphPhoneSearchResults'
+import { GraphPhoneNoteSheet } from './graph/phone/GraphPhoneNoteSheet'
+import { GraphPhoneViewSheet } from './graph/phone/GraphPhoneViewSheet'
+import { GraphPhoneFitButton, GraphPhoneLocalChip } from './graph/phone/GraphPhoneOverlays'
 import './graph/graphView.css'
+import './graph/phone/graphPhone.css'
 
 /*
  * Graph View: the notes of the library and their links, drawn with
  * react-force-graph-2d. The backend builds the model (links, degrees,
  * contexts, folders, neighbors and the summary) and searches it; this view
- * lays it out, draws it and lets the person explore it.
+ * lays it out, draws it and lets the person explore it. In the space of a
+ * phone it follows the phone boards of the canvas.
  */
 
 interface ForceNode extends LibraryGraphNode {
@@ -49,8 +66,32 @@ const ALL_LINKED_NAMES_ZOOM = 1.4
 const HUB_DEGREE = 4
 /** Room around the notes when the graph is framed, in screen pixels. */
 const FIT_PADDING = 64
+const PHONE_FIT_PADDING = 32
 /** Framing never zooms in past this. */
 const MAX_FIT_ZOOM = 2
+/** Duration of the camera move to a note. */
+const CENTER_MS = 600
+
+/** Width of the view below which the phone boards of the canvas apply. */
+const PHONE_MAX_WIDTH = 600
+/** Heights of the note sheet on a phone, peeking and expanded. */
+const PHONE_SHEET_PEEK = 212
+const PHONE_SHEET_FULL = 560
+/** The expanded sheet always leaves this much of the graph in sight. */
+const PHONE_SHEET_GRAPH_ROOM = 120
+/**
+ * Where the folders sit: an ellipse `aspect` times taller than wide, `spread`
+ * times the desktop circle. On a phone it is tall and tight, as the screen.
+ */
+interface FolderArrangement {
+  aspect: number
+  spread: number
+}
+const DESKTOP_FOLDERS: FolderArrangement = { aspect: 1, spread: 1 }
+const PHONE_FOLDERS: FolderArrangement = { aspect: 3, spread: 0.6 }
+
+/** What the phone shows over the graph: nothing, the search or the view sheet. */
+type PhonePanel = 'graph' | 'search' | 'view'
 
 function pathOf(value: string | ForceNode): string {
   return typeof value === 'string' ? value : value.path
@@ -67,9 +108,10 @@ function contextName(tag: string | null | undefined): string {
 /**
  * Pulls the notes of each folder toward their folder's own place: the
  * folders sit around a circle (notes at the library root, in the middle),
- * so each group, and its halo, keeps an area of its own.
+ * so each group, and its halo, keeps an area of its own. On a phone the
+ * circle is stretched into a tall ellipse, as the screen is.
  */
-function folderCohesion(strength: number) {
+function folderCohesion(strength: number, { aspect, spread }: FolderArrangement = DESKTOP_FOLDERS) {
   let nodes: ForceNode[] = []
   let anchors = new Map<string, { x: number; y: number }>()
   const force = (alpha: number) => {
@@ -87,10 +129,11 @@ function folderCohesion(strength: number) {
       if (node.folder) sizes.set(node.folder, (sizes.get(node.folder) ?? 0) + 1)
     }
     const folders = [...sizes.keys()].sort((left, right) => (sizes.get(right) ?? 0) - (sizes.get(left) ?? 0))
-    const radius = folders.length > 1 ? 60 + 28 * Math.sqrt(next.length) : 0
+    const radius = folders.length > 1 ? (60 + 28 * Math.sqrt(next.length)) * spread : 0
+    const stretch = Math.sqrt(aspect)
     anchors = new Map(folders.map((folder, index) => {
       const angle = -Math.PI / 2 + (index * 2 * Math.PI) / folders.length
-      return [folder, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }]
+      return [folder, { x: (Math.cos(angle) * radius) / stretch, y: Math.sin(angle) * radius * stretch }]
     }))
     anchors.set('', { x: 0, y: 0 })
   }
@@ -139,14 +182,26 @@ function GraphViewComponent({
   const [frameVersion, setFrameVersion] = useState(0)
   const [viewport, setViewport] = useState<MinimapViewport | null>(null)
   const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
+  const [rootElement, setRootElement] = useState<HTMLDivElement | null>(null)
+  const [phonePanel, setPhonePanel] = useState<PhonePanel>('graph')
+  const [isSheetExpanded, setIsSheetExpanded] = useState(false)
 
   const rootRef = useRef<HTMLDivElement | null>(null)
   const graphHostRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<GraphRef | undefined>(undefined)
   const lastClickRef = useRef<{ path: string; at: number } | null>(null)
+  const pendingCenterRef = useRef<number | null>(null)
   const frameRequestRef = useRef<number | null>(null)
   const framedModelRef = useRef<unknown>(null)
+  const framedArrangementRef = useRef<FolderArrangement | null>(null)
   const pendingFitRef = useRef(false)
+
+  const attachRoot = useCallback((element: HTMLDivElement | null) => {
+    rootRef.current = element
+    setRootElement(element)
+  }, [])
+  const isPhone = useNarrowContainer(rootElement, PHONE_MAX_WIDTH)
+  const paint = isPhone ? PHONE_GRAPH_PAINT : DESKTOP_GRAPH_PAINT
 
   useEffect(() => {
     setPalette(readGraphPalette(rootRef.current))
@@ -167,6 +222,7 @@ function GraphViewComponent({
 
   useEffect(() => () => {
     if (frameRequestRef.current !== null) cancelAnimationFrame(frameRequestRef.current)
+    if (pendingCenterRef.current !== null) window.clearTimeout(pendingCenterRef.current)
   }, [])
 
   // The minimap follows the layout and the camera, at most once per frame.
@@ -255,13 +311,46 @@ function GraphViewComponent({
     hidden: hiddenContexts.has(context.tag ?? NO_CONTEXT_KEY),
   })), [graphModel.summary.contexts, hiddenContexts, palette.muted])
 
-  const focusNode = useCallback((path: string) => {
-    setSelectedPath(path)
+  // On a phone the selected note is a bottom sheet over the graph.
+  const phoneSheetFullHeight = Math.max(PHONE_SHEET_PEEK, Math.min(PHONE_SHEET_FULL, graphSize.height - PHONE_SHEET_GRAPH_ROOM))
+  const showsPhoneSheet = isPhone && phonePanel === 'graph' && selected !== null
+  const phoneSheetHeight = showsPhoneSheet ? (isSheetExpanded ? phoneSheetFullHeight : PHONE_SHEET_PEEK) : 0
+
+  /** Centers a note in the part of the canvas a bottom sheet of `coveredBottom` pixels leaves free. */
+  const centerNode = useCallback((path: string, coveredBottom: number) => {
+    const graph = graphRef.current
     const node = nodeByPath.get(path)
-    if (node && typeof node.x === 'number' && typeof node.y === 'number') {
-      graphRef.current?.centerAt(node.x, node.y, 600)
-    }
+    if (!graph || !node || typeof node.x !== 'number' || typeof node.y !== 'number') return
+    const scale = graph.zoom() || 1
+    graph.centerAt(node.x, node.y + coveredBottom / 2 / scale, CENTER_MS)
   }, [nodeByPath])
+
+  const cancelPendingCenter = useCallback(() => {
+    if (pendingCenterRef.current === null) return
+    window.clearTimeout(pendingCenterRef.current)
+    pendingCenterRef.current = null
+  }, [])
+
+  /** Selects a note and centers it, now or after `centerDelay` ms. */
+  const focusNode = useCallback((path: string, centerDelay = 0) => {
+    setSelectedPath(path)
+    if (isPhone) {
+      // As in the phone boards: picking a note goes back to the graph with its sheet peeking.
+      setPhonePanel('graph')
+      setQuery('')
+      setIsSheetExpanded(false)
+    }
+    cancelPendingCenter()
+    const coveredBottom = isPhone ? PHONE_SHEET_PEEK : 0
+    if (centerDelay <= 0) {
+      centerNode(path, coveredBottom)
+      return
+    }
+    pendingCenterRef.current = window.setTimeout(() => {
+      pendingCenterRef.current = null
+      centerNode(path, coveredBottom)
+    }, centerDelay)
+  }, [cancelPendingCenter, centerNode, isPhone])
 
   const toggleChatPath = useCallback((path: string) => {
     if (!onChatSelectedPathsChange) return
@@ -278,18 +367,22 @@ function GraphViewComponent({
     const now = Date.now()
     const last = lastClickRef.current
     lastClickRef.current = { path: node.path, at: now }
+    const isPinned = typeof node.fx === 'number' || typeof node.fy === 'number'
     if (last && last.path === node.path && now - last.at < DOUBLE_CLICK_MS) {
       lastClickRef.current = null
-      // A double click frees a note fixed by dragging it.
-      if (typeof node.fx === 'number' || typeof node.fy === 'number') {
+      cancelPendingCenter()
+      // A double click (or tap) frees a note fixed by dragging it.
+      if (isPinned) {
         node.fx = undefined
         node.fy = undefined
         graphRef.current?.d3ReheatSimulation()
       }
       return
     }
-    focusNode(node.path)
-  }, [focusNode, onChatSelectedPathsChange, toggleChatPath])
+    // A pinned note is centered once no second tap comes: moving the camera
+    // first would take the note away from under the finger.
+    focusNode(node.path, isPinned ? DOUBLE_CLICK_MS : 0)
+  }, [cancelPendingCenter, focusNode, onChatSelectedPathsChange, toggleChatPath])
 
   const handleNodeDragEnd = useCallback((node: ForceNode) => {
     node.fx = node.x
@@ -298,6 +391,7 @@ function GraphViewComponent({
 
   // Forces of the layout, from the person's preferences.
   const isGraphMounted = graphData.nodes.length > 0 && graphSize.width > 0 && graphSize.height > 0
+  const folderArrangement = isPhone ? PHONE_FOLDERS : DESKTOP_FOLDERS
   useEffect(() => {
     const graph = graphRef.current
     if (!graph || !isGraphMounted) return
@@ -306,13 +400,15 @@ function GraphViewComponent({
     charge?.strength?.(-repulsion)
     const link = graph.d3Force('link') as { distance?: (value: number) => unknown } | undefined
     link?.distance?.(linkDistance)
-    graph.d3Force('folder', folderCohesion(cohesion / 100) as never)
-    if (framedModelRef.current !== graphData) {
+    graph.d3Force('folder', folderCohesion(cohesion / 100, folderArrangement) as never)
+    // A new model, or the folders rearranged for another screen, is framed again once it settles.
+    if (framedModelRef.current !== graphData || framedArrangementRef.current !== folderArrangement) {
       framedModelRef.current = graphData
+      framedArrangementRef.current = folderArrangement
       pendingFitRef.current = true
     }
     graph.d3ReheatSimulation()
-  }, [graphData, isGraphMounted, preferences.forces])
+  }, [folderArrangement, graphData, isGraphMounted, preferences.forces])
 
   const showsLabel = useCallback((node: ForceNode, isSelected: boolean, isNeighbor: boolean, isHovered: boolean, isMatch: boolean) => (
     preferences.labels === 'all'
@@ -329,30 +425,31 @@ function GraphViewComponent({
     const isHovered = node.path === hoveredPath
     const isMatch = matches.has(node.path)
     let opacity = 1
-    if (hasQuery) opacity = isMatch ? 1 : 0.16
-    else if (selected && !localOn) opacity = isSelected || isNeighbor ? 1 : 0.3
+    if (hasQuery) opacity = isMatch ? 1 : paint.unmatchedOpacity
+    else if (selected && !localOn) opacity = isSelected || isNeighbor ? 1 : paint.dimmedOpacity
     else if (node.degree === 0) opacity = 0.65
     if (isHovered) opacity = 1
     drawNode(context, {
       x: node.x,
       y: node.y,
-      radius: nodeRadius(node.degree),
+      radius: paint.nodeRadius(node.degree),
       color: node.contextColor ?? palette.muted,
       opacity,
       ring: isSelected ? 'selected' : isMatch ? 'match' : isHovered || chatPaths.has(node.path) ? 'hover' : null,
       label: showsLabel(node, isSelected, isNeighbor, isHovered, isMatch) ? node.label : null,
       labelStrong: isSelected,
-      labelMaxWidth: isHovered || isSelected ? 360 : 210,
-    }, palette, globalScale)
-  }, [chatPaths, hasQuery, hoveredPath, localOn, matches, palette, selected, selectedNeighbors, selectedPath, showsLabel])
+      labelMaxWidth: isHovered || isSelected ? paint.labelMaxWidthStrong : paint.labelMaxWidth,
+    }, palette, globalScale, paint)
+  }, [chatPaths, hasQuery, hoveredPath, localOn, matches, paint, palette, selected, selectedNeighbors, selectedPath, showsLabel])
 
-  const paintPointerArea = useCallback((node: ForceNode, color: string, context: CanvasRenderingContext2D) => {
+  // The touch area of a node; on a phone it never shrinks below a finger.
+  const paintPointerArea = useCallback((node: ForceNode, color: string, context: CanvasRenderingContext2D, globalScale: number) => {
     if (typeof node.x !== 'number' || typeof node.y !== 'number') return
     context.fillStyle = color
     context.beginPath()
-    context.arc(node.x, node.y, nodeRadius(node.degree) + 5, 0, Math.PI * 2)
+    context.arc(node.x, node.y, Math.max(paint.nodeRadius(node.degree) + paint.hitPadding, paint.minHitRadius / globalScale), 0, Math.PI * 2)
     context.fill()
-  }, [])
+  }, [paint])
 
   const isActiveLink = useCallback((link: ForceLink) => (
     selectedPath !== null && (pathOf(link.source) === selectedPath || pathOf(link.target) === selectedPath)
@@ -360,8 +457,8 @@ function GraphViewComponent({
 
   const dimLinks = hasQuery || (selected !== null && !localOn)
   const linkColor = useCallback((link: ForceLink) => (
-    isActiveLink(link) ? withAlpha(palette.teal, 0.85) : withAlpha(palette.muted, dimLinks ? 0.18 : 0.45)
-  ), [dimLinks, isActiveLink, palette.muted, palette.teal])
+    isActiveLink(link) ? withAlpha(palette.teal, paint.activeLinkAlpha) : withAlpha(palette.muted, dimLinks ? 0.18 : 0.45)
+  ), [dimLinks, isActiveLink, paint.activeLinkAlpha, palette.muted, palette.teal])
 
   const paintHalos = useCallback((context: CanvasRenderingContext2D, globalScale: number) => {
     if (!preferences.showFolders) return
@@ -372,8 +469,8 @@ function GraphViewComponent({
       group.points.push([node.x, node.y])
       groups.set(node.folder, group)
     }
-    drawFolderHalos(context, [...groups.values()], palette, globalScale)
-  }, [graphData.nodes, palette, preferences.showFolders, visiblePaths])
+    drawFolderHalos(context, [...groups.values()], palette, globalScale, paint)
+  }, [graphData.nodes, paint, palette, preferences.showFolders, visiblePaths])
 
   const minimapNodes = useMemo((): MinimapNode[] => {
     void frameVersion
@@ -388,7 +485,7 @@ function GraphViewComponent({
     graphRef.current?.zoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next)), 300)
   }, [])
 
-  // Frames the visible notes in the part of the canvas the inspector leaves free.
+  // Frames the visible notes in the part of the canvas the inspector, or the phone sheet, leaves free.
   const fitGraph = useCallback((duration = 600) => {
     const graph = graphRef.current
     const host = graphHostRef.current
@@ -405,16 +502,17 @@ function GraphViewComponent({
       bottom = Math.max(bottom, node.y)
     }
     if (!Number.isFinite(left)) return
-    const inspector = rootRef.current?.querySelector('.notia-gv-inspector')
+    const inspector = isPhone ? null : rootRef.current?.querySelector('.notia-gv-inspector')
     const isSideInspector = inspector !== null && inspector !== undefined
       && getComputedStyle(inspector).top !== 'auto' && host.clientWidth > 760
     const covered = isSideInspector ? inspector.getBoundingClientRect().width + 32 : 0
-    const width = Math.max(1, host.clientWidth - covered - FIT_PADDING * 2)
-    const height = Math.max(1, host.clientHeight - FIT_PADDING * 2)
+    const padding = isPhone ? PHONE_FIT_PADDING : FIT_PADDING
+    const width = Math.max(1, host.clientWidth - covered - padding * 2)
+    const height = Math.max(1, host.clientHeight - phoneSheetHeight - padding * 2)
     const scale = Math.min(MAX_FIT_ZOOM, Math.max(MIN_ZOOM, Math.min(width / Math.max(1, right - left), height / Math.max(1, bottom - top))))
     graph.zoom(scale, duration)
-    graph.centerAt((left + right) / 2 + covered / 2 / scale, (top + bottom) / 2, duration)
-  }, [graphData.nodes, visiblePaths])
+    graph.centerAt((left + right) / 2 + covered / 2 / scale, (top + bottom) / 2 + phoneSheetHeight / 2 / scale, duration)
+  }, [graphData.nodes, isPhone, phoneSheetHeight, visiblePaths])
 
   // A new model is framed once its layout, with the forces applied, settles.
   const handleEngineStop = useCallback(() => {
@@ -424,29 +522,63 @@ function GraphViewComponent({
   }, [fitGraph])
 
   const clearSelection = useCallback(() => {
+    cancelPendingCenter()
     setSelectedPath(null)
     setIsLocal(false)
+  }, [cancelPendingCenter])
+
+  // Over the phone's search or view sheet, a tap on the graph changes nothing.
+  const handleBackgroundClick = useCallback(() => {
+    if (isPhone && phonePanel !== 'graph') return
+    clearSelection()
+  }, [clearSelection, isPhone, phonePanel])
+
+  const toggleContext = useCallback((key: string) => setHiddenContexts((current) => {
+    const next = new Set(current)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  }), [])
+
+  const setSheetExpanded = useCallback((expanded: boolean) => {
+    setIsSheetExpanded(expanded)
+    if (selectedPath) centerNode(selectedPath, expanded ? phoneSheetFullHeight : PHONE_SHEET_PEEK)
+  }, [centerNode, phoneSheetFullHeight, selectedPath])
+
+  const closePhoneSearch = useCallback(() => {
+    setPhonePanel('graph')
+    setQuery('')
   }, [])
 
   const hasContent = graphData.nodes.length > 0
+  const chat = selected && onChatSelectedPathsChange
+    ? { isIncluded: chatPaths.has(selected.path), onToggle: () => toggleChatPath(selected.path) }
+    : null
 
   return (
-    <div ref={rootRef} className="notia-gv">
-      <GraphTopBar
-        visibleNotes={visiblePaths.size}
-        visibleLinks={visibleLinkCount}
-        isLocal={localOn}
-        canShowLocal={selected !== null}
-        onShowGlobal={() => setIsLocal(false)}
-        onShowLocal={() => setIsLocal(true)}
-        chips={chips}
-        onToggleChip={(key) => setHiddenContexts((current) => {
-          const next = new Set(current)
-          if (next.has(key)) next.delete(key)
-          else next.add(key)
-          return next
-        })}
-      />
+    <div ref={attachRoot} className={`notia-gv${isPhone ? ' notia-gv--phone' : ''}`}>
+      {!isPhone ? (
+        <GraphTopBar
+          visibleNotes={visiblePaths.size}
+          visibleLinks={visibleLinkCount}
+          isLocal={localOn}
+          canShowLocal={selected !== null}
+          onShowGlobal={() => setIsLocal(false)}
+          onShowLocal={() => setIsLocal(true)}
+          chips={chips}
+          onToggleChip={toggleContext}
+        />
+      ) : phonePanel === 'search' ? (
+        <GraphPhoneSearchHeader query={query} onQueryChange={setQuery} onClose={closePhoneSearch} />
+      ) : (
+        <GraphPhoneHeader
+          visibleNotes={visiblePaths.size}
+          visibleLinks={visibleLinkCount}
+          isViewCustomized={hiddenContexts.size > 0 || hasCustomGraphView(preferences)}
+          onOpenSearch={() => setPhonePanel('search')}
+          onOpenView={() => setPhonePanel('view')}
+        />
+      )}
       <div className="notia-gv-stage">
         <div ref={graphHostRef} className="notia-gv-canvas">
           {(!hasContent || isLoading) ? (
@@ -468,18 +600,20 @@ function GraphViewComponent({
               nodeCanvasObject={paintNode}
               nodePointerAreaPaint={paintPointerArea}
               linkColor={linkColor}
-              linkWidth={(link) => (isActiveLink(link as ForceLink) ? 1.6 : 1.1)}
+              linkWidth={(link) => (isActiveLink(link as ForceLink) ? paint.activeLinkWidth : paint.linkWidth)}
               linkCurvature={0.16}
               onRenderFramePre={paintHalos}
               onNodeClick={handleNodeClick}
-              onNodeHover={(node) => setHoveredPath((node as ForceNode | null)?.path ?? null)}
+              // A finger leaves no hover behind: on a phone a tap only selects.
+              onNodeHover={isPhone ? undefined : (node) => setHoveredPath((node as ForceNode | null)?.path ?? null)}
               onNodeDragEnd={handleNodeDragEnd}
-              onBackgroundClick={clearSelection}
+              onBackgroundClick={handleBackgroundClick}
               onZoom={({ k }) => {
                 setZoom(k)
-                requestFrame()
+                if (!isPhone) requestFrame()
               }}
-              onEngineTick={requestFrame}
+              // Only the minimap, which a phone does not show, follows each tick.
+              onEngineTick={isPhone ? undefined : requestFrame}
               onEngineStop={handleEngineStop}
               cooldownTicks={120}
               cooldownTime={5000}
@@ -491,44 +625,93 @@ function GraphViewComponent({
           ) : null}
         </div>
 
-        <GraphSearchPanel
-          query={query}
-          onQueryChange={setQuery}
-          results={hasQuery ? searchResults : null}
-          colorOf={(path) => nodeByPath.get(path)?.contextColor ?? palette.muted}
-          selectedPath={selectedPath}
-          onPick={focusNode}
-        />
+        {isPhone ? (
+          <>
+            {phonePanel === 'graph' && localOn ? <GraphPhoneLocalChip onExit={() => setIsLocal(false)} /> : null}
+            {phonePanel === 'graph' ? (
+              <GraphPhoneFitButton bottom={phoneSheetHeight > 0 ? phoneSheetHeight + 16 : 24} onFit={() => fitGraph()} />
+            ) : null}
+            {phonePanel === 'search' ? (
+              <GraphPhoneSearchResults
+                query={query}
+                results={hasQuery ? searchResults : null}
+                topConnected={graphModel.summary.topConnected.flatMap((path) => nodeByPath.get(path) ?? [])}
+                nodeByPath={nodeByPath}
+                libraryName={libraryName}
+                colorOf={(path) => nodeByPath.get(path)?.contextColor ?? palette.muted}
+                onPick={focusNode}
+              />
+            ) : null}
+            {selected && showsPhoneSheet ? (
+              <GraphPhoneNoteSheet
+                libraryName={libraryName}
+                selected={selected}
+                look={lookOf(selected)}
+                connections={selected.neighbors.flatMap((path) => nodeByPath.get(path) ?? [])}
+                lookOf={lookOf}
+                height={phoneSheetHeight}
+                isExpanded={isSheetExpanded}
+                onExpandedChange={setSheetExpanded}
+                isLocal={localOn}
+                onToggleLocal={() => setIsLocal((current) => !current)}
+                onClose={clearSelection}
+                onOpen={onOpenFile}
+                onPick={focusNode}
+                chat={chat}
+              />
+            ) : null}
+          </>
+        ) : (
+          <>
+            <GraphSearchPanel
+              query={query}
+              onQueryChange={setQuery}
+              results={hasQuery ? searchResults : null}
+              colorOf={(path) => nodeByPath.get(path)?.contextColor ?? palette.muted}
+              selectedPath={selectedPath}
+              onPick={focusNode}
+            />
 
-        <GraphInspector
-          libraryName={libraryName}
-          selected={selected}
-          nodeByPath={nodeByPath}
-          summary={graphModel.summary}
-          lookOf={lookOf}
-          contextLooks={contextLooks}
-          isLocal={localOn}
-          onToggleLocal={() => setIsLocal((current) => !current)}
-          onClose={clearSelection}
-          onOpen={onOpenFile}
-          onPick={focusNode}
-          chat={selected && onChatSelectedPathsChange
-            ? { isIncluded: chatPaths.has(selected.path), onToggle: () => toggleChatPath(selected.path) }
-            : null}
-        />
+            <GraphInspector
+              libraryName={libraryName}
+              selected={selected}
+              nodeByPath={nodeByPath}
+              summary={graphModel.summary}
+              lookOf={lookOf}
+              contextLooks={contextLooks}
+              isLocal={localOn}
+              onToggleLocal={() => setIsLocal((current) => !current)}
+              onClose={clearSelection}
+              onOpen={onOpenFile}
+              onPick={focusNode}
+              chat={chat}
+            />
 
-        <GraphDock
-          zoomPercent={Math.round(zoom * 100)}
-          onZoomIn={() => zoomTo(Math.round((zoom + ZOOM_STEP) * 100) / 100)}
-          onZoomOut={() => zoomTo(Math.round((zoom - ZOOM_STEP) * 100) / 100)}
-          onZoomReset={() => zoomTo(1)}
-          onFit={() => fitGraph()}
+            <GraphDock
+              zoomPercent={Math.round(zoom * 100)}
+              onZoomIn={() => zoomTo(Math.round((zoom + ZOOM_STEP) * 100) / 100)}
+              onZoomOut={() => zoomTo(Math.round((zoom - ZOOM_STEP) * 100) / 100)}
+              onZoomReset={() => zoomTo(1)}
+              onFit={() => fitGraph()}
+              preferences={preferences}
+              onChange={updatePreferences}
+            />
+
+            <GraphMinimap nodes={minimapNodes} viewport={viewport} version={frameVersion} />
+          </>
+        )}
+      </div>
+
+      {isPhone && phonePanel === 'view' ? (
+        <GraphPhoneViewSheet
+          chips={chips}
+          onToggleChip={toggleContext}
           preferences={preferences}
           onChange={updatePreferences}
+          orphanCount={graphModel.summary.orphans}
+          onClose={() => setPhonePanel('graph')}
         />
-
-        <GraphMinimap nodes={minimapNodes} viewport={viewport} version={frameVersion} />
-      </div>
+      ) : null}
     </div>
   )
 }

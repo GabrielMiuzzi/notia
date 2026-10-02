@@ -90,6 +90,16 @@ export interface MacroPill {
   valueLabel: string
 }
 
+export interface MacroIndicator {
+  key: string
+  label: string
+  valueLabel: string
+  targetLabel: string
+  percentLabel: string
+  progress: number
+  status: string
+}
+
 export interface FoodPanel {
   date: string
   dayLabel: string
@@ -102,13 +112,31 @@ export interface FoodPanel {
   remainingLabel: string
   stats: Array<{ label: string; value: string }>
   footnote: string
-  macros: Array<{ key: string; label: string; valueLabel: string; targetLabel: string; percentLabel: string; progress: number; status: string }>
+  macros: MacroIndicator[]
   groups: Array<{
     id: string
     label: string
     kcalLabel: string | null
     meals: Array<{ id: string; name: string; kcalLabel: string; pills: MacroPill[]; values: RecentMeal }>
   }>
+}
+
+/** Las calorías de hoy (tarjeta del celular), aunque la alimentación muestre otro día. */
+export interface CaloriesSummary {
+  totalLabel: string
+  targetLabel: string
+  progress: number
+  over: boolean
+  remainingLabel: string
+  macros: MacroIndicator[]
+}
+
+/** El peso de los últimos 30 días (tarjeta del celular). */
+export interface WeightTrend {
+  changeLabel: string | null
+  goalLabel: string | null
+  /** Trazo SVG en una caja de 100 × 100; sin línea con menos de dos pesos. */
+  line: string | null
 }
 
 export interface WaterPanel {
@@ -170,6 +198,8 @@ export interface HealthDashboard {
   weight: WeightPanel
   objective: ObjectivePanel
   food: FoodPanel | null
+  todayCalories: CaloriesSummary | null
+  weightTrend: WeightTrend
   water: WaterPanel | null
   composition: CompositionPanel | null
   profileForm: ProfileForm

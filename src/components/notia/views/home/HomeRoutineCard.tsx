@@ -12,10 +12,13 @@ interface HomeRoutineCardProps {
   onOpenRoutine: () => void
   /** Reads the dashboard again after a habit changed. */
   onChanged: () => Promise<void>
+  /** Phone board: the week across the card, the month, week and best streak
+   *  in three columns under it, and the routines in a row that scrolls. */
+  phone?: boolean
 }
 
 /** Today's habits of each routine and how the week and the month went. */
-export function HomeRoutineCard({ card, library, onOpenRoutine, onChanged }: HomeRoutineCardProps) {
+export function HomeRoutineCard({ card, library, onOpenRoutine, onChanged, phone = false }: HomeRoutineCardProps) {
   const routine = card.data
   const baseId = useId()
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -38,6 +41,27 @@ export function HomeRoutineCard({ card, library, onOpenRoutine, onChanged }: Hom
     }
   }
 
+  const openButton = <HomeMoreButton label="Abrir" ariaLabel="Abrir Rutinas" onClick={onOpenRoutine} />
+  const weekDays = routine ? (
+    <div className="home-week__days">
+      {routine.week.map((day) => (
+        <div
+          key={day.label}
+          role="img"
+          aria-label={day.label}
+          title={day.label}
+          className={`home-wday${day.isToday ? ' home-wday--today' : ''}${day.isFuture ? ' home-wday--future' : ''}`}
+        >
+          <span className="home-ring" style={{ '--home-ring-pct': `${day.pct ?? 0}%` } as CSSProperties}>
+            <span className="home-mono">{day.done}/{day.total}</span>
+          </span>
+          <span className="home-wday__letter">{day.letter}</span>
+        </div>
+      ))}
+    </div>
+  ) : null
+  const weekBar = <div className="home-bar"><div className="home-bar__fill" style={{ width: `${routine?.weekPct ?? 0}%` }} /></div>
+
   return (
     <HomeCardShell
       id="home-routine-title"
@@ -45,46 +69,51 @@ export function HomeRoutineCard({ card, library, onOpenRoutine, onChanged }: Hom
       icon={<Layers size={15} strokeWidth={1.75} />}
       className="home-card--routine"
       error={card.error}
-      action={(
+      action={phone ? openButton : (
         <div className="home-card__actions">
           {routine ? (
             <span className="home-card__sub home-routine__month">
               <b className="home-accent">{percentLabel(routine.monthPct)}</b> completado en {routine.monthLabel}
             </span>
           ) : null}
-          <HomeMoreButton label="Abrir" ariaLabel="Abrir Rutinas" onClick={onOpenRoutine} />
+          {openButton}
         </div>
       )}
     >
       {routine ? (
         <>
-          <div className="home-week">
-            <div className="home-week__days">
-              {routine.week.map((day) => (
-                <div
-                  key={day.label}
-                  role="img"
-                  aria-label={day.label}
-                  title={day.label}
-                  className={`home-wday${day.isToday ? ' home-wday--today' : ''}${day.isFuture ? ' home-wday--future' : ''}`}
-                >
-                  <span className="home-ring" style={{ '--home-ring-pct': `${day.pct ?? 0}%` } as CSSProperties}>
-                    <span className="home-mono">{day.done}/{day.total}</span>
-                  </span>
-                  <span className="home-wday__letter">{day.letter}</span>
+          {phone ? (
+            <>
+              {weekDays}
+              <div className="home-routine__stats">
+                <div className="home-routine__stat">
+                  <span className="home-card__sub home-routine__month-name">{routine.monthLabel}</span>
+                  <b className="home-routine__figure home-routine__figure--accent">{percentLabel(routine.monthPct)}</b>
                 </div>
-              ))}
-            </div>
-            <div className="home-week__divider" />
-            <div className="home-week__summary">
-              <div className="home-week__row">
-                <span className="home-card__sub">Semana</span>
-                <span className="home-mono home-week__pct">{percentLabel(routine.weekPct)}</span>
+                <div className="home-routine__stat home-routine__stat--week">
+                  <span className="home-card__sub">Semana · <span className="home-mono home-routine__week-pct">{percentLabel(routine.weekPct)}</span></span>
+                  {weekBar}
+                </div>
+                <div className="home-routine__stat">
+                  <span className="home-card__sub">Mejor racha</span>
+                  <b className="home-routine__figure">{countLabel(routine.bestStreak, 'día', 'días')}</b>
+                </div>
               </div>
-              <div className="home-bar"><div className="home-bar__fill" style={{ width: `${routine.weekPct ?? 0}%` }} /></div>
-              <div className="home-card__sub">Mejor racha <b className="home-strong">{countLabel(routine.bestStreak, 'día', 'días')}</b></div>
+            </>
+          ) : (
+            <div className="home-week">
+              {weekDays}
+              <div className="home-week__divider" />
+              <div className="home-week__summary">
+                <div className="home-week__row">
+                  <span className="home-card__sub">Semana</span>
+                  <span className="home-mono home-week__pct">{percentLabel(routine.weekPct)}</span>
+                </div>
+                {weekBar}
+                <div className="home-card__sub">Mejor racha <b className="home-strong">{countLabel(routine.bestStreak, 'día', 'días')}</b></div>
+              </div>
             </div>
-          </div>
+          )}
           {groups.length === 0 ? (
             <p className="home-empty">Todavía no armaste rutinas. Creálas desde Rutina.</p>
           ) : (
@@ -98,7 +127,11 @@ export function HomeRoutineCard({ card, library, onOpenRoutine, onChanged }: Hom
                       type="button"
                       className={`home-rtab${isSelected ? ' home-rtab--selected' : ''}`}
                       aria-pressed={isSelected}
-                      onClick={() => setSelectedId(group.id)}
+                      onClick={(event) => {
+                        setSelectedId(group.id)
+                        // On a phone the routines scroll sideways: keep the chosen one whole.
+                        if (phone) event.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+                      }}
                     >
                       <span>{group.name}</span>
                       <span className="home-mono home-rtab__count">{group.done}/{group.total}</span>

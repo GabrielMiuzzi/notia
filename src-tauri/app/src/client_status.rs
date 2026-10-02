@@ -59,8 +59,16 @@ pub(crate) struct StatusInput {
     pub(crate) on_copy: bool,
     /// The copy is moving files or the database.
     pub(crate) transferring: bool,
+    /// Files done and to do of the running sync.
+    pub(crate) progress: Option<(usize, usize)>,
     /// The error of the last sync of the copy.
     pub(crate) sync_error: Option<String>,
+    /// Files that did not travel in the last sync.
+    pub(crate) skipped: usize,
+}
+
+fn files(count: usize) -> String {
+    if count == 1 { "1 archivo".to_string() } else { format!("{count} archivos") }
 }
 
 fn status(kind: StatusKind, title: &str, text: String) -> Option<ClientStatus> {
@@ -93,10 +101,19 @@ pub(crate) fn describe(input: &StatusInput) -> Option<ClientStatus> {
             status(StatusKind::Connecting, "Host disponible", format!("Iniciá sesión en Notia para usar {library}."))
         }
         LinkState::Online if kind == ClientKind::Copy && input.transferring => {
-            status(StatusKind::Syncing, "Sincronizando la copia", format!("{library} con {host}."))
+            let text = match input.progress {
+                Some((done, total)) if total > 0 => format!("{library} con {host}: {done} de {}.", files(total)),
+                _ => format!("{library} con {host}."),
+            };
+            status(StatusKind::Syncing, "Sincronizando la copia", text)
         }
         LinkState::Online => match (kind, &input.sync_error) {
             (ClientKind::Copy, Some(error)) => status(StatusKind::Failed, "No se pudo sincronizar la copia", error.clone()),
+            (ClientKind::Copy, None) if input.skipped > 0 => status(
+                StatusKind::Connected,
+                "Conectado con el host",
+                format!("{library} en {host} · {} sin copiar; se vuelve a intentar.", files(input.skipped)),
+            ),
             (ClientKind::Copy, None) => status(StatusKind::Connected, "Conectado con el host", format!("{library} en {host} · copia al día.")),
             (ClientKind::Remote, _) => status(StatusKind::Connected, "Conectado con el host", format!("{library} en {host}.")),
         },
@@ -117,7 +134,9 @@ pub(crate) fn current(app: &AppHandle) -> Option<ClientStatus> {
         link_message: link.message,
         on_copy: crate::host_mirror::is_offline(app),
         transferring: crate::host_mirror::is_transferring(app),
+        progress: crate::host_mirror::progress(app),
         sync_error: crate::host_mirror::last_error(app),
+        skipped: crate::host_mirror::last_skipped(app),
     })
 }
 
@@ -207,6 +226,10 @@ mod tests {
         assert_eq!(kind(&copy_client(LinkState::Unknown)), StatusKind::Connecting);
         assert_eq!(kind(&copy_client(LinkState::Online)), StatusKind::Connected);
         assert_eq!(kind(&StatusInput { transferring: true, ..copy_client(LinkState::Online) }), StatusKind::Syncing);
+        let copying = describe(&StatusInput { transferring: true, progress: Some((340, 1508)), ..copy_client(LinkState::Online) }).expect("copying");
+        assert_eq!(copying.text, "Notas con casa:52480: 340 de 1508 archivos.");
+        let partial = describe(&StatusInput { skipped: 1, ..copy_client(LinkState::Online) }).expect("partial");
+        assert_eq!((partial.kind, partial.text.as_str()), (StatusKind::Connected, "Notas en casa:52480 · 1 archivo sin copiar; se vuelve a intentar."));
         let failed = describe(&StatusInput { sync_error: Some("Sin espacio.".into()), ..copy_client(LinkState::Online) }).expect("failed");
         assert_eq!((failed.kind, failed.text.as_str()), (StatusKind::Failed, "Sin espacio."));
         assert_eq!(kind(&StatusInput { signed_in: false, ..copy_client(LinkState::Online) }), StatusKind::Connecting);

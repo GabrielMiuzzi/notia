@@ -366,6 +366,135 @@ p[data-over="false"] { color: var(--hl-muted); }
   .hl-inline { flex-wrap: wrap; }
 }
 
+/* Celular (canvas `SaludMovil`): la vista de Salud mide menos de 700 px. La
+   barra de arriba queda fija y la pantalla se desplaza debajo; el botón
+   flotante se ubica en la vista, que ya respeta las zonas seguras. */
+.notia-main.health-view--phone {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Un campo enfocado (teclado virtual o Tab) no queda bajo la barra ni el botón flotante */
+.hl-phone { height: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scroll-padding: 112px 0 88px; scrollbar-color: var(--color-scrollbar) transparent; -webkit-overflow-scrolling: touch; }
+.hl-phone__top { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--hl-line); background: var(--hl-bg); }
+.hl-phone__bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 4px 16px; }
+.hl-phone__bar .hl-h1 { font-size: 22px; }
+.hl-phone__icon { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: var(--hl-touch); height: var(--hl-touch); padding: 0; border: 0; border-radius: 12px; background: none; color: var(--hl-ink); cursor: pointer; }
+.hl-phone__icon:hover { background: var(--hl-hover); }
+.hl-phone__tabs { display: flex; padding: 0 8px; }
+.hl-phone__tabs button { flex: 1; min-height: var(--hl-touch); padding: 8px 0 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--hl-muted); font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
+.hl-phone__tabs button[aria-selected="true"] { border-bottom-color: var(--hl-teal); color: var(--hl-teal); }
+.hl-phone__main { display: flex; flex-direction: column; gap: 12px; padding: 12px 12px 24px; }
+.hl-phone__main[data-fab="true"] { padding-bottom: 96px; }
+.hl-phone__menu { display: flex; flex-direction: column; gap: 4px; }
+.hl-phone__item { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 0 4px; border: 0; border-radius: 10px; background: none; color: var(--hl-ink); font: inherit; text-align: left; cursor: pointer; }
+.hl-phone__item:hover { background: var(--hl-hover); }
+.hl-fab { position: absolute; right: 16px; bottom: 16px; z-index: 30; display: inline-flex; align-items: center; gap: 8px; height: 56px; padding: 0 20px; border: 0; border-radius: 16px; background: var(--hl-teal); color: var(--hl-on-teal); font: inherit; font-size: 15px; font-weight: 600; box-shadow: 0 8px 24px rgba(15, 20, 32, 0.45); cursor: pointer; }
+
+/* Tarjetas de Hoy: toda la tarjeta es un botón */
+.health-view--phone .hl-panel.hl-phone-card { padding: 0; }
+.hl-phone-card__button { display: block; width: 100%; padding: 16px; border: 0; border-radius: 14px; background: none; color: var(--hl-ink); font: inherit; text-align: left; cursor: pointer; }
+.hl-phone-card__button:active { background: var(--hl-elevated); }
+.hl-phone-card__head { display: flex; align-items: center; justify-content: space-between; }
+.hl-phone-card__more { display: inline-flex; align-items: center; }
+.hl-phone-card__figure { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; }
+.hl-phone-card__figure--tight { margin-top: 0; }
+.hl-phone-card .hl-track { display: block; margin-top: 12px; }
+.hl-phone-card .hl-fill { display: block; }
+.hl-phone-card__note { display: block; margin-top: 8px; color: var(--hl-muted); }
+.hl-phone-card__note[data-over="true"] { color: var(--hl-high); }
+.hl-phone-card__macros { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 16px; }
+.hl-phone-macro { display: block; min-width: 0; }
+.hl-phone-macro__label { display: flex; align-items: center; }
+.hl-phone-macro__label .hl-dot { width: 7px; height: 7px; }
+.hl-phone-macro__amount { display: block; margin-top: 2px; }
+.hl-phone-card .hl-phone-macro__track { height: 6px; margin-top: 4px; }
+.hl-phone-card__row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.hl-phone-card__lines { display: block; margin-top: 4px; }
+.hl-spark { display: block; flex: none; width: 130px; height: 56px; padding: 4px 2px; }
+.hl-spark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.hl-spark path { fill: none; stroke: var(--hl-teal); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+
+/* Los paneles del escritorio, con las medidas del celular */
+.health-view--phone .hl-panel:not(.hl-welcome):not(.hl-phone-card) { padding: 16px; }
+.health-view--phone .hl-alert--page { margin-top: 0; }
+.health-view--phone .hl-welcome { padding: 32px; }
+.health-view--phone .hl-welcome .hl-actions { margin-top: 20px; }
+.health-view--phone .hl-big { font-size: 34px; }
+.health-view--phone .hl-input { font-size: 16px; }
+.health-view--phone .hl-button { padding: 8px 13px; font-size: 14px; }
+.health-view--phone .hl-seg button { min-width: 36px; }
+/* Botones, segmentos y enlaces del canvas usan números proporcionales */
+.health-view--phone .hl-button,
+.health-view--phone .hl-seg button,
+.health-view--phone .hl-link { font-variant-numeric: normal; }
+.health-view--phone .hl-weight .hl-figure { gap: 12px; }
+.health-view--phone .hl-weight__toggle { margin-left: auto; }
+.health-view--phone .hl-records li { padding: 8px 12px; }
+.health-view--phone .hl-body .hl-panel__top p { margin-top: 0; }
+.health-view--phone .hl-strip .hl-square { margin-right: 0; }
+.health-view--phone .hl-body > p:last-child { margin-top: 16px; }
+/* Los enlaces de texto ocupan una línea, como en el canvas; el dedo tiene 44 px igual */
+.health-view--phone .hl-link { position: relative; min-height: 0; }
+.health-view--phone .hl-link::after { content: ""; position: absolute; top: 50%; right: -4px; left: -4px; height: var(--hl-touch); transform: translateY(-50%); }
+.health-view--phone .hl-water__ring { gap: 20px; }
+.health-view--phone .hl-water__ring .hl-faint { margin-top: 8px; }
+.health-view--phone .hl-water .hl-link { margin-top: 8px; }
+/* «Restar 250 ml» no toma toques de la cantidad que tiene arriba */
+.health-view--phone .hl-water .hl-link::after { top: -8px; bottom: -18px; height: auto; transform: none; }
+.health-view--phone .hl-meal { padding: 12px 16px; }
+.health-view--phone .hl-bmi { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.health-view--phone .hl-food__summary { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.health-view--phone .hl-food__energy .hl-figure { gap: 8px; margin-top: 0; }
+.health-view--phone .hl-food__energy .hl-track { margin-top: 12px; }
+.health-view--phone .hl-food .hl-pairs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px 0; margin-top: 16px; }
+.health-view--phone .hl-food .hl-pairs__row { padding: 0; }
+.health-view--phone .hl-food__energy > .hl-faint { margin-top: 12px; }
+.health-view--phone .hl-food__macros { gap: 8px; }
+.health-view--phone .hl-macro .hl-dot { margin-right: 8px; }
+.health-view--phone .hl-macro > div:nth-child(2),
+.health-view--phone .hl-macro > div:last-child { margin-top: 4px; }
+.health-view--phone .hl-meal-group__head { padding: 10px 16px; }
+.health-view--phone .hl-meal-group__head .hl-button--small { min-height: 40px; padding: 6px 12px; font-size: 13px; }
+.health-view--phone .hl-meal-group__head .hl-button--small svg { width: 13px; height: 13px; }
+/* La base fija el margen con !important; el canvas sube el texto 2 px */
+.health-view--phone .hl-meal-group__empty { margin-top: -2px !important; }
+.health-view--phone .hl-body__groups { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 20px; }
+
+/* Los modales del celular son hojas que suben desde abajo */
+.notia-modal-engine-backdrop:has(> .hl-sheet) { align-items: flex-end; }
+.notia-modal-engine-panel.hl-modal-panel.hl-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  max-height: 92%;
+  border: 1px solid var(--hl-line);
+  border-bottom: 0;
+  border-radius: 20px 20px 0 0;
+  font-size: 15px;
+}
+.hl-sheet .hl-modal { flex: 1 1 auto; min-height: 0; max-height: none; padding: 8px 16px calc(20px + env(safe-area-inset-bottom, 0px)); }
+.hl-sheet__handle { display: block; width: 40px; height: 4px; margin: 4px auto 10px; border-radius: 99px; background: var(--hl-line); }
+.hl-sheet .hl-modal__head { margin-bottom: 12px; }
+.hl-sheet .hl-modal__head .hl-mid { font-size: 19px; }
+.hl-sheet .hl-icon-button { flex-shrink: 0; border: 0; border-radius: 12px; }
+.hl-sheet .hl-icon-button:hover { background: var(--hl-hover); }
+.hl-sheet .hl-input { font-size: 16px; }
+.hl-sheet .hl-button { padding: 8px 13px; font-size: 14px; }
+.hl-sheet .hl-seg button { min-width: 36px; }
+.hl-sheet .hl-seg svg { width: 13px; height: 13px; }
+.hl-sheet .hl-field .hl-dot--small { margin-right: 0; }
+.hl-sheet .hl-suggestion { position: relative; min-height: 0; padding: 4px 10px; border-radius: 10px; font-size: 15px; }
+.hl-sheet .hl-suggestion::after { content: ""; position: absolute; top: 50%; right: 0; left: 0; height: var(--hl-touch); transform: translateY(-50%); }
+.health-view--phone .hl-input::placeholder { color: var(--hl-muted); }
+.hl-sheet .hl-grid-3,
+.hl-sheet .hl-grid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hl-sheet .hl-field .hl-inline { flex-direction: column; }
+/* La medición de la balanza deja 16 px antes de los botones, sin el extra de los otros formularios */
+.hl-sheet .hl-form:has(.hl-fieldset) .hl-form__foot { padding-top: 0; }
+
 @media (prefers-reduced-motion: reduce) {
   .hl-fill, .hl-water__fill, .hl-button { transition: none; }
 }

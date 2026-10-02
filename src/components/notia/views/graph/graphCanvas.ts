@@ -55,6 +55,107 @@ export function nodeRadius(degree: number): number {
   return degree === 0 ? 3.5 : Math.min(12, 4 + Math.sqrt(degree) * 2)
 }
 
+/** Radius of a node in the phone boards: a little smaller than on the desktop. */
+export function phoneNodeRadius(degree: number): number {
+  return degree === 0 ? 3 : Math.min(10, 3.5 + Math.sqrt(degree) * 1.7)
+}
+
+/**
+ * Sizes of the drawing, from the desktop board or the phone boards of the
+ * canvas. Lengths are screen pixels unless they say graph units.
+ */
+export interface GraphPaintMetrics {
+  /** Radius of a node, in graph units. */
+  nodeRadius: (degree: number) => number
+  /** The touch area of a node is its radius plus this, in graph units... */
+  hitPadding: number
+  /** ...and never smaller than this radius on screen. */
+  minHitRadius: number
+  /** Opacity of the notes outside the selection and of the ones the search left out. */
+  dimmedOpacity: number
+  unmatchedOpacity: number
+  /** Outer edge of the selected, matched or hovered ring, and of the gap inside it. */
+  selectedRing: number
+  matchRing: number
+  ringGap: number
+  labelFontSize: number
+  labelHeight: number
+  labelPadX: number
+  /** Room between a node and its label. */
+  labelGap: number
+  labelWeight: number
+  labelMaxWidth: number
+  labelMaxWidthStrong: number
+  linkWidth: number
+  activeLinkWidth: number
+  activeLinkAlpha: number
+  /** Room around the notes of a folder, in graph units. */
+  haloPadding: number
+  haloFont: string
+  haloFontSize: number
+  /** Room between a folder's name and its count, and the count's opacity. */
+  haloCountGap: number
+  haloCountAlpha: number
+  /** Room between a halo and its label. */
+  haloLabelGap: number
+}
+
+export const DESKTOP_GRAPH_PAINT: GraphPaintMetrics = {
+  nodeRadius,
+  hitPadding: 5,
+  minHitRadius: 0,
+  dimmedOpacity: 0.3,
+  unmatchedOpacity: 0.16,
+  selectedRing: 5,
+  matchRing: 4.5,
+  ringGap: 3,
+  labelFontSize: 11.5,
+  labelHeight: 18,
+  labelPadX: 6,
+  labelGap: 5,
+  labelWeight: 450,
+  labelMaxWidth: 210,
+  labelMaxWidthStrong: 360,
+  linkWidth: 1.1,
+  activeLinkWidth: 1.6,
+  activeLinkAlpha: 0.85,
+  haloPadding: 30,
+  haloFont: "'JetBrains Mono', ui-monospace, monospace",
+  haloFontSize: 11,
+  // Two monospace spaces: "name  count".
+  haloCountGap: 13.2,
+  haloCountAlpha: 1,
+  haloLabelGap: 6,
+}
+
+export const PHONE_GRAPH_PAINT: GraphPaintMetrics = {
+  nodeRadius: phoneNodeRadius,
+  hitPadding: 7,
+  // The phone boards never make a node's touch area smaller than 30 px.
+  minHitRadius: 15,
+  dimmedOpacity: 0.28,
+  unmatchedOpacity: 0.15,
+  selectedRing: 4.5,
+  matchRing: 4,
+  ringGap: 2.5,
+  labelFontSize: 10.5,
+  labelHeight: 16,
+  labelPadX: 5,
+  labelGap: 4,
+  labelWeight: 400,
+  labelMaxWidth: 140,
+  labelMaxWidthStrong: 220,
+  linkWidth: 1,
+  activeLinkWidth: 1.5,
+  activeLinkAlpha: 0.9,
+  haloPadding: 18,
+  haloFont: "'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif",
+  haloFontSize: 10.5,
+  haloCountGap: 6,
+  haloCountAlpha: 0.75,
+  haloLabelGap: 3,
+}
+
 type Point = [number, number]
 
 /** Convex hull (monotone chain), counter-clockwise. */
@@ -78,7 +179,6 @@ export function convexHull(points: Point[]): Point[] {
   return [...lower, ...upper]
 }
 
-const HALO_PADDING = 30
 const HALO_STEPS = 12
 
 export interface HaloGroup {
@@ -87,7 +187,13 @@ export interface HaloGroup {
 }
 
 /** A dashed halo around the notes of each folder with three or more visible notes. */
-export function drawFolderHalos(context: CanvasRenderingContext2D, groups: HaloGroup[], palette: GraphPalette, globalScale: number): void {
+export function drawFolderHalos(
+  context: CanvasRenderingContext2D,
+  groups: HaloGroup[],
+  palette: GraphPalette,
+  globalScale: number,
+  metrics: GraphPaintMetrics = DESKTOP_GRAPH_PAINT,
+): void {
   context.save()
   for (const group of groups) {
     if (group.points.length < 3) continue
@@ -95,7 +201,7 @@ export function drawFolderHalos(context: CanvasRenderingContext2D, groups: HaloG
     for (const [x, y] of group.points) {
       for (let step = 0; step < HALO_STEPS; step += 1) {
         const angle = (step * Math.PI * 2) / HALO_STEPS
-        padded.push([x + Math.cos(angle) * HALO_PADDING, y + Math.sin(angle) * HALO_PADDING])
+        padded.push([x + Math.cos(angle) * metrics.haloPadding, y + Math.sin(angle) * metrics.haloPadding])
       }
     }
     const hull = convexHull(padded)
@@ -113,12 +219,19 @@ export function drawFolderHalos(context: CanvasRenderingContext2D, groups: HaloG
     context.stroke()
     context.setLineDash([])
     const top = hull.reduce((best, point) => (point[1] < best[1] ? point : best), first)
-    const fontSize = 11 / globalScale
-    context.font = `400 ${fontSize}px 'JetBrains Mono', ui-monospace, monospace`
-    context.textAlign = 'center'
+    context.font = `400 ${metrics.haloFontSize / globalScale}px ${metrics.haloFont}`
+    context.textAlign = 'left'
     context.textBaseline = 'bottom'
     context.fillStyle = palette.muted
-    context.fillText(`${group.name}  ${group.points.length}`, top[0], top[1] - 6 / globalScale)
+    const count = String(group.points.length)
+    const gap = metrics.haloCountGap / globalScale
+    const nameWidth = context.measureText(group.name).width
+    const left = top[0] - (nameWidth + gap + context.measureText(count).width) / 2
+    const baseline = top[1] - metrics.haloLabelGap / globalScale
+    context.fillText(group.name, left, baseline)
+    context.globalAlpha = metrics.haloCountAlpha
+    context.fillText(count, left + nameWidth + gap, baseline)
+    context.globalAlpha = 1
   }
   context.restore()
 }
@@ -149,18 +262,24 @@ function ellipsize(context: CanvasRenderingContext2D, text: string, maxWidth: nu
 }
 
 /** A node: its dot, the ring of its state and its label under it on a pill. */
-export function drawNode(context: CanvasRenderingContext2D, paint: NodePaint, palette: GraphPalette, globalScale: number): void {
+export function drawNode(
+  context: CanvasRenderingContext2D,
+  paint: NodePaint,
+  palette: GraphPalette,
+  globalScale: number,
+  metrics: GraphPaintMetrics = DESKTOP_GRAPH_PAINT,
+): void {
   const { x, y, radius } = paint
   context.save()
   context.globalAlpha = paint.opacity
   if (paint.ring) {
     const ringColor = paint.ring === 'selected' ? palette.teal : paint.ring === 'match' ? palette.amber : withAlpha(palette.text, 0.55)
     context.beginPath()
-    context.arc(x, y, radius + (paint.ring === 'selected' ? 5 : 4.5) / globalScale, 0, Math.PI * 2)
+    context.arc(x, y, radius + (paint.ring === 'selected' ? metrics.selectedRing : metrics.matchRing) / globalScale, 0, Math.PI * 2)
     context.fillStyle = ringColor
     context.fill()
     context.beginPath()
-    context.arc(x, y, radius + 3 / globalScale, 0, Math.PI * 2)
+    context.arc(x, y, radius + metrics.ringGap / globalScale, 0, Math.PI * 2)
     context.fillStyle = palette.background
     context.fill()
   }
@@ -170,13 +289,13 @@ export function drawNode(context: CanvasRenderingContext2D, paint: NodePaint, pa
   context.fill()
 
   if (paint.label) {
-    const fontSize = 11.5 / globalScale
-    context.font = `${paint.labelStrong ? 600 : 450} ${fontSize}px 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif`
+    const fontSize = metrics.labelFontSize / globalScale
+    context.font = `${paint.labelStrong ? 600 : metrics.labelWeight} ${fontSize}px 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif`
     const text = ellipsize(context, paint.label, paint.labelMaxWidth / globalScale)
     const width = context.measureText(text).width
-    const padX = 6 / globalScale
-    const height = 18 / globalScale
-    const top = y + radius + 5 / globalScale
+    const padX = metrics.labelPadX / globalScale
+    const height = metrics.labelHeight / globalScale
+    const top = y + radius + metrics.labelGap / globalScale
     context.fillStyle = withAlpha(palette.background, 0.82)
     context.beginPath()
     context.roundRect(x - width / 2 - padX, top, width + padX * 2, height, 4 / globalScale)

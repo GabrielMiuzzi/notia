@@ -2,24 +2,28 @@ import { Mic, MonitorSpeaker, Activity } from 'lucide-react'
 import { MeetingLevelBars } from './MeetingLevelBars'
 import { MeetingOptions, type MeetingOptionsProps } from './MeetingOptions'
 import { MEETING_SOURCE_PANEL_ID } from './MeetingSourceTabs'
+import { sourceStatus } from './meetingDisplay'
 import type { SpeechLevelHistory } from './useSpeechLevels'
 
 export type MeetingSource = 'microphone' | 'system'
 
 const METER_BARS = 28
-const SIGNAL_LEVEL = 0.1
 
-interface MeetingReadyPanelProps extends MeetingOptionsProps {
+/** The live recording's setup: what it records and how to start. */
+export interface MeetingLiveSetupProps {
   canStart: boolean
   isStarting: boolean
   onStart: () => void
-  microphoneLabel: string
   systemAudioSupported: boolean
   sources: Record<MeetingSource, boolean>
   onToggleSource: (source: MeetingSource) => void
   isChecking: boolean
   onToggleCheck: () => void
   levels: SpeechLevelHistory
+}
+
+interface MeetingReadyPanelProps extends MeetingOptionsProps, MeetingLiveSetupProps {
+  microphoneLabel: string
 }
 
 export function MeetingReadyPanel({
@@ -77,11 +81,7 @@ export function MeetingReadyPanel({
         <div className="notia-meeting-sources">
           {sourceCards.map((source) => {
             const enabled = source.available && sources[source.id]
-            const latest = source.levels[source.levels.length - 1] ?? 0
-            const status = !source.available ? 'No disponible'
-              : !enabled ? 'Apagado'
-                : isChecking ? (latest >= SIGNAL_LEVEL ? 'Captando' : 'Sin señal')
-                  : 'Listo'
+            const status = sourceStatus(source.available, enabled, isChecking, source.levels)
             const Icon = source.icon
             return (
               <div key={source.id} className="notia-meeting-source-card" data-enabled={enabled ? 'true' : 'false'}>

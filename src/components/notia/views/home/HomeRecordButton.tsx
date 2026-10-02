@@ -19,6 +19,9 @@ const ignoreDraft = () => undefined
 interface HomeRecordButtonProps {
   /** Shows the Meeting view, where the recording goes on. */
   onOpenMeeting: () => void
+  /** Phone board: «Grabar reunión», a taller button and, while recording, a
+   *  pill over the bottom of the view that stays in sight when it scrolls. */
+  phone?: boolean
 }
 
 /**
@@ -26,7 +29,7 @@ interface HomeRecordButtonProps {
  * where supported, the system audio). The session belongs to the backend:
  * it keeps recording when Home closes and the Meeting view follows it.
  */
-export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
+export function HomeRecordButton({ onOpenMeeting, phone = false }: HomeRecordButtonProps) {
   const aiPreferences = useAppSelector(selectAiSettings, shallowEqual)
   const meetingOptions = useMemo(() => ({ liveAnswers: false, settings: meetingAiSettings(aiPreferences) }), [aiPreferences])
   const voice = useVoiceTranscription({
@@ -64,18 +67,32 @@ export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
     return () => window.removeEventListener('keydown', startOnShortcut)
   }, [isRecording, start])
 
+  const buttonClass = phone ? 'home-button home-button--phone' : 'home-button home-button--tall'
+  const iconSize = phone ? 16 : 15
   if (isRecording) {
+    const clock = formatClock(voice.state.status === 'recording' || voice.state.status === 'paused' ? voice.state.elapsedMs : 0)
+    const stop = () => void voice.stop()
     return (
-      <button type="button" className="home-button home-button--tall home-button--recording" onClick={() => void voice.stop()}>
-        <Square size={12} fill="currentColor" strokeWidth={0} aria-hidden="true" />
-        Detener · <span className="home-mono">{formatClock(voice.state.status === 'recording' || voice.state.status === 'paused' ? voice.state.elapsedMs : 0)}</span>
-      </button>
+      <>
+        <button type="button" className={`${buttonClass} home-button--recording`} onClick={stop}>
+          <Square size={12} fill="currentColor" strokeWidth={0} aria-hidden="true" />
+          Detener · <span className="home-mono">{clock}</span>
+        </button>
+        {/* Out of the flow: placed against the view, not the scrolled list. */}
+        {phone ? (
+          <div className="home-rec-pill" role="status">
+            <span className="home-rec-pill__dot" aria-hidden="true" />
+            <span>Grabando · <span className="home-mono" aria-hidden="true">{clock}</span></span>
+            <button type="button" className="home-button home-button--recording home-rec-pill__stop" onClick={stop}>Detener</button>
+          </div>
+        ) : null}
+      </>
     )
   }
   if (status === 'finalizing' || snapshot?.status === 'processing') {
     return (
-      <button type="button" className="home-button home-button--tall" onClick={onOpenMeeting}>
-        <Mic size={15} strokeWidth={1.75} aria-hidden="true" />
+      <button type="button" className={buttonClass} onClick={onOpenMeeting}>
+        <Mic size={iconSize} strokeWidth={1.75} aria-hidden="true" />
         Procesando…
       </button>
     )
@@ -83,8 +100,8 @@ export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
   // A new recording replaces the meeting; one not saved yet is decided in Meeting.
   if (hasUnsavedMeeting) {
     return (
-      <button type="button" className="home-button home-button--tall" onClick={onOpenMeeting}>
-        <Mic size={15} strokeWidth={1.75} aria-hidden="true" />
+      <button type="button" className={buttonClass} onClick={onOpenMeeting}>
+        <Mic size={iconSize} strokeWidth={1.75} aria-hidden="true" />
         Reunión sin guardar
       </button>
     )
@@ -93,13 +110,13 @@ export function HomeRecordButton({ onOpenMeeting }: HomeRecordButtonProps) {
   return (
     <button
       type="button"
-      className="home-button home-button--tall"
+      className={buttonClass}
       title={error ?? 'Grabar reunión (Ctrl+Shift+R)'}
       disabled={!canStart}
       onClick={start}
     >
-      <Mic size={15} strokeWidth={1.75} aria-hidden="true" />
-      Grabar
+      <Mic size={iconSize} strokeWidth={1.75} aria-hidden="true" />
+      {phone ? 'Grabar reunión' : 'Grabar'}
     </button>
   )
 }
