@@ -25,6 +25,26 @@ const readyProps = {
   folderOptions: ['Trabajo'],
   libraryName: 'gaia',
   onFolderChange: vi.fn(),
+  aiContext: {
+    libraryName: 'gaia',
+    options: {
+      folders: [{ path: 'Facultad', noteCount: 24 }, { path: 'Facultad/Materia', noteCount: 3 }],
+      // A library has as many contexts as it wants.
+      contexts: Array.from({ length: 10 }, (_, index) => ({
+        tag: `#Contexto${index + 1}`,
+        label: `Contexto${index + 1}`,
+        color: '#6C8EFF',
+        locked: index === 0,
+        selectedByDefault: index !== 0,
+      })),
+    },
+    error: null,
+    choice: { wholeLibrary: true, folder: 'Facultad', contexts: ['#Contexto2', '#Contexto3'] },
+    setWholeLibrary: vi.fn(),
+    setFolder: vi.fn(),
+    toggleContext: vi.fn(),
+    setAllContexts: vi.fn(),
+  },
 }
 
 describe('Meeting panels', () => {
@@ -47,6 +67,36 @@ describe('Meeting panels', () => {
     expect(readyProps.onToggleSource).toHaveBeenCalledWith('microphone')
     fireEvent.click(screen.getByRole('button', { name: 'Iniciar grabación' }))
     expect(readyProps.onStart).toHaveBeenCalled()
+  })
+
+  it('limits the AI to the whole library with some contexts, or to a folder', () => {
+    const { rerender } = render(<MeetingReadyPanel {...readyProps} />)
+    expect(screen.getByRole('heading', { name: 'Contexto para la IA' })).toBeTruthy()
+    expect(screen.getByText('Toda la librería gaia')).toBeTruthy()
+    expect((screen.getByLabelText('Carpeta de contexto') as HTMLSelectElement).disabled).toBe(true)
+    expect(screen.getByText('2 de 10')).toBeTruthy()
+    // The first eight contexts, the rest on demand.
+    const group = screen.getByRole('group', { name: 'Contextos permitidos' })
+    expect(group.querySelectorAll('[aria-pressed]').length).toBe(8)
+    fireEvent.click(screen.getByRole('button', { name: '+2 más' }))
+    expect(group.querySelectorAll('[aria-pressed]').length).toBe(10)
+    fireEvent.click(screen.getByRole('button', { name: /Contexto10/ }))
+    expect(readyProps.aiContext.toggleContext).toHaveBeenCalledWith('#Contexto10')
+    fireEvent.click(screen.getByRole('button', { name: 'Ninguno' }))
+    expect(readyProps.aiContext.setAllContexts).toHaveBeenCalledWith(false)
+    fireEvent.click(screen.getByRole('switch', { name: 'Toda la librería' }))
+    expect(readyProps.aiContext.setWholeLibrary).toHaveBeenCalledWith(false)
+
+    const folderChoice = { ...readyProps.aiContext, choice: { ...readyProps.aiContext.choice, wholeLibrary: false } }
+    rerender(<MeetingReadyPanel {...readyProps} aiContext={folderChoice} />)
+    expect(screen.getByText('gaia / Facultad')).toBeTruthy()
+    expect(screen.getByText('24 notas')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Carpeta de contexto'), { target: { value: 'Facultad/Materia' } })
+    expect(readyProps.aiContext.setFolder).toHaveBeenCalledWith('Facultad/Materia')
+    expect((screen.getByRole('button', { name: /Contexto2/ }) as HTMLButtonElement).disabled).toBe(true)
+
+    rerender(<MeetingReadyPanel {...readyProps} aiContext={{ ...readyProps.aiContext, libraryName: null, options: null }} />)
+    expect(screen.getByText('Abrí una biblioteca para que la IA consulte tus notas.')).toBeTruthy()
   })
 
   it('lists the questions of the meeting with the minute they were asked', () => {

@@ -211,6 +211,9 @@ fn route(command: &str) -> Option<Route> {
         "meeting_remove_mark" => meeting_remove_mark,
         "meeting_set_notes" => meeting_set_notes,
         "meeting_set_live_answers" => meeting_set_live_answers,
+        "meeting_set_ai_notes" => meeting_set_ai_notes,
+        "meeting_call_notes_agent" => meeting_call_notes_agent,
+        "meeting_ai_context_options" => meeting_ai_context_options,
         "meeting_regenerate_answer" => meeting_regenerate_answer,
         "meeting_pin_answer" => meeting_pin_answer,
         "meeting_rename_speaker" => meeting_rename_speaker,
@@ -484,6 +487,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_remove_mark",
     "meeting_set_notes",
     "meeting_set_live_answers",
+    "meeting_set_ai_notes",
+    "meeting_call_notes_agent",
+    "meeting_ai_context_options",
     "meeting_regenerate_answer",
     "meeting_pin_answer",
     "meeting_rename_speaker",
@@ -587,6 +593,9 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_remove_mark",
     "meeting_set_notes",
     "meeting_set_live_answers",
+    "meeting_set_ai_notes",
+    "meeting_call_notes_agent",
+    "meeting_ai_context_options",
     "meeting_regenerate_answer",
     "meeting_pin_answer",
     "meeting_rename_speaker",
@@ -642,6 +651,7 @@ pub fn is_remote_command(command: &str) -> bool {
 /// headless server, open to other library users, never runs them.
 pub const HOST_CLIENT_COMMANDS: &[&str] = &[
     "meeting_task_boards",
+    "meeting_ai_context_options",
     "meeting_store_note",
     "meeting_store_tasks",
     "meeting_ai_complete",
@@ -1529,6 +1539,20 @@ fn meeting_set_notes(app: &AppHandle, _window_label: &str, command: &str, args: 
 
 fn meeting_set_live_answers(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_set_live_answers(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_set_ai_notes(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_set_ai_notes(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_call_notes_agent(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_call_notes_agent(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_ai_context_options(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_ai_context_options(arg0, arg1).await) })))
 }
 
 fn meeting_regenerate_answer(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

@@ -11,6 +11,7 @@ import { useNotiaAction } from '../../../context/notiaActions/useNotiaAction'
 import { clearMeetingTranscriptContext, setMeetingTranscriptContext } from '../../../services/meeting/meetingTranscriptContext'
 import {
   addMeetingMark,
+  callMeetingNotesAgent,
   discardMeeting,
   exportMeeting,
   meetingAiSettings,
@@ -18,6 +19,7 @@ import {
   regenerateMeetingAnswer,
   removeMeetingMark,
   saveMeetingNote,
+  setMeetingAiNotes,
   setMeetingLiveAnswers,
   setMeetingNotes,
 } from '../../../services/meeting/meetingService'
@@ -40,8 +42,11 @@ import { MeetingPhoneMenu } from './meeting/MeetingPhoneMenu'
 import { useMeetingSnapshot } from './meeting/useMeetingSnapshot'
 import { useFollowMeetingSession } from './meeting/useFollowMeetingSession'
 import { useSpeechLevels } from './meeting/useSpeechLevels'
+import { useMeetingAiContext } from './meeting/useMeetingAiContext'
+import { MeetingMarkComposer, type MeetingAiNotesActions } from './meeting/MeetingAiNotesPanel'
 import { formatClock } from './meeting/meetingDisplay'
 import './meeting/meetingPhone.css'
+import './meeting/meetingAi.css'
 
 const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
 const LEVEL_HISTORY = 90
@@ -72,6 +77,11 @@ function MeetingViewComponent() {
   const [folderOptions, setFolderOptions] = useState<string[]>([])
   // Off until the person turns them on: they send the transcript to the AI provider.
   const [liveAnswers, setLiveAnswers] = useState(false)
+  // Notas IA starts on (canvas «Grabando»); the backend keeps it off without an AI configured.
+  const [aiNotes, setAiNotes] = useState(true)
+  const { state: aiContextState, aiContext } = useMeetingAiContext(library)
+  // «Nueva marca» open, with the minute it was opened at.
+  const [markDraft, setMarkDraft] = useState<{ atMs: number | undefined } | null>(null)
   const [monitorId, setMonitorId] = useState<string | null>(null)
   const [filter, setFilter] = useState<MeetingFilter>(NO_FILTER)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -95,8 +105,8 @@ function MeetingViewComponent() {
   const [phoneSearchOpen, setPhoneSearchOpen] = useState(false)
 
   const meetingOptions = useMemo(
-    () => ({ liveAnswers, settings: meetingAiSettings(aiPreferences) }),
-    [aiPreferences, liveAnswers],
+    () => ({ liveAnswers, aiNotes, settings: meetingAiSettings(aiPreferences), aiContext }),
+    [aiContext, aiNotes, aiPreferences, liveAnswers],
   )
   const voice = useVoiceTranscription({
     draft: NO_DRAFT,
@@ -144,6 +154,7 @@ function MeetingViewComponent() {
     setExportMenuOpen(false)
     setPhoneSheet(null)
     setPhoneSearchOpen(false)
+    setMarkDraft(null)
   }, [stage])
 
   // A speaker merged into another no longer exists to filter by.
@@ -310,10 +321,43 @@ function MeetingViewComponent() {
   }
 
   const meetingId = snapshot?.id ?? null
-  const markMoment = () => meetingId && void run(() => addMeetingMark(meetingId), 'No se pudo marcar el momento.')
+  const recordingElapsedMs = voice.state.status === 'recording' || voice.state.status === 'paused' ? voice.state.elapsedMs : undefined
+  const openMarkComposer = () => {
+    if (meetingId) setMarkDraft({ atMs: recordingElapsedMs })
+  }
+  const saveMark = (label: string) => {
+    const draft = markDraft
+    setMarkDraft(null)
+    if (meetingId && draft) {
+      void run(() => addMeetingMark(meetingId, { label: label.trim() || undefined, atMs: draft.atMs }), 'No se pudo marcar el momento.')
+    }
+  }
   const toggleLiveAnswers = (enabled: boolean) => {
     setLiveAnswers(enabled)
     if (meetingId) void run(() => setMeetingLiveAnswers(meetingId, enabled, aiPreferences), 'No se pudieron cambiar las respuestas en vivo.')
+  }
+  const notesActions: MeetingAiNotesActions = {
+    libraryId: library?.id ?? null,
+    onToggleAiNotes: (enabled) => {
+      setAiNotes(enabled)
+      if (meetingId) void run(() => setMeetingAiNotes(meetingId, enabled, aiPreferences), 'No se pudo cambiar Notas IA.')
+    },
+    onCallNotesAgent: () => {
+      if (meetingId) void run(() => callMeetingNotesAgent(meetingId, aiPreferences), 'No se pudo llamar al agente.')
+    },
+    onAddOwnNote: async (text) => {
+      if (!meetingId) return false
+      setActionError(null)
+      try {
+        await addMeetingMark(meetingId, { label: text })
+        return true
+      } catch (error) {
+        setActionError(errorText(error, 'No se pudo agregar la nota.'))
+        return false
+      }
+    },
+    onRemoveMark: (markId) => meetingId && void run(() => removeMeetingMark(meetingId, markId), 'No se pudo quitar el momento.'),
+    onError: setActionError,
   }
   const saveNotes = useCallback((notes: string) => {
     if (meetingId) void setMeetingNotes(meetingId, notes).catch(() => undefined)
@@ -369,7 +413,7 @@ function MeetingViewComponent() {
     voice.dismissError()
   }
 
-  const elapsedMs = voice.state.status === 'recording' || voice.state.status === 'paused' ? voice.state.elapsedMs : 0
+  const elapsedMs = recordingElapsedMs ?? 0
   const speakerCount = snapshot?.speakers.length ?? 0
   const modelLabel = voice.modelPreparationError ? 'No se pudo preparar el modelo de voz'
     : !voice.isModelReady ? 'Preparando voz al iniciar Notia…'
@@ -509,6 +553,7 @@ function MeetingViewComponent() {
                 label="Más opciones"
                 icon={<EllipsisVertical size={18} aria-hidden="true" />}
                 items={[
+                  { label: 'Notas IA completas', onSelect: () => setPhoneSheet('ai-notes'), disabled: !snapshot },
                   { label: 'Notas rápidas', onSelect: () => setPhoneSheet('notes'), disabled: !snapshot },
                   { label: `Momentos marcados (${snapshot?.marks.length ?? 0})`, onSelect: () => setPhoneSheet('marks'), disabled: !snapshot },
                   { label: 'Cancelar grabación', onSelect: () => void onSession(voice.cancel)() },
@@ -551,7 +596,14 @@ function MeetingViewComponent() {
         </header>
         {errorMessage || notice ? <div className="notia-meeting-phone-banners">{banners}</div> : null}
         {stage === 'ready' ? (
-          <MeetingPhoneSetup tab={sourceTab} onSelectTab={setSourceTab} options={optionProps} live={liveSetup} upload={fileSetup} />
+          <MeetingPhoneSetup
+            tab={sourceTab}
+            onSelectTab={setSourceTab}
+            options={optionProps}
+            live={liveSetup}
+            upload={fileSetup}
+            aiContext={aiContextState}
+          />
         ) : stage === 'recording' ? (
           <MeetingPhoneRecording
             snapshot={snapshot}
@@ -559,11 +611,12 @@ function MeetingViewComponent() {
             levels={levels}
             isPaused={status === 'paused'}
             canMark={Boolean(meetingId) && status === 'recording'}
-            onMark={markMoment}
+            onMark={openMarkComposer}
             onPause={() => void onSession(voice.pause)()}
             onResume={() => void voice.resume().catch(() => undefined)}
             onStop={() => void onSession(voice.stop)()}
             {...answerActions}
+            notesActions={notesActions}
             sheet={phoneSheet}
             onCloseSheet={() => setPhoneSheet(null)}
           />
@@ -585,6 +638,9 @@ function MeetingViewComponent() {
             onSaveNote={() => void saveNote()}
             onOpenNote={() => void openFile(snapshot.savedNotePath ?? '')}
           />
+        ) : null}
+        {markDraft && stage === 'recording' ? (
+          <MeetingMarkComposer phone atMs={markDraft.atMs ?? elapsedMs} onSave={saveMark} onCancel={() => setMarkDraft(null)} />
         ) : null}
       </main>
     )
@@ -630,9 +686,22 @@ function MeetingViewComponent() {
           </div>
           {stage === 'recording' ? (
             <div className="notia-meeting-actions">
-              <button type="button" className="notia-meeting-secondary-button" onClick={markMoment} disabled={!meetingId || status !== 'recording'}>
-                <Flag size={14} aria-hidden="true" /> Marcar momento
-              </button>
+              <div className="notia-meeting-menu">
+                <button
+                  type="button"
+                  className="notia-meeting-secondary-button"
+                  aria-expanded={markDraft !== null}
+                  aria-controls={markDraft ? 'meeting-mark-popover' : undefined}
+                  data-open={markDraft ? 'true' : undefined}
+                  onClick={() => (markDraft ? setMarkDraft(null) : openMarkComposer())}
+                  disabled={!meetingId || status !== 'recording'}
+                >
+                  <Flag size={14} aria-hidden="true" /> Marcar momento
+                </button>
+                {markDraft ? (
+                  <MeetingMarkComposer atMs={markDraft.atMs ?? elapsedMs} onSave={saveMark} onCancel={() => setMarkDraft(null)} />
+                ) : null}
+              </div>
               {status === 'paused' ? (
                 <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.resume().catch(() => undefined)}>
                   <Play size={14} aria-hidden="true" /> Reanudar
@@ -700,9 +769,23 @@ function MeetingViewComponent() {
       {stage === 'ready' && sourceTab === 'file' ? (
         <MeetingUploadPanel {...fileSetup} {...optionProps} />
       ) : stage === 'ready' ? (
-        <MeetingReadyPanel {...liveSetup} {...optionProps} microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'} />
+        <MeetingReadyPanel
+          {...liveSetup}
+          {...optionProps}
+          aiContext={aiContextState}
+          microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'}
+        />
       ) : stage === 'recording' ? (
-        <MeetingRecordingPanel snapshot={snapshot} partialText={voice.visiblePartialText} levels={levels} {...answerActions} />
+        <MeetingRecordingPanel
+          snapshot={snapshot}
+          partialText={voice.visiblePartialText}
+          levels={levels}
+          onToggleLiveAnswers={answerActions.onToggleLiveAnswers}
+          onRegenerateAnswer={answerActions.onRegenerateAnswer}
+          onPinAnswer={answerActions.onPinAnswer}
+          notesActions={notesActions}
+          canAddNote={Boolean(meetingId)}
+        />
       ) : stage === 'processing' ? (
         <MeetingProcessingPanel {...processingProps} />
       ) : snapshot ? (

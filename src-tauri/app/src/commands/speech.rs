@@ -100,6 +100,15 @@ pub async fn start_speech_session(
     if payload.expected_speakers.is_some_and(|count| !(2..=MAX_EXPECTED_SPEAKERS).contains(&count)) {
         return Err(format!("La cantidad de hablantes debe estar entre 2 y {MAX_EXPECTED_SPEAKERS}."));
     }
+    let mut payload = payload;
+    if let Some(meeting) = payload.meeting.as_mut() {
+        meeting.ai_context = meeting
+            .ai_context
+            .take()
+            .map(notia_backend_core::meeting_ai::MeetingAiContext::normalized)
+            .transpose()
+            .map_err(|error| error.message)?;
+    }
     let phase = *state
         .phase
         .lock()

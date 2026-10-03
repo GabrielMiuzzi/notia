@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 
 const narrow = vi.hoisted(() => ({ value: true }))
@@ -89,6 +89,7 @@ describe('Meeting view on a phone', () => {
       marks: [],
       answers: [],
       liveAnswers: false,
+      aiNotes: { enabled: true, running: false, objective: '', decisions: [], openQuestions: [], topics: [], tasks: [] },
       insights: { keyPoints: [], tasks: [], corrected: false },
       suggestedQuestions: [],
       contextText: '',
@@ -96,6 +97,12 @@ describe('Meeting view on a phone', () => {
     renderView()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Finalizar' })).toBeTruthy())
     expect(screen.getByRole('button', { name: 'Más opciones' })).toBeTruthy()
+    // The assistant opens on Notas IA; its switch follows the tab shown.
+    expect(screen.getByRole('switch', { name: 'Notas IA' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('tab', { name: 'Respuestas' }))
     expect(screen.getByRole('switch', { name: 'Respuestas en vivo' }).getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Marcar' }))
+    expect(screen.getByRole('dialog').textContent).toContain('Nueva marca')
+    expect(screen.getByText('La grabación sigue mientras escribís.')).toBeTruthy()
   })
 })

@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Flag, Pause, Play, Sparkles, Square, X } from 'lucide-react'
+import { Flag, Pause, Play, Square, X } from 'lucide-react'
 import { NotiaModalShell } from '../../NotiaModalShell'
 import { MeetingLevelBars } from './MeetingLevelBars'
+import { MeetingAiNotesSheet, MeetingPhoneAiNotes, type MeetingAiNotesActions } from './MeetingAiNotesPanel'
 import {
   FOLLOW_THRESHOLD_PX,
   LiveLines,
   MeetingAnswerActions,
+  MeetingAssistantTabs,
   MeetingMarks,
   MeetingPreviousAnswers,
   NotesCard,
+  type MeetingAssistantTab,
 } from './MeetingRecordingPanel'
 import { formatClock, lineAtMoment } from './meetingDisplay'
 import type { SpeechLevelHistory } from './useSpeechLevels'
@@ -16,10 +19,11 @@ import type { MeetingAnswer, MeetingSnapshot } from '../../../../services/meetin
 
 /*
  * Recording stage of Meeting in the space of a phone (canvas «Notia ·
- * Meeting», board M2 «Grabando»): the levels, the transcript following the
- * newest line, the live answers as a sheet and the controls at the bottom.
- * Lines may arrive late and in bursts (Android has no live preview), so the
- * transcript only follows them while the person is at its end.
+ * Meeting», boards M2 «Grabando» and Mobile · Grabando): the levels, the
+ * transcript following the newest line, the live assistant (Notas IA and
+ * the live answers) and the controls at the bottom. Lines may arrive late
+ * and in bursts (Android has no live preview), so the transcript only
+ * follows them while the person is at its end.
  */
 
 const WAVE_BARS = 70
@@ -28,7 +32,7 @@ const WAVE_HEIGHT = 24
 const NO_ANSWERS: MeetingAnswer[] = []
 
 /** What the ⋮ menu of the recording opens. */
-export type MeetingPhoneSheet = 'notes' | 'marks'
+export type MeetingPhoneSheet = 'notes' | 'marks' | 'ai-notes'
 
 interface MeetingPhoneRecordingProps {
   snapshot: MeetingSnapshot | null
@@ -45,6 +49,7 @@ interface MeetingPhoneRecordingProps {
   onPinAnswer: (answerId: string, pinned: boolean) => void
   onSaveNotes: (notes: string) => void
   onRemoveMark: (markId: string) => void
+  notesActions: MeetingAiNotesActions
   sheet: MeetingPhoneSheet | null
   onCloseSheet: () => void
 }
@@ -64,6 +69,7 @@ export function MeetingPhoneRecording({
   onPinAnswer,
   onSaveNotes,
   onRemoveMark,
+  notesActions,
   sheet,
   onCloseSheet,
 }: MeetingPhoneRecordingProps) {
@@ -112,11 +118,12 @@ export function MeetingPhoneRecording({
         ) : null}
       </section>
 
-      <PhoneLiveAnswers
+      <PhoneAssistant
         snapshot={snapshot}
-        onToggle={onToggleLiveAnswers}
+        onToggleLiveAnswers={onToggleLiveAnswers}
         onRegenerate={onRegenerateAnswer}
         onPin={onPinAnswer}
+        notesActions={notesActions}
       />
 
       <div className="notia-meeting-phone-controls">
@@ -137,7 +144,15 @@ export function MeetingPhoneRecording({
         )}
       </div>
 
-      {sheet ? (
+      {sheet === 'ai-notes' && snapshot ? (
+        <MeetingAiNotesSheet
+          snapshot={snapshot}
+          actions={notesActions}
+          canAddNote={canMark || isPaused}
+          onShowMoment={showMoment}
+          onClose={onCloseSheet}
+        />
+      ) : sheet === 'notes' || sheet === 'marks' ? (
         <NotiaModalShell open onClose={onCloseSheet} size="md" panelClassName="notia-meeting-phone-sheet">
           <div className="notia-meeting-phone-sheet-top">
             <span className="notia-meeting-phone-handle" aria-hidden="true" />
@@ -169,63 +184,89 @@ function PhoneWave({ source, levels }: { source: 'microphone' | 'system'; levels
   )
 }
 
-interface PhoneLiveAnswersProps {
+interface PhoneAssistantProps {
   snapshot: MeetingSnapshot | null
-  onToggle: (enabled: boolean) => void
+  onToggleLiveAnswers: (enabled: boolean) => void
   onRegenerate: (answerId: string, shorter: boolean) => void
   onPin: (answerId: string, pinned: boolean) => void
+  notesActions: MeetingAiNotesActions
 }
 
-function PhoneLiveAnswers({ snapshot, onToggle, onRegenerate, onPin }: PhoneLiveAnswersProps) {
-  const enabled = snapshot?.liveAnswers ?? false
-  const answers = snapshot?.answers ?? []
-  const current = answers[answers.length - 1]
-  const previous = answers.slice(0, -1).reverse()
+/** «Asistente en vivo»: Notas IA or the live answers, with the switch of the tab shown. */
+function PhoneAssistant({ snapshot, onToggleLiveAnswers, onRegenerate, onPin, notesActions }: PhoneAssistantProps) {
+  const [tab, setTab] = useState<MeetingAssistantTab>('notes')
+  const enabled = tab === 'notes' ? snapshot?.aiNotes.enabled ?? false : snapshot?.liveAnswers ?? false
+  const toggle = () => (tab === 'notes' ? notesActions.onToggleAiNotes(!enabled) : onToggleLiveAnswers(!enabled))
 
   return (
-    <section className="notia-meeting-phone-answers" data-enabled={enabled ? 'true' : 'false'} aria-labelledby="meeting-phone-answers-title">
+    <section className="notia-meeting-phone-answers" data-enabled={enabled ? 'true' : 'false'} aria-label="Asistente en vivo">
       <span className="notia-meeting-phone-handle" aria-hidden="true" />
       <div className="notia-meeting-phone-answers-head">
-        <Sparkles size={16} strokeWidth={1.8} aria-hidden="true" />
-        <h2 id="meeting-phone-answers-title">Respuestas en vivo</h2>
+        <MeetingAssistantTabs snapshot={snapshot} selected={tab} onSelect={setTab} phone />
         <button
           type="button"
           role="switch"
           className="notia-meeting-phone-switch"
           aria-checked={enabled}
-          aria-labelledby="meeting-phone-answers-title"
+          aria-label={tab === 'notes' ? 'Notas IA' : 'Respuestas en vivo'}
           disabled={!snapshot}
-          onClick={() => onToggle(!enabled)}
+          onClick={toggle}
         >
           <span aria-hidden="true" />
         </button>
       </div>
-      <div className="notia-meeting-phone-answers-box">
-        {!enabled ? (
-          <p className="notia-meeting-phone-answers-empty">Activalo y, cuando alguien haga una pregunta, la respuesta aparece acá.</p>
-        ) : !current ? (
-          <p className="notia-meeting-phone-answers-empty">Cuando alguien haga una pregunta, la respuesta sugerida aparece acá.</p>
+      <div
+        className="notia-meeting-phone-answers-box"
+        role="tabpanel"
+        id={`meeting-assistant-panel-${tab}`}
+        aria-labelledby={`meeting-assistant-tab-${tab}`}
+      >
+        {tab === 'notes' ? (
+          snapshot ? <MeetingPhoneAiNotes snapshot={snapshot} onCallAgent={notesActions.onCallNotesAgent} /> : null
         ) : (
-          <>
-            <div className="notia-meeting-phone-answer">
-              <div className="notia-meeting-answer-label notia-meeting-answer-label--accent">
-                Pregunta · <time>{formatClock(current.askedAtMs)}</time>
-              </div>
-              <p className="notia-meeting-answer-question">{current.question}</p>
-              {current.status === 'failed' ? (
-                <p className="notia-meeting-error-text" role="alert">{current.error ?? 'No se pudo generar la respuesta.'}</p>
-              ) : (
-                <p className="notia-meeting-answer-text" aria-live="polite">
-                  {current.text}
-                  {current.status === 'generating' ? <span className="notia-meeting-caret" aria-hidden="true" /> : null}
-                </p>
-              )}
-              <MeetingAnswerActions key={current.id} answer={current} onRegenerate={onRegenerate} onPin={onPin} />
-            </div>
-            <MeetingPreviousAnswers answers={previous} onRegenerate={onRegenerate} onPin={onPin} />
-          </>
+          <PhoneLiveAnswers snapshot={snapshot} onRegenerate={onRegenerate} onPin={onPin} />
         )}
       </div>
     </section>
+  )
+}
+
+interface PhoneLiveAnswersProps {
+  snapshot: MeetingSnapshot | null
+  onRegenerate: (answerId: string, shorter: boolean) => void
+  onPin: (answerId: string, pinned: boolean) => void
+}
+
+function PhoneLiveAnswers({ snapshot, onRegenerate, onPin }: PhoneLiveAnswersProps) {
+  const enabled = snapshot?.liveAnswers ?? false
+  const answers = snapshot?.answers ?? []
+  const current = answers[answers.length - 1]
+  const previous = answers.slice(0, -1).reverse()
+
+  if (!enabled) {
+    return <p className="notia-meeting-phone-answers-empty">Activalo y, cuando alguien haga una pregunta, la respuesta aparece acá.</p>
+  }
+  if (!current) {
+    return <p className="notia-meeting-phone-answers-empty">Cuando alguien haga una pregunta, la respuesta sugerida aparece acá.</p>
+  }
+  return (
+    <>
+      <div className="notia-meeting-phone-answer">
+        <div className="notia-meeting-answer-label notia-meeting-answer-label--accent">
+          Pregunta · <time>{formatClock(current.askedAtMs)}</time>
+        </div>
+        <p className="notia-meeting-answer-question">{current.question}</p>
+        {current.status === 'failed' ? (
+          <p className="notia-meeting-error-text" role="alert">{current.error ?? 'No se pudo generar la respuesta.'}</p>
+        ) : (
+          <p className="notia-meeting-answer-text" aria-live="polite">
+            {current.text}
+            {current.status === 'generating' ? <span className="notia-meeting-caret" aria-hidden="true" /> : null}
+          </p>
+        )}
+        <MeetingAnswerActions key={current.id} answer={current} onRegenerate={onRegenerate} onPin={onPin} />
+      </div>
+      <MeetingPreviousAnswers answers={previous} onRegenerate={onRegenerate} onPin={onPin} />
+    </>
   )
 }

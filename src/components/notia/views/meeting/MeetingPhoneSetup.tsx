@@ -1,8 +1,10 @@
-import { useRef, type ChangeEvent } from 'react'
+import { useRef, useState, type ChangeEvent } from 'react'
 import { Activity, AlignLeft, Folder, Lock, Mic, MonitorSpeaker, Video, X } from 'lucide-react'
 import { MEETING_MEDIA_ACCEPT } from '../../../../services/meeting/meetingMediaService'
+import { MeetingAiContextSheet } from './MeetingAiContextPicker'
 import { MeetingLevelBars } from './MeetingLevelBars'
-import { MeetingOptionRows, type MeetingOptionsProps } from './MeetingOptions'
+import { MeetingOptionRows, OptionButtonRow, type MeetingOptionsProps } from './MeetingOptions'
+import { describeAiContext, type MeetingAiContextState } from './useMeetingAiContext'
 import type { MeetingLiveSetupProps } from './MeetingReadyPanel'
 import { MEETING_SOURCE_PANEL_ID, MeetingSourceTabs, type MeetingSourceTab } from './MeetingSourceTabs'
 import type { MeetingFileSetupProps } from './MeetingUploadPanel'
@@ -24,9 +26,20 @@ interface MeetingPhoneSetupProps {
   options: MeetingOptionsProps
   live: MeetingLiveSetupProps
   upload: MeetingFileSetupProps
+  /** What the recording's AI may consult (a file has no live AI). */
+  aiContext: MeetingAiContextState
 }
 
-export function MeetingPhoneSetup({ tab, onSelectTab, options, live, upload }: MeetingPhoneSetupProps) {
+export function MeetingPhoneSetup({ tab, onSelectTab, options, live, upload, aiContext }: MeetingPhoneSetupProps) {
+  const [contextOpen, setContextOpen] = useState(false)
+  const contextRow = tab === 'live' ? (
+    <OptionButtonRow
+      label="Contexto IA"
+      value={describeAiContext(aiContext)}
+      disabled={!aiContext.libraryName}
+      onClick={() => setContextOpen(true)}
+    />
+  ) : null
   return (
     <div className="notia-meeting-phone-stage">
       <div className="notia-meeting-phone-setup">
@@ -40,10 +53,11 @@ export function MeetingPhoneSetup({ tab, onSelectTab, options, live, upload }: M
         <MeetingSourceTabs phone selected={tab} onSelect={onSelectTab} />
         <div className="notia-meeting-phone-panel" id={MEETING_SOURCE_PANEL_ID} role="tabpanel">
           {tab === 'file' ? <PhoneFilePicker {...upload} /> : <PhoneSources {...live} />}
-          <MeetingOptionRows {...options} />
+          <MeetingOptionRows {...options} leadingRow={contextRow} />
         </div>
       </div>
       {tab === 'file' ? <PhoneTranscribeBar {...upload} /> : <PhoneRecordButton {...live} />}
+      {contextOpen && tab === 'live' ? <MeetingAiContextSheet state={aiContext} onClose={() => setContextOpen(false)} /> : null}
     </div>
   )
 }

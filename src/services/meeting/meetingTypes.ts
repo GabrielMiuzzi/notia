@@ -82,6 +82,67 @@ export interface MeetingMediaFile extends MeetingSourceFile {
   peaks: number[]
 }
 
+/** A topic of the Notas IA, the newest first. */
+export interface MeetingNoteTopic {
+  title: string
+  atMs: number
+  items: string[]
+  /** Being discussed now (the last one, while recording). */
+  current: boolean
+}
+
+export interface MeetingNoteTask {
+  id: string
+  text: string
+  owner: string
+  /** `H1` for «Hablante 1»; empty without an owner. */
+  ownerInitials: string
+  due: string
+  sent: boolean
+}
+
+/** The notes the agent rewrites while the meeting goes on. */
+export interface MeetingAiNotes {
+  enabled: boolean
+  running: boolean
+  error?: string
+  /** When the next automatic pass runs (ms since the epoch), while recording. */
+  nextPassAt?: number
+  objective: string
+  decisions: string[]
+  openQuestions: string[]
+  topics: MeetingNoteTopic[]
+  tasks: MeetingNoteTask[]
+}
+
+/** The part of the library the meeting's AI consults. */
+export interface MeetingAiContext {
+  libraryId: string
+  /** A folder, subfolders included; the whole library when `null`. */
+  folder: string | null
+  /** With the whole library, the allowed contexts (`sin-contexto` for the notes without one). */
+  contexts: string[] | null
+}
+
+export interface MeetingContextFolder {
+  path: string
+  noteCount: number
+}
+
+export interface MeetingContextOption {
+  tag: string
+  label: string
+  color?: string
+  /** Sensitive: off until the person turns it on. */
+  locked: boolean
+  selectedByDefault: boolean
+}
+
+export interface MeetingContextOptions {
+  folders: MeetingContextFolder[]
+  contexts: MeetingContextOption[]
+}
+
 export interface MeetingSnapshot {
   id: string
   status: MeetingStatus
@@ -99,6 +160,7 @@ export interface MeetingSnapshot {
   marks: MeetingMark[]
   answers: MeetingAnswer[]
   liveAnswers: boolean
+  aiNotes: MeetingAiNotes
   insights: MeetingInsights
   savedNotePath?: string
   suggestedQuestions: MeetingQuestion[]

@@ -47,6 +47,7 @@ pub mod mail_accounts;
 pub mod mail_tools;
 pub mod markdown_editing;
 pub mod meeting;
+pub mod meeting_ai;
 pub mod note_diagram;
 pub mod note_ink;
 pub mod note_preview;

@@ -1,6 +1,7 @@
 import { callBackend, subscribeBackend, type Unsubscribe } from '../transport'
 import { resolveAiPreferencesForTransport, type AiPreferences } from '../preferences/aiSettingsStorage'
 import type {
+  MeetingContextOptions,
   MeetingExportFormat,
   MeetingFilter,
   MeetingInsightsRequest,
@@ -53,8 +54,12 @@ export const getMeetingContext = (meetingId: string) =>
 export const discardMeeting = (meetingId: string) =>
   call<void>('meeting_discard', { meetingId }, 'No se pudo empezar una nueva grabación.')
 
-export const addMeetingMark = (meetingId: string) =>
-  call<MeetingMark>('meeting_add_mark', { meetingId }, 'No se pudo marcar el momento.')
+/**
+ * Marks a moment with what the person wrote; without a label, with the last
+ * words said. `atMs` is the moment the person started the mark.
+ */
+export const addMeetingMark = (meetingId: string, mark: { label?: string; atMs?: number } = {}) =>
+  call<MeetingMark>('meeting_add_mark', { meetingId, label: mark.label, atMs: mark.atMs }, 'No se pudo marcar el momento.')
 
 export const removeMeetingMark = (meetingId: string, markId: string) =>
   call<void>('meeting_remove_mark', { meetingId, markId }, 'No se pudo quitar el momento.')
@@ -69,7 +74,25 @@ export const setMeetingLiveAnswers = (meetingId: string, enabled: boolean, prefe
     settings: meetingAiSettings(preferences),
   }, 'No se pudieron cambiar las respuestas en vivo.')
 
-export const regenerateMeetingAnswer = (meetingId: string, answerId: string, shorter: boolean, preferences: AiPreferences) =>
+export const setMeetingAiNotes = (meetingId: string, enabled: boolean, preferences: AiPreferences) =>
+  call<void>('meeting_set_ai_notes', {
+    meetingId,
+    enabled,
+    settings: meetingAiSettings(preferences),
+  }, 'No se pudo cambiar Notas IA.')
+
+/** «Llamar agente»: the notes are rewritten now; the snapshot says when it ends. */
+export const callMeetingNotesAgent = (meetingId: string, preferences: AiPreferences) =>
+  call<void>('meeting_call_notes_agent', {
+    meetingId,
+    settings: meetingAiSettings(preferences),
+  }, 'No se pudo llamar al agente.')
+
+/** The folders and contexts the AI of a recording can be limited to. */
+export const getMeetingContextOptions = (libraryId: string) =>
+  call<MeetingContextOptions>('meeting_ai_context_options', { libraryId }, 'No se pudieron leer las carpetas y los contextos.')
+
+export const regenerateMeetingAnswer =(meetingId: string, answerId: string, shorter: boolean, preferences: AiPreferences) =>
   call<void>('meeting_regenerate_answer', {
     meetingId,
     answerId,

@@ -1,3 +1,4 @@
+import type { MeetingAiContext } from '../meeting/meetingTypes'
 
 export type SpeechPermissionState = 'granted' | 'denied' | 'prompt' | 'unavailable'
 
@@ -86,8 +87,12 @@ export interface SpeechLevelsEvent {
 
 export interface MeetingSessionOptions {
   liveAnswers: boolean
-  /** Provider preferences for the live answers. */
+  /** Notas IA starts on. */
+  aiNotes?: boolean
+  /** Provider preferences for the live answers and Notas IA. */
   settings: unknown
+  /** The part of the library the meeting's AI consults; none when missing. */
+  aiContext?: MeetingAiContext | null
 }
 
 export interface StartSpeechSessionInput {

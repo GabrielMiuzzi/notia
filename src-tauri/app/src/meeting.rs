@@ -17,9 +17,17 @@
 //! and its export (`meeting_store_note`), the tasks (`meeting_store_tasks`)
 //! and the AI (`meeting_ai_complete`), because the AI settings of the
 //! library point to the host's provider.
+//!
+//! The AI of a recording (live answers and Notas IA) may consult the part
+//! of the library the person chose when starting it: the passages that
+//! match each request travel in its prompt. They are read where the library
+//! is (this device, or the host for a client), once every
+//! [`CORPUS_TTL`]. Notas IA rewrites its notes every
+//! [`meeting_ai::NOTES_PASS_INTERVAL_MS`] while recording, once more when
+//! the recording stops, and whenever the person calls the agent.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use notia_backend_core::ai_settings::{AiSettings, AiSettingsInput};
@@ -27,6 +35,7 @@ use notia_backend_core::meeting::{
     self, MeetingFilter, MeetingInsightsRequest, MeetingMark, MeetingRecord, MeetingSegment,
     MeetingSnapshotDto, MeetingSourceFile, MeetingSources, MeetingStart, MeetingStatus, SavedMeetingNote,
 };
+use notia_backend_core::meeting_ai::{self, ContextCorpus, LibraryNote, MeetingAiContext, MeetingContextOptionsDto};
 use notia_backend_core::RequestControl;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -43,23 +52,43 @@ const LINE_EVENT: &str = "meeting://line";
 const ANSWER_EVENT_INTERVAL: Duration = Duration::from_millis(80);
 const MAX_FOLDER_CHARS: usize = 200;
 const MAX_NOTE_NAME_ATTEMPTS: usize = 50;
+/// How long the library notes read for a meeting's AI are reused.
+const CORPUS_TTL: Duration = Duration::from_secs(10 * 60);
+/// Characters of the last lines a live answer looks up in the library,
+/// besides its question.
+const LIVE_ANSWER_QUERY_CHARS: usize = 600;
+/// Time between two looks at the Notas IA schedule.
+const NOTES_SCHEDULE_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 pub(crate) struct MeetingState {
     inner: Mutex<MeetingInner>,
     /// "Pasar por IA" is running.
     generating: AtomicBool,
+    /// The library notes last read for a meeting's AI.
+    corpus: Mutex<Option<CachedCorpus>>,
+    /// One reading of the library at a time.
+    corpus_build: Mutex<()>,
+}
+
+struct CachedCorpus {
+    context: MeetingAiContext,
+    read_at: Instant,
+    corpus: Arc<ContextCorpus>,
 }
 
 #[derive(Default)]
 struct MeetingInner {
     record: Option<MeetingRecord>,
+    /// Provider preferences of the live answers and Notas IA.
+    settings: Option<AiSettings>,
+    /// The part of the library the meeting's AI consults.
+    ai_context: Option<MeetingAiContext>,
     live: LiveAnswers,
 }
 
 #[derive(Default)]
 struct LiveAnswers {
-    settings: Option<AiSettings>,
     /// Answer being generated and how to cancel it.
     running: Option<(String, RequestControl)>,
     /// Latest question asked while another answer was being generated.
@@ -80,8 +109,29 @@ struct AnswerJob {
     meeting_id: String,
     answer_id: String,
     prompt: String,
+    library: Option<LibraryLookup>,
     settings: AiSettings,
     control: RequestControl,
+}
+
+/// A notes pass ready to ask the AI.
+struct NotesJob {
+    meeting_id: String,
+    prompt: String,
+    library: Option<LibraryLookup>,
+    settings: AiSettings,
+}
+
+/// What a request may read of the library and what to look up in it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LibraryLookup {
+    context: MeetingAiContext,
+    query: String,
+}
+
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
 fn state(app: &AppHandle) -> &MeetingState {
@@ -112,6 +162,7 @@ pub(crate) enum MeetingAiKind {
     Correction,
     Insights,
     LiveAnswer,
+    Notes,
 }
 
 impl MeetingAiKind {
@@ -120,7 +171,79 @@ impl MeetingAiKind {
             Self::Correction => meeting::CORRECTION_SYSTEM_PROMPT,
             Self::Insights => meeting::INSIGHTS_SYSTEM_PROMPT,
             Self::LiveAnswer => meeting::LIVE_ANSWER_SYSTEM_PROMPT,
+            Self::Notes => meeting_ai::NOTES_SYSTEM_PROMPT,
         }
+    }
+
+    /// Characters of library passages the request carries.
+    fn library_budget(self) -> usize {
+        match self {
+            Self::LiveAnswer => meeting_ai::LIVE_ANSWER_LIBRARY_CHARS,
+            Self::Notes => meeting_ai::NOTES_LIBRARY_CHARS,
+            Self::Correction | Self::Insights => 0,
+        }
+    }
+}
+
+/// The notes of the library `context` admits, read once every
+/// [`CORPUS_TTL`]. Hidden folders (`.agent`, `.notia`) stay out.
+fn library_corpus(app: &AppHandle, context: &MeetingAiContext) -> Result<Arc<ContextCorpus>, BackendError> {
+    let meeting_state = state(app);
+    let cached = || {
+        meeting_state.corpus.lock().ok().and_then(|cache| {
+            cache
+                .as_ref()
+                .filter(|cached| cached.context == *context && cached.read_at.elapsed() < CORPUS_TTL)
+                .map(|cached| cached.corpus.clone())
+        })
+    };
+    if let Some(corpus) = cached() {
+        return Ok(corpus);
+    }
+    let _building = meeting_state.corpus_build.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(corpus) = cached() {
+        return Ok(corpus);
+    }
+    let notes = crate::library_graph::library_notes(app, &context.library_id)?
+        .into_iter()
+        .filter(|(path, tag, _)| {
+            !path.split('/').any(|segment| segment.starts_with('.')) && context.admits(path, tag.as_deref())
+        })
+        .map(|(path, _, content)| LibraryNote { path, content })
+        .collect();
+    let corpus = Arc::new(ContextCorpus::new(notes));
+    if let Ok(mut cache) = meeting_state.corpus.lock() {
+        *cache = Some(CachedCorpus { context: context.clone(), read_at: Instant::now(), corpus: corpus.clone() });
+    }
+    Ok(corpus)
+}
+
+/// `prompt` with the library passages that match the lookup. Without the
+/// library (unreadable, nothing matches) the request goes on with the
+/// transcript alone.
+fn with_library_passages(app: &AppHandle, kind: MeetingAiKind, prompt: &str, library: Option<&LibraryLookup>) -> String {
+    let Some(lookup) = library.filter(|_| kind.library_budget() > 0) else {
+        return prompt.to_string();
+    };
+    match library_corpus(app, &lookup.context) {
+        Ok(corpus) => meeting_ai::with_library(prompt, corpus.passages(&lookup.query, kind.library_budget()).as_deref()),
+        Err(error) => {
+            log::warn!("[notia:meeting] the library context could not be read ({:?})", error.code);
+            prompt.to_string()
+        }
+    }
+}
+
+/// Reads the library context in the background so the first request of the
+/// recording does not wait for it.
+fn warm_library_corpus(app: AppHandle, context: MeetingAiContext) {
+    let spawned = std::thread::Builder::new().name("notia-meeting-library".to_string()).spawn(move || {
+        if let Err(error) = library_corpus(&app, &context) {
+            log::warn!("[notia:meeting] the library context could not be read ({:?})", error.code);
+        }
+    });
+    if let Err(error) = spawned {
+        log::warn!("[notia:meeting] library context thread not started: {error}");
     }
 }
 
@@ -135,17 +258,30 @@ fn settings_input(settings: &AiSettings) -> AiSettingsInput {
     }
 }
 
-/// Completes an AI request of a meeting: on this device, or on the host
-/// for a client (its library's provider is the host's).
-fn complete_text(app: &AppHandle, settings: &AiSettings, kind: MeetingAiKind, prompt: &str) -> Result<String, BackendError> {
+/// Completes an AI request of a meeting, with the library passages of
+/// `library`: on this device, or on the host for a client (its library and
+/// provider are the host's).
+fn complete_text(
+    app: &AppHandle,
+    settings: &AiSettings,
+    kind: MeetingAiKind,
+    prompt: &str,
+    library: Option<&LibraryLookup>,
+) -> Result<String, BackendError> {
     if uses_host(app) {
         return crate::host_client::call_host_blocking(
             app,
             "meeting_ai_complete",
-            json!({ "payload": { "settings": settings_input(settings), "kind": kind, "prompt": prompt } }),
+            json!({ "payload": {
+                "settings": settings_input(settings),
+                "kind": kind,
+                "prompt": prompt,
+                "library": library,
+            } }),
         );
     }
-    crate::ai_tasks::complete(app, settings, kind.system_prompt(), prompt, Vec::new())
+    let prompt = with_library_passages(app, kind, prompt, library);
+    crate::ai_tasks::complete(app, settings, kind.system_prompt(), &prompt, Vec::new())
 }
 
 fn missing() -> BackendError {
@@ -182,15 +318,22 @@ pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, 
     let settings = options.settings.as_ref().map(AiSettingsInput::normalize);
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
-    inner.record = Some(MeetingRecord::new(
+    let mut record = MeetingRecord::new(
         session_id,
         start_labels(),
         MeetingSources { microphone: sources.microphone, system: sources.system },
         options.live_answers && settings.is_some(),
-    ));
-    inner.live.settings = settings;
+    );
+    record.set_ai_notes(options.ai_notes && settings.is_some(), now_ms());
+    inner.record = Some(record);
+    inner.settings = settings;
+    inner.ai_context = options.ai_context.clone();
     drop(inner);
     announce(app, session_id);
+    if let Some(context) = options.ai_context.clone().filter(|_| !uses_host(app)) {
+        warm_library_corpus(app.clone(), context);
+    }
+    spawn_notes_schedule(app.clone(), session_id.to_string());
 }
 
 /// A meeting transcribed from `file`. It exists before the first line of
@@ -201,7 +344,8 @@ pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceF
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
     inner.record = Some(MeetingRecord::from_file(session_id, start_labels(), file));
-    inner.live.settings = None;
+    inner.settings = None;
+    inner.ai_context = None;
     drop(inner);
     announce(app, session_id);
 }
@@ -308,13 +452,23 @@ fn request_answer(inner: &mut MeetingInner, question: String, asked_at_ms: u64) 
         inner.live.queued = Some((question, asked_at_ms));
         return None;
     }
-    let settings = inner.live.settings.clone()?;
+    let settings = inner.settings.clone()?;
     let record = inner.record.as_mut()?;
     let answer_id = record.begin_answer(&question, asked_at_ms)?;
     let prompt = meeting::live_answer_prompt(&record.recent_context(), &question);
+    let library = answer_lookup(inner.ai_context.as_ref(), record, &question);
     let control = crate::ai_tasks::task_control();
     inner.live.running = Some((answer_id.clone(), control.clone()));
-    Some(AnswerJob { meeting_id: record.id.clone(), answer_id, prompt, settings, control })
+    Some(AnswerJob { meeting_id: record.id.clone(), answer_id, prompt, library, settings, control })
+}
+
+/// What a live answer looks up in the library: its question and the last
+/// words said.
+fn answer_lookup(context: Option<&MeetingAiContext>, record: &MeetingRecord, question: &str) -> Option<LibraryLookup> {
+    context.map(|context| LibraryLookup {
+        context: context.clone(),
+        query: format!("{question}\n{}", record.recent_lines(LIVE_ANSWER_QUERY_CHARS)),
+    })
 }
 
 /// Runs `job` and then each question queued meanwhile, on one thread.
@@ -343,13 +497,15 @@ fn run_answer(app: &AppHandle, job: AnswerJob) -> Option<AnswerJob> {
     };
     // A client asks its host, which answers at once instead of streaming.
     let result = if uses_host(app) {
-        complete_text(app, &job.settings, MeetingAiKind::LiveAnswer, &job.prompt).inspect(|text| show(text))
+        complete_text(app, &job.settings, MeetingAiKind::LiveAnswer, &job.prompt, job.library.as_ref())
+            .inspect(|text| show(text))
     } else {
+        let prompt = with_library_passages(app, MeetingAiKind::LiveAnswer, &job.prompt, job.library.as_ref());
         crate::ai_tasks::stream_complete(
             app,
             &job.settings,
             meeting::LIVE_ANSWER_SYSTEM_PROMPT,
-            &job.prompt,
+            &prompt,
             &job.control,
             &mut |text| {
                 if last_event.elapsed() >= ANSWER_EVENT_INTERVAL {
@@ -372,6 +528,93 @@ fn run_answer(app: &AppHandle, job: AnswerJob) -> Option<AnswerJob> {
     };
     announce(app, &job.meeting_id);
     next
+}
+
+// --- Notas IA -----------------------------------------------------------------
+
+/// Starts a notes pass of `meeting_id`: `manual` for "Llamar agente". `None`
+/// when an automatic pass has nothing new to read.
+fn begin_notes(app: &AppHandle, meeting_id: &str, manual: bool) -> Result<Option<NotesJob>, BackendError> {
+    let job = {
+        let mut guard = lock(app)?;
+        let inner = &mut *guard;
+        let record = inner.record.as_mut().filter(|record| record.id == meeting_id).ok_or_else(missing)?;
+        let settings = inner
+            .settings
+            .clone()
+            .ok_or_else(|| BackendError::invalid_input("Configurá la IA para usar Notas IA."))?;
+        let Some(pass) = record.begin_notes_pass(manual)? else { return Ok(None) };
+        let library = inner.ai_context.clone().map(|context| LibraryLookup { context, query: pass.query });
+        NotesJob { meeting_id: meeting_id.to_string(), prompt: pass.prompt, library, settings }
+    };
+    announce(app, meeting_id);
+    Ok(Some(job))
+}
+
+/// Asks the AI for the notes of `job` and keeps them; while recording, the
+/// next automatic pass comes one interval later.
+fn finish_notes(app: &AppHandle, job: NotesJob) {
+    let answer = complete_text(app, &job.settings, MeetingAiKind::Notes, &job.prompt, job.library.as_ref())
+        .map_err(|error| error.message);
+    let finished = with_record(app, &job.meeting_id, |record| {
+        let next = (record.status == MeetingStatus::Live).then(|| now_ms() + meeting_ai::NOTES_PASS_INTERVAL_MS);
+        record.finish_notes_pass(answer, next);
+        Ok(())
+    });
+    if finished.is_ok() {
+        announce(app, &job.meeting_id);
+    }
+}
+
+/// The automatic notes passes of the recording `meeting_id`, on their own
+/// thread: each one when it is due, and a last one with what was said
+/// since the previous pass when the recording stops.
+fn spawn_notes_schedule(app: AppHandle, meeting_id: String) {
+    let spawned = std::thread::Builder::new().name("notia-meeting-notes".to_string()).spawn(move || loop {
+        std::thread::sleep(NOTES_SCHEDULE_TICK);
+        let (live, due, enabled, running) = {
+            let Ok(inner) = lock(&app) else { return };
+            let Some(record) = inner.record.as_ref().filter(|record| record.id == meeting_id) else { return };
+            let notes = &record.ai_notes;
+            (record.status == MeetingStatus::Live, record.notes_pass_due(now_ms()), notes.enabled, notes.running)
+        };
+        if live {
+            if !due {
+                continue;
+            }
+            match begin_notes(&app, &meeting_id, false) {
+                Ok(Some(job)) => finish_notes(&app, job),
+                // Nothing new, or no AI: the next look is one interval later.
+                started => {
+                    if let Err(error) = started {
+                        log::warn!("[notia:meeting] the automatic notes pass did not start ({:?})", error.code);
+                    }
+                    let postponed = with_record(&app, &meeting_id, |record| {
+                        record.ai_notes.next_pass_at = Some(now_ms() + meeting_ai::NOTES_PASS_INTERVAL_MS);
+                        Ok(())
+                    });
+                    if postponed.is_ok() {
+                        announce(&app, &meeting_id);
+                    }
+                }
+            }
+            continue;
+        }
+        if !enabled {
+            return;
+        }
+        // The pass the person called finishes before the last one.
+        if running {
+            continue;
+        }
+        if let Ok(Some(job)) = begin_notes(&app, &meeting_id, false) {
+            finish_notes(&app, job);
+        }
+        return;
+    });
+    if let Err(error) = spawned {
+        log::warn!("[notia:meeting] notes schedule thread not started: {error}");
+    }
 }
 
 // --- Commands ---------------------------------------------------------------
@@ -455,12 +698,27 @@ pub(crate) fn meeting_discard(app: AppHandle, payload: MeetingIdPayload) -> Resu
     Ok(())
 }
 
-/// Marks the current moment of the recording.
-pub(crate) fn meeting_add_mark(app: AppHandle, payload: MeetingIdPayload) -> Result<MeetingMark, BackendError> {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingAddMarkPayload {
+    meeting_id: String,
+    /// What the person wants to remember; the last words said when missing.
+    #[serde(default)]
+    label: Option<String>,
+    /// The moment the person started the mark (ms of the recording); now
+    /// when missing. A later moment than now is now.
+    #[serde(default)]
+    at_ms: Option<u64>,
+}
+
+/// Marks a moment of the recording: the current one, or the one the person
+/// started the mark at.
+pub(crate) fn meeting_add_mark(app: AppHandle, payload: MeetingAddMarkPayload) -> Result<MeetingMark, BackendError> {
     let speech = app.state::<crate::services::speech_service::SpeechRuntimeState>();
-    let at_ms = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id)
+    let position_ms = crate::services::speech_service::session_position_ms(&speech, &payload.meeting_id)
         .map_err(BackendError::invalid_input)?;
-    let mark = with_record(&app, &payload.meeting_id, |record| record.add_mark(at_ms))?;
+    let at_ms = payload.at_ms.map_or(position_ms, |at_ms| at_ms.min(position_ms));
+    let mark = with_record(&app, &payload.meeting_id, |record| record.add_mark(at_ms, payload.label.as_deref()))?;
     announce(&app, &payload.meeting_id);
     Ok(mark)
 }
@@ -511,13 +769,95 @@ pub(crate) fn meeting_set_live_answers(app: AppHandle, payload: MeetingLiveAnswe
     let record = inner.record.as_mut().filter(|record| record.id == payload.meeting_id).ok_or_else(missing)?;
     record.live_answers = payload.enabled;
     if payload.enabled {
-        inner.live.settings = settings;
+        inner.settings = settings;
     } else {
         inner.live.cancel();
     }
     drop(guard);
     announce(&app, &payload.meeting_id);
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingAiNotesPayload {
+    meeting_id: String,
+    enabled: bool,
+    #[serde(default)]
+    settings: Option<AiSettingsInput>,
+}
+
+/// Turns Notas IA on or off. The notes taken stay either way.
+pub(crate) fn meeting_set_ai_notes(app: AppHandle, payload: MeetingAiNotesPayload) -> Result<(), BackendError> {
+    let mut guard = lock(&app)?;
+    let inner = &mut *guard;
+    let settings = payload.settings.as_ref().map(AiSettingsInput::normalize);
+    if payload.enabled && settings.is_none() {
+        return Err(BackendError::invalid_input("Configurá la IA para usar Notas IA."));
+    }
+    let record = inner.record.as_mut().filter(|record| record.id == payload.meeting_id).ok_or_else(missing)?;
+    if record.source_file.is_some() {
+        return Err(BackendError::invalid_input("Notas IA acompaña las grabaciones, no los archivos subidos."));
+    }
+    record.set_ai_notes(payload.enabled, now_ms());
+    if settings.is_some() {
+        inner.settings = settings;
+    }
+    drop(guard);
+    announce(&app, &payload.meeting_id);
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingCallNotesAgentPayload {
+    meeting_id: String,
+    #[serde(default)]
+    settings: Option<AiSettingsInput>,
+}
+
+/// "Llamar agente": a notes pass now, with everything said so far. It runs
+/// in the background; the snapshot says when it ends.
+pub(crate) fn meeting_call_notes_agent(app: AppHandle, payload: MeetingCallNotesAgentPayload) -> Result<(), BackendError> {
+    if let Some(settings) = &payload.settings {
+        lock(&app)?.settings = Some(settings.normalize());
+    }
+    let job = begin_notes(&app, &payload.meeting_id, true)?
+        .ok_or_else(|| BackendError::invalid_input("Todavía no hay nada transcripto para tomar notas."))?;
+    let worker = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("notia-meeting-notes-call".to_string())
+        .spawn(move || finish_notes(&worker, job));
+    if let Err(error) = spawned {
+        log::warn!("[notia:meeting] notes agent thread not started: {error}");
+        let _ = with_record(&app, &payload.meeting_id, |record| {
+            record.finish_notes_pass(Err("No se pudo llamar al agente. Probá de nuevo.".to_string()), None);
+            Ok(())
+        });
+        announce(&app, &payload.meeting_id);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingContextOptionsPayload {
+    library_id: String,
+}
+
+/// The folders and contexts the AI of a recording can be limited to. Runs
+/// where the library is (the host for a client).
+pub(crate) async fn meeting_ai_context_options(
+    app: AppHandle,
+    payload: MeetingContextOptionsPayload,
+) -> Result<MeetingContextOptionsDto, BackendError> {
+    crate::host::async_runtime::spawn_blocking(move || {
+        let (files, _) = crate::library_inventory::inventory_files(&app, &payload.library_id)?;
+        let catalog = crate::library_graph::context_tags(&app, &payload.library_id);
+        Ok(meeting_ai::context_options(&files, &catalog))
+    })
+    .await
+    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron leer las carpetas y los contextos.", true))?
 }
 
 #[derive(Debug, Deserialize)]
@@ -547,12 +887,14 @@ pub(crate) fn meeting_regenerate_answer(app: AppHandle, payload: MeetingRegenera
         } else {
             meeting::live_answer_prompt(&context, &question)
         };
+        let library = answer_lookup(inner.ai_context.as_ref(), record, &question);
         let control = crate::ai_tasks::task_control();
         inner.live.running = Some((payload.answer_id.clone(), control.clone()));
         AnswerJob {
             meeting_id: payload.meeting_id.clone(),
             answer_id: payload.answer_id,
             prompt,
+            library,
             settings: payload.settings.normalize(),
             control,
         }
@@ -646,7 +988,7 @@ pub(crate) async fn meeting_generate_insights(app: AppHandle, payload: MeetingIn
         if request.correct {
             let mut corrections = std::collections::HashMap::new();
             for batch in record.correction_batches() {
-                let answer = complete_text(&app, &settings, MeetingAiKind::Correction, &batch.prompt)?;
+                let answer = complete_text(&app, &settings, MeetingAiKind::Correction, &batch.prompt, None)?;
                 corrections.extend(meeting::parse_corrections(&answer, &batch));
             }
             with_record(&app, &payload.meeting_id, |record| {
@@ -658,7 +1000,7 @@ pub(crate) async fn meeting_generate_insights(app: AppHandle, payload: MeetingIn
         if request.wants_insights() {
             let context = with_record(&app, &payload.meeting_id, |record| Ok(record.context_text()))?;
             let prompt = meeting::insights_prompt(&context, request)?;
-            let answer = complete_text(&app, &settings, MeetingAiKind::Insights, &prompt)?;
+            let answer = complete_text(&app, &settings, MeetingAiKind::Insights, &prompt, None)?;
             let parsed = meeting::parse_insights(&answer, request)?;
             with_record(&app, &payload.meeting_id, |record| {
                 record.apply_insights(parsed);
@@ -934,13 +1276,24 @@ pub(crate) struct MeetingAiCompletePayload {
     settings: AiSettingsInput,
     kind: MeetingAiKind,
     prompt: String,
+    /// The library passages to add, read here.
+    #[serde(default)]
+    library: Option<LibraryLookup>,
 }
 
 /// Completes on this host an AI request of a meeting a client keeps on its
-/// device: the library's AI settings point to this host's provider.
+/// device: the library's AI settings point to this host's provider, and
+/// the library context is read here.
 pub(crate) async fn meeting_ai_complete(app: AppHandle, payload: MeetingAiCompletePayload) -> Result<String, BackendError> {
+    let library = payload
+        .library
+        .map(|lookup| {
+            Ok::<_, BackendError>(LibraryLookup { context: lookup.context.normalized()?, query: lookup.query })
+        })
+        .transpose()?;
     crate::host::async_runtime::spawn_blocking(move || {
-        crate::ai_tasks::complete(&app, &payload.settings.normalize(), payload.kind.system_prompt(), &payload.prompt, Vec::new())
+        let prompt = with_library_passages(&app, payload.kind, &payload.prompt, library.as_ref());
+        crate::ai_tasks::complete(&app, &payload.settings.normalize(), payload.kind.system_prompt(), &prompt, Vec::new())
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "La operación de IA se interrumpió.", true))?

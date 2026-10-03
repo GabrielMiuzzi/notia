@@ -1,8 +1,10 @@
 import { Mic, MonitorSpeaker, Activity } from 'lucide-react'
+import { MeetingAiContextSection } from './MeetingAiContextPicker'
 import { MeetingLevelBars } from './MeetingLevelBars'
 import { MeetingOptions, type MeetingOptionsProps } from './MeetingOptions'
 import { MEETING_SOURCE_PANEL_ID } from './MeetingSourceTabs'
 import { sourceStatus } from './meetingDisplay'
+import type { MeetingAiContextState } from './useMeetingAiContext'
 import type { SpeechLevelHistory } from './useSpeechLevels'
 
 export type MeetingSource = 'microphone' | 'system'
@@ -24,6 +26,7 @@ export interface MeetingLiveSetupProps {
 
 interface MeetingReadyPanelProps extends MeetingOptionsProps, MeetingLiveSetupProps {
   microphoneLabel: string
+  aiContext: MeetingAiContextState
 }
 
 export function MeetingReadyPanel({
@@ -31,6 +34,7 @@ export function MeetingReadyPanel({
   isStarting,
   onStart,
   microphoneLabel,
+  aiContext,
   systemAudioSupported,
   sources,
   onToggleSource,
@@ -113,6 +117,7 @@ export function MeetingReadyPanel({
         </div>
 
         <MeetingOptions {...options} />
+        <MeetingAiContextSection state={aiContext} />
 
         <div className="notia-meeting-setup-footer">
           <p>{systemAudioSupported

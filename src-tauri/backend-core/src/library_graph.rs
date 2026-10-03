@@ -351,6 +351,15 @@ fn board_of(path: &str) -> Option<String> {
     })
 }
 
+/// Context tag of a Markdown note: the context of its Task Manager board
+/// (lower-case board name → tag in `board_contexts`), else its `contexto`
+/// property.
+pub fn note_context(path: &str, content: &str, board_contexts: &HashMap<String, String>) -> Option<String> {
+    board_of(path)
+        .and_then(|board| board_contexts.get(&board).cloned())
+        .or_else(|| frontmatter_context(content))
+}
+
 /// Builds the graph from the library files (logical paths), the Markdown
 /// sources that could be read, the context catalog and board contexts
 /// (lower-case board name → tag).
@@ -403,11 +412,7 @@ pub fn build_library_graph(
             let name = file_name(path);
             let stem = strip_extension(name);
             let context = is_markdown_path(path)
-                .then(|| {
-                    board_of(path)
-                        .and_then(|board| board_contexts.get(&board).cloned())
-                        .or_else(|| sources.get(*path).and_then(|content| frontmatter_context(content)))
-                })
+                .then(|| note_context(path, sources.get(*path).map_or("", String::as_str), board_contexts))
                 .flatten()
                 .and_then(|tag| {
                     contexts

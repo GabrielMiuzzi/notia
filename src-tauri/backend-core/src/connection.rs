@@ -217,6 +217,8 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "meeting_remove_mark",
     "meeting_set_notes",
     "meeting_set_live_answers",
+    "meeting_set_ai_notes",
+    "meeting_call_notes_agent",
     "meeting_regenerate_answer",
     "meeting_pin_answer",
     "meeting_rename_speaker",

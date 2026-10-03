@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowDown, ChevronDown, MessageSquare, Mic, MonitorSpeaker, Sparkles, X } from 'lucide-react'
 import { MeetingLevelBars } from './MeetingLevelBars'
+import { MeetingAiNotesPanel, type MeetingAiNotesActions } from './MeetingAiNotesPanel'
 import { formatClock, lineAtMoment } from './meetingDisplay'
 import type { SpeechLevelHistory } from './useSpeechLevels'
 import type { MeetingAnswer, MeetingLine, MeetingMark, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
@@ -11,6 +12,9 @@ const LANE_HIGHLIGHT = 12
 export const FOLLOW_THRESHOLD_PX = 80
 const NOTES_SAVE_DELAY_MS = 600
 
+/** The tabs of the live assistant: Notas IA and the live answers. */
+export type MeetingAssistantTab = 'notes' | 'answers'
+
 interface MeetingRecordingPanelProps {
   snapshot: MeetingSnapshot | null
   partialText: string
@@ -18,8 +22,55 @@ interface MeetingRecordingPanelProps {
   onToggleLiveAnswers: (enabled: boolean) => void
   onRegenerateAnswer: (answerId: string, shorter: boolean) => void
   onPinAnswer: (answerId: string, pinned: boolean) => void
-  onSaveNotes: (notes: string) => void
-  onRemoveMark: (markId: string) => void
+  notesActions: MeetingAiNotesActions
+  canAddNote: boolean
+}
+
+interface AssistantTabsProps {
+  snapshot: MeetingSnapshot | null
+  selected: MeetingAssistantTab
+  onSelect: (tab: MeetingAssistantTab) => void
+  /** The phone names the answers tab «Respuestas». */
+  phone?: boolean
+}
+
+/** Notas IA, with how many topics it has, and the live answers, with a dot while they are on. */
+export function MeetingAssistantTabs({ snapshot, selected, onSelect, phone = false }: AssistantTabsProps) {
+  const topics = snapshot?.aiNotes.enabled ? snapshot.aiNotes.topics.length : 0
+  const tabs: Array<{ id: MeetingAssistantTab; label: string }> = [
+    { id: 'notes', label: 'Notas IA' },
+    { id: 'answers', label: phone ? 'Respuestas' : 'Respuestas en vivo' },
+  ]
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const next = selected === 'notes' ? 'answers' : 'notes'
+    onSelect(next)
+    event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus()
+  }
+  return (
+    <div role="tablist" aria-label="Asistente en vivo" className="notia-meeting-assistant-tabs" onKeyDown={handleKeyDown}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          data-tab={tab.id}
+          id={`meeting-assistant-tab-${tab.id}`}
+          aria-selected={selected === tab.id}
+          aria-controls={`meeting-assistant-panel-${tab.id}`}
+          tabIndex={selected === tab.id ? 0 : -1}
+          onClick={() => onSelect(tab.id)}
+        >
+          {tab.label}
+          {tab.id === 'notes' && topics > 0 ? <span className="notia-meeting-assistant-count">{topics}</span> : null}
+          {tab.id === 'answers' && snapshot?.liveAnswers && !phone ? (
+            <><span className="notia-meeting-assistant-dot" aria-hidden="true" /><span className="notia-meeting-sr">activas</span></>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 const NO_ANSWERS: MeetingAnswer[] = []
@@ -59,10 +110,11 @@ export function MeetingRecordingPanel({
   onToggleLiveAnswers,
   onRegenerateAnswer,
   onPinAnswer,
-  onSaveNotes,
-  onRemoveMark,
+  notesActions,
+  canAddNote,
 }: MeetingRecordingPanelProps) {
   const [follow, setFollow] = useState(true)
+  const [tab, setTab] = useState<MeetingAssistantTab>('notes')
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const lines = snapshot?.lines ?? []
   const sources = snapshot?.sources ?? { microphone: true, system: false }
@@ -136,20 +188,25 @@ export function MeetingRecordingPanel({
           </div>
         </section>
 
-        <aside className="notia-meeting-aside" aria-label="Asistencia durante la reunión">
-          <LiveAnswersCard
-            snapshot={snapshot}
-            onToggle={onToggleLiveAnswers}
-            onRegenerate={onRegenerateAnswer}
-            onPin={onPinAnswer}
-          />
-          <NotesCard
-            key={snapshot?.id ?? 'no-meeting'}
-            enabled={Boolean(snapshot)}
-            initialNotes={snapshot?.notes ?? ''}
-            onSave={onSaveNotes}
-          />
-          <MeetingMarks marks={snapshot?.marks ?? []} onShow={showMoment} onRemove={onRemoveMark} />
+        <aside className="notia-meeting-aside notia-meeting-aside--assistant" aria-label="Asistente en vivo">
+          <MeetingAssistantTabs snapshot={snapshot} selected={tab} onSelect={setTab} />
+          <div
+            className="notia-meeting-assistant-panel"
+            role="tabpanel"
+            id={`meeting-assistant-panel-${tab}`}
+            aria-labelledby={`meeting-assistant-tab-${tab}`}
+          >
+            {tab === 'notes' ? (
+              <MeetingAiNotesPanel snapshot={snapshot} actions={notesActions} canAddNote={canAddNote} onShowMoment={showMoment} />
+            ) : (
+              <LiveAnswersCard
+                snapshot={snapshot}
+                onToggle={onToggleLiveAnswers}
+                onRegenerate={onRegenerateAnswer}
+                onPin={onPinAnswer}
+              />
+            )}
+          </div>
         </aside>
       </div>
     </div>

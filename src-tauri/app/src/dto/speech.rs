@@ -41,9 +41,16 @@ pub struct StartSpeechSessionPayload {
 pub struct MeetingSessionOptions {
     #[serde(default)]
     pub live_answers: bool,
-    /// Provider preferences for the live answers.
+    /// Notas IA starts on.
+    #[serde(default)]
+    pub ai_notes: bool,
+    /// Provider preferences for the live answers and Notas IA.
     #[serde(default)]
     pub settings: Option<notia_backend_core::ai_settings::AiSettingsInput>,
+    /// The part of the library the meeting's AI consults; `None` reads
+    /// nothing of the library.
+    #[serde(default)]
+    pub ai_context: Option<notia_backend_core::meeting_ai::MeetingAiContext>,
 }
 
 #[derive(Debug, Deserialize)]

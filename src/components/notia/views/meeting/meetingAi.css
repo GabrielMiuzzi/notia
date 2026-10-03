@@ -1,0 +1,527 @@
+/* The AI of a recording (canvas «Notia · Meeting», boards Main, Grabando,
+   Mobile · Lista, Mobile · Contexto and Mobile · Grabando): «Contexto para
+   la IA» in the setup, the live assistant's tabs, Notas IA and «Nueva
+   marca». Colors come from the palette tokens; a context chip takes the
+   color its library gives it. */
+
+/* Kinds of note, the same in every layout. */
+.notia-meeting-view [data-tone="decisions"] { --meeting-tone: var(--color-sage); }
+.notia-meeting-view [data-tone="questions"] { --meeting-tone: var(--color-periwinkle); }
+.notia-meeting-view [data-tone="marks"] { --meeting-tone: var(--color-violet); }
+.notia-meeting-view [data-tone="topics"] { --meeting-tone: var(--color-muted-text); }
+.notia-meeting-view [data-tone="tasks"] { --meeting-tone: var(--color-amber); }
+
+/* Contexto para la IA (desktop setup) */
+.notia-meeting-ai-context { display: flex; flex-direction: column; gap: 14px; padding: 16px 24px 18px; border-top: 1px solid var(--color-border-soft); }
+.notia-meeting-ai-context-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.notia-meeting-ai-context-title > svg { flex-shrink: 0; color: var(--color-accent-text); }
+.notia-meeting-ai-context-title h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-heading-text); }
+.notia-meeting-ai-context-title span { font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-context-row { display: flex; align-items: center; gap: 16px; }
+.notia-meeting-ai-folder {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-main-bg);
+  color: var(--color-body-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.notia-meeting-ai-folder > svg { flex-shrink: 0; color: var(--color-muted-text); }
+.notia-meeting-ai-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-ai-folder-meta { flex-shrink: 0; font-size: 12px; color: var(--color-muted-text); }
+/* The native select covers the field: a click or a tap opens the system picker. */
+.notia-meeting-view .notia-meeting-ai-folder select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.notia-meeting-ai-folder:has(select:focus-visible) { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+.notia-meeting-ai-folder[data-disabled="true"] { opacity: 0.6; color: var(--color-muted-text); cursor: not-allowed; }
+.notia-meeting-view .notia-meeting-ai-folder[data-disabled="true"] select { cursor: not-allowed; }
+.notia-meeting-ai-whole { display: flex; flex-shrink: 0; align-items: center; gap: 10px; font-size: 13px; }
+
+.notia-meeting-ai-contexts { display: flex; flex-direction: column; gap: 8px; }
+.notia-meeting-ai-contexts[data-disabled="true"] { opacity: 0.45; }
+.notia-meeting-ai-contexts-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-contexts-head strong { font-weight: 400; color: var(--color-body-text); }
+.notia-meeting-ai-link {
+  min-height: 24px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.notia-meeting-ai-contexts-head .notia-meeting-ai-link:first-of-type { margin-left: auto; }
+.notia-meeting-ai-link--muted { color: var(--color-muted-text); }
+.notia-meeting-ai-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.notia-meeting-ai-chip {
+  --meeting-context-color: var(--color-muted-text);
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.notia-meeting-ai-chip[aria-pressed="true"] {
+  border-color: var(--meeting-context-color);
+  background: color-mix(in srgb, var(--color-heading-text) 4%, transparent);
+  color: var(--color-heading-text);
+}
+.notia-meeting-ai-chip-box {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1.5px solid var(--meeting-context-color);
+  border-radius: 4px;
+  color: var(--color-main-bg);
+}
+.notia-meeting-ai-chip[aria-pressed="true"] .notia-meeting-ai-chip-box { background: var(--meeting-context-color); }
+.notia-meeting-ai-chip--more { border-style: dashed; color: var(--color-body-text); }
+
+/* Contexto para la IA (phone sheet) */
+.notia-modal-engine-panel.notia-meeting-ai-sheet { height: calc(100% - 120px); padding: 0; }
+.notia-meeting-ai-sheet-handle { margin-top: 8px; }
+.notia-meeting-ai-sheet-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px 4px; }
+.notia-meeting-view--phone .notia-meeting-ai-sheet-head h2,
+.notia-meeting-ai-sheet-head h2 { flex: 1; margin: 0; font-size: 18px; font-weight: 600; color: var(--color-heading-text); }
+.notia-meeting-ai-sheet-head .notia-meeting-icon-button { width: 44px; height: 44px; }
+.notia-meeting-ai-sheet-subtitle { margin: 0; padding: 0 16px 14px; font-size: 13px; line-height: 1.45; color: var(--color-muted-text); }
+.notia-meeting-ai-sheet-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 0 16px 16px; }
+.notia-meeting-ai-sheet-whole {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+}
+.notia-meeting-ai-sheet-whole > div { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.notia-meeting-ai-sheet-whole strong { font-size: 15px; font-weight: 600; }
+.notia-meeting-ai-sheet-whole small { font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-sheet-folders { display: flex; flex-direction: column; gap: 6px; }
+.notia-meeting-ai-sheet-folders[data-disabled="true"] { opacity: 0.45; }
+.notia-meeting-ai-sheet-folders > span { font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-sheet-folders [role="radiogroup"] { overflow: hidden; border: 1px solid var(--color-border-soft); border-radius: 12px; background: var(--color-card-bg); }
+.notia-meeting-ai-sheet-folders [role="radio"] {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: transparent;
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  touch-action: manipulation;
+}
+.notia-meeting-ai-sheet-folders [role="radio"]:last-child { border-bottom: 0; }
+.notia-meeting-ai-sheet-folders [role="radio"] > svg { flex-shrink: 0; color: var(--color-muted-text); }
+.notia-meeting-ai-sheet-folders [role="radio"] > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-ai-sheet-folders [role="radio"] > i {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 2px solid var(--color-border-soft);
+  border-radius: 50%;
+}
+.notia-meeting-ai-sheet-folders [role="radio"][aria-checked="true"] { background: color-mix(in srgb, var(--color-accent-text) 8%, transparent); }
+.notia-meeting-ai-sheet-folders [role="radio"][aria-checked="true"] > i { border-color: var(--color-accent-text); }
+.notia-meeting-ai-sheet-folders [role="radio"][aria-checked="true"] > i::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-text); }
+.notia-meeting-ai-sheet .notia-meeting-ai-link { min-height: 32px; padding: 0 8px; font-size: 13px; }
+.notia-meeting-ai-sheet .notia-meeting-ai-chip { min-height: 38px; gap: 8px; padding: 0 14px 0 12px; font-size: 14px; }
+.notia-meeting-ai-sheet .notia-meeting-ai-chip-box { width: 16px; height: 16px; }
+.notia-meeting-ai-sheet-foot { flex-shrink: 0; padding: 12px 16px 34px; border-top: 1px solid var(--color-border-soft); }
+.notia-meeting-ai-sheet-foot .notia-meeting-phone-primary { width: 100%; }
+/* A row of the phone options that opens its sheet. */
+button.notia-meeting-option-row {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button.notia-meeting-option-row:disabled { opacity: 0.55; cursor: default; }
+
+/* The live assistant's tabs */
+.notia-meeting-aside--assistant { overflow: hidden; }
+.notia-meeting-assistant-tabs {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-sidebar-bg);
+}
+.notia-meeting-assistant-tabs [role="tab"] {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.notia-meeting-assistant-tabs [role="tab"][aria-selected="true"] { background: var(--color-card-bg); color: var(--color-heading-text); }
+.notia-meeting-assistant-count {
+  min-width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent-text) 16%, transparent);
+  color: var(--color-accent-text);
+  font-size: 11px;
+}
+.notia-meeting-assistant-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-text); }
+.notia-meeting-assistant-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.notia-meeting-assistant-panel > .notia-meeting-card { flex: 1 1 auto; min-height: 0; }
+
+/* Notas IA */
+.notia-meeting-ai-notes { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; }
+.notia-meeting-ai-notes[data-enabled="true"] { border-color: color-mix(in srgb, var(--color-accent-text) 45%, transparent); }
+.notia-meeting-ai-off { margin: 40px 0 0; font-size: 13px; line-height: 1.5; color: var(--color-muted-text); text-align: center; }
+.notia-meeting-ai-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-main-bg);
+}
+.notia-meeting-ai-agent > svg { flex-shrink: 0; color: var(--color-muted-text); }
+.notia-meeting-ai-agent-text { flex: 1; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--color-muted-text); }
+.notia-meeting-ai-agent-text strong { font-weight: 400; color: var(--color-heading-text); }
+.notia-meeting-ai-agent[data-running="true"] .notia-meeting-ai-agent-text { color: var(--color-accent-text); }
+.notia-meeting-ai-agent-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border: 2px solid var(--color-border-soft);
+  border-top-color: var(--color-accent-text);
+  border-radius: 50%;
+  animation: notia-meeting-spin 0.8s linear infinite;
+}
+.notia-meeting-ai-agent-button {
+  min-height: 30px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent-text) 45%, transparent);
+  border-radius: 8px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.notia-meeting-ai-agent-button[aria-disabled="true"] { border-color: var(--color-border-soft); background: transparent; color: var(--color-muted-text); cursor: default; }
+.notia-meeting-ai-agent--compact { padding: 0; border: 0; background: transparent; }
+
+.notia-meeting-ai-jumps { flex-shrink: 0; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.notia-meeting-ai-jumps button {
+  min-height: 26px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.notia-meeting-ai-jumps button > span { width: 7px; height: 7px; border-radius: 2px; background: var(--meeting-tone); }
+.notia-meeting-ai-jumps small { font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-scroll { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding-right: 4px; }
+.notia-meeting-ai-objective { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 8px; background: var(--color-card-bg); }
+.notia-meeting-ai-objective span { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-muted-text); }
+.notia-meeting-ai-objective p { margin: 0; font-size: 13px; line-height: 1.5; }
+.notia-meeting-ai-section { display: flex; flex-direction: column; gap: 6px; scroll-margin-top: 4px; }
+.notia-meeting-ai-section[data-divided="true"] { gap: 10px; padding-top: 14px; border-top: 1px solid var(--color-border-soft); }
+.notia-meeting-ai-section h3 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--color-heading-text); }
+.notia-meeting-ai-section h3 > span { width: 8px; height: 8px; border-radius: 2px; background: var(--meeting-tone); }
+.notia-meeting-ai-section ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 0 18px; }
+.notia-meeting-ai-section li { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.notia-meeting-ai-section .notia-meeting-ai-marks { padding: 0; list-style: none; }
+.notia-meeting-ai-marks li { display: flex; align-items: flex-start; gap: 4px; }
+.notia-meeting-ai-marks li > button:first-child {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.notia-meeting-ai-marks time { font-family: var(--meeting-mono); color: var(--color-violet); }
+.notia-meeting-ai-marks .notia-meeting-icon-button { width: 24px; height: 24px; }
+.notia-meeting-ai-topic { display: flex; flex-direction: column; gap: 4px; }
+.notia-meeting-ai-topic-head { display: flex; align-items: center; gap: 8px; }
+.notia-meeting-ai-topic-head strong { min-width: 0; font-size: 13px; font-weight: 600; color: var(--color-heading-text); }
+.notia-meeting-ai-topic-head time { flex-shrink: 0; font-family: var(--meeting-mono); font-size: 11px; color: var(--color-muted-text); }
+.notia-meeting-ai-live { display: inline-flex; flex-shrink: 0; align-items: center; gap: 5px; margin-left: auto; font-size: 11px; color: var(--color-accent-text); }
+.notia-meeting-ai-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent-text); animation: notia-meeting-blink 1s steps(1) infinite; }
+.notia-meeting-ai-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+}
+.notia-meeting-ai-task-box {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--color-muted-text);
+  border-radius: 4px;
+  color: var(--color-on-accent);
+}
+.notia-meeting-ai-task[data-sent="true"] .notia-meeting-ai-task-box { border-color: var(--color-accent-text); background: var(--color-accent-text); }
+.notia-meeting-ai-task-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.notia-meeting-ai-task-body > span { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.notia-meeting-ai-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.notia-meeting-ai-owner {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 3px;
+  border-radius: 999px;
+  background: var(--color-sidebar-bg);
+  font-size: 11px;
+}
+.notia-meeting-ai-owner > span {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-accent-text);
+  color: var(--color-on-accent);
+  font-size: 8px;
+  font-weight: 700;
+}
+.notia-meeting-ai-due { min-height: 22px; display: inline-flex; align-items: center; padding: 0 8px; border: 1px solid var(--color-border-soft); border-radius: 999px; font-size: 11px; }
+.notia-meeting-ai-due[data-empty="true"] { border-style: dashed; color: var(--color-muted-text); }
+.notia-meeting-ai-send { margin-left: auto; }
+.notia-meeting-ai-send > button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.notia-meeting-ai-sent { margin-left: auto; font-size: 11px; color: var(--color-accent-text); }
+.notia-meeting-ai-own {
+  flex-shrink: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 0 6px 0 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: var(--color-main-bg);
+}
+.notia-meeting-ai-own:focus-within { outline: 2px solid var(--color-focus-ring); outline-offset: 1px; }
+.notia-meeting-ai-own input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--color-body-text); font: inherit; font-size: 13px; }
+.notia-meeting-view .notia-meeting-ai-own input:focus-visible { outline: 0; }
+.notia-meeting-ai-own button {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: var(--color-card-bg);
+  color: var(--color-accent-text);
+  cursor: pointer;
+}
+
+/* Notas IA on the phone */
+.notia-meeting-phone-answers-head .notia-meeting-assistant-tabs { flex: 1; min-width: 0; display: flex; padding: 0; border: 0; background: transparent; }
+.notia-meeting-phone-answers-head .notia-meeting-assistant-tabs [role="tab"] { min-height: 34px; padding: 0 12px; border-radius: 9px; font-size: 14px; font-weight: 600; }
+.notia-meeting-view--phone .notia-meeting-phone-answers-box { height: 204px; }
+.notia-meeting-phone-ai-notes { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.notia-meeting-phone-ai-topic { display: flex; align-items: center; gap: 8px; }
+.notia-meeting-phone-ai-topic strong { flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-phone-ai-topic .notia-meeting-ai-live { margin-left: 0; }
+.notia-meeting-phone-ai-row { display: flex; align-items: baseline; gap: 8px; }
+.notia-meeting-phone-ai-row > span { width: 74px; flex-shrink: 0; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--meeting-tone); }
+/* One line each, so «Llamar agente» stays in sight; the full notes open from the ⋮ menu. */
+.notia-meeting-phone-ai-row > p { min-width: 0; margin: 0; overflow: hidden; font-size: 13px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-phone-ai-notes .notia-meeting-ai-agent { margin-top: 2px; }
+.notia-meeting-phone-ai-notes .notia-meeting-ai-agent-button { min-height: 44px; }
+.notia-modal-engine-panel.notia-meeting-ai-notes-sheet { height: calc(100% - 48px); }
+.notia-meeting-ai-notes-sheet .notia-meeting-ai-notes { flex: 1; min-height: 0; padding: 0 0 4px; border: 0; background: transparent; }
+
+/* Nueva marca */
+.notia-meeting-ai-mark-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: min(340px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: var(--color-card-bg);
+  box-shadow: 0 16px 40px var(--color-menu-shadow);
+}
+.notia-meeting-ai-mark-popover > label { font-size: 13px; font-weight: 600; }
+.notia-meeting-ai-mark-head { display: flex; align-items: center; gap: 8px; }
+.notia-meeting-ai-mark-head > span:not(.notia-meeting-ai-mark-minute) { font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-ai-mark-minute {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-violet) 14%, transparent);
+  color: var(--color-violet);
+  font-family: var(--meeting-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+.notia-meeting-ai-mark-popover textarea,
+.notia-meeting-ai-mark-sheet textarea {
+  height: 72px;
+  resize: none;
+  padding: 10px;
+  border: 1px solid var(--color-violet);
+  border-radius: 8px;
+  background: var(--color-main-bg);
+  color: var(--color-body-text);
+  font: inherit;
+  font-size: 13px;
+}
+.notia-meeting-ai-mark-actions { display: flex; align-items: center; gap: 8px; }
+.notia-meeting-ai-mark-actions > span { margin-right: auto; font-size: 11px; color: var(--color-muted-text); }
+.notia-meeting-ai-mark-popover .notia-meeting-primary-button,
+.notia-meeting-ai-mark-popover .notia-meeting-ghost-button { min-height: 30px; padding: 0 12px; }
+.notia-meeting-secondary-button[data-open="true"] { border-color: var(--color-violet); background: var(--color-card-bg); }
+
+.notia-modal-engine-panel.notia-meeting-ai-mark-sheet { gap: 12px; padding: 8px 16px 30px; background: var(--color-card-bg); }
+.notia-meeting-ai-mark-sheet .notia-meeting-ai-mark-head label { font-size: 16px; font-weight: 600; }
+.notia-meeting-ai-mark-sheet .notia-meeting-ai-mark-minute { min-height: 26px; padding: 0 9px; font-size: 13px; }
+.notia-meeting-ai-mark-sheet textarea { height: 88px; padding: 12px; border-radius: 10px; font-size: 15px; }
+.notia-meeting-ai-mark-sheet .notia-meeting-ai-mark-actions > button { flex: 1 1 0; height: 48px; border-radius: 12px; font-size: 15px; }
+.notia-meeting-ai-sheet-cancel { border: 1px solid var(--color-border-soft); background: transparent; color: var(--color-body-text); font: inherit; cursor: pointer; }
+.notia-meeting-ai-mark-hint { margin: 0; font-size: 12px; color: var(--color-muted-text); text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .notia-meeting-ai-agent-spinner,
+  .notia-meeting-ai-live::before { animation: none; }
+}
+
+@container meeting (max-width: 960px) {
+  .notia-meeting-aside--assistant { overflow: visible; }
+  .notia-meeting-assistant-panel > .notia-meeting-card { min-height: 520px; }
+}
+
+@container meeting (max-width: 680px) {
+  .notia-meeting-ai-context { padding: 16px; }
+  .notia-meeting-ai-context-row { flex-direction: column; align-items: stretch; gap: 12px; }
+}
+
+@media (pointer: coarse) {
+  .notia-meeting-ai-folder { height: 44px; }
+  .notia-meeting-ai-link,
+  .notia-meeting-ai-jumps button,
+  .notia-meeting-ai-send > button,
+  .notia-meeting-assistant-tabs [role="tab"] { min-height: 40px; }
+  .notia-meeting-ai-chip { min-height: 40px; }
+  .notia-meeting-ai-agent-button { min-height: 40px; }
+  .notia-meeting-ai-own { height: 48px; }
+  .notia-meeting-ai-own button { width: 40px; height: 40px; }
+  .notia-meeting-ai-marks .notia-meeting-icon-button { width: 40px; height: 40px; }
+  .notia-meeting-ai-mark-popover .notia-meeting-primary-button,
+  .notia-meeting-ai-mark-popover .notia-meeting-ghost-button { min-height: 44px; }
+}

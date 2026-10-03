@@ -207,6 +207,27 @@ fn build_graph_from(app: &AppHandle, library_id: &str, fresh: bool) -> Result<(i
     Ok((generation, BuiltGraph { model, sources }))
 }
 
+/// The Markdown notes of a library with their context (the board's, else
+/// the note's `contexto`) and their text, from the sources the graph keeps:
+/// what Meeting's AI may consult.
+pub(crate) fn library_notes(app: &AppHandle, library_id: &str) -> Result<Vec<(String, Option<String>, String)>, BackendError> {
+    let (_, built) = build_graph_from(app, library_id, false)?;
+    let boards = board_contexts(app, library_id);
+    Ok(built
+        .sources
+        .into_iter()
+        .map(|(path, content)| {
+            let context = crate::backend::library_graph::note_context(&path, &content, &boards);
+            (path, context, content)
+        })
+        .collect())
+}
+
+/// Tag and color of each context of the library catalog.
+pub(crate) fn context_tags(app: &AppHandle, library_id: &str) -> Vec<(String, String)> {
+    context_catalog(app, library_id).into_iter().map(|context| (context.tag, context.color)).collect()
+}
+
 /// Cached graph for the inventory generation and client revision.
 fn cached_graph(app: &AppHandle, library_id: &str, revision: u64) -> Result<Arc<BuiltGraph>, BackendError> {
     let state = app.state::<LibraryGraphState>();

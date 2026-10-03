@@ -85,13 +85,32 @@ function OptionRow({ label, value, disabled = false, children }: OptionRowProps)
   )
 }
 
-/** The same choices as rows of a list, for the phone layout. */
-export function MeetingOptionRows(props: MeetingOptionsProps) {
+interface OptionButtonRowProps {
+  label: string
+  value: string
+  onClick: () => void
+  disabled?: boolean
+}
+
+/** A row that opens a sheet of its own instead of the system picker. */
+export function OptionButtonRow({ label, value, onClick, disabled = false }: OptionButtonRowProps) {
+  return (
+    <button type="button" className="notia-meeting-option-row" disabled={disabled} onClick={onClick}>
+      <span className="notia-meeting-option-label">{label}</span>
+      <span className="notia-meeting-option-value">{value}</span>
+      <ChevronRight size={14} aria-hidden="true" />
+    </button>
+  )
+}
+
+/** The same choices as rows of a list, for the phone layout; `leadingRow` goes first. */
+export function MeetingOptionRows({ leadingRow, ...props }: MeetingOptionsProps & { leadingRow?: ReactNode }) {
   const { language, onLanguageChange, expectedSpeakers, onExpectedSpeakersChange, folder, libraryName, onFolderChange } = props
   const { languages, folders } = optionChoices(props)
   const languageName = languages.find(([code]) => code === language)?.[1] ?? language
   return (
     <div className="notia-meeting-option-rows">
+      {leadingRow}
       <OptionRow label="Idioma" value={languageName}>
         <select aria-label="Idioma" value={language} onChange={(event) => onLanguageChange(event.target.value)}>
           {languages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
