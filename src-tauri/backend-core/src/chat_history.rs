@@ -345,6 +345,26 @@ fn encode_attachments(attachments: &[StoredChatAttachment]) -> String {
     base64::engine::general_purpose::STANDARD.encode(json)
 }
 
+/// A saved chat as an agent reads it: each attachments marker, Base64 of
+/// whole files and photos, becomes the names of its files.
+pub fn without_attachment_payloads(text: &str) -> String {
+    text.split('\n')
+        .map(|line| match marker_content(line.trim(), ATTACHMENTS_MARKER_PREFIX) {
+            Some(encoded) => {
+                let names = decode_attachments(encoded)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|attachment| attachment.name.replace("-->", ""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("<!-- adjuntos del mensaje: {names} -->")
+            }
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn marker_content<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     line.strip_prefix(prefix)?.strip_suffix(MARKER_SUFFIX)
 }
@@ -671,6 +691,17 @@ mod tests {
             },
         ];
         document
+    }
+
+    #[test]
+    fn an_agent_reads_a_saved_chat_without_its_files() {
+        let serialized = serialize_chat_document(&document());
+        assert!(serialized.contains(ATTACHMENTS_MARKER_PREFIX));
+        let readable = without_attachment_payloads(&serialized);
+        assert!(!readable.contains(ATTACHMENTS_MARKER_PREFIX) && !readable.contains("aGVsbG8="));
+        assert!(readable.contains("<!-- adjuntos del mensaje: foto.png -->
+Hola"));
+        assert_eq!(readable.lines().count(), serialized.lines().count());
     }
 
     #[test]

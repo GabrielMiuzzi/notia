@@ -324,6 +324,20 @@ pub(crate) struct GeneratePasswordPayload {
 pub(crate) struct GeneratedPasswordDto {
     password: String,
     brute_force_seconds: f64,
+    rating: crate::backend::coldpass::PasswordRating,
+}
+
+/// A password being typed in the form, with the fields it must not reuse.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RatePasswordPayload {
+    password: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    website: String,
+    #[serde(default)]
+    username: String,
 }
 
 /// Whether the library has a vault and which key it needs.
@@ -367,9 +381,21 @@ pub(crate) fn coldpass_generate_password(payload: GeneratePasswordPayload) -> Re
         return Err(BackendError::new(BackendErrorCode::Internal, "No se pudo generar la password.", true));
     }
     Ok(GeneratedPasswordDto {
+        rating: crate::backend::coldpass::rate_password(&password, &[]),
         password,
         brute_force_seconds: crate::backend::coldpass::brute_force_seconds(&payload.options),
     })
+}
+
+/// How strong the password typed in the form reads.
+pub(crate) fn coldpass_rate_password(payload: RatePasswordPayload) -> Result<crate::backend::coldpass::PasswordRating, BackendError> {
+    if payload.password.chars().count() > crate::backend::coldpass::MAX_RATED_PASSWORD_CHARS {
+        return Err(BackendError::invalid_input("La contraseña es demasiado larga."));
+    }
+    Ok(crate::backend::coldpass::rate_password(
+        &payload.password,
+        &[&payload.name, &payload.website, &payload.username],
+    ))
 }
 
 /// Opens the vault of the library with the Owner's password, creating it on

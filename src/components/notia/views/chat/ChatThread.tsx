@@ -160,6 +160,12 @@ function ChatThreadComponent({
   const thinkingContentRef = useRef<HTMLDivElement | null>(null)
   const [isEditingPlan, setIsEditingPlan] = useState(false)
   const [draftPlan, setDraftPlan] = useState<TaskExecutionStep[]>([])
+  // Closing the preview only hides it; the pending action stays until confirmed or cancelled.
+  const [isAgentPreviewOpen, setIsAgentPreviewOpen] = useState(true)
+
+  useEffect(() => {
+    setIsAgentPreviewOpen(true)
+  }, [pendingAgentPreview])
 
   useEffect(() => {
     if (isEditingPlan) return
@@ -177,6 +183,45 @@ function ChatThreadComponent({
     }
     container.scrollTop = container.scrollHeight
   }, [streamingThinking])
+
+  const hasNoSelectedHunk = Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)
+  // Rendered inside the preview while it is open: on touch screens it is a bottom sheet over the thread.
+  const agentConfirmationActions = (
+    <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Confirmar acción del agente">
+      <button
+        type="button"
+        className="notia-chat-agent-confirmation-button is-primary"
+        onClick={onConfirmAgentAction}
+        disabled={hasNoSelectedHunk}
+      >
+        {canSelectAgentHunks && pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Confirmar seleccionados' : 'Confirmar'}
+      </button>
+      {onConfirmAllAgentActions ? (
+        <button
+          type="button"
+          className="notia-chat-agent-confirmation-button"
+          title="Confirma este cambio y todos los que siga pidiendo en este pedido, sin volver a preguntar"
+          onClick={onConfirmAllAgentActions}
+          disabled={hasNoSelectedHunk}
+        >
+          Confirmar todos
+        </button>
+      ) : null}
+      {onProposeAgentAlternative ? (
+        <button type="button" className="notia-chat-agent-confirmation-button" onClick={onProposeAgentAlternative}>
+          Proponer otra cosa
+        </button>
+      ) : null}
+      {pendingAgentPreview && !isAgentPreviewOpen ? (
+        <button type="button" className="notia-chat-agent-confirmation-button" onClick={() => setIsAgentPreviewOpen(true)}>
+          Ver cambios
+        </button>
+      ) : null}
+      <button type="button" className="notia-chat-agent-confirmation-button" onClick={onDeclineAgentAction}>
+        Cancelar
+      </button>
+    </div>
+  )
 
   return (
     <section
@@ -441,15 +486,15 @@ function ChatThreadComponent({
                   <div className="notia-chat-message-bubble notia-chat-agent-confirmation">
                     <span className="notia-chat-message-role">Notia · requiere confirmación</span>
                     <ChatMarkdownMessage source={pendingAgentConfirmation} />
-                    {pendingAgentPreview ? (
+                    {pendingAgentPreview && isAgentPreviewOpen ? (
                       <div className="notia-chat-diff-preview" role="dialog" aria-modal="true" aria-label="Vista previa de cambios">
                         <div className="notia-chat-diff-sheet-header">
                           <strong>Vista previa de cambios</strong>
                           <button
                             type="button"
                             className="notia-chat-agent-confirmation-button"
-                            onClick={onDeclineAgentAction}
-                            aria-label="Cerrar vista previa"
+                            onClick={() => setIsAgentPreviewOpen(false)}
+                            aria-label="Cerrar vista previa sin cancelar"
                           >
                             Cerrar
                           </button>
@@ -485,37 +530,10 @@ function ChatThreadComponent({
                             )
                           })}
                         </div>
+                        {agentConfirmationActions}
                       </div>
                     ) : null}
-                    <div className="notia-chat-agent-confirmation-actions" role="group" aria-label="Confirmar acción del agente">
-                      <button
-                        type="button"
-                        className="notia-chat-agent-confirmation-button is-primary"
-                        onClick={onConfirmAgentAction}
-                        disabled={Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)}
-                      >
-                        {canSelectAgentHunks && pendingAgentPreview && pendingAgentHunkIds.length < pendingAgentPreview.hunks.length ? 'Confirmar seleccionados' : 'Confirmar'}
-                      </button>
-                      {onConfirmAllAgentActions ? (
-                        <button
-                          type="button"
-                          className="notia-chat-agent-confirmation-button"
-                          title="Confirma este cambio y todos los que siga pidiendo en este pedido, sin volver a preguntar"
-                          onClick={onConfirmAllAgentActions}
-                          disabled={Boolean(pendingAgentPreview && pendingAgentHunkIds.length === 0)}
-                        >
-                          Confirmar todos
-                        </button>
-                      ) : null}
-                      {onProposeAgentAlternative ? (
-                        <button type="button" className="notia-chat-agent-confirmation-button" onClick={onProposeAgentAlternative}>
-                          Proponer otra cosa
-                        </button>
-                      ) : null}
-                      <button type="button" className="notia-chat-agent-confirmation-button" onClick={onDeclineAgentAction}>
-                        Cancelar
-                      </button>
-                    </div>
+                    {pendingAgentPreview && isAgentPreviewOpen ? null : agentConfirmationActions}
                   </div>
                 </article>
               ) : null}

@@ -95,6 +95,7 @@ function NotiaMenuComponent() {
   const {
     coldPassSession,
     coldPassEntries,
+    coldPassNotice,
     coldPassPromptState,
     coldPassCredentialModalState,
     coldPassDeletePromptState,
@@ -550,6 +551,7 @@ function NotiaMenuComponent() {
                 mountedHeavyWorkspaceView={mountedHeavyWorkspaceView}
                 isAndroidRuntime={isAndroidRuntime}
                 coldPassEntries={coldPassEntries}
+                coldPassNotice={coldPassNotice}
                 coldPassSession={coldPassSession}
                 activeTaskManagerVault={activeTaskManagerVault}
                 libraryContexts={libraryContexts}

@@ -744,16 +744,38 @@ impl BackendLimits {
         Ok(())
     }
 
-    pub fn validate_result(&self, result: &ToolResult) -> Result<(), BackendError> {
-        let result_bytes = serde_json::to_vec(result).map_err(|_| {
-            BackendError::invalid_input("El resultado no puede serializarse de forma segura.")
-        })?;
-        if result_bytes.len() > self.max_result_bytes {
-            return Err(BackendError::invalid_input(
-                "El resultado de la tool es demasiado grande.",
-            ));
+    /// `result` as the model receives it: one larger than `max_result_bytes`
+    /// keeps the start of its data and a note to ask for less, instead of
+    /// ending the turn.
+    pub fn fit_result(&self, result: ToolResult) -> ToolResult {
+        let Ok(bytes) = serde_json::to_vec(&result) else {
+            return ToolResult {
+                ok: false,
+                data: None,
+                error: Some(BackendError::invalid_input("El resultado no puede serializarse de forma segura.")),
+                preview: None,
+                ..result
+            };
+        };
+        if bytes.len() <= self.max_result_bytes {
+            return result;
         }
-        Ok(())
+        let data = result.data.as_ref().map(serde_json::Value::to_string).unwrap_or_default();
+        // Room for the note and the JSON escaping of the kept text.
+        let mut keep = (self.max_result_bytes / 3).min(data.len());
+        while !data.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        ToolResult {
+            data: Some(serde_json::json!({
+                "truncated": true,
+                "totalBytes": bytes.len(),
+                "partialResult": &data[..keep],
+                "note": "El resultado era demasiado grande y llega cortado: arriba va su comienzo. Pedí menos para ver el resto (de a un documento, con offset y limit, o una búsqueda más precisa); no afirmes nada sobre lo que no llegó.",
+            })),
+            preview: None,
+            ..result
+        }
     }
 }
 
@@ -859,19 +881,24 @@ mod tests {
     }
 
     #[test]
-    fn enforces_the_result_limit() {
-        let mut limits = BackendLimits::default();
-        limits.max_result_bytes = 1;
-        assert!(limits
-            .validate_result(&ToolResult {
-                call_id: "call-1".to_string(),
-                ok: true,
-                changed: false,
-                data: Some(serde_json::json!({"value": "too large"})),
-                error: None,
-                preview: None,
-            })
-            .is_err());
+    fn a_result_too_large_arrives_cut_instead_of_failing() {
+        let limits = BackendLimits { max_result_bytes: 4_000, ..BackendLimits::default() };
+        let result = |text: String| ToolResult {
+            call_id: "call-1".to_string(),
+            ok: true,
+            changed: false,
+            data: Some(serde_json::json!({ "value": text })),
+            error: None,
+            preview: None,
+        };
+        let small = result("ñandú".to_string());
+        assert_eq!(limits.fit_result(small.clone()), small);
+        let cut = limits.fit_result(result("ñandú ".repeat(5_000)));
+        assert!(cut.ok && cut.call_id == "call-1");
+        assert!(serde_json::to_vec(&cut).expect("serializes").len() <= limits.max_result_bytes);
+        let data = cut.data.expect("data");
+        assert_eq!(data["truncated"], true);
+        assert!(data["partialResult"].as_str().is_some_and(|text| text.starts_with("{\"value\":\"ñandú")));
     }
 
     #[test]

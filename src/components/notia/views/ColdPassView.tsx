@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, Copy, Download, ExternalLink, Eye, EyeOff, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import type { ColdPassEntryView } from '../../../types/coldpass'
+import type { ColdPassNotice } from '../hooks/useColdPassSession'
 import { ColdPassBiometricButton } from '../ColdPassBiometricButton'
 import { ColdPassBluetoothCard } from '../ColdPassBluetoothCard'
 import { backendSupports } from '../../../services/transport'
@@ -32,6 +33,8 @@ const PHONE_MAX_WIDTH = 600
 
 interface ColdPassViewProps {
   entries: ColdPassEntryView[]
+  /** What the last save did; shown once as a toast. */
+  notice?: ColdPassNotice | null
   isUnlocked: boolean
   isImportingVault?: boolean
   onCreateCredential: () => void
@@ -42,6 +45,7 @@ interface ColdPassViewProps {
 
 function ColdPassViewComponent({
   entries,
+  notice = null,
   isUnlocked,
   isImportingVault = false,
   onCreateCredential,
@@ -77,6 +81,10 @@ function ColdPassViewComponent({
     setToast(message)
     toastTimer.current = window.setTimeout(() => setToast(''), TOAST_MS)
   }, [])
+
+  useEffect(() => {
+    if (notice) showToast(notice.message)
+  }, [notice, showToast])
 
   const copySecret = useCallback(async (text: string, copied: string) => {
     try {

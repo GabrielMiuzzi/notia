@@ -20,6 +20,11 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PersistableBundle
+import android.view.View
+import android.webkit.WebView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -42,9 +47,41 @@ import java.util.concurrent.atomic.AtomicInteger
  * It also shows the fixed notification with the state of a client's link
  * with its host (`showConnectionStatus`) while the app is open. Rust decides
  * what it says; this only shows it.
+ *
+ * It also keeps the interface clear of the system bars (`load`).
  */
 @TauriPlugin
 class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
+
+    override fun load(webView: WebView) {
+        keepContentClearOfSystemBars()
+    }
+
+    /**
+     * MainActivity draws edge to edge, but the WebView does not report the
+     * tablet taskbar, the navigation bar or the caption bar of a desktop-mode
+     * window as `env(safe-area-inset-*)`, so they covered the interface. The
+     * content view that holds the WebView is padded by those bars (and the
+     * display cutout) instead, and they are taken out of the insets the
+     * WebView receives, so nothing is padded twice. The keyboard inset still
+     * reaches the WebView, which `useKeyboardInset` relies on.
+     */
+    private fun keepContentClearOfSystemBars() {
+        val content = activity.findViewById<View>(android.R.id.content) ?: return
+        content.setBackgroundColor(SYSTEM_BARS_BACKGROUND)
+        WindowCompat.getInsetsController(activity.window, content).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets.inset(bars)
+        }
+        ViewCompat.requestApplyInsets(content)
+    }
 
     @Command
     fun beginWork(invoke: Invoke) {
@@ -341,6 +378,8 @@ class ContinuityPlugin(private val activity: Activity) : Plugin(activity) {
         const val CONNECTION_CHANNEL_ID = "notia-host-connection"
         const val CONNECTION_NOTIFICATION_ID = 0x4E0B
         const val NOTIFICATION_PERMISSION_REQUEST = 0x4E0C
+        // Ink of the dark theme, behind the system bars.
+        const val SYSTEM_BARS_BACKGROUND = 0xFF0F1420.toInt()
 
         // Shared with the service, which outlives the plugin's calls.
         val activeWork = AtomicInteger(0)

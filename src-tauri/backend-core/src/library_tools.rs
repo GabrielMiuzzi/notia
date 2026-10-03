@@ -387,6 +387,67 @@ pub struct DocumentContent {
     pub revision: u64,
 }
 
+/// Characters of one document a `read_library_documents` call returns,
+/// by default and at most, and of all its documents together: a long
+/// document is read by parts, as a desktop agent reads a long file.
+pub const DEFAULT_DOCUMENT_PART_CHARS: usize = 200_000;
+pub const MAX_DOCUMENT_PART_CHARS: usize = 200_000;
+const MAX_READ_RESULT_CHARS: usize = 600_000;
+
+/// The part of a document a `read_library_documents` call returns:
+/// `content` starts at character `offset`; `next_offset` is where the
+/// next part starts, `None` when the document ends there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPart {
+    pub document_id: String,
+    pub locator: DocumentLocatorDto,
+    pub revision: u64,
+    pub total_chars: usize,
+    pub offset: usize,
+    pub content: String,
+    pub next_offset: Option<usize>,
+}
+
+/// Text of a document as the agent reads it: without embedded photos and,
+/// in a saved chat, without the files of its messages.
+fn readable_content(document: &DocumentContent) -> String {
+    let content = crate::recipes::markdown::without_photos(&document.content);
+    if document.locator.logical_path.as_str().starts_with(CHAT_HISTORY_PREFIX) {
+        crate::chat_history::without_attachment_payloads(&content)
+    } else {
+        content
+    }
+}
+
+/// The parts of `documents` from character `offset`, each of at most
+/// `limit` characters and all within `MAX_READ_RESULT_CHARS`; a document
+/// past that budget comes empty with its `next_offset` to read it later.
+pub fn document_parts(documents: Vec<DocumentContent>, offset: usize, limit: Option<usize>) -> Vec<DocumentPart> {
+    let limit = limit.unwrap_or(DEFAULT_DOCUMENT_PART_CHARS).clamp(1, MAX_DOCUMENT_PART_CHARS);
+    let mut budget = MAX_READ_RESULT_CHARS;
+    documents
+        .into_iter()
+        .map(|document| {
+            let text = readable_content(&document);
+            let total_chars = text.chars().count();
+            let start = offset.min(total_chars);
+            let content = text.chars().skip(start).take(limit.min(budget)).collect::<String>();
+            let end = start + content.chars().count();
+            budget -= end - start;
+            DocumentPart {
+                document_id: document.document_id,
+                locator: document.locator,
+                revision: document.revision,
+                total_chars,
+                offset: start,
+                content,
+                next_offset: (end < total_chars).then_some(end),
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentMetadata {
@@ -2048,6 +2109,29 @@ mod tests {
             library.recover_write("missing").expect("missing").0,
             RecoveryState::NotFound
         );
+    }
+
+    #[test]
+    fn long_documents_are_read_by_parts_within_one_budget() {
+        let document = |path: &str, content: String| DocumentContent {
+            document_id: path.into(),
+            locator: DocumentLocatorDto::new("library-1", path, None, None).expect("locator"),
+            content,
+            revision: 1,
+        };
+        let long = "ñ".repeat(450_000);
+        let parts = document_parts(["a.md", "b.md", "c.md", "d.md"].map(|path| document(path, long.clone())).to_vec(), 0, None);
+        let lengths = parts.iter().map(|part| part.content.chars().count()).collect::<Vec<_>>();
+        // 200k of each, until the 600k of the call run out: the last one
+        // comes empty, to read in a later call.
+        assert_eq!(lengths, [200_000, 200_000, 200_000, 0]);
+        assert_eq!(parts[3].next_offset, Some(0));
+        assert_eq!(parts[0].next_offset, Some(200_000));
+        assert_eq!(parts[0].total_chars, 450_000);
+        let last = document_parts(vec![document("a.md", long)], 400_000, Some(999_999));
+        assert_eq!((last[0].offset, last[0].content.chars().count(), last[0].next_offset), (400_000, 50_000, None));
+        let photo = document("n.md", "Antes ![x](data:image/png;base64,AAAA) después".into());
+        assert_eq!(document_parts(vec![photo], 0, None)[0].content, "Antes ![x](foto embebida) después");
     }
 
     #[test]

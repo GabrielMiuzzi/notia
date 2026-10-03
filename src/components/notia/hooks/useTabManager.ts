@@ -251,7 +251,7 @@ export function useTabManager({
         || (tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH && !currentSpecialTabs.aiActions)
         || (tabPath === RECIPES_WORKSPACE_TAB_PATH && !currentSpecialTabs.recipes)
         || (tabPath === HEALTH_WORKSPACE_TAB_PATH && !currentSpecialTabs.health)
-        || (tabPath === GYM_WORKSPACE_TAB_PATH && !currentSpecialTabs.health)
+        || (tabPath === GYM_WORKSPACE_TAB_PATH && !currentSpecialTabs.gym)
         || (tabPath === HOME_WORKSPACE_TAB_PATH && !currentSpecialTabs.home)
       ) { return }
 
@@ -271,7 +271,7 @@ export function useTabManager({
         aiActions: tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.aiActions,
         recipes: tabPath === RECIPES_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.recipes,
         health: tabPath === HEALTH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.health,
-        gym: tabPath === GYM_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.health,
+        gym: tabPath === GYM_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.gym,
         home: tabPath === HOME_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.home,
       }
       const remainingTabs = buildWorkspaceTitleTabs(store.getState().documents.openTabs, nextSpecialTabs)

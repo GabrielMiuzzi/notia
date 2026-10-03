@@ -12,6 +12,7 @@ import { ChatWorkspaceView } from './views/chat/ChatWorkspaceView'
 import { HomeView } from './views/HomeView'
 import { useWikiLinkTargets } from './hooks/useWikiLinkTargets'
 import type { ColdPassEntryView } from '../../types/coldpass'
+import type { ColdPassNotice } from './hooks/useColdPassSession'
 import type { TaskManagerChatContext, TaskManagerVaultRef } from '../../modules/task-manager/types/taskManagerTypes'
 import type { LibraryGraphModel } from '../../types/graph/libraryGraph'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
@@ -44,6 +45,7 @@ interface NotiaWorkspaceProps {
   mountedHeavyWorkspaceView: string
   isAndroidRuntime: boolean
   coldPassEntries: ColdPassEntryView[]
+  coldPassNotice: ColdPassNotice | null
   coldPassSession: object | null
   activeTaskManagerVault: TaskManagerVaultRef | null
   libraryContexts: LibraryContext[]
@@ -82,6 +84,7 @@ function NotiaWorkspaceComponent({
   mountedHeavyWorkspaceView,
   isAndroidRuntime,
   coldPassEntries,
+  coldPassNotice,
   coldPassSession,
   activeTaskManagerVault,
   libraryContexts,
@@ -228,6 +231,7 @@ function NotiaWorkspaceComponent({
       <ModuleView>
         <ColdPassView
           entries={coldPassEntries}
+          notice={coldPassNotice}
           isUnlocked={Boolean(coldPassSession)}
           isImportingVault={isImportingVault}
           onCreateCredential={handleOpenColdPassCredentialModal}

@@ -1989,7 +1989,7 @@ flowchart LR
 ### Validaciones, errores y límites
 
 - Se aceptan imágenes reconocidas por MIME o extensión, PDF por MIME o extensión y archivos de texto por MIME o por extensiones de texto/código configuradas (`txt`, `md`, `csv`, `json`, `xml`, `html`, `css`, JavaScript/TypeScript, Python, Rust, Java, C/C++, YAML, TOML, INI, log y TeX, entre otras). Otros tipos muestran que solo se pueden procesar imágenes, PDF o texto.
-- Cada archivo tiene un límite de 40 MB. Un archivo de texto vacío se rechaza y cada archivo de texto admite como máximo 120.000 caracteres. Los límites del lote deben contemplar tamaño total, tamaño individual y cantidad de imágenes antes de enviar; en el código revisado de esta iteración sí se verifica de forma explícita el tamaño individual, pero no se encontró una constante ni una validación ejecutable para el tamaño agregado o una cantidad máxima de imágenes. Esos dos límites quedan como discrepancia técnica pendiente y no se presentan aquí como garantía implementada.
+- Cada archivo tiene un límite de 40 MB. Un archivo de texto vacío se rechaza y cada archivo de texto admite como máximo 10 MB (`MAX_TEXT_FILE_BYTES` al elegirlo, `MAX_TEXT_CHARS` al enviar), el tope que entra en Base64 en el chat guardado (16 Mi caracteres) y en el request del turno (32 MiB). Ver «Archivos de texto largos (2026-10-03)». Los límites del lote deben contemplar tamaño total, tamaño individual y cantidad de imágenes antes de enviar; en el código revisado de esta iteración sí se verifica de forma explícita el tamaño individual, pero no se encontró una constante ni una validación ejecutable para el tamaño agregado o una cantidad máxima de imágenes. Esos dos límites quedan como discrepancia técnica pendiente y no se presentan aquí como garantía implementada.
 - Los PDF se renderizan localmente mediante `renderPdfForAi`: se conservan todas las páginas dentro del límite de 24 páginas, se convierten a JPEG para la colección visual y se extraen como máximo 40.000 caracteres de texto. Un PDF vacío, de más de 24 páginas o con un fallo de renderizado interrumpe la carga de ese lote antes de iniciar el chat; un PDF escaneado puede continuar aunque no tenga texto extraíble porque sus páginas renderizadas siguen siendo la fuente visual.
 - Un archivo binario sin Base64 utilizable también se rechaza. Los errores de lectura, formato, tamaño y procesamiento llegan a `ChatWorkspaceView` como un mensaje seguro; no se inicia una consulta parcial.
 - El envío sigue requiriendo texto no vacío en el compositor; adjuntar archivos por sí solo no habilita el botón. El modelo configurado debe admitir visión cuando el lote contiene imágenes o páginas de PDF; los textos continúan formando parte del prompt.
@@ -5475,7 +5475,7 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `ai_tasks` | `ai_check_health`, `ai_list_models`, `ai_resolve_model`, `ai_recognize_inkmath` | `aiRuntime` |
 | `backup::service` | `backend_backup_status`, `backend_pick_backup_directory` †, `backend_disable_backups`, `backend_migrate_backup_directory` | `SettingsModal`, `backupSettingsStorage` |
 | `chat_history` | `backend_create_chat`, `backend_load_chat`, `backend_list_chats`, `backend_match_chat`, `backend_set_chat_context`, `backend_set_chat_settings`, `backend_set_chat_pinned`, `backend_rename_chat`, `backend_save_chat`, `backend_chat_image_previews`, `backend_classify_chat_file` | `chatDocumentStorage`, `chatImageAttachment`, `chatSessionStorage` |
-| `coldpass` | `coldpass_unlock`, `coldpass_status`, `coldpass_generate_password`, `coldpass_lock`, `coldpass_save_entry`, `coldpass_delete_entry`, `coldpass_pick_csv_import` †, `coldpass_confirm_import` | `ColdPassView`, `coldpassStorage` |
+| `coldpass` | `coldpass_unlock`, `coldpass_status`, `coldpass_generate_password`, `coldpass_rate_password`, `coldpass_lock`, `coldpass_save_entry`, `coldpass_delete_entry`, `coldpass_pick_csv_import` †, `coldpass_confirm_import` | `ColdPassView`, `coldpassStorage` |
 | `commands::bluetooth` | `coldpass_bluetooth_status` †, `coldpass_bluetooth_connect` †, `coldpass_bluetooth_submit_pin` †, `coldpass_bluetooth_authenticate` †, `coldpass_bluetooth_send_message` †, `coldpass_bluetooth_disconnect` † | `ColdPassView`, `coldpassBluetooth` |
 | `commands::qwen3_tts` | `get_qwen3_tts_status`, `reload_qwen3_tts`, `synthesize_qwen3_tts_speech`, `qwen3_tts_speech_plan`, `prepare_qwen3_tts` | `qwen3TtsRuntime` |
 | `commands::remote_speech` | `speech_remote_audio`, `speech_remote_audio_cancel` | `speechService`, `useRemoteVoiceTranscription` |
@@ -8910,6 +8910,7 @@ En Telegram y en el chat de la app, cada cambio y cada plan ofrecen **Confirmar*
   - `ai_chat.rs`: `InteractionAnswer` suma `approveAll`/`suggestion` y guarda la propuesta en el chat como respuesta.
   - React (`ChatThread`, `ChatWorkspaceView`, `aiChatRuntime`):
     - La tarjeta de confirmación tiene **Confirmar**, o **Confirmar seleccionados** si se desmarcaron hunks, más **Confirmar todos**, **Proponer otra cosa** y **Cancelar**.
+    - Con puntero grueso la vista previa es una hoja inferior fija sobre el hilo, así que `ChatThread` dibuja esos botones dentro de la hoja, pegados al pie. **Cerrar** solo oculta la vista previa (estado local `isAgentPreviewOpen`) sin cancelar; los botones vuelven a la tarjeta junto con **Ver cambios**.
     - La de plan tiene **Confirmar**, **Confirmar todos**, **Editar plan**, **Proponer otra cosa** y **Cancelar**.
     - La propuesta se escribe en el cuadro de preguntas. «Editar propuesta», que cancelaba el turno, se quitó.
 
@@ -9624,7 +9625,7 @@ El campo `passkey` de las entradas se reemplazó por `password`.
 
   Conserva el pairing por PIN, la autenticación y el envío de mensajes.
 - **`ColdPassOwnerPasswordModal`.** Reemplaza a `ColdPassPasskeyModal`: pide la contraseña del Owner y, si el vault es anterior, la passkey vieja con la explicación de que se pide una sola vez.
-- **`ColdPassCredentialModal`.** Recibe `openGenerator` para **Generar nueva**.
+- **`ColdPassCredentialModal`.** Recibe `openGenerator` para **Generar nueva** (desde el 2026-10-03 lleva el generador a la vista; ver «Formulario de credencial según el canvas»).
 - **Hook.** `useColdPassSession` expone `handleSubmitColdPassUnlock({ password, legacyPasskey })`, `handleSubmitColdPassDeletePassword` y `handleSubmitColdPassImportPassword`.
 - **CSS.** Se quitaron del `notia.css` las reglas de la tabla, el historial flotante y la tarjeta Bluetooth anteriores (352 líneas).
 
@@ -11215,3 +11216,92 @@ Sigue el lienzo «Notia · Meeting» (claude.ai/artifact/XKw8V1GNpg31pGxa91WRWm)
   - una reunión real con un proveedor de IA: pasadas de 5 minutos, «Llamar agente», pasada final al detener y calidad de los pasajes de la biblioteca;
   - probar en la tablet como cliente del host (opciones y pasajes desde el host);
   - medir el tiempo de la primera lectura de una biblioteca grande en Android.
+
+## Archivos de texto largos (2026-10-03)
+
+Un `.md` de 1,9 M caracteres (una exportación de Telegram) se rechazaba al enviar con «no es válido o supera el límite permitido»: `classify_file` lo aceptaba por estar debajo de 40 MB y `validate_attachments` lo cortaba en 120.000 caracteres.
+
+- **Límites** (`backend-core/src/chat_attachments.rs`):
+  - Un archivo de texto admite hasta 10 MB.
+  - `classify_file` rechaza uno mayor al elegirlo, antes de leerlo («El archivo de texto supera el límite de 10 MB»).
+  - `validate_attachments` distingue el texto demasiado largo del adjunto inválido.
+- **Mensaje** (`compose_message`):
+  - Hasta `MAX_INLINE_TEXT_CHARS` = 400.000 caracteres (unos 100k tokens), el texto va entero, como antes.
+  - Uno más largo va con sus primeros `EXCERPT_CHARS` = 100.000 caracteres y un aviso con el total, el nombre de la herramienta y el `offset` para seguir.
+  - El router de áreas recibe el mismo texto recortado.
+- **Herramienta `read_message_attachment`:**
+  - `read_attachment_tool` la ofrece solo si algún mensaje del turno (incluido el historial de la ventana de memoria) tiene un texto largo. La sirve el loop de `run_agent_inner`, como `change_tool_areas`: no pasa por el executor ni por el catálogo, no pide confirmación y sigue ofrecida después de cambiar de área.
+  - Argumentos:
+    - `name`: si dos adjuntos tienen el mismo nombre, gana el más reciente.
+    - `offset`: en caracteres, no bytes.
+    - `limit`: 100.000 por defecto, como máximo 200.000.
+    - `query`: opcional.
+  - Sin `query` devuelve `content` y `nextOffset` (`null` al final). Con `query` devuelve hasta 30 líneas que contienen el texto, sin distinguir mayúsculas, cada una con su posición y un fragmento de 400 caracteres, más `nextOffset` para la página siguiente.
+  - Leer otro tramo cuenta como avance para el detector de rondas trabadas; una llamada idéntica cuenta como repetida.
+  - `compact_tool_results` recorta los tramos viejos cuando los resultados superan 400.000 caracteres, conservando siempre los 6 más recientes. Por eso la descripción le pide al agente anotar lo que necesita de cada tramo.
+- **Persistencia:** no cambia. El texto completo queda en `NOTIA_CHAT_ATTACHMENTS` del chat y viaja en cada turno mientras el mensaje está en la ventana de memoria.
+- **Pruebas:**
+  - `chat_attachments::tests::a_long_text_file_goes_as_its_first_part_and_offers_the_reader`
+  - `chat_attachments::tests::the_reader_returns_parts_by_characters_and_searches_lines`
+  - `agent::tests::a_long_text_attachment_is_read_by_parts_in_the_loop`
+  - Límites en `validation_enforces_page_and_text_limits`.
+- **Pendiente:** probar en la app con el `chat.md` real y DeepSeek.
+
+**Ningún resultado de herramienta corta el turno (2026-10-03).** Después del arreglo, un turno con el `chat.md` adjunto terminó en «El resultado de la tool es demasiado grande.»: el loop validaba cada resultado con `BackendLimits::validate_result` (2 MiB) y abortaba el turno entero. `read_library_documents` devolvía documentos completos, incluido el chat guardado con el archivo en Base64 dentro de `NOTIA_CHAT_ATTACHMENTS`.
+
+- **`BackendLimits::fit_result`** reemplaza a `validate_result`. Un resultado más grande que `max_result_bytes` llega al modelo como `{truncated, totalBytes, partialResult, note}`, con el comienzo de su JSON (un tercio del límite) y el pedido de traer menos. Sigue `ok` y nunca devuelve error. Aplica a todas las herramientas del executor.
+- **`read_library_documents` por partes** (`library_tools::document_parts`):
+  - Acepta `offset` y `limit` (200.000 caracteres por documento por defecto y como máximo) y un tope de 600.000 caracteres por llamada.
+  - Cada documento trae `totalChars`, `offset`, `content` y `nextOffset`. Uno que ya no entra llega vacío con su `nextOffset`.
+  - La descripción del esquema le pide seguir con `nextOffset` y anotar lo que necesita de cada tramo.
+- **Contenido legible:** sale sin fotos embebidas (`without_photos`, antes en el handler de la app). En un chat guardado bajo `chat/chats/`, cada marcador de adjuntos pasa a `<!-- adjuntos del mensaje: nombres -->` (`chat_history::without_attachment_payloads`).
+- **Pruebas:**
+  - `protocol::tests::a_result_too_large_arrives_cut_instead_of_failing`
+  - `library_tools::tests::long_documents_are_read_by_parts_within_one_budget`
+  - `chat_history::tests::an_agent_reads_a_saved_chat_without_its_files`
+- **Validado:** backend-core 510 y notia-app 483 (+5 ignoradas), con `--features bluetooth`.
+- **Pendiente:** repetir el turno real en la app.
+
+
+## Android: la interfaz no queda debajo de las barras del sistema (2026-10-03)
+
+**Problema.** En la tablet, en modo tableta y en modo escritorio, la barra de tareas y la de navegación tapaban el pie de la interfaz (por ejemplo, la hoja «Vista previa de cambios» del chat). `MainActivity` dibuja de borde a borde (`enableEdgeToEdge`), pero el WebView no informa esas barras como `env(safe-area-inset-*)`, así que el relleno del shell quedaba en 0.
+
+**Arreglo** (`resources/continuity/android/ContinuityPlugin.kt`, en `load(webView)`; `build.rs` lo copia a `gen/android`):
+- La vista de contenido de la actividad (`android.R.id.content`, que contiene el WebView) se rellena con los insets de `systemBars()` y `displayCutout()`. Eso incluye la barra de estado, la de navegación o la barra de tareas, y la barra de título de una ventana en modo escritorio.
+- Esas barras se descuentan de los insets que recibe el WebView, así que `env(safe-area-inset-*)` queda en 0 y nada se rellena dos veces. El inset del teclado sigue llegando al WebView, y `useKeyboardInset` funciona como antes.
+- Detrás de las barras se pinta el fondo del tema oscuro (`#0F1420`), con íconos claros. Con el tema claro de Notia, esas franjas siguen oscuras.
+- **Validado:** compila con Gradle (`:app:compileArm64DebugKotlin`).
+- **Pendiente:** probar en la tablet en modo tableta, en modo escritorio con la ventana movida o redimensionada, en ambas orientaciones y con el teclado abierto en el chat.
+
+## ColdPass: formulario de credencial según el canvas (2026-10-03)
+
+El canvas «ColdPass — Gestor de contraseñas» (https://claude.ai/artifact/LggqHF7n8vBWPqR44UXoyU) sumó los tableros «Editar credencial — escritorio» (1440 × 900) y «Celular — editar» (390 × 844). Los otros tres tableros solo cambian en datos de ejemplo.
+
+**Backend** (`backend-core/src/coldpass.rs`, `app/src/coldpass.rs`, `app/src/registry.rs`):
+- `PasswordOptions` suma `includeUppercase` (por defecto `true`) y `avoidAmbiguous` (por defecto `false`, deja afuera `0 O l 1 I`). Un pedido sin esos campos se lee como antes. `generate_password` pone al menos un carácter de cada clase elegida y mezcla con Fisher-Yates usando el mismo índice uniforme. Las minúsculas siempre van.
+- `rate_password(password, personal)` devuelve `PasswordRating { level 0–4, label, hint }`: Vacía, Débil (< 45 bits), Regular (< 64), Fuerte (< 90) y Muy fuerte. Usa la entropía del canvas (26 + 26 + 10 + 15) y un tope de 34 bits para «palabra + dígitos» de menos de 12 caracteres. El texto de tiempo va de «se adivina al instante» a «resiste siglos de fuerza bruta», con 10¹⁰ intentos por segundo. Una contraseña que `is_weak_password` marca débil (corta, repetitiva o con el nombre, sitio o usuario) nunca pasa de Débil, para no contradecir el chip de la lista.
+- Comando nuevo `coldpass_rate_password { password, name, website, username }`. Está en `CLIENT_LOCAL_COMMANDS` (`connection.rs`): en un cliente se calcula en el dispositivo y lo que se escribe no viaja al host en cada tecla. `coldpass_generate_password` suma `rating` de la contraseña generada.
+- `upsert_coldpass_entry` exige contraseña (antes solo nombre) y limita las notas a `MAX_NOTES_CHARS` = 500. Unas notas más largas que vinieron de una importación se conservan mientras no se editen.
+
+**Interfaz:**
+- `ColdPassCredentialModal.tsx` se reescribió según los tableros:
+  - encabezado con inicial, título y «sitio · usuario»;
+  - campos en dos columnas;
+  - tarjeta de contraseña con mostrar/ocultar, medidor de 4 tramos, **Deshacer cambio** y el aviso «Al guardar, la contraseña actual pasa al historial»;
+  - generador desplegable (abierto al abrir, como en el canvas) con vista previa, **Generar otra**, largo 8–64, cuatro opciones y **Usar esta contraseña**;
+  - notas con contador `n / 500`;
+  - pie con estado («Cambios sin guardar» o «Cambiada hace…»), **Cancelar** y **Guardar cambios**, que solo se habilita con cambios, nombre y contraseña.
+- La fuerza la decide Rust: el formulario pide `coldpass_rate_password` 120 ms después de cada cambio y muestra solo la última respuesta.
+- Estilos en `views/coldpass/coldpassEditor.css`, con tokens de la paleta en el panel (`.cpe`), porque el modal se monta fuera de la vista. Por debajo de 600 px de ventana es pantalla completa: **Cancelar**, título y **Guardar** arriba, franja «Cambios sin guardar», sin pie y con «Última modificación: hace…» al final.
+- Al guardar, `useColdPassSession` publica `coldPassNotice` («Cambios guardados.», «Guardado. La contraseña anterior quedó en el historial.» o «Credencial guardada.»), que `ColdPassView` muestra como toast. Que la contraseña pasó al historial se lee del resultado del backend, no del formulario.
+- Se borraron `ColdPassPasswordGeneratorPopover.tsx`, `formatColdPassBruteForceEstimate` y 214 líneas del CSS anterior del modal en `notia.css`.
+
+**Desvío del canvas.** En los dos tableros, la columna del formulario achica la tarjeta de contraseña y su `overflow: hidden` tapa el generador: en escritorio queda oculto **Usar esta contraseña** y en el celular, todo el generador. En la app los bloques no se achican (`.cpe-body > * { flex-shrink: 0 }`) y el formulario se desplaza. Las demás medidas se tomaron con Chrome headless contra los tableros renderizados con su runtime: diálogo de 642 × 870 (el canvas mide la caja de contenido) y todas las cajas a 1 px o menos en 1440 × 900 y en 390 × 844.
+
+**Validado:**
+- `cargo test --offline -p notia-backend-core` → 513 (+3 ignoradas). Pruebas nuevas: `generated_passwords_hold_every_chosen_class_and_can_skip_ambiguous_characters`, `rating_follows_entropy_and_never_praises_a_weak_password` y `saving_needs_a_password_and_notes_within_the_limit_unless_kept`.
+- `cargo test --offline -p notia-app --features bluetooth` → 483 (+5 ignoradas).
+- `tsc -p tsconfig.app.json`, eslint de los archivos tocados y vitest: 558 pruebas en 123 archivos (nuevo `ColdPassCredentialModal.test.tsx`).
+
+**Pendiente:** probar en Windows y en la tablet con el vault real (editar, generar, deshacer, notas largas importadas) y el cálculo local en un cliente.

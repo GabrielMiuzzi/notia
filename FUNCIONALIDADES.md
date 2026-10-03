@@ -28,7 +28,7 @@
 - Chat IA con interruptor de búsqueda en toda la librería (RAG) y contexto fijo de archivos o carpetas completas de la librería.
 - Chat lateral con encabezado de agente (lista con descripción), título del chat, historial (búsqueda, grupos por día, agente de cada chat, fijar, renombrar y eliminar), nuevo chat y cierre; compositor con chip del contexto abierto, adjuntar, dictar, modelo y enviar.
 - Chat local con IA mediante Ollama, con prompt default del sistema embebido y visualizador sincronizado, prompts Markdown alternativos seleccionables, continuidad conversacional, análisis/comparaciones y reintento seguro de respuestas nativas vacías transitorias después de rondas de tools.
-- Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto, colección visual ordenada para imágenes y páginas de PDF y previews acotados de imágenes raster persistidas al abrir chats Markdown.
+- Adjuntos locales múltiples en el chat, conservados en los mensajes del historial y reutilizables en seguimientos, con eliminación individual, bloques separados para texto, colección visual ordenada para imágenes y páginas de PDF y previews acotados de imágenes raster persistidas al abrir chats Markdown. Archivos de texto de hasta 10 MB: hasta 400.000 caracteres van enteros y uno más largo va con su comienzo, y el agente lee el resto por tramos o busca texto con `read_message_attachment`. Los documentos de la biblioteca también se leen por tramos (`offset`/`limit` en `read_library_documents`), y un resultado de herramienta demasiado grande llega recortado al modelo en vez de cortar la respuesta.
 - Chat IA con hasta seis agentes de `.agent/promps` y una dinámica de `.agent/dynamics`: los agentes responden en rondas automáticas y entre ellos, con avatar y nombre, guardados en el chat.
 - Chat IA con permisos por chat (uso de herramientas y solo lectura o escritura) y contexto permanente.
 - Memoria persistente y herramientas nativas para el agente de IA.
@@ -62,6 +62,7 @@
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas con la contraseña del Owner: lista con buscador y filtros por contraseñas débiles o antiguas, detalle con historial fechado y copiado que se borra del portapapeles a los 30 segundos.
 - Desbloqueo de ColdPass con huella en Android, opcional por dispositivo.
+- Formulario de credencial de ColdPass con medidor de fuerza de la contraseña, deshacer el cambio y generador integrado (largo, mayúsculas, números, símbolos y sin ambiguos); pantalla completa en el teléfono.
 - Sincronización de ColdPass mediante Bluetooth.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
 - Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).

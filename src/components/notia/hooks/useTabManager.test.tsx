@@ -8,7 +8,7 @@ const documents = vi.hoisted(() => ({ writeLibraryDocument: vi.fn() }))
 vi.mock('../../../services/libraries/libraryDocumentRuntime', () => documents)
 
 const { store } = await import('../../../store/index')
-const { addOpenTab, resetTabs, setActiveTabPath, updateTabSource } = await import('../../../features/documents/documentsSlice')
+const { activateSpecialTab, addOpenTab, GYM_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, resetTabs, setActiveTabPath, updateTabSource } = await import('../../../features/documents/documentsSlice')
 const { registerPendingEditorChanges } = await import('../../../services/markdown/pendingEditorChanges')
 const { useTabManager } = await import('./useTabManager')
 
@@ -75,5 +75,38 @@ describe('useTabManager and the editor’s pending text', () => {
 
     expect(sourceOf('A.md')).toBe('Hola mundo')
     expect(sourceOf('B.md')).toBe('Otra cosa')
+  })
+})
+
+describe('useTabManager and the module tabs', () => {
+  afterEach(() => {
+    store.dispatch(resetTabs())
+  })
+
+  it('closes Gimnasio without Salud open', async () => {
+    store.dispatch(activateSpecialTab('gym'))
+    const { result } = renderTabManager()
+
+    await act(async () => {
+      await result.current.closeTabByPath(GYM_WORKSPACE_TAB_PATH)
+    })
+
+    expect(store.getState().documents.specialTabs.gym).toBe(false)
+  })
+
+  it('does not bring Gimnasio back when another tab closes', async () => {
+    store.dispatch(activateSpecialTab('health'))
+    store.dispatch(activateSpecialTab('gym'))
+    const { result } = renderTabManager()
+
+    await act(async () => {
+      await result.current.closeTabByPath(GYM_WORKSPACE_TAB_PATH)
+    })
+    await act(async () => {
+      await result.current.closeTabByPath(HEALTH_WORKSPACE_TAB_PATH)
+    })
+
+    expect(store.getState().documents.specialTabs.gym).toBe(false)
+    expect(store.getState().documents.specialTabs.health).toBe(false)
   })
 })

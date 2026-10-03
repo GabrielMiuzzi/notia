@@ -1917,7 +1917,7 @@
     }
   },
   "read_library_documents": {
-    "description": "Lee el contenido completo de elementos previamente identificados. Usala solo cuando se pidan detalles. Fuente de verdad: la biblioteca autorizada. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "description": "Lee el contenido de elementos previamente identificados. Usala solo cuando se pidan detalles. Fuente de verdad: la biblioteca autorizada. Un documento largo se lee por partes: cada uno trae totalChars, el tramo desde offset y nextOffset; si nextOffset no es null, volvé a llamarla con ese offset (de a un documento) hasta leer lo que necesites. Los tramos leídos hace varias rondas se recortan para ahorrar contexto: anotá lo que necesites de cada tramo antes de pedir el siguiente. No afirmes nada sobre la parte que no leíste.",
     "parameters": {
       "type": "object",
       "required": [
@@ -1929,6 +1929,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Carácter desde el que leer cada documento; 0 por defecto. Usá el nextOffset de la lectura anterior."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200000,
+          "description": "Caracteres a leer de cada documento; 200000 por defecto."
         }
       }
     }

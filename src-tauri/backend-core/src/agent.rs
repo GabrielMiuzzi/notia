@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::catalog::{
     authorize_tool_call, project_tool_catalog, AuthorizationPrincipal, ToolCatalogProjection,
 };
+use super::chat_attachments::{read_attachment, read_attachment_tool, READ_ATTACHMENT_TOOL};
 use super::context::BackendRequestContext;
 use super::control::RequestControl;
 use super::error::{BackendError, BackendErrorCode};
@@ -476,7 +477,15 @@ fn run_agent_inner(
         .or_else(|| request.tool_areas.clone())
         .map(|ids| parse_area_ids(&ids))
         .unwrap_or_default();
-    let mut tools = if routed { turn_tools(&pool, &areas, options.limits.max_tools) } else { pool.clone() };
+    // A text file too long to quote whole is read by parts with a tool the
+    // loop serves itself, in every round and area.
+    let turn_attachments = request.messages.iter().flat_map(|message| &message.attachments).collect::<Vec<_>>();
+    let attachment_tool = read_attachment_tool(&turn_attachments);
+    let with_attachment_tool = |mut tools: Vec<ToolDefinition>| {
+        tools.extend(attachment_tool.clone());
+        tools
+    };
+    let mut tools = with_attachment_tool(if routed { turn_tools(&pool, &areas, options.limits.max_tools) } else { pool.clone() });
     let mut area_switches = 0usize;
     let mut messages = continuation
         .as_ref()
@@ -928,7 +937,7 @@ fn run_agent_inner(
                         area_switches += 1;
                         progressed = true;
                         areas = next;
-                        tools = turn_tools(&pool, &areas, options.limits.max_tools);
+                        tools = with_attachment_tool(turn_tools(&pool, &areas, options.limits.max_tools));
                         ToolResult {
                             call_id: call.id.clone(),
                             ok: true,
@@ -951,6 +960,47 @@ fn run_agent_inner(
                         preview: None,
                     },
                 };
+                emit(
+                    events,
+                    options,
+                    &mut event_count,
+                    BackendEvent::ToolCompleted {
+                        request_id: request.context.request_id.clone(),
+                        tool_name: call.name.clone(),
+                        round: rounds,
+                        ok: result.ok,
+                        changed: Some(false),
+                        operation_id: Some(call.id.clone()),
+                    },
+                )?;
+                append_tool_message(&mut messages, &call, &result);
+                had_tool_result = true;
+                continue;
+            }
+            if attachment_tool.is_some() && call.name == READ_ATTACHMENT_TOOL {
+                emit(
+                    events,
+                    options,
+                    &mut event_count,
+                    BackendEvent::ToolStarted {
+                        request_id: request.context.request_id.clone(),
+                        tool_name: call.name.clone(),
+                        round: rounds,
+                    },
+                )?;
+                let (data, error) = match read_attachment(&turn_attachments, &call.arguments) {
+                    Ok(data) => (Some(data), None),
+                    Err(error) => (None, Some(error)),
+                };
+                // Reading another part is progress; an identical call repeats.
+                let call_key = tool_call_key(&call.name, &call.arguments);
+                if executed.contains_key(&call_key) {
+                    repeated_call = true;
+                } else {
+                    progressed = true;
+                }
+                let result = ToolResult { call_id: call.id.clone(), ok: error.is_none(), changed: false, data, error, preview: None };
+                executed.insert(call_key, ExecutedTool { result: result.clone(), retry_count: 0 });
                 emit(
                     events,
                     options,
@@ -1224,7 +1274,8 @@ fn run_agent_inner(
                         preview: None,
                     },
                 };
-                options.limits.validate_result(&result)?;
+                // A result too large reaches the model cut, never ends the turn.
+                let result = options.limits.fit_result(result);
                 state.store_tool_result(
                     &request.context,
                     &request.idempotency_key,
@@ -2762,15 +2813,24 @@ mod tests {
         }
     }
 
-    /// Answers from a script and keeps the tool names of every request.
+    /// Answers from a script and keeps the tool names and the messages of
+    /// every request.
     struct RecordingProvider {
         responses: Mutex<Vec<ProviderResponse>>,
         offered: Mutex<Vec<Vec<String>>>,
+        seen: Mutex<Vec<Vec<ProviderMessage>>>,
+    }
+
+    impl RecordingProvider {
+        fn new(responses: Vec<ProviderResponse>) -> Self {
+            Self { responses: Mutex::new(responses), offered: Mutex::new(Vec::new()), seen: Mutex::new(Vec::new()) }
+        }
     }
 
     impl AgentProvider for RecordingProvider {
         fn chat(&self, request: &ProviderRequest, _: &RequestControl) -> Result<ProviderResponse, BackendError> {
             self.offered.lock().expect("offered").push(request.tools.iter().map(|tool| tool.name.clone()).collect());
+            self.seen.lock().expect("seen").push(request.messages.clone());
             Ok(self.responses.lock().expect("responses").remove(0))
         }
         fn stream_chat(
@@ -2792,16 +2852,13 @@ mod tests {
 
     #[test]
     fn a_routed_run_changes_areas_and_goes_on_with_the_new_tools() {
-        let provider = RecordingProvider {
-            responses: Mutex::new(vec![
-                // Starts in Finanzas, finds that it is a meal and moves to Salud.
-                assistant("", vec![call("switch-1", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["salud"], "reason": "es una comida" }))]),
-                assistant("", vec![call("switch-2", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["correo"] }))]),
-                assistant("", vec![call("meal-1", "log_meal", serde_json::json!({ "name": "Milanesa" }))]),
-                assistant("Listo, registré la milanesa.", Vec::new()),
-            ]),
-            offered: Mutex::new(Vec::new()),
-        };
+        let provider = RecordingProvider::new(vec![
+            // Starts in Finanzas, finds that it is a meal and moves to Salud.
+            assistant("", vec![call("switch-1", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["salud"], "reason": "es una comida" }))]),
+            assistant("", vec![call("switch-2", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["correo"] }))]),
+            assistant("", vec![call("meal-1", "log_meal", serde_json::json!({ "name": "Milanesa" }))]),
+            assistant("Listo, registré la milanesa.", Vec::new()),
+        ]);
         let executor = read_executor();
         let mut routed = request(vec![tool("search_web", true), tool("get_finance_dashboard", true), tool("log_meal", true)]);
         routed.tool_areas = Some(vec!["finanzas".into()]);
@@ -2827,11 +2884,52 @@ mod tests {
         assert_eq!(response.tool_results.len(), 1);
 
         // Without areas, the tools are offered as they come.
-        let plain = RecordingProvider { responses: Mutex::new(vec![assistant("Hola.", Vec::new())]), offered: Mutex::new(Vec::new()) };
+        let plain = RecordingProvider::new(vec![assistant("Hola.", Vec::new())]);
         let request = request(vec![tool("search_web", true), tool("get_finance_dashboard", true), tool("log_meal", true)]);
         run_agent(&plain, &read_executor(), &NoopAgentState, &VecEventSink::default(), &request, &principal(), &RequestControl::new(None), &AgentRuntimeOptions::default())
             .expect("agent completes");
         assert_eq!(plain.offered.lock().expect("offered")[0], ["search_web", "get_finance_dashboard", "log_meal"]);
+    }
+
+    #[test]
+    fn a_long_text_attachment_is_read_by_parts_in_the_loop() {
+        use crate::chat_attachments::{MessageAttachment, MessageAttachmentKind, READ_ATTACHMENT_TOOL};
+        let chat = (0..15_000).map(|line| format!("[{line:05}] Ana: mensaje de prueba\n")).collect::<String>();
+        let provider = RecordingProvider::new(vec![
+            assistant("", vec![call("switch-1", SWITCH_AREA_TOOL, serde_json::json!({ "areas": ["salud"] }))]),
+            assistant("", vec![
+                call("read-1", READ_ATTACHMENT_TOOL, serde_json::json!({ "name": "chat.md", "offset": 20_000, "limit": 30 })),
+                call("find-1", READ_ATTACHMENT_TOOL, serde_json::json!({ "name": "chat.md", "query": "[14999]" })),
+            ]),
+            assistant("Leí el chat entero.", Vec::new()),
+        ]);
+        let executor = read_executor();
+        let mut routed = request(vec![tool("search_web", true), tool("get_finance_dashboard", true), tool("log_meal", true)]);
+        routed.tool_areas = Some(vec!["finanzas".into()]);
+        routed.messages[0].attachments.push(MessageAttachment {
+            name: "chat.md".into(),
+            media_type: "text/markdown".into(),
+            kind: MessageAttachmentKind::Text,
+            pages: Vec::new(),
+            text_content: Some(chat.clone()),
+            extracted_text: None,
+            page_count: None,
+        });
+        let response = run_agent(&provider, &executor, &NoopAgentState, &VecEventSink::default(), &routed, &principal(), &RequestControl::new(None), &AgentRuntimeOptions::default())
+            .expect("agent completes");
+        assert_eq!(response.response.markdown, "Leí el chat entero.");
+        // The reader stays offered after the areas change.
+        let offered = provider.offered.lock().expect("offered").clone();
+        assert!(offered.iter().all(|names| names.iter().any(|name| name == READ_ATTACHMENT_TOOL)), "{offered:?}");
+        let seen = provider.seen.lock().expect("seen").clone();
+        // The message carries only the first part; the tool results bring the rest.
+        assert!(seen[0][0].content.len() < chat.len() / 2);
+        let last = &seen[2];
+        let part = &chat[20_000..20_030];
+        assert!(last.iter().any(|message| message.content.contains(part)));
+        assert!(last.iter().any(|message| message.content.contains("[14999] Ana")));
+        // The loop serves the reader itself: nothing reaches the executor.
+        assert_eq!(*executor.executions.lock().expect("executions"), 0);
     }
 
     #[test]

@@ -113,6 +113,11 @@ interface UseColdPassSessionDeps {
   closeColdPassTab: () => void
 }
 
+export interface ColdPassNotice {
+  message: string
+  at: number
+}
+
 export interface UseColdPassSessionReturn {
   coldPassSession: ColdPassSessionData | null
   coldPassEntries: ColdPassEntryView[]
@@ -121,6 +126,8 @@ export interface UseColdPassSessionReturn {
   coldPassDeletePromptState: ColdPassDeletePromptState
   coldPassImportPromptState: ColdPassImportPromptState
   isImportingVault: boolean
+  /** What the last save did, for the view to show; `at` tells repeats apart. */
+  coldPassNotice: ColdPassNotice | null
   handleSubmitColdPassUnlock: (values: ColdPassUnlockValues) => void
   handleUnlockColdPassWithBiometric: () => void
   handleCloseColdPassPrompt: () => void
@@ -137,6 +144,18 @@ export interface UseColdPassSessionReturn {
   resetColdPassSession: () => void
 }
 
+/**
+ * The saved credential tells whether the backend moved a password to its
+ * history: its newest record is not the one it had before.
+ */
+function savedMessage(editingEntry: ColdPassEntryView | undefined, session: ColdPassSessionData): string {
+  if (!editingEntry) return 'Credencial guardada.'
+  const saved = session.entries.find((entry) => entry.id === editingEntry.id)
+  const newest = saved?.passwordHistory[0]
+  const replaced = Boolean(newest) && newest?.replacedAt !== editingEntry.passwordHistory[0]?.replacedAt
+  return replaced ? 'Guardado. La contraseña anterior quedó en el historial.' : 'Cambios guardados.'
+}
+
 export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSessionReturn {
   const { activeLibrary, activeWorkspaceView, closeColdPassTab } = deps
   const dispatch = useAppDispatch()
@@ -147,6 +166,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
   const [coldPassCredentialModalState, setColdPassCredentialModalState] = useState<ColdPassCredentialModalState>(INITIAL_CREDENTIAL_MODAL_STATE)
   const [coldPassDeletePromptState, setColdPassDeletePromptState] = useState<ColdPassDeletePromptState>(INITIAL_DELETE_PROMPT_STATE)
   const [coldPassImportPromptState, setColdPassImportPromptState] = useState<ColdPassImportPromptState>(INITIAL_IMPORT_PROMPT_STATE)
+  const [coldPassNotice, setColdPassNotice] = useState<ColdPassNotice | null>(null)
 
   // Auto-open ColdPass prompt when entering coldpass view without session
   useEffect(() => {
@@ -364,6 +384,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
       .then((session) => {
         setColdPassSession(session)
         setColdPassCredentialModalState(INITIAL_CREDENTIAL_MODAL_STATE)
+        setColdPassNotice({ message: savedMessage(editingEntry, session), at: Date.now() })
       })
       .catch((error) => {
         setColdPassCredentialModalState((current) => ({
@@ -481,6 +502,7 @@ export function useColdPassSession(deps: UseColdPassSessionDeps): UseColdPassSes
     coldPassDeletePromptState,
     coldPassImportPromptState,
     isImportingVault: coldPassImportPromptState.isSelectingFile,
+    coldPassNotice,
     handleSubmitColdPassUnlock,
     handleUnlockColdPassWithBiometric,
     handleCloseColdPassPrompt,

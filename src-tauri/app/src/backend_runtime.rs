@@ -3045,16 +3045,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 } else {
                     reader.read_documents(&context.library_id, &ids)?
                 };
-                // Notes and recipes are read without their embedded images:
-                // hundreds of kilobytes of base64 the model cannot use.
-                let documents = documents
-                    .into_iter()
-                    .map(|mut document| {
-                        document.content = notia_backend_core::recipes::markdown::without_photos(&document.content);
-                        document
-                    })
-                    .collect::<Vec<_>>();
-                json!({ "documents": documents })
+                // A long document is read by parts, without embedded photos
+                // or the files of a saved chat (see `document_parts`).
+                let offset = call.arguments.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let limit = call.arguments.get("limit").and_then(Value::as_u64).map(|limit| limit as usize);
+                json!({ "documents": notia_backend_core::library_tools::document_parts(documents, offset, limit) })
             }
             "search_library_documents" => {
                 let page = reader.search_documents(&DocumentSearchRequest {

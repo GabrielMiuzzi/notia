@@ -26,6 +26,11 @@ const MIN_DISTINCT_PASSWORD_CHARS: usize = 5;
 const MIN_PERSONAL_WORD_CHARS: usize = 4;
 /// A password unchanged for longer than a year should be rotated.
 const ROTATE_AFTER_MS: i64 = 365 * 24 * 60 * 60 * 1000;
+/// Notes the form accepts; longer notes from an import are kept while they
+/// are not edited.
+pub const MAX_NOTES_CHARS: usize = 500;
+/// Longest password the form's strength meter rates, as any other field.
+pub const MAX_RATED_PASSWORD_CHARS: usize = MAX_FIELD_CHARS;
 
 /// A replaced password and when it was replaced. Vaults written before the
 /// dates were kept store plain strings, read here without a date.
@@ -337,12 +342,19 @@ pub fn upsert_coldpass_entry(
     if entry.name.trim().is_empty() {
         return Err(BackendError::invalid_input("La credencial necesita un nombre."));
     }
+    if entry.password.is_empty() {
+        return Err(BackendError::invalid_input("La credencial necesita una contraseña."));
+    }
+    let long_notes = entry.notes.chars().count() > MAX_NOTES_CHARS;
     match editing_id {
         Some(editing_id) => {
             let current = entries
                 .iter_mut()
                 .find(|candidate| candidate.id == editing_id)
                 .ok_or_else(|| BackendError::invalid_input("La credencial ya no existe."))?;
+            if long_notes && current.notes != entry.notes {
+                return Err(notes_too_long());
+            }
             let mut history = current.password_history.clone();
             let changed = current.password != entry.password;
             if changed && !current.password.is_empty() {
@@ -359,6 +371,9 @@ pub fn upsert_coldpass_entry(
             *current = entry;
         }
         None => {
+            if long_notes {
+                return Err(notes_too_long());
+            }
             if entries.len() >= MAX_COLDPASS_ENTRIES {
                 return Err(BackendError::invalid_input("El vault alcanzó el máximo de credenciales."));
             }
@@ -369,6 +384,10 @@ pub fn upsert_coldpass_entry(
         }
     }
     Ok(())
+}
+
+fn notes_too_long() -> BackendError {
+    BackendError::invalid_input(format!("Las notas admiten hasta {MAX_NOTES_CHARS} caracteres."))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -453,18 +472,29 @@ pub fn parse_coldpass_csv(content: &str, new_id: &mut dyn FnMut() -> String) -> 
     Ok(ColdPassCsvImport { entries, skipped_row_count: skipped })
 }
 
-/// Options of the password generator.
+/// Options of the password generator. Lowercase letters always go in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordOptions {
     pub length: u32,
+    #[serde(default = "include_by_default")]
+    pub include_uppercase: bool,
     pub include_numbers: bool,
     pub include_special_characters: bool,
+    /// Leaves out characters that are easy to confuse (0 O l 1 I).
+    #[serde(default)]
+    pub avoid_ambiguous: bool,
 }
 
-const PASSWORD_LETTERS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+fn include_by_default() -> bool {
+    true
+}
+
+const PASSWORD_LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
+const PASSWORD_UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const PASSWORD_NUMBERS: &str = "0123456789";
 const PASSWORD_SPECIAL: &str = "!@#$%^&*()-_=+[]{};:,.<>/?";
+const AMBIGUOUS_CHARACTERS: &str = "0Ol1I";
 /// Guesses per second of the attacker the estimate assumes.
 const GUESSES_PER_SECOND: f64 = 10_000_000_000.0;
 
@@ -473,22 +503,109 @@ pub fn password_length(options: &PasswordOptions) -> usize {
     options.length.clamp(8, 64) as usize
 }
 
-pub fn password_charset(options: &PasswordOptions) -> Vec<char> {
-    let mut charset = PASSWORD_LETTERS.to_string();
-    if options.include_numbers {
-        charset.push_str(PASSWORD_NUMBERS);
-    }
-    if options.include_special_characters {
-        charset.push_str(PASSWORD_SPECIAL);
-    }
-    charset.chars().collect()
+/// The character classes the options ask for, each without the ambiguous
+/// characters when they are avoided.
+fn password_pools(options: &PasswordOptions) -> Vec<Vec<char>> {
+    [
+        (true, PASSWORD_LOWER),
+        (options.include_uppercase, PASSWORD_UPPER),
+        (options.include_numbers, PASSWORD_NUMBERS),
+        (options.include_special_characters, PASSWORD_SPECIAL),
+    ]
+    .into_iter()
+    .filter(|(included, _)| *included)
+    .map(|(_, characters)| {
+        characters
+            .chars()
+            .filter(|character| !options.avoid_ambiguous || !AMBIGUOUS_CHARACTERS.contains(*character))
+            .collect()
+    })
+    .collect()
 }
 
-/// A password of the chosen length and characters; `index(n)` returns a
-/// uniform random index below `n`.
+pub fn password_charset(options: &PasswordOptions) -> Vec<char> {
+    password_pools(options).concat()
+}
+
+/// A password of the chosen length with at least one character of each
+/// chosen class; `index(n)` returns a uniform random index below `n`.
 pub fn generate_password(options: &PasswordOptions, index: &mut dyn FnMut(usize) -> usize) -> String {
-    let charset = password_charset(options);
-    (0..password_length(options)).map(|_| charset[index(charset.len())]).collect()
+    let pools = password_pools(options);
+    let charset = pools.concat();
+    let mut password = pools.iter().map(|pool| pool[index(pool.len())]).collect::<Vec<_>>();
+    while password.len() < password_length(options) {
+        password.push(charset[index(charset.len())]);
+    }
+    for position in (1..password.len()).rev() {
+        password.swap(position, index(position + 1));
+    }
+    password.into_iter().collect()
+}
+
+/// How strong a password reads in the form: `level` 0 (empty) to 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordRating {
+    pub level: u8,
+    pub label: String,
+    pub hint: String,
+}
+
+/// Rates a password by its estimated entropy. One that the vault would mark
+/// weak (short, repetitive or made of the name, site or user in `personal`)
+/// never rates above «Débil».
+pub fn rate_password(password: &str, personal: &[&str]) -> PasswordRating {
+    let length = password.chars().count();
+    if length == 0 {
+        return PasswordRating { level: 0, label: "Vacía".into(), hint: "Escribí o generá una contraseña".into() };
+    }
+    let bits = password_entropy_bits(password);
+    let level = match bits {
+        bits if bits < 45.0 => 1,
+        bits if bits < 64.0 => 2,
+        bits if bits < 90.0 => 3,
+        _ => 4,
+    };
+    let level = if is_weak_password(password, personal) { 1 } else { level };
+    let label = ["", "Débil", "Regular", "Fuerte", "Muy fuerte"][usize::from(level)];
+    PasswordRating { level, label: label.into(), hint: crack_time_hint(bits).into() }
+}
+
+fn password_entropy_bits(password: &str) -> f64 {
+    let pool = [
+        (password.chars().any(|character| character.is_ascii_lowercase()), 26),
+        (password.chars().any(|character| character.is_ascii_uppercase()), 26),
+        (password.chars().any(|character| character.is_ascii_digit()), 10),
+        (password.chars().any(|character| !character.is_ascii_alphanumeric()), 15),
+    ]
+    .into_iter()
+    .filter_map(|(present, size)| present.then_some(size))
+    .sum::<u32>()
+    .max(1);
+    let length = password.chars().count();
+    let bits = length as f64 * f64::from(pool).log2();
+    // A word followed by digits («martin2024») falls to a dictionary first.
+    let letters_then_digits = password.trim_end_matches(|character: char| character.is_ascii_digit());
+    if length < 12 && !letters_then_digits.is_empty() && letters_then_digits.chars().all(|character| character.is_ascii_alphabetic()) {
+        bits.min(34.0)
+    } else {
+        bits
+    }
+}
+
+fn crack_time_hint(bits: f64) -> &'static str {
+    let seconds = 2f64.powf(bits) / 2.0 / GUESSES_PER_SECOND;
+    if seconds < 1.0 {
+        "se adivina al instante"
+    } else if seconds < 3_600.0 {
+        "se adivina en minutos"
+    } else if seconds < 86_400.0 * 30.0 {
+        "se adivina en días"
+    } else if seconds < 31_536_000.0 * 100.0 {
+        "resiste años de fuerza bruta"
+    } else {
+        "resiste siglos de fuerza bruta"
+    }
 }
 
 /// Seconds a brute-force attack would need to try every password.
@@ -605,13 +722,70 @@ mod tests {
 
     #[test]
     fn passwords_follow_the_options_and_their_strength_is_estimated() {
-        let options = PasswordOptions { length: 3, include_numbers: true, include_special_characters: false };
+        let options = PasswordOptions {
+            length: 3,
+            include_uppercase: true,
+            include_numbers: true,
+            include_special_characters: false,
+            avoid_ambiguous: false,
+        };
         let mut next = 0;
         let password = generate_password(&options, &mut |size| { next = (next + 61) % size; next });
         assert_eq!(password.chars().count(), 8);
         assert!(password.chars().all(|character| character.is_ascii_alphanumeric()));
         assert_eq!(password_charset(&options).len(), 62);
-        let strong = PasswordOptions { length: 64, include_numbers: true, include_special_characters: true };
+        let strong = PasswordOptions { length: 64, include_special_characters: true, ..options };
         assert!(brute_force_seconds(&strong) > brute_force_seconds(&options));
+    }
+
+    #[test]
+    fn generated_passwords_hold_every_chosen_class_and_can_skip_ambiguous_characters() {
+        let options = PasswordOptions {
+            length: 8,
+            include_uppercase: true,
+            include_numbers: true,
+            include_special_characters: true,
+            avoid_ambiguous: true,
+        };
+        // An index that always picks the first character still has to cover each class.
+        let password = generate_password(&options, &mut |_| 0);
+        assert!(password.chars().any(|character| character.is_ascii_lowercase()));
+        assert!(password.chars().any(|character| character.is_ascii_uppercase()));
+        assert!(password.chars().any(|character| character.is_ascii_digit()));
+        assert!(password.chars().any(|character| !character.is_ascii_alphanumeric()));
+        assert!(password_charset(&options).iter().all(|character| !"0Ol1I".contains(*character)));
+        let lower_only = PasswordOptions { include_uppercase: false, include_numbers: false, include_special_characters: false, ..options };
+        assert!(generate_password(&lower_only, &mut |size| size - 1).chars().all(|character| character.is_ascii_lowercase()));
+        let legacy: PasswordOptions =
+            serde_json::from_str(r#"{"length":16,"includeNumbers":true,"includeSpecialCharacters":false}"#).expect("options");
+        assert!(legacy.include_uppercase && !legacy.avoid_ambiguous);
+    }
+
+    #[test]
+    fn rating_follows_entropy_and_never_praises_a_weak_password() {
+        assert_eq!(rate_password("", &[]).level, 0);
+        assert_eq!(rate_password("", &[]).label, "Vacía");
+        assert_eq!(rate_password("martin2024", &[]).label, "Débil");
+        assert_eq!(rate_password("martin2024", &[]).hint, "se adivina al instante");
+        assert_eq!(rate_password("Tq8!mZ2rVx#4", &[]).label, "Fuerte");
+        assert_eq!(rate_password("Tq8!mZ2rVx#4kP9@wL3s", &[]).label, "Muy fuerte");
+        assert_eq!(rate_password("Tq8!mZ2rVx#4kP9@wL3s", &[]).hint, "resiste siglos de fuerza bruta");
+        assert_eq!(rate_password("Mercado#Pago2026xyz", &["Mercado Pago"]).label, "Débil");
+    }
+
+    #[test]
+    fn saving_needs_a_password_and_notes_within_the_limit_unless_kept() {
+        let mut new_id = ids();
+        let mut entries = Vec::new();
+        assert!(upsert_coldpass_entry(&mut entries, entry("Banco", ""), None, &mut new_id, 1_000).is_err());
+        let mut long = entry("Banco", "uno");
+        long.notes = "x".repeat(MAX_NOTES_CHARS + 1);
+        assert!(upsert_coldpass_entry(&mut entries, long.clone(), None, &mut new_id, 1_000).is_err());
+        // Notes that came longer from an import stay while they are not edited.
+        entries.push(ColdPassEntryDto { id: "importada".into(), ..long.clone() });
+        let kept = ColdPassEntryDto { notes: long.notes.clone(), ..entry("Banco", "dos") };
+        upsert_coldpass_entry(&mut entries, kept, Some("importada"), &mut new_id, 2_000).expect("kept notes");
+        let edited = ColdPassEntryDto { notes: format!("{}y", long.notes), ..entry("Banco", "dos") };
+        assert!(upsert_coldpass_entry(&mut entries, edited, Some("importada"), &mut new_id, 3_000).is_err());
     }
 }

@@ -109,6 +109,7 @@ fn route(command: &str) -> Option<Route> {
         "coldpass_unlock" => coldpass_unlock,
         "coldpass_status" => coldpass_status,
         "coldpass_generate_password" => coldpass_generate_password,
+        "coldpass_rate_password" => coldpass_rate_password,
         "coldpass_lock" => coldpass_lock,
         "coldpass_save_entry" => coldpass_save_entry,
         "coldpass_delete_entry" => coldpass_delete_entry,
@@ -385,6 +386,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "coldpass_unlock",
     "coldpass_status",
     "coldpass_generate_password",
+    "coldpass_rate_password",
     "coldpass_lock",
     "coldpass_save_entry",
     "coldpass_delete_entry",
@@ -1074,6 +1076,10 @@ fn coldpass_status(app: &AppHandle, _window_label: &str, command: &str, args: &V
 
 fn coldpass_generate_password(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::coldpass::coldpass_generate_password(arg(command, args, "payload")?))))
+}
+
+fn coldpass_rate_password(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::coldpass::coldpass_rate_password(arg(command, args, "payload")?))))
 }
 
 fn coldpass_lock(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
