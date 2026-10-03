@@ -10598,9 +10598,9 @@ Estado vigente desde 2026-09-29. Reemplaza lo que «Editor Markdown: elementos d
 Una foto mandada por Telegram llegaba al modelo solo en el pedido que la traía. `TelegramWorker::remember` guardaba en el historial reciente únicamente el texto, así que al preguntar después («¿cómo me ves?», «mirá la foto») el modelo ya no tenía la imagen y respondía que solo veía la referencia del archivo. Los chats de la app no tenían el problema: `chat_turn::turn_messages` ya manda en el mensaje nuevo los archivos de los mensajes de su ventana de memoria.
 
 - `remember_with_files` guarda los archivos del pedido (fotos, imágenes, PDF) con el mensaje de la persona; `remember` sigue para los mensajes sin archivos.
-- `telegram_bot::turn_messages` arma los mensajes como los chats de la app: el historial como texto y el mensaje nuevo con los archivos del historial (los últimos `MAX_HISTORY_FILES` = 10, lo que trae un álbum) seguidos de los propios. El historial vive solo en memoria y sigue limitado a `MAX_HISTORY_MESSAGES`.
+- `telegram_bot::turn_messages` arma los mensajes como los chats de la app: el historial como texto y el mensaje nuevo con los archivos del historial (los últimos `MAX_HISTORY_FILES` = 10, lo que trae un álbum) seguidos de los propios. El historial vive solo en memoria y sigue limitado a `MAX_HISTORY_MESSAGES`. Desde el 2026-10-02 cada archivo queda en el mensaje que lo trajo (ver «Telegram y chats: una foto anterior ya no parece recién enviada»).
 - Notia usa un único modelo, el del chat, que debe tener visión, tools y thinking; no hay un modelo aparte para imágenes.
-- Test: `telegram_bot::a_photo_sent_earlier_reaches_the_next_requests`.
+- Test: `telegram_bot::a_photo_sent_earlier_reaches_the_next_requests` (hoy `a_photo_sent_earlier_stays_on_its_message`).
 
 ## Telegram: PDFs con fuentes de tabla laxa (2026-10-01)
 
@@ -11125,3 +11125,17 @@ La lógica del formulario se comparte con el modal de escritorio en `hooks/useRe
 ### Validación de la iteración
 
 `npx tsc -p tsconfig.app.json --noEmit` sin errores; ESLint sobre los 102 archivos TypeScript tocados; Vitest completo, 544 pruebas en 121 archivos; `cargo test` de `notia-backend-core` y de `notia-app` (`--features bluetooth`); `cargo check` de escritorio y de `aarch64-linux-android`. Las carpetas temporales `.preview-*` y sus servidores de Vite se borraron.
+
+## Telegram y chats: una foto anterior ya no parece recién enviada (2026-10-02)
+
+En Telegram, la foto de un almuerzo mandada a las 17:00 con «Cargame este almuerzo» se cargó bien, pero durante horas el agente siguió hablando de ella. A pedidos sin relación («¿me dirías mi rutina de kettlebell?», la composición corporal) les sumaba «Ese almuerzo ya lo tenía cargado, así que no lo dupliqué». A las 19:39 volvió a pedir confirmación para cargarlo, y a las 19:54 un mensaje de Notia sin pedido dijo «la foto que mandaste es la misma del almuerzo de hoy».
+
+Causa: `telegram_bot::turn_messages` (y `chat_turn::turn_messages` en los chats de la app) sacaba los archivos de los mensajes del historial y los pegaba al mensaje nuevo. Para el modelo, cada pedido traía la foto como recién enviada, y la regla «foto de un plato → `log_meal`» volvía a aplicarse. Además, las herramientas toman la foto del último mensaje de la persona (`last_user_images`, que alimenta `photoFromMessage` de `log_meal`, `create_recipe` y Gimnasio), así que recibían la foto vieja como la del pedido. Los mensajes autónomos y las acciones de IA arman su pedido con el mismo historial, por eso también la veían. El verificador de Finanzas (`finance_turn_facts`) daba por recibido un documento si cualquier mensaje del pedido tenía archivos.
+
+Corrección:
+- `telegram_bot::turn_messages` deja cada archivo en el mensaje que lo trajo, con los últimos `MAX_HISTORY_FILES` = 10 del historial, y el mensaje nuevo lleva solo los suyos. `chat_turn::turn_messages` hace lo mismo en la app, sin tope, como antes. El modelo sigue viendo la foto en su lugar, con la respuesta que ya tuvo, así que puede contestar sobre ella («¿cómo me ves?»).
+- `photoFromMessage` y las demás herramientas solo ven las fotos del mensaje actual (`last_user_images`, sin cambios).
+- Insertar una foto en una nota por su referencia (`![…](referencia)`, `with_message_images`) busca en todos los mensajes de la persona del pedido (`user_attachment_images`; ante una referencia repetida gana la más reciente), así que una foto anterior se puede seguir guardando en una nota cuando se pide después.
+- `finance_turn_facts` solo cuenta como documento recibido los archivos del último mensaje de la persona.
+
+Pruebas: `telegram_bot::a_photo_sent_earlier_stays_on_its_message`, `chat_turn::each_message_keeps_its_attachments_and_the_turn_carries_the_context` y `backend_runtime::a_photo_of_an_earlier_message_is_not_the_requests_photo` (`backend-core` 497, `notia-app` 483). Pendiente: comprobarlo en el chat de Telegram real, con una foto seguida de pedidos sin relación y de un mensaje autónomo.

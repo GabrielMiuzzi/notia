@@ -1425,8 +1425,16 @@ fn finance_turn_facts(
         .flat_map(|message| message.tool_calls.iter())
         .map(|call| (call.id.as_str(), call.name.as_str()))
         .collect::<HashMap<_, _>>();
+    // Only the person's latest message: files of earlier messages stay in the
+    // history and were already handled.
+    let latest_has_files = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .is_some_and(|message| !message.images.is_empty() || !message.attachments.is_empty());
     let document_received = request.context.channel == super::context::BackendChannel::Telegram
-        && (!request.attachments.is_empty() || request.messages.iter().any(|message| !message.images.is_empty() || !message.attachments.is_empty()));
+        && (!request.attachments.is_empty() || latest_has_files);
     super::finance_answer::FinanceTurnFacts {
         mutation_executed: tool_results.iter().any(|result| result.changed),
         clarification_requested: names.values().any(|name| *name == "request_user_clarification"),

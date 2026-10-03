@@ -4487,7 +4487,7 @@ pub(crate) fn execute_backend_request(
         journal: Arc::clone(&state.journal),
         idempotency_key: request.idempotency_key.clone(),
         request_images: last_user_images(&request),
-        attachment_images: last_user_attachment_images(&request),
+        attachment_images: user_attachment_images(&request),
     };
     let revisions = TauriRevisionPort { app: app.clone() };
     let interactions = state.interactions(Some(&revisions));
@@ -4953,17 +4953,23 @@ fn last_user_images(request: &AgentRequest) -> Vec<crate::recipes::MessageImage>
     message.images.iter().chain(attached).map(|base64| crate::recipes::MessageImage { base64: base64.clone() }).collect()
 }
 
-/// Image attachments of the last message of the person, by the reference
-/// the model was told to insert them with.
-fn last_user_attachment_images(request: &AgentRequest) -> Vec<(String, String)> {
-    let Some(message) = request.messages.iter().rev().find(|message| message.role == notia_backend_core::MessageRole::User) else {
-        return Vec::new();
-    };
-    notia_backend_core::chat_attachments::image_references(&message.attachments)
-        .into_iter()
-        .zip(&message.attachments)
-        .filter_map(|(reference, attachment)| Some((reference?, attachment.pages.first()?.clone())))
-        .collect()
+/// Image attachments of the person's messages, by the reference the model
+/// was told to insert them with. Earlier messages count too: a photo sent
+/// before can still go into a note when asked later, and it is inserted only
+/// where the model writes its reference. A later reference wins a repeated one.
+fn user_attachment_images(request: &AgentRequest) -> Vec<(String, String)> {
+    let mut images = Vec::<(String, String)>::new();
+    for message in request.messages.iter().filter(|message| message.role == notia_backend_core::MessageRole::User) {
+        let references = notia_backend_core::chat_attachments::image_references(&message.attachments);
+        for (reference, attachment) in references.into_iter().zip(&message.attachments) {
+            let (Some(reference), Some(page)) = (reference, attachment.pages.first()) else {
+                continue;
+            };
+            images.retain(|(known, _)| *known != reference);
+            images.push((reference, page.clone()));
+        }
+    }
+    images
 }
 
 /// Current UTC date as `YYYY-MM-DD`.
@@ -5067,6 +5073,57 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    /// Telegram, 2026-10-02: a lunch photo sent at 17:00 rode along with
+    /// every later request for hours, so the agent kept offering to load it
+    /// (and tried to). A photo of an earlier message is not the request's
+    /// photo for the tools, but it can still go into a note by reference.
+    #[test]
+    fn a_photo_of_an_earlier_message_is_not_the_requests_photo() {
+        use notia_backend_core::chat_attachments::{MessageAttachment, MessageAttachmentKind};
+        use notia_backend_core::{
+            AgentRequest, BackendActor, BackendChannel, BackendMessage, BackendRequestContext, BackendScope, MessageRole,
+            PersistencePolicy,
+        };
+        let photo = MessageAttachment {
+            name: "almuerzo.jpg".into(),
+            media_type: "image/jpeg".into(),
+            kind: MessageAttachmentKind::Image,
+            pages: vec!["QUJD".into()],
+            text_content: None,
+            extracted_text: None,
+            page_count: None,
+        };
+        let said = |role, content: &str, attachments| BackendMessage { role, content: content.into(), images: Vec::new(), attachments };
+        let history = vec![
+            said(MessageRole::User, "Cargame este almuerzo", vec![photo]),
+            said(MessageRole::Assistant, "Quedó registrado.", Vec::new()),
+        ];
+        let request = |text: &str| AgentRequest {
+            context: BackendRequestContext {
+                request_id: "request-1".into(),
+                library_id: "library-1".into(),
+                actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+                channel: BackendChannel::Telegram,
+                scope: BackendScope::Library,
+                persistence_policy: PersistencePolicy::Persistent,
+            },
+            messages: notia_backend_core::telegram_bot::turn_messages(&history, text, Vec::new()),
+            snapshot: None,
+            tools: Vec::new(),
+            attachments: Vec::new(),
+            idempotency_key: "key-1".into(),
+            prompt_name: None,
+            tool_access: Default::default(),
+            library_search: true,
+            autonomous: false,
+            scheduled_action: None,
+            tool_areas: None,
+        };
+        let later = request("¿Me pasás la rutina de hoy?");
+        assert!(super::last_user_images(&later).is_empty());
+        assert_eq!(super::user_attachment_images(&later), vec![("almuerzo.jpg".to_string(), "QUJD".to_string())]);
+    }
 
     /// «Haceme una nota que es de una idea…» from Telegram (2026-09-29): the
     /// agent's note, previewed, confirmed and written, in the library root,

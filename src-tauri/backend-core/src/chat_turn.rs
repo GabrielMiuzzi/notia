@@ -304,8 +304,10 @@ pub fn message_attachment(attachment: &StoredChatAttachment) -> MessageAttachmen
     }
 }
 
-/// Messages of the turn: the history the agent sees and the new message,
-/// which carries the files of the history and of this turn.
+/// Messages of the turn: the history the agent sees, each message with its
+/// own files, and the new message with the files of this turn. A file sent
+/// earlier stays where it was answered: on the new message it looked freshly
+/// sent, and the tools that use the message's photo took it again.
 pub fn turn_messages(history: &[StoredChatMessage], prompt: &str, attachments: &[StoredChatAttachment]) -> Vec<BackendMessage> {
     let mut messages = history
         .iter()
@@ -316,19 +318,14 @@ pub fn turn_messages(history: &[StoredChatMessage], prompt: &str, attachments: &
             },
             content: message.content.clone(),
             images: Vec::new(),
-            attachments: Vec::new(),
+            attachments: message.attachments.iter().map(message_attachment).collect(),
         })
         .collect::<Vec<_>>();
     messages.push(BackendMessage {
         role: MessageRole::User,
         content: prompt.to_string(),
         images: Vec::new(),
-        attachments: history
-            .iter()
-            .flat_map(|message| &message.attachments)
-            .chain(attachments)
-            .map(message_attachment)
-            .collect(),
+        attachments: attachments.iter().map(message_attachment).collect(),
     });
     messages
 }
@@ -653,15 +650,16 @@ Respondé corto."));
     }
 
     #[test]
-    fn the_turn_message_carries_every_attachment_and_the_context() {
+    fn each_message_keeps_its_attachments_and_the_turn_carries_the_context() {
         let mut history = vec![message(ChatRole::User, "antes")];
         history[0].attachments.push(attachment(ChatAttachmentKind::Image));
         let messages = turn_messages(&history, "ahora", &[attachment(ChatAttachmentKind::Text)]);
         assert_eq!(messages.len(), 2);
-        assert!(messages[0].attachments.is_empty());
-        assert_eq!(messages[1].attachments.len(), 2);
-        assert_eq!(messages[1].attachments[0].pages, ["AAA", "BBB"]);
-        assert!(messages[1].attachments[1].pages.is_empty());
+        // The earlier photo stays on its message; the turn has only its file.
+        assert_eq!(messages[0].attachments.len(), 1);
+        assert_eq!(messages[0].attachments[0].pages, ["AAA", "BBB"]);
+        assert_eq!(messages[1].attachments.len(), 1);
+        assert!(messages[1].attachments[0].pages.is_empty());
         assert!(turn_prompt(TurnMode::Chat, "hola", Some(" sala ")).ends_with("\nsala"));
         assert!(turn_prompt(TurnMode::Meeting, "¿qué dijo?", Some("texto")).contains("TRANSCRIPCIÓN ACTUAL:\ntexto"));
     }

@@ -1740,7 +1740,8 @@ impl Worker {
     }
 
     /// Adds a request with its files (photos, documents) and its answer to
-    /// the chat's recent history; later requests carry the files again.
+    /// the chat's recent history; later requests show the files on this
+    /// request, not as new ones.
     fn remember_with_files(&self, chat_id: i64, request: String, files: Vec<MessageAttachment>, answer: String) {
         if let Ok(mut history) = self.history.lock() {
             let entries = history.entry(chat_id).or_default();

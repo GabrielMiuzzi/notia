@@ -17,29 +17,35 @@ use crate::protocol::MutationPreview;
 pub const MAX_PENDING_REQUESTS: usize = 10;
 pub const RECOVERY_COMMAND: &str = "/reanudar";
 pub const MAX_HISTORY_MESSAGES: usize = 20;
-/// Files of earlier requests a new request carries: an album's worth.
+/// Files of earlier requests a new request still shows: an album's worth.
 pub const MAX_HISTORY_FILES: usize = 10;
 /// Telegram clients cut a text over the 4096-character limit into several
 /// messages, each longer than half that limit. Counted in UTF-16 units, as
 /// Telegram does, leaving room for the spaces trimmed at each cut.
 const SPLIT_PART_MIN_UNITS: usize = 2_000;
 
-/// Messages of a request: the chat's history as text and the new message
-/// with the files of the history (the latest `MAX_HISTORY_FILES`) and its
-/// own, as the app's chats do. A photo sent earlier stays visible to the
-/// model when the person asks about it later.
+/// Messages of a request: the chat's history and the new message with its
+/// own files. A file sent earlier stays on the message it came with (the
+/// latest `MAX_HISTORY_FILES` of the history), so the model still sees it
+/// when the person asks about it later, after the answer it already got.
+/// Moved to the new message, a lunch photo looked freshly sent for hours:
+/// every later request, and Notia's own messages, offered to load it again.
 pub fn turn_messages(history: &[BackendMessage], text: &str, attachments: Vec<MessageAttachment>) -> Vec<BackendMessage> {
-    let earlier = history.iter().flat_map(|message| message.attachments.iter().cloned()).collect::<Vec<_>>();
-    let kept = earlier.len().saturating_sub(MAX_HISTORY_FILES);
+    let total = history.iter().map(|message| message.attachments.len()).sum::<usize>();
+    let mut dropped = total.saturating_sub(MAX_HISTORY_FILES);
     let mut messages = history
         .iter()
-        .map(|message| BackendMessage { attachments: Vec::new(), ..message.clone() })
+        .map(|message| {
+            let skip = dropped.min(message.attachments.len());
+            dropped -= skip;
+            BackendMessage { attachments: message.attachments[skip..].to_vec(), ..message.clone() }
+        })
         .collect::<Vec<_>>();
     messages.push(BackendMessage {
         role: MessageRole::User,
         content: text.to_string(),
         images: Vec::new(),
-        attachments: earlier.into_iter().skip(kept).chain(attachments).collect(),
+        attachments,
     });
     messages
 }
@@ -566,25 +572,29 @@ mod tests {
     }
 
     #[test]
-    fn a_photo_sent_earlier_reaches_the_next_requests() {
+    fn a_photo_sent_earlier_stays_on_its_message() {
         let history = vec![
-            said(MessageRole::User, "Así estoy hoy", vec![photo("foto-1.jpg")]),
-            said(MessageRole::Assistant, "Guardé la foto.", Vec::new()),
+            said(MessageRole::User, "Cargame este almuerzo", vec![photo("almuerzo.jpg")]),
+            said(MessageRole::Assistant, "Quedó registrado.", Vec::new()),
         ];
-        let messages = turn_messages(&history, "¿Cómo me ves?", Vec::new());
+        let messages = turn_messages(&history, "¿Me pasás la rutina de hoy?", Vec::new());
         assert_eq!(messages.len(), 3);
-        assert!(messages[..2].iter().all(|message| message.attachments.is_empty()));
-        assert_eq!(messages[2].content, "¿Cómo me ves?");
-        assert_eq!(messages[2].attachments, vec![photo("foto-1.jpg")]);
-        // Only the latest files of the history go, then the new ones.
+        // The model still sees the photo, where it was sent and answered.
+        assert_eq!(messages[0].attachments, vec![photo("almuerzo.jpg")]);
+        assert!(messages[1].attachments.is_empty());
+        // The new request is not presented as carrying it.
+        assert_eq!(messages[2].content, "¿Me pasás la rutina de hoy?");
+        assert!(messages[2].attachments.is_empty());
+        // Only the latest files of the history stay; the new ones go with the request.
         let many = (0..MAX_HISTORY_FILES + 2)
             .map(|index| said(MessageRole::User, "foto", vec![photo(&format!("h{index}.jpg"))]))
             .collect::<Vec<_>>();
         let messages = turn_messages(&many, "y esta?", vec![photo("nueva.jpg")]);
-        let names = messages.last().expect("request").attachments.iter().map(|file| file.name.as_str()).collect::<Vec<_>>();
-        assert_eq!(names.len(), MAX_HISTORY_FILES + 1);
-        assert_eq!(names.first(), Some(&"h2.jpg"));
-        assert_eq!(names.last(), Some(&"nueva.jpg"));
+        let earlier = messages[..many.len()].iter().flat_map(|message| &message.attachments).map(|file| file.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(earlier.len(), MAX_HISTORY_FILES);
+        assert_eq!(earlier.first(), Some(&"h2.jpg"));
+        assert!(messages[0].attachments.is_empty() && messages[1].attachments.is_empty());
+        assert_eq!(messages.last().expect("request").attachments, vec![photo("nueva.jpg")]);
     }
 
     #[test]
