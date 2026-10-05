@@ -11305,3 +11305,13 @@ El canvas «ColdPass — Gestor de contraseñas» (https://claude.ai/artifact/Lg
 - `tsc -p tsconfig.app.json`, eslint de los archivos tocados y vitest: 558 pruebas en 123 archivos (nuevo `ColdPassCredentialModal.test.tsx`).
 
 **Pendiente:** probar en Windows y en la tablet con el vault real (editar, generar, deshacer, notas largas importadas) y el cálculo local en un cliente.
+
+## Finanzas: guardar la ocurrencia de un servicio (2026-10-04)
+
+**Problema.** `finance_save_service_occurrence` (`app/src/finance.rs`) fallaba siempre con «16 values for 15 columns». El `INSERT` de `finance_service_occurrences` nombra 15 columnas, pero los valores eran `?1…?14`, `COALESCE(…, ?15)` y `?15`. La llamada pasa 14 parámetros (el decimotercero es `source` y el decimocuarto, la marca de tiempo), así que sobraba `?14` y `?15` no existía. Así, ni la app ni el agente podían guardar la marca mensual de un servicio: el servicio seguía «sin pagar» en ese mes aunque el pago estuviera vinculado en el resumen. La reconciliación de resúmenes (`finance_records.rs`) usa otro `INSERT`, que estaba bien.
+
+**Arreglo.** Los valores son `?1…?13, COALESCE((SELECT created_at …), ?14), ?14`: al reemplazar una ocurrencia se conserva su `created_at`. La sentencia pasó a la constante `UPSERT_SERVICE_OCCURRENCE_SQL`.
+
+**Validado.** Prueba nueva `finance::tests::a_service_occurrence_is_saved_and_replaced_keeping_its_creation`: corre la sentencia dos veces contra el esquema migrado en memoria y comprueba el importe nuevo, el `created_at` original y el `updated_at` nuevo. Un barrido de todos los `INSERT … VALUES` de `app` y `backend-core` no encontró otro desajuste de columnas.
+
+**Pendiente.** Recompilar la app que hace de host y volver a pedirle al agente las ocurrencias de octubre de AMP2008, Movistar y SANPAS30.

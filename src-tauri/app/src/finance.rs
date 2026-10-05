@@ -1140,6 +1140,10 @@ pub fn finance_list_all_service_occurrences(
     result
 }
 
+/// Saves a service's occurrence for a period, or replaces the one it had;
+/// the replaced row keeps its `created_at`. `?14` is the timestamp.
+const UPSERT_SERVICE_OCCURRENCE_SQL: &str = "INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,COALESCE((SELECT created_at FROM finance_service_occurrences WHERE service_id=?2 AND period=?3),?14),?14) ON CONFLICT(service_id,period) DO UPDATE SET expected_amount=excluded.expected_amount,paid_amount=excluded.paid_amount,effective_date=excluded.effective_date,status=excluded.status,transaction_id=excluded.transaction_id,artifact_id=excluded.artifact_id,source_reference=excluded.source_reference,raw_source=excluded.raw_source,actor_library_user_id=excluded.actor_library_user_id,source=excluded.source,updated_at=excluded.updated_at";
+
 pub fn finance_save_service_occurrence(
     app: crate::host::AppHandle,
     payload: SaveFinanceServiceOccurrencePayload,
@@ -1310,7 +1314,7 @@ pub fn finance_save_service_occurrence(
         let version: i64 = transaction.query_row("SELECT COALESCE(MAX(version_number),0)+1 FROM finance_service_occurrence_versions WHERE occurrence_id=?1", [&previous.id], |row| row.get(0)).map_err(|error| error.to_string())?;
         transaction.execute("INSERT INTO finance_service_occurrence_versions(id,occurrence_id,version_number,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", params![new_id(), previous.id, version, previous.expected_amount, previous.paid_amount, previous.effective_date, previous.status, previous.transaction_id, previous.artifact_id, previous.source_reference, previous.raw_source, previous.actor_library_user_id, previous.source, payload.reason, timestamp]).map_err(|error| error.to_string())?;
     }
-    transaction.execute("INSERT INTO finance_service_occurrences(id,service_id,period,expected_amount,paid_amount,effective_date,status,transaction_id,artifact_id,source_reference,raw_source,actor_library_user_id,source,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,COALESCE((SELECT created_at FROM finance_service_occurrences WHERE service_id=?2 AND period=?3),?15),?15) ON CONFLICT(service_id,period) DO UPDATE SET expected_amount=excluded.expected_amount,paid_amount=excluded.paid_amount,effective_date=excluded.effective_date,status=excluded.status,transaction_id=excluded.transaction_id,artifact_id=excluded.artifact_id,source_reference=excluded.source_reference,raw_source=excluded.raw_source,actor_library_user_id=excluded.actor_library_user_id,source=excluded.source,updated_at=excluded.updated_at", params![occurrence_id, occurrence.service_id, occurrence.period, occurrence.expected_amount, occurrence.paid_amount, occurrence.effective_date, occurrence.status, occurrence.transaction_id, occurrence.artifact_id, occurrence.source_reference, occurrence.raw_source, payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
+    transaction.execute(UPSERT_SERVICE_OCCURRENCE_SQL, params![occurrence_id, occurrence.service_id, occurrence.period, occurrence.expected_amount, occurrence.paid_amount, occurrence.effective_date, occurrence.status, occurrence.transaction_id, occurrence.artifact_id, occurrence.source_reference, occurrence.raw_source, payload.context.actor_library_user_id, payload.context.source, timestamp]).map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;
     sync_context(&payload.context, &app)?;
     let persisted =
@@ -2950,6 +2954,29 @@ mod tests {
             super::finance_history_start_period("2026-01"),
             Ok("2025-02".into())
         );
+    }
+
+    #[test]
+    fn a_service_occurrence_is_saved_and_replaced_keeping_its_creation() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        crate::database::migrate(&connection).expect("finance migrations");
+        connection
+            .execute("INSERT INTO finance_services(id,name,normalized_name,category_id,currency,expected_amount,modality,active,created_at,updated_at) VALUES('movistar','Movistar','movistar','default-expense-services','ARS','84573.99','fixed',1,'now','now')", [])
+            .expect("service fixture");
+        let save = |paid: &str, timestamp: &str| {
+            connection.execute(
+                super::UPSERT_SERVICE_OCCURRENCE_SQL,
+                params!["service-occurrence:movistar:2026-10", "movistar", "2026-10", "84573.99", paid, "2026-10-05", "accepted", None::<String>, None::<String>, None::<String>, None::<String>, None::<String>, "ai", timestamp],
+            )
+        };
+
+        save("84573.99", "t1").expect("first save");
+        save("84600.00", "t2").expect("replacing save");
+
+        let (paid, created, updated): (String, String, String) = connection
+            .query_row("SELECT paid_amount,created_at,updated_at FROM finance_service_occurrences WHERE service_id='movistar' AND period='2026-10'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("occurrence");
+        assert_eq!((paid.as_str(), created.as_str(), updated.as_str()), ("84600.00", "t1", "t2"));
     }
 
     #[test]
