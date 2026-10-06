@@ -11,12 +11,20 @@
       ]
     },
     {
-      "profileId": "speaker-diarization-v1",
+      "profileId": "whisper-large-v3",
+      "language": "multilingual",
+      "finalPass": { "type": "whisperGgml", "model": "ggml-large-v3-q5_0.bin" },
+      "files": [
+        { "relativePath": "ggml-large-v3-q5_0.bin", "bytes": 1081140203, "sha256": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1" }
+      ]
+    },
+    {
+      "profileId": "speaker-diarization-v2",
       "language": "es",
       "diarization": { "type": "pyannote", "segmentation": "segmentation.onnx", "embedding": "embedding.onnx" },
       "files": [
         { "relativePath": "segmentation.onnx", "bytes": 5992913, "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079" },
-        { "relativePath": "embedding.onnx", "bytes": 39593761, "sha256": "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b" }
+        { "relativePath": "embedding.onnx", "bytes": 40257283, "sha256": "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e" }
       ]
     }
   ]

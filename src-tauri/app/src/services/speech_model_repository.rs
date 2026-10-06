@@ -44,7 +44,16 @@ struct SpeechModelProfile {
     asr: Option<SpeechAsrConfig>,
     #[serde(default)]
     diarization: Option<SpeechDiarizationConfig>,
+    #[serde(default)]
+    final_pass: Option<SpeechFinalPassConfig>,
     files: Vec<SpeechModelFile>,
+}
+
+/// The model that transcribes a whole recording again once it ends.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum SpeechFinalPassConfig {
+    WhisperGgml { model: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +70,14 @@ pub struct ResolvedDiarizationModel {
     pub segmentation: PathBuf,
     pub embedding: PathBuf,
     pub num_threads: i32,
+    /// Cosine distance under which the clustering joins two voices; it
+    /// depends on the embedding model.
+    pub clustering_threshold: f32,
 }
+
+/// Clustering threshold of the packaged embedding model.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+pub const DIARIZATION_CLUSTERING_THRESHOLD: f32 = 0.5;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
@@ -157,6 +173,27 @@ pub fn resolve_asr_model(
         num_threads,
         language: language.to_string(),
     })
+}
+
+/// The Whisper model of the final pass (large-v3), when it is installed and
+/// passes its check. Only Windows bundles it, to run it on the GPU; without
+/// it there is no final pass.
+#[cfg(target_os = "windows")]
+pub fn resolve_final_pass_model(app: &AppHandle) -> Option<PathBuf> {
+    let manifest = parse_manifest().ok()?;
+    let profile = manifest.profiles.iter().find(|profile| profile.final_pass.is_some())?;
+    let Some(SpeechFinalPassConfig::WhisperGgml { model }) = profile.final_pass.as_ref() else {
+        return None;
+    };
+    let models_root = match ready_models_root(app, profile) {
+        Ok(Some(root)) => root,
+        Ok(None) => return None,
+        Err(message) => {
+            log::error!("[notia:speech] the final pass model could not be checked: {message}");
+            return None;
+        }
+    };
+    resolve_verified_role_path(&models_root.join(&profile.profile_id), model).ok()
 }
 
 fn parse_manifest() -> Result<SpeechModelManifest, String> {
@@ -272,6 +309,7 @@ pub fn resolve_diarization_model(
         segmentation: resolve_verified_role_path(&profile_root, segmentation)?,
         embedding: resolve_verified_role_path(&profile_root, embedding)?,
         num_threads: 2,
+        clustering_threshold: DIARIZATION_CLUSTERING_THRESHOLD,
     })
 }
 
@@ -365,6 +403,12 @@ fn validate_manifest(manifest: &SpeechModelManifest) -> Result<(), String> {
         }
         if let Some(diarization) = &profile.diarization {
             validate_diarization_roles(diarization, &declared_paths)?;
+        }
+        if let Some(SpeechFinalPassConfig::WhisperGgml { model }) = &profile.final_pass {
+            validate_relative_path(model)?;
+            if !declared_paths.contains(model.as_str()) {
+                return Err(format!("El modelo de la pasada final {model} no esta declarado."));
+            }
         }
     }
     Ok(())

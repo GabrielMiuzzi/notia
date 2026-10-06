@@ -63,30 +63,23 @@ fn percent_decode(value: &str) -> Option<String> {
 pub(crate) const MAX_HTTP_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) fn serve_http_redirect(mut stream: std::net::TcpStream) {
-    let request = match read_http_request(&mut stream) {
-        Ok(request) => request,
-        Err(status) => {
-            let _ = stream.write_all(&text_response(status, "Solicitud HTTP inválida."));
-            return;
-        }
+    let response = match read_http_request(&mut stream) {
+        Ok(request) => http_redirect(&request),
+        Err(status) => text_response(status, "Solicitud HTTP inválida."),
     };
-    let Some((method, path)) = request_line_parts(&request) else {
-        let _ = stream.write_all(&text_response("400 Bad Request", "Solicitud inválida."));
-        return;
+    let _ = stream.write_all(&response);
+}
+
+/// The answer to a plain HTTP request: the same address over HTTPS.
+pub(crate) fn http_redirect(request: &[u8]) -> Vec<u8> {
+    let Some((method, path)) = request_line_parts(request) else {
+        return text_response("400 Bad Request", "Solicitud inválida.");
     };
-    let Some(host) = request_host(&request) else {
-        let _ = stream.write_all(&text_response(
-            "400 Bad Request",
-            "Abrí esta dirección mediante HTTPS.",
-        ));
-        return;
+    let Some(host) = request_host(request) else {
+        return text_response("400 Bad Request", "Abrí esta dirección mediante HTTPS.");
     };
     if !is_safe_redirect_host(&host) {
-        let _ = stream.write_all(&text_response(
-            "400 Bad Request",
-            "El host de la dirección no es válido.",
-        ));
-        return;
+        return text_response("400 Bad Request", "El host de la dirección no es válido.");
     }
     let status = if method == "GET" || method == "HEAD" {
         "308 Permanent Redirect"
@@ -94,13 +87,7 @@ pub(crate) fn serve_http_redirect(mut stream: std::net::TcpStream) {
         "426 Upgrade Required"
     };
     let location = format!("Location: https://{host}{path}");
-    let response = response_with_headers(
-        status,
-        "text/plain; charset=utf-8",
-        "Usá HTTPS.".as_bytes(),
-        &[&location],
-    );
-    let _ = stream.write_all(&response);
+    response_with_headers(status, "text/plain; charset=utf-8", "Usá HTTPS.".as_bytes(), &[&location])
 }
 
 pub(crate) fn read_http_request<S: Read>(stream: &mut S) -> Result<Vec<u8>, &'static str> {

@@ -15,6 +15,8 @@ export interface DevicePreferences {
   qwen3Tts: Qwen3TtsPreferences
   editorPage: EditorPagePreferences
   pen: PenPreferences
+  /** Microphone and output a recording captures, by name; `null` is the system default. */
+  audioDevices: { microphone: string | null; output: string | null }
   /** Derived by the backend from `editorPage`; sending it back has no effect. */
   editorPageSetup: EditorPageSetup
 }

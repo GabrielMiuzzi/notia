@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::BackendError;
-use crate::meeting_ai::{self, MeetingAiNotesDto, MeetingAiNotesState};
+use crate::meeting_ai::{self, MeetingAiContext, MeetingAiNotesDto, MeetingAiNotesState};
+use crate::meeting_review::{self, MeetingReviewState};
 
 pub const MAX_SPEAKER_NAME_CHARS: usize = 60;
 pub const MAX_NOTES_CHARS: usize = 20_000;
@@ -37,9 +38,68 @@ const MAX_KEY_POINT_CHARS: usize = 300;
 const MAX_TASKS: usize = 20;
 const MAX_TASK_TITLE_CHARS: usize = 120;
 const MAX_TASK_DETAIL_CHARS: usize = 500;
+/// Intervals of speech a call reports for one recording.
+pub const MAX_CALL_SPEECH: usize = 20_000;
+/// Silence between two intervals of one person that still joins them.
+const CALL_SPEECH_GAP_MS: u64 = 1_500;
+/// Least share of a separated speaker's talk one call participant must
+/// cover to give that speaker their name.
+const CALL_NAME_MIN_SHARE: f64 = 0.4;
+/// A segment the review left empty goes away only when it was this short:
+/// a longer one emptied is a mistake of the AI, not filler words.
+const MAX_FILLER_SEGMENT_WORDS: usize = 6;
+
+/// Folder of the library with the saved meetings, one JSON file each, next
+/// to their notes: «Reuniones anteriores» lists them and reopens them.
+pub const MEETING_ARCHIVE_FOLDER: &str = ".notia/meetings";
+const MEETING_ARCHIVE_VERSION: u32 = 1;
+const MAX_MEETING_ID_CHARS: usize = 80;
+
+/// A meeting saved as a note, as it is kept to be opened again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingArchive {
+    pub version: u32,
+    pub record: MeetingRecord,
+    /// The part of the library its AI consulted.
+    #[serde(default)]
+    pub ai_context: Option<MeetingAiContext>,
+}
+
+impl MeetingArchive {
+    pub fn new(record: MeetingRecord, ai_context: Option<MeetingAiContext>) -> Self {
+        Self { version: MEETING_ARCHIVE_VERSION, record, ai_context }
+    }
+
+    /// An archive read from the library, checked.
+    pub fn parse(text: &str) -> Result<Self, BackendError> {
+        let archive: Self =
+            serde_json::from_str(text).map_err(|_| BackendError::invalid_input("La reunión guardada no se puede leer."))?;
+        if archive.version != MEETING_ARCHIVE_VERSION {
+            return Err(BackendError::invalid_input("La reunión se guardó con otra versión de Notia."));
+        }
+        archive_path(&archive.record.id)?;
+        Ok(archive)
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+/// Where the archive of `meeting_id` lives in the library.
+pub fn archive_path(meeting_id: &str) -> Result<String, BackendError> {
+    let valid = !meeting_id.is_empty()
+        && meeting_id.chars().count() <= MAX_MEETING_ID_CHARS
+        && meeting_id.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
+    if !valid {
+        return Err(BackendError::invalid_input("La reunión no es válida."));
+    }
+    Ok(format!("{MEETING_ARCHIVE_FOLDER}/{meeting_id}.json"))
+}
 
 /// Line recognized while recording, before the speakers are separated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingLine {
     pub id: String,
@@ -48,11 +108,14 @@ pub struct MeetingLine {
     pub text: String,
     /// The line asks a question (it can get a live answer).
     pub question: bool,
+    /// Who the call (Teams) says was speaking then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// Segment of the finished recording, with its speaker when diarization
 /// found one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeetingSegment {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -60,7 +123,17 @@ pub struct MeetingSegment {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Someone speaking in the call being recorded, as the call reports it
+/// (ms of the recording).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallSpeech {
+    pub name: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingMark {
     pub id: String,
@@ -68,7 +141,7 @@ pub struct MeetingMark {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MeetingAnswerStatus {
     Generating,
@@ -77,7 +150,7 @@ pub enum MeetingAnswerStatus {
 }
 
 /// Answer the AI suggests for a question asked during the recording.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingAnswer {
     pub id: String,
@@ -91,7 +164,7 @@ pub struct MeetingAnswer {
     pub pinned: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingTask {
     pub id: String,
@@ -101,7 +174,7 @@ pub struct MeetingTask {
     pub sent: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingInsights {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,7 +185,7 @@ pub struct MeetingInsights {
     pub corrected: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MeetingStatus {
     Live,
@@ -128,7 +201,7 @@ pub struct MeetingSources {
 }
 
 /// Whether a transcribed file carries only sound or a video whose audio is used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeetingFileKind {
     Audio,
@@ -154,7 +227,7 @@ pub fn media_file_kind(file_name: &str) -> Option<MeetingFileKind> {
 }
 
 /// The audio or video file a meeting was transcribed from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSourceFile {
     /// The name the person's file had, without folders.
@@ -182,14 +255,14 @@ impl MeetingSourceFile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SpeakerName {
     id: String,
     name: String,
 }
 
 /// Note of the library the meeting was saved to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedMeetingNote {
     pub logical_path: String,
     /// The note as the explorer shows it.
@@ -198,7 +271,7 @@ pub struct SavedMeetingNote {
 }
 
 /// Labels of the local moment the recording started, computed by the app.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeetingStart {
     /// `24/09/2026 10:32`
     pub date_label: String,
@@ -207,7 +280,7 @@ pub struct MeetingStart {
     pub unix_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeetingRecord {
     pub id: String,
     pub start: MeetingStart,
@@ -223,9 +296,17 @@ pub struct MeetingRecord {
     pub marks: Vec<MeetingMark>,
     pub answers: Vec<MeetingAnswer>,
     pub live_answers: bool,
+    #[serde(default)]
     pub ai_notes: MeetingAiNotesState,
+    #[serde(default)]
     pub insights: MeetingInsights,
+    /// The AI review that runs once the speakers are separated.
+    #[serde(default)]
+    pub review: MeetingReviewState,
     pub saved_note: Option<SavedMeetingNote>,
+    /// Who spoke when, as the call reported it while recording.
+    #[serde(default)]
+    pub call_speech: Vec<CallSpeech>,
     next_id: u64,
 }
 
@@ -302,6 +383,7 @@ pub struct MeetingSnapshotDto {
     pub live_answers: bool,
     pub ai_notes: MeetingAiNotesDto,
     pub insights: MeetingInsights,
+    pub review: MeetingReviewState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_note_path: Option<String>,
     /// Questions asked in the meeting, to ask the AI about them.
@@ -367,7 +449,9 @@ impl MeetingRecord {
             live_answers,
             ai_notes: MeetingAiNotesState::default(),
             insights: MeetingInsights::default(),
+            review: MeetingReviewState::default(),
             saved_note: None,
+            call_speech: Vec::new(),
             next_id: 0,
         }
     }
@@ -384,6 +468,40 @@ impl MeetingRecord {
         record.status = MeetingStatus::Processing;
         record.source_file = Some(file);
         record
+    }
+
+    /// The record as it opens again from its archive: finished, with
+    /// nothing running. An answer cut while it was generated says so.
+    pub fn reopened(mut self) -> Self {
+        self.status = MeetingStatus::Completed;
+        self.ai_notes.running = false;
+        self.ai_notes.next_pass_at = None;
+        self.review.stage = None;
+        for answer in &mut self.answers {
+            if answer.status == MeetingAnswerStatus::Generating {
+                answer.status = MeetingAnswerStatus::Failed;
+                answer.error = Some("La respuesta se interrumpió.".to_string());
+            }
+        }
+        self
+    }
+
+    /// Tasks of «Pasar por IA» and Notas IA not created in the Task Manager.
+    pub fn pending_task_count(&self) -> usize {
+        self.insights.tasks.iter().filter(|task| !task.sent).count()
+            + self.ai_notes.notes.tasks.iter().filter(|task| !task.sent).count()
+    }
+
+    pub fn speaker_count(&self) -> usize {
+        self.speakers.len()
+    }
+
+    /// Whether the title or the transcript holds `query` (lowercase).
+    pub fn mentions(&self, query: &str) -> bool {
+        query.is_empty()
+            || self.title().to_lowercase().contains(query)
+            || self.segments.iter().any(|segment| segment.text.to_lowercase().contains(query))
+            || (self.segments.is_empty() && self.lines.iter().any(|line| line.text.to_lowercase().contains(query)))
     }
 
     pub fn title(&self) -> String {
@@ -405,6 +523,7 @@ impl MeetingRecord {
             end_ms: end_ms.max(start_ms),
             text: text.to_string(),
             question: !detect_questions(text).is_empty(),
+            speaker: self.call_speaker_between(start_ms, end_ms.max(start_ms)),
         };
         self.duration_ms = self.duration_ms.max(line.end_ms);
         self.lines.push(line.clone());
@@ -435,12 +554,18 @@ impl MeetingRecord {
                 .collect()
         };
         self.speakers.clear();
+        if !has_speakers {
+            self.speakers_from_call();
+        }
         for segment in &self.segments {
             let Some(id) = &segment.speaker_id else { continue };
             if !self.speakers.iter().any(|speaker| &speaker.id == id) {
                 let name = format!("Hablante {}", self.speakers.len() + 1);
                 self.speakers.push(SpeakerName { id: id.clone(), name });
             }
+        }
+        if has_speakers {
+            self.name_speakers_from_call();
         }
         self.duration_ms = self
             .duration_ms
@@ -489,6 +614,128 @@ impl MeetingRecord {
         }
         self.notes = notes.to_string();
         Ok(())
+    }
+
+    /// Someone spoke in the call from `start_ms` to `end_ms` of the
+    /// recording. Joins the interval to the last one of that person when it
+    /// overlaps it or follows it closely, as the extension resends the
+    /// interval while the person keeps talking. Returns whether the name is
+    /// new in this meeting.
+    pub fn add_call_speech(&mut self, name: &str, start_ms: u64, end_ms: u64) -> Result<bool, BackendError> {
+        if self.status != MeetingStatus::Live {
+            return Err(BackendError::invalid_input("La grabación de la reunión ya terminó."));
+        }
+        let name = single_line(name);
+        if name.is_empty() || name.chars().count() > MAX_SPEAKER_NAME_CHARS {
+            return Err(BackendError::invalid_input(format!(
+                "El nombre del participante debe tener entre 1 y {MAX_SPEAKER_NAME_CHARS} caracteres."
+            )));
+        }
+        let end_ms = end_ms.max(start_ms);
+        let known = self.call_speech.iter().any(|speech| speech.name == name);
+        let last = self.call_speech.iter_mut().rev().find(|speech| speech.name == name);
+        match last {
+            Some(last) if start_ms <= last.end_ms.saturating_add(CALL_SPEECH_GAP_MS) && end_ms >= last.start_ms => {
+                last.start_ms = last.start_ms.min(start_ms);
+                last.end_ms = last.end_ms.max(end_ms);
+            }
+            _ => {
+                if self.call_speech.len() >= MAX_CALL_SPEECH {
+                    return Err(BackendError::invalid_input("La reunión ya tiene demasiados turnos de la llamada."));
+                }
+                self.call_speech.push(CallSpeech { name, start_ms, end_ms });
+            }
+        }
+        Ok(!known)
+    }
+
+    /// Who the call says spoke most between `start_ms` and `end_ms`; a
+    /// moment without length counts as one millisecond.
+    fn call_speaker_between(&self, start_ms: u64, end_ms: u64) -> Option<String> {
+        let end_ms = end_ms.max(start_ms.saturating_add(1));
+        let mut talk: Vec<(&str, u64)> = Vec::new();
+        for speech in &self.call_speech {
+            let speech_end = speech.end_ms.max(speech.start_ms.saturating_add(1));
+            let overlap = speech_end.min(end_ms).saturating_sub(speech.start_ms.max(start_ms));
+            if overlap == 0 {
+                continue;
+            }
+            match talk.iter_mut().find(|(name, _)| *name == speech.name) {
+                Some((_, total)) => *total += overlap,
+                None => talk.push((speech.name.as_str(), overlap)),
+            }
+        }
+        talk.into_iter().max_by_key(|(_, total)| *total).map(|(name, _)| name.to_string())
+    }
+
+    /// Without separated speakers, each segment goes to whoever the call
+    /// says was speaking, one speaker per name.
+    fn speakers_from_call(&mut self) {
+        if self.call_speech.is_empty() {
+            return;
+        }
+        let names: Vec<Option<String>> = self
+            .segments
+            .iter()
+            .map(|segment| self.call_speaker_between(segment.start_ms, segment.end_ms))
+            .collect();
+        for (index, name) in names.into_iter().enumerate() {
+            let Some(name) = name else { continue };
+            let id = match self.speakers.iter().find(|speaker| speaker.name == name) {
+                Some(speaker) => speaker.id.clone(),
+                None => {
+                    let id = format!("call-{}", self.speakers.len() + 1);
+                    self.speakers.push(SpeakerName { id: id.clone(), name });
+                    id
+                }
+            };
+            self.segments[index].speaker_id = Some(id);
+        }
+    }
+
+    /// Each separated speaker takes the name of the call participant who
+    /// spoke during most of their talk, when that covers enough of it.
+    fn name_speakers_from_call(&mut self) {
+        if self.call_speech.is_empty() {
+            return;
+        }
+        let names: Vec<Option<String>> = self
+            .speakers
+            .iter()
+            .map(|speaker| {
+                let mut talk_ms = 0_u64;
+                let mut by_name: Vec<(String, u64)> = Vec::new();
+                let own = self.segments.iter().filter(|segment| segment.speaker_id.as_deref() == Some(speaker.id.as_str()));
+                for segment in own {
+                    talk_ms += segment.end_ms.saturating_sub(segment.start_ms);
+                    for speech in &self.call_speech {
+                        let overlap = speech.end_ms.min(segment.end_ms).saturating_sub(speech.start_ms.max(segment.start_ms));
+                        if overlap == 0 {
+                            continue;
+                        }
+                        match by_name.iter_mut().find(|(name, _)| *name == speech.name) {
+                            Some((_, total)) => *total += overlap,
+                            None => by_name.push((speech.name.clone(), overlap)),
+                        }
+                    }
+                }
+                let (name, covered) = by_name.into_iter().max_by_key(|(_, total)| *total)?;
+                (talk_ms > 0 && covered as f64 >= talk_ms as f64 * CALL_NAME_MIN_SHARE).then_some(name)
+            })
+            .collect();
+        for (speaker, name) in self.speakers.iter_mut().zip(names) {
+            if let Some(name) = name {
+                speaker.name = name;
+            }
+        }
+    }
+
+    /// The live lines with who the call says spoke each one, as known now.
+    fn lines_with_speakers(&self) -> Vec<MeetingLine> {
+        self.lines
+            .iter()
+            .map(|line| MeetingLine { speaker: self.call_speaker_between(line.start_ms, line.end_ms), ..line.clone() })
+            .collect()
     }
 
     pub fn rename_speaker(&mut self, id: &str, name: &str) -> Result<(), BackendError> {
@@ -823,7 +1070,7 @@ impl MeetingRecord {
             duration_ms: self.duration_ms,
             sources: self.sources,
             source_file: self.source_file.clone(),
-            lines: self.lines.clone(),
+            lines: self.lines_with_speakers(),
             speakers: self.speaker_stats(),
             turns: visible,
             total_turns,
@@ -833,6 +1080,7 @@ impl MeetingRecord {
             live_answers: self.live_answers,
             ai_notes: self.ai_notes.dto(self.status == MeetingStatus::Live),
             insights: self.insights.clone(),
+            review: self.review.clone(),
             saved_note_path: self.saved_note.as_ref().map(|note| note.visible_path.clone()),
             suggested_questions: self.suggested_questions(),
             context_text: self.context_text(),
@@ -868,9 +1116,12 @@ impl MeetingRecord {
     /// Transcript with the minute of each turn and the person's notes.
     pub fn context_text(&self) -> String {
         let mut lines = if self.segments.is_empty() {
-            self.lines
+            self.lines_with_speakers()
                 .iter()
-                .map(|line| format!("[{}] {}", format_clock(line.start_ms), line.text))
+                .map(|line| match &line.speaker {
+                    Some(name) => format!("[{}] {name}: {}", format_clock(line.start_ms), line.text),
+                    None => format!("[{}] {}", format_clock(line.start_ms), line.text),
+                })
                 .collect::<Vec<_>>()
         } else {
             self.turns()
@@ -904,7 +1155,10 @@ impl MeetingRecord {
             if size > max_chars && !picked.is_empty() {
                 break;
             }
-            picked.push(format!("[{}] {}", format_clock(line.start_ms), line.text));
+            match self.call_speaker_between(line.start_ms, line.end_ms) {
+                Some(name) => picked.push(format!("[{}] {name}: {}", format_clock(line.start_ms), line.text)),
+                None => picked.push(format!("[{}] {}", format_clock(line.start_ms), line.text)),
+            }
         }
         picked.reverse();
         picked.join("\n")
@@ -913,22 +1167,116 @@ impl MeetingRecord {
     /// Batches of segments for the AI correction, each small enough for one
     /// answer.
     pub fn correction_batches(&self) -> Vec<CorrectionBatch> {
+        self.segment_batches(CORRECTION_BATCH_CHARS, correction_prompt, |_| None)
+    }
+
+    /// Batches of segments for the review's cleanup, each with its speaker.
+    pub fn cleanup_batches(&self) -> Vec<CorrectionBatch> {
+        self.segment_batches(meeting_review::CLEANUP_BATCH_CHARS, meeting_review::cleanup_prompt, |segment| {
+            Some(self.speaker_name(segment.speaker_id.as_deref()).unwrap_or("Sin hablante"))
+        })
+    }
+
+    /// The segments as `S1 [speaker]: text` lines, in batches of about
+    /// `max_chars`, each asked with `prompt`.
+    fn segment_batches<'a>(
+        &'a self,
+        max_chars: usize,
+        prompt: fn(&str) -> String,
+        speaker: impl Fn(&'a MeetingSegment) -> Option<&'a str>,
+    ) -> Vec<CorrectionBatch> {
         let mut batches = Vec::new();
         let mut ids = Vec::new();
         let mut body = String::new();
         for (index, segment) in self.segments.iter().enumerate() {
-            let line = format!("{}: {}\n", correction_id(index), segment.text.trim());
-            if !ids.is_empty() && body.len() + line.len() > CORRECTION_BATCH_CHARS {
-                batches.push(CorrectionBatch { prompt: correction_prompt(&body), ids: std::mem::take(&mut ids) });
+            let line = match speaker(segment) {
+                Some(name) => format!("{} [{name}]: {}\n", correction_id(index), segment.text.trim()),
+                None => format!("{}: {}\n", correction_id(index), segment.text.trim()),
+            };
+            if !ids.is_empty() && body.len() + line.len() > max_chars {
+                batches.push(CorrectionBatch { prompt: prompt(&body), ids: std::mem::take(&mut ids) });
                 body.clear();
             }
             ids.push(correction_id(index));
             body.push_str(&line);
         }
         if !ids.is_empty() {
-            batches.push(CorrectionBatch { prompt: correction_prompt(&body), ids });
+            batches.push(CorrectionBatch { prompt: prompt(&body), ids });
         }
         batches
+    }
+
+    /// Replaces the text of the segments the review cleaned up. A segment
+    /// emptied goes away when it was only a few words (filler); a cleanup
+    /// that leaves under a quarter of a longer text, or adds more than a
+    /// third, is discarded as a rewrite. A speaker left without segments
+    /// goes away too.
+    pub fn apply_cleanup(&mut self, cleaned: &HashMap<String, String>) {
+        let mut kept = Vec::with_capacity(self.segments.len());
+        for (index, mut segment) in std::mem::take(&mut self.segments).into_iter().enumerate() {
+            if let Some(text) = cleaned.get(&correction_id(index)).map(|text| text.trim()) {
+                let original = segment.text.chars().count().max(1);
+                let length = text.chars().count();
+                if text.is_empty() {
+                    if segment.text.split_whitespace().count() <= MAX_FILLER_SEGMENT_WORDS {
+                        continue;
+                    }
+                } else if length * 4 >= original && length * 3 <= original * 4 {
+                    segment.text = text.to_string();
+                }
+            }
+            kept.push(segment);
+        }
+        self.segments = kept;
+        let segments = &self.segments;
+        self.speakers
+            .retain(|speaker| segments.iter().any(|segment| segment.speaker_id.as_deref() == Some(speaker.id.as_str())));
+        self.review.cleaned = true;
+    }
+
+    /// The request that names the speakers the conversation names, and the
+    /// ids it may name; `None` when every speaker has a name already.
+    pub fn naming_request(&self) -> Option<(String, Vec<String>)> {
+        let unnamed = self
+            .speakers
+            .iter()
+            .filter(|speaker| meeting_review::is_default_speaker_name(&speaker.name))
+            .map(|speaker| (speaker.id.clone(), speaker.name.clone()))
+            .collect::<Vec<_>>();
+        if unnamed.is_empty() || self.segments.is_empty() {
+            return None;
+        }
+        let mut transcript = String::new();
+        for turn in self.turns() {
+            let label = self.speaker_name(turn.speaker_id.as_deref()).unwrap_or("Sin hablante");
+            let id = turn.speaker_id.as_deref().unwrap_or("-");
+            let line = format!("[{}] {label} ({id}): {}\n", format_clock(turn.start_ms), turn.text);
+            if transcript.len() + line.len() > meeting_review::NAMING_TRANSCRIPT_CHARS {
+                break;
+            }
+            transcript.push_str(&line);
+        }
+        let ids = unnamed.iter().map(|(id, _)| id.clone()).collect();
+        Some((meeting_review::naming_prompt(&transcript, &unnamed), ids))
+    }
+
+    /// Gives the names the review found to the speakers that still have
+    /// Notia's: the person may have renamed one while it ran. Returns how
+    /// many were named.
+    pub fn apply_speaker_names(&mut self, names: &[(String, String)]) -> usize {
+        let mut named = 0;
+        for (id, name) in names {
+            let name = name.trim();
+            let valid = !name.is_empty() && name.chars().count() <= MAX_SPEAKER_NAME_CHARS && !name.contains(['\n', '\r']);
+            let taken = self.speakers.iter().any(|speaker| speaker.name.eq_ignore_ascii_case(name));
+            let Some(speaker) = self.speakers.iter_mut().find(|speaker| &speaker.id == id) else { continue };
+            if valid && !taken && meeting_review::is_default_speaker_name(&speaker.name) {
+                speaker.name = name.to_string();
+                named += 1;
+            }
+        }
+        self.review.named += named;
+        named
     }
 
     /// File name of the meeting note.
@@ -1005,8 +1353,11 @@ impl MeetingRecord {
         out.push_str("## Transcripción\n\n");
         let turns = self.turns();
         if turns.is_empty() {
-            for line in &self.lines {
-                out.push_str(&format!("`{}` {}\n\n", format_clock(line.start_ms), line.text));
+            for line in self.lines_with_speakers() {
+                match &line.speaker {
+                    Some(name) => out.push_str(&format!("**{name}** · `{}`\n{}\n\n", format_clock(line.start_ms), line.text)),
+                    None => out.push_str(&format!("`{}` {}\n\n", format_clock(line.start_ms), line.text)),
+                }
             }
         }
         for turn in turns {
@@ -1299,6 +1650,102 @@ pub fn parse_corrections(answer: &str, batch: &CorrectionBatch) -> HashMap<Strin
 mod tests {
     use super::*;
 
+    fn reviewed_record() -> MeetingRecord {
+        let start = MeetingStart { date_label: "05/10/2026 10:00".into(), file_stamp: "2026-10-05 10.00".into(), unix_ms: 0 };
+        let mut record = MeetingRecord::new("m1", start, MeetingSources { microphone: true, system: false }, false);
+        let segment = |start_ms: u64, speaker: &str, text: &str| MeetingSegment {
+            start_ms,
+            end_ms: start_ms + 1_000,
+            speaker_id: Some(speaker.into()),
+            text: text.into(),
+        };
+        record.complete(
+            vec![
+                segment(0, "speaker-1", "Bueno eh, Laura, ¿querés contar cómo, cómo vamos con el piloto?"),
+                segment(2_000, "speaker-2", "Eeeh."),
+                segment(3_000, "speaker-3", "Sí, eh, vamos bien, este, terminamos la la primera etapa del piloto con los comercios."),
+                segment(5_000, "speaker-3", "Los comercios adheridos ya están cobrando con el sistema nuevo desde el lunes."),
+            ],
+            6_000,
+        );
+        record
+    }
+
+    #[test]
+    fn a_saved_meeting_opens_again_finished_and_nothing_running() {
+        let mut record = reviewed_record();
+        record.review.stage = Some(crate::meeting_review::MeetingReviewStage::Names);
+        record.ai_notes.running = true;
+        record.insights.tasks = vec![
+            MeetingTask { id: "t1".into(), title: "Llamar".into(), detail: String::new(), sent: false },
+            MeetingTask { id: "t2".into(), title: "Pagar".into(), detail: String::new(), sent: true },
+        ];
+        let json = MeetingArchive::new(record.clone(), None).to_json();
+        let reopened = MeetingArchive::parse(&json).expect("archive").record.reopened();
+        assert_eq!(reopened.status, MeetingStatus::Completed);
+        assert_eq!(reopened.review.stage, None);
+        assert!(!reopened.ai_notes.running);
+        assert_eq!(reopened.segments, record.segments);
+        assert_eq!(reopened.speaker_count(), 3);
+        assert_eq!(reopened.pending_task_count(), 1);
+        assert!(reopened.mentions("comercios adheridos"));
+        assert!(!reopened.mentions("presupuesto"));
+        assert!(MeetingArchive::parse("{\"version\":2}").is_err());
+        assert_eq!(archive_path("m1").expect("path"), ".notia/meetings/m1.json");
+        assert!(archive_path("../m1").is_err());
+        assert!(archive_path("").is_err());
+    }
+
+    #[test]
+    fn the_cleanup_replaces_text_drops_filler_and_keeps_rewrites_out() {
+        let mut record = reviewed_record();
+        let batches = record.cleanup_batches();
+        assert_eq!(batches.len(), 1);
+        assert!(batches[0].prompt.contains("S1 [Hablante 1]: Bueno eh, Laura"));
+        assert!(batches[0].prompt.contains("S2 [Hablante 2]: Eeeh."));
+        let cleaned = HashMap::from([
+            ("S1".to_string(), "Laura, ¿querés contar cómo vamos con el piloto?".to_string()),
+            ("S2".to_string(), String::new()),
+            ("S3".to_string(), "Sí, vamos bien: terminamos la primera etapa del piloto con los comercios.".to_string()),
+            // A summary, not a cleanup: discarded.
+            ("S4".to_string(), "Ya cobran.".to_string()),
+        ]);
+        record.apply_cleanup(&cleaned);
+        let texts = record.segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            vec![
+                "Laura, ¿querés contar cómo vamos con el piloto?",
+                "Sí, vamos bien: terminamos la primera etapa del piloto con los comercios.",
+                "Los comercios adheridos ya están cobrando con el sistema nuevo desde el lunes.",
+            ]
+        );
+        // Hablante 2 only said filler: gone.
+        let names = record.speaker_stats().into_iter().map(|speaker| speaker.name).collect::<Vec<_>>();
+        assert_eq!(names, vec!["Hablante 1", "Hablante 3"]);
+        assert!(record.review.cleaned);
+    }
+
+    #[test]
+    fn speakers_named_by_the_review_keep_names_the_person_gave() {
+        let mut record = reviewed_record();
+        record.rename_speaker("speaker-1", "Coordinación").expect("rename");
+        let (prompt, ids) = record.naming_request().expect("unnamed speakers");
+        assert_eq!(ids, vec!["speaker-2".to_string(), "speaker-3".to_string()]);
+        assert!(prompt.contains("[00:00] Coordinación (speaker-1): Bueno eh, Laura"));
+        let named = record.apply_speaker_names(&[
+            ("speaker-3".into(), "Laura".into()),
+            ("speaker-1".into(), "Pedro".into()),
+            ("speaker-2".into(), "laura".into()),
+        ]);
+        assert_eq!(named, 1);
+        let names = record.speaker_stats().into_iter().map(|speaker| speaker.name).collect::<Vec<_>>();
+        assert_eq!(names, vec!["Coordinación", "Hablante 2", "Laura"]);
+        assert_eq!(record.review.named, 1);
+        record.rename_speaker("speaker-2", "Invitado").expect("rename");
+        assert!(record.naming_request().is_none());
+    }
+
     #[test]
     fn a_meeting_from_a_file_is_named_after_it_and_says_so_in_its_note() {
         let start = MeetingStart { date_label: "26/09/2026 21:10".into(), file_stamp: "2026-09-26 21.10".into(), unix_ms: 0 };
@@ -1355,6 +1802,63 @@ mod tests {
             12_000,
         );
         record
+    }
+
+    #[test]
+    fn call_speech_names_the_live_lines_and_joins_while_the_person_talks() {
+        let mut record = record();
+        assert!(record.add_call_speech("Ana Pérez", 0, 1_000).expect("speech"), "a new name");
+        // The extension resends the interval while Ana keeps talking.
+        assert!(!record.add_call_speech("Ana Pérez", 0, 2_500).expect("speech"));
+        assert!(!record.add_call_speech("Ana Pérez", 3_200, 4_000).expect("speech"));
+        record.add_call_speech("Beto", 4_200, 7_000).expect("speech");
+        assert_eq!(record.call_speech.len(), 2, "Ana's pieces joined");
+        assert_eq!((record.call_speech[0].start_ms, record.call_speech[0].end_ms), (0, 4_000));
+
+        let line = record.push_line(500, 3_000, "Arranquemos con el presupuesto.").expect("line");
+        assert_eq!(line.speaker.as_deref(), Some("Ana Pérez"));
+        record.push_line(4_500, 6_800, "Yo traje los números.");
+        let snapshot = record.snapshot(&MeetingFilter::default());
+        assert_eq!(snapshot.lines[1].speaker.as_deref(), Some("Beto"));
+        assert!(record.context_text().contains("Beto: Yo traje los números."));
+        assert!(record.add_call_speech("  ", 0, 1).is_err());
+        assert!(record.add_call_speech(&"x".repeat(MAX_SPEAKER_NAME_CHARS + 1), 0, 1).is_err());
+
+        // Without separated speakers, the call names the transcript's turns.
+        record.complete(Vec::new(), 7_000);
+        let names: Vec<String> = record.speaker_stats().into_iter().map(|speaker| speaker.name).collect();
+        assert_eq!(names, ["Ana Pérez", "Beto"]);
+        assert!(record.note_markdown().contains("**Ana Pérez** · `00:00`\nArranquemos con el presupuesto."));
+        assert!(record.add_call_speech("Ana Pérez", 8_000, 9_000).is_err(), "only while recording");
+    }
+
+    #[test]
+    fn separated_speakers_take_the_name_that_covers_most_of_their_talk() {
+        let mut record = record();
+        record.add_call_speech("Ana", 0, 6_000).expect("speech");
+        record.add_call_speech("Beto", 6_000, 10_500).expect("speech");
+        record.add_call_speech("Ana", 10_500, 11_000).expect("speech");
+        record.push_line(0, 4_000, "Hola, ¿cómo te fue en el viaje?");
+        record.complete(
+            vec![
+                segment(0, 6_000, "speaker-2", "Hola, ¿cómo te fue en el viaje?"),
+                segment(6_000, 8_000, "speaker-1", "Bien, tranquilo."),
+                segment(8_000, 10_000, "speaker-1", "Llegué bien."),
+                segment(10_000, 12_000, "speaker-3", "Empecemos."),
+            ],
+            12_000,
+        );
+        let names: Vec<(String, String)> =
+            record.speaker_stats().into_iter().map(|speaker| (speaker.id, speaker.name)).collect();
+        assert_eq!(
+            names,
+            [
+                ("speaker-2".to_string(), "Ana".to_string()),
+                ("speaker-1".to_string(), "Beto".to_string()),
+                // Only a quarter of its talk overlaps anyone: it keeps its number.
+                ("speaker-3".to_string(), "Hablante 3".to_string()),
+            ]
+        );
     }
 
     #[test]

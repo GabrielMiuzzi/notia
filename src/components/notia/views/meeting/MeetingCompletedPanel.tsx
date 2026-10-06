@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Check, Combine, Pencil, Search, Sparkles, X } from 'lucide-react'
-import { formatClock, speakerColorClass } from './meetingDisplay'
+import { formatClock, generateLabel, speakerColorClass } from './meetingDisplay'
 import { MeetingAskPanel } from './MeetingAskPanel'
+import { MeetingReviewNotice } from './MeetingReviewNotice'
 import { useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit } from './useMeetingCompleted'
 import { listMeetingTaskBoards, sendMeetingTasks } from '../../../../services/meeting/meetingService'
 import type {
@@ -30,11 +31,12 @@ export function MeetingCompletedPanel({ snapshot, filter, onFilterChange, aiPref
   )
   return (
     <div className="notia-meeting-finished">
+      <MeetingReviewNotice review={snapshot.review} />
       <SpeakersRow snapshot={snapshot} />
       <div className="notia-meeting-columns">
         <TranscriptCard snapshot={snapshot} speakersById={speakersById} filter={filter} onFilterChange={onFilterChange} />
         <aside className="notia-meeting-aside" aria-label="Trabajar con la reunión">
-          <InsightsCard meetingId={snapshot.id} aiPreferences={aiPreferences} />
+          <InsightsCard meetingId={snapshot.id} aiPreferences={aiPreferences} reviewing={Boolean(snapshot.review.stage)} />
           <InsightsResults snapshot={snapshot} library={library} />
           <MeetingAskPanel
             key={snapshot.id}
@@ -238,7 +240,7 @@ const INSIGHT_OPTIONS: Array<{ key: keyof MeetingInsightsRequest; label: string;
   { key: 'correct', label: 'Corregir la transcripción', hint: 'errores de dictado' },
 ]
 
-function InsightsCard({ meetingId, aiPreferences }: { meetingId: string; aiPreferences: AiPreferences }) {
+function InsightsCard({ meetingId, aiPreferences, reviewing }: { meetingId: string; aiPreferences: AiPreferences; reviewing: boolean }) {
   const { request, choose, isGenerating, error, nothingChosen, generate } = useMeetingInsights(meetingId, aiPreferences)
 
   return (
@@ -262,8 +264,8 @@ function InsightsCard({ meetingId, aiPreferences }: { meetingId: string; aiPrefe
           </label>
         ))}
       </div>
-      <button type="button" className="notia-meeting-primary-button notia-meeting-wide-button" onClick={() => void generate()} disabled={isGenerating || nothingChosen}>
-        {isGenerating ? 'Generando…' : 'Generar'}
+      <button type="button" className="notia-meeting-primary-button notia-meeting-wide-button" onClick={() => void generate()} disabled={isGenerating || nothingChosen || reviewing}>
+        {generateLabel(isGenerating, reviewing)}
       </button>
       {error ? <p className="notia-meeting-error-text" role="alert">{error}</p> : null}
     </section>

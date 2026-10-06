@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Notia ColdPass</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<main class="popup">
+  <header class="head">
+    <img src="icons/icon-32.png" width="28" height="28" alt="">
+    <div class="head__text">
+      <h1>ColdPass</h1>
+      <span id="library" class="muted">Notia</span>
+    </div>
+    <span id="state" class="pill" data-state="locked">Bloqueado</span>
+  </header>
+
+  <form id="unlock" class="form" hidden>
+    <label class="field">
+      <span>Puerto de Notia (modo Host)</span>
+      <input id="port" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="52480">
+    </label>
+    <label class="field">
+      <span>Usuario Owner</span>
+      <input id="username" autocomplete="username" spellcheck="false" required>
+    </label>
+    <label class="field">
+      <span>Contraseña del Owner</span>
+      <input id="password" type="password" autocomplete="current-password" required>
+    </label>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button id="submit" type="submit" class="primary">Desbloquear</button>
+    <p class="muted small">Queda desbloqueado mientras Chrome esté abierto. Notia tiene que estar en modo Host.</p>
+  </form>
+
+  <section id="unlocked" class="form" hidden>
+    <p class="muted">Completa usuario y contraseña en los sitios guardados, ofrece guardar los nuevos y genera contraseñas en los campos de contraseña.</p>
+    <p class="muted small">Notia en este equipo, puerto <span id="host"></span></p>
+    <button id="lock" type="button" class="ghost">Bloquear</button>
+  </section>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>

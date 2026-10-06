@@ -8,6 +8,8 @@ export interface MeetingLine {
   endMs: number
   text: string
   question: boolean
+  /** Who the call (Teams, through the NotIA extension) says was speaking. */
+  speaker?: string
 }
 
 export interface MeetingSpeaker {
@@ -57,6 +59,31 @@ export interface MeetingInsights {
   keyPoints: string[]
   tasks: MeetingTask[]
   corrected: boolean
+}
+
+/** A meeting saved as a note, as «Reuniones anteriores» lists it. */
+export interface MeetingHistoryItem {
+  id: string
+  title: string
+  /** `HOY`, `AYER`, `ESTA SEMANA` or the month, on the first meeting of each group. */
+  group?: string
+  /** `10:15` today and yesterday, `Lun` this week, else `28 sep`. */
+  timeLabel: string
+  durationMs: number
+  speakerCount: number
+  pendingTasks: number
+  /** The folder or the context its AI consulted. */
+  context?: { label: string; color?: string }
+}
+
+/** The AI review that runs on its own once the speakers are separated. */
+export interface MeetingReview {
+  /** The step running now: cleaning up the transcript, then naming the speakers. */
+  stage?: 'cleanup' | 'names'
+  cleaned: boolean
+  /** Speakers the review named from the conversation. */
+  named: number
+  error?: string
 }
 
 /** Question asked in the meeting and the minute it was asked. */
@@ -162,6 +189,7 @@ export interface MeetingSnapshot {
   liveAnswers: boolean
   aiNotes: MeetingAiNotes
   insights: MeetingInsights
+  review: MeetingReview
   savedNotePath?: string
   suggestedQuestions: MeetingQuestion[]
   contextText: string

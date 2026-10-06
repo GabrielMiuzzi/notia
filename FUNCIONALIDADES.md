@@ -42,9 +42,13 @@
 - Reflexión al terminar cada pedido del Owner (también si falló o se canceló): memorias, pensamientos, biografía y forma de hablar nuevos guardados solos.
 - Agente autónomo por Telegram (solo al Owner): al llegar mails nuevos a Gmail los revisa y, si vale la pena, recuerda, pregunta o propone mejoras sin repetirse; solo lee y se apaga desde Configuraciones → Telegram (la revisión de cada hora es una acción de Acciones IA).
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
+- Meeting: elección del micrófono y de la salida a grabar (Windows), recordada por equipo y usada también por el dictado, con aviso para dispositivos virtuales como Voicemod; la salida envolvente se convierte a mono con los canales frontales.
 - Meeting: contexto para la IA elegido al grabar (una carpeta, o toda la biblioteca con los contextos permitidos) y Notas IA que el agente reescribe cada 5 minutos o al llamarlo (objetivo, decisiones, preguntas abiertas, notas por tema, tareas al Task Manager), con marcas y notas propias.
 - Meeting: transcripción de archivos de audio (MP3, WAV, M4A, OGG, FLAC) y video (MP4, MOV, MKV, WEBM) elegidos o arrastrados, con duración, onda, progreso y cancelación; después, separación de hablantes y todo lo de una reunión grabada.
 - Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
+- Meeting: segunda pasada al terminar en Windows con GPU (Whisper large-v3 con tiempos por palabra), cuyo texto reemplaza al en vivo línea por línea.
+- Meeting: repaso automático con IA al terminar la separación: ordena la transcripción (palabras mal oídas, muletillas, repeticiones) y nombra a los hablantes que la conversación identifica.
+- Meeting: «Reuniones anteriores» (panel en escritorio, pantalla propia en el celular) con las reuniones guardadas como nota, agrupadas por fecha, con búsqueda por título o contenido, y apertura de una reunión guardada para seguir trabajando con ella.
 - Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.
 - Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
 - Dictado y síntesis de voz offline, con reconocimiento Whisper large-v3-turbo y texto en vivo por LocalAgreement.
@@ -64,6 +68,8 @@
 - Desbloqueo de ColdPass con huella en Android, opcional por dispositivo.
 - Formulario de credencial de ColdPass con medidor de fuerza de la contraseña, deshacer el cambio y generador integrado (largo, mayúsculas, números, símbolos y sin ambiguos); pantalla completa en el teléfono.
 - Sincronización de ColdPass mediante Bluetooth.
+- Extensión de Chrome NotIA (`chrome-ext/notia`): en una llamada de Microsoft Teams en Chrome, marca en la grabación de Meeting quién habla en cada momento, con nombre (por los subtítulos en directo o el contorno de quien habla); nombra las frases en vivo y los hablantes al terminar.
+- Extensión de Chrome para ColdPass (`chrome-ext/coldpass`): completa credenciales guardadas, ofrece guardar las nuevas y genera contraseñas, conectada al modo Host de esta computadora.
 - Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
 - Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
 - Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.

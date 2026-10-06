@@ -33,9 +33,10 @@ use std::time::{Duration, Instant};
 use notia_backend_core::ai_settings::{AiSettings, AiSettingsInput};
 use notia_backend_core::meeting::{
     self, MeetingFilter, MeetingInsightsRequest, MeetingMark, MeetingRecord, MeetingSegment,
-    MeetingSnapshotDto, MeetingSourceFile, MeetingSources, MeetingStart, MeetingStatus, SavedMeetingNote,
+    MeetingArchive, MeetingSnapshotDto, MeetingSourceFile, MeetingSources, MeetingStart, MeetingStatus, SavedMeetingNote,
 };
 use notia_backend_core::meeting_ai::{self, ContextCorpus, LibraryNote, MeetingAiContext, MeetingContextOptionsDto};
+use notia_backend_core::meeting_review::{self, MeetingReviewStage, MeetingReviewState};
 use notia_backend_core::RequestControl;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -151,7 +152,7 @@ fn announce(app: &AppHandle, meeting_id: &str) {
 
 /// Whether this device is a client working on its host: the library and
 /// the AI provider are the host's.
-fn uses_host(app: &AppHandle) -> bool {
+pub(crate) fn uses_host(app: &AppHandle) -> bool {
     crate::host_client::uses_host(app)
 }
 
@@ -163,6 +164,7 @@ pub(crate) enum MeetingAiKind {
     Insights,
     LiveAnswer,
     Notes,
+    Review,
 }
 
 impl MeetingAiKind {
@@ -172,6 +174,7 @@ impl MeetingAiKind {
             Self::Insights => meeting::INSIGHTS_SYSTEM_PROMPT,
             Self::LiveAnswer => meeting::LIVE_ANSWER_SYSTEM_PROMPT,
             Self::Notes => meeting_ai::NOTES_SYSTEM_PROMPT,
+            Self::Review => meeting_review::REVIEW_SYSTEM_PROMPT,
         }
     }
 
@@ -180,7 +183,7 @@ impl MeetingAiKind {
         match self {
             Self::LiveAnswer => meeting_ai::LIVE_ANSWER_LIBRARY_CHARS,
             Self::Notes => meeting_ai::NOTES_LIBRARY_CHARS,
-            Self::Correction | Self::Insights => 0,
+            Self::Correction | Self::Insights | Self::Review => 0,
         }
     }
 }
@@ -340,11 +343,12 @@ pub(crate) fn begin(app: &AppHandle, session_id: &str, sources: CaptureSources, 
 /// the file arrives and is processing from the start: there is nothing to
 /// capture and no live answers.
 #[cfg_attr(not(any(target_os = "windows", target_os = "android")), allow(dead_code))]
-pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceFile) {
+pub(crate) fn begin_file(app: &AppHandle, session_id: &str, file: MeetingSourceFile, settings: Option<AiSettings>) {
     let Ok(mut inner) = lock(app) else { return };
     inner.live.cancel();
     inner.record = Some(MeetingRecord::from_file(session_id, start_labels(), file));
-    inner.settings = None;
+    // Only the review uses them: a file has no live answers or Notas IA.
+    inner.settings = settings;
     inner.ai_context = None;
     drop(inner);
     announce(app, session_id);
@@ -415,7 +419,87 @@ pub(crate) fn on_completed(app: &AppHandle, session_id: &str, transcript: &Diari
     .is_ok()
     {
         announce(app, session_id);
+        spawn_review(app.clone(), session_id.to_string());
     }
+}
+
+// --- AI review --------------------------------------------------------------
+
+/// Reviews the finished meeting `meeting_id` with the AI on its own thread,
+/// when there is a configured AI and a transcript with speakers.
+fn spawn_review(app: AppHandle, meeting_id: String) {
+    let settings = {
+        let Ok(inner) = lock(&app) else { return };
+        let Some(record) = inner.record.as_ref().filter(|record| record.id == meeting_id) else { return };
+        if !record.segments.iter().any(|segment| segment.speaker_id.is_some()) {
+            return;
+        }
+        let Some(settings) = inner.settings.clone() else { return };
+        settings
+    };
+    let spawned = std::thread::Builder::new()
+        .name("notia-meeting-review".to_string())
+        .spawn(move || run_review(&app, &meeting_id, &settings));
+    if let Err(error) = spawned {
+        log::warn!("[notia:meeting] review thread not started: {error}");
+    }
+}
+
+/// The two steps of the review: the cleanup of the transcript, then the
+/// speakers' names. "Pasar por IA" waits for it, so both never edit the
+/// transcript at once.
+fn run_review(app: &AppHandle, meeting_id: &str, settings: &AiSettings) {
+    let meeting_state = state(app);
+    if meeting_state.generating.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let _generating = GeneratingGuard(&meeting_state.generating);
+    let steps: [(MeetingReviewStage, fn(&AppHandle, &str, &AiSettings) -> Result<(), BackendError>); 2] =
+        [(MeetingReviewStage::Cleanup, review_cleanup), (MeetingReviewStage::Names, review_names)];
+    for (stage, step) in steps {
+        if set_review(app, meeting_id, |review| review.stage = Some(stage)).is_err() {
+            return;
+        }
+        if let Err(error) = step(app, meeting_id, settings) {
+            log::warn!("[notia:meeting] the AI review stopped at {stage:?} ({:?})", error.code);
+            let _ = set_review(app, meeting_id, |review| review.error = Some(error.message.clone()));
+        }
+    }
+    let _ = set_review(app, meeting_id, |review| review.stage = None);
+}
+
+fn set_review(app: &AppHandle, meeting_id: &str, change: impl FnOnce(&mut MeetingReviewState)) -> Result<(), BackendError> {
+    with_record(app, meeting_id, |record| {
+        change(&mut record.review);
+        Ok(())
+    })?;
+    announce(app, meeting_id);
+    Ok(())
+}
+
+fn review_cleanup(app: &AppHandle, meeting_id: &str, settings: &AiSettings) -> Result<(), BackendError> {
+    let batches = with_record(app, meeting_id, |record| Ok(record.cleanup_batches()))?;
+    let mut cleaned = std::collections::HashMap::new();
+    for batch in &batches {
+        let answer = complete_text(app, settings, MeetingAiKind::Review, &batch.prompt, None)?;
+        cleaned.extend(meeting::parse_corrections(&answer, batch));
+    }
+    with_record(app, meeting_id, |record| {
+        record.apply_cleanup(&cleaned);
+        Ok(())
+    })
+}
+
+fn review_names(app: &AppHandle, meeting_id: &str, settings: &AiSettings) -> Result<(), BackendError> {
+    let Some((prompt, ids)) = with_record(app, meeting_id, |record| Ok(record.naming_request()))? else {
+        return Ok(());
+    };
+    let answer = complete_text(app, settings, MeetingAiKind::Review, &prompt, None)?;
+    let names = meeting_review::parse_speaker_names(&answer, &ids);
+    with_record(app, meeting_id, |record| {
+        record.apply_speaker_names(&names);
+        Ok(())
+    })
 }
 
 /// The session failed: what was recognized stays as the transcript.
@@ -431,6 +515,24 @@ pub(crate) fn on_interrupted(app: &AppHandle, session_id: &str) {
     if changed.is_ok() {
         announce(app, session_id);
     }
+}
+
+/// A meeting saved before becomes the current one, finished. Never over a
+/// recording or one still separating speakers.
+pub(crate) fn open_saved(app: &AppHandle, archive: MeetingArchive) -> Result<(), BackendError> {
+    let meeting_id = archive.record.id.clone();
+    {
+        let mut inner = lock(app)?;
+        if inner.record.as_ref().is_some_and(|record| record.status != MeetingStatus::Completed) {
+            return Err(BackendError::invalid_input("Terminá la reunión en curso antes de abrir otra."));
+        }
+        inner.live.cancel();
+        inner.record = Some(archive.record.reopened());
+        inner.settings = None;
+        inner.ai_context = archive.ai_context;
+    }
+    announce(app, &meeting_id);
+    Ok(())
 }
 
 /// The session was cancelled or could not start: its record goes away.
@@ -721,6 +823,100 @@ pub(crate) fn meeting_add_mark(app: AppHandle, payload: MeetingAddMarkPayload) -
     let mark = with_record(&app, &payload.meeting_id, |record| record.add_mark(at_ms, payload.label.as_deref()))?;
     announce(&app, &payload.meeting_id);
     Ok(mark)
+}
+
+// --- The call being recorded (NotIA extension) ------------------------------
+
+/// The meeting being recorded now: its id and title.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn live_meeting(app: &AppHandle) -> Option<(String, String)> {
+    let inner = lock(app).ok()?;
+    let record = inner.record.as_ref().filter(|record| record.status == MeetingStatus::Live)?;
+    Some((record.id.clone(), record.title()))
+}
+
+/// Someone speaking in the call, from `start_unix_ms` to `end_unix_ms`
+/// (this computer's clock).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) struct CallSpeechInput {
+    pub(crate) name: String,
+    pub(crate) start_unix_ms: u64,
+    pub(crate) end_unix_ms: u64,
+}
+
+/// Where the recording `meeting_id` is now (ms).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn recording_position(app: &AppHandle, meeting_id: &str) -> Result<u64, BackendError> {
+    let runtime = app.state::<crate::services::speech_service::SpeechRuntimeState>();
+    let position = crate::services::speech_service::session_position_ms(&runtime, meeting_id);
+    #[cfg(test)]
+    let position = position.or_else(|error| probe::position(meeting_id).ok_or(error));
+    position.map_err(BackendError::invalid_input)
+}
+
+/// A recording without audio for driving the NotIA extension in Chrome
+/// (`server::api::meeting_call`'s probe): its clock starts when it is made.
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+pub(crate) mod probe {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    static STARTED: Mutex<Option<(String, u64)>> = Mutex::new(None);
+
+    pub(crate) fn begin(app: &AppHandle) -> String {
+        let id = format!("probe-{}", uuid::Uuid::new_v4());
+        let record = MeetingRecord::new(&id, start_labels(), MeetingSources { microphone: true, system: true }, false);
+        lock(app).expect("meeting").record = Some(record);
+        *STARTED.lock().expect("probe") = Some((id.clone(), now_ms()));
+        id
+    }
+
+    pub(super) fn position(meeting_id: &str) -> Option<u64> {
+        let started = STARTED.lock().ok()?;
+        let (id, at) = started.as_ref()?;
+        (id == meeting_id).then(|| now_ms().saturating_sub(*at))
+    }
+
+    /// What the call reported, for the probe to print.
+    pub(crate) fn call_speech(app: &AppHandle) -> Vec<notia_backend_core::meeting::CallSpeech> {
+        lock(app).ok().and_then(|inner| inner.record.as_ref().map(|record| record.call_speech.clone())).unwrap_or_default()
+    }
+}
+
+/// The span of the recording (ms) that the moments `start_unix_ms` to
+/// `end_unix_ms` of this computer's clock fall on, given that the recording
+/// is at `position_ms` at `now_unix_ms`. A moment in the future counts as
+/// now; `None` when it all happened before the recording started.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn recording_span(position_ms: u64, now_unix_ms: u64, start_unix_ms: u64, end_unix_ms: u64) -> Option<(u64, u64)> {
+    let on_recording = |unix_ms: u64| position_ms.checked_sub(now_unix_ms.saturating_sub(unix_ms.min(now_unix_ms)));
+    let end_ms = on_recording(end_unix_ms.max(start_unix_ms))?;
+    Some((on_recording(start_unix_ms).unwrap_or(0), end_ms))
+}
+
+/// Places what the call reports on the clock of the recording `meeting_id`:
+/// the recording's position now minus how long ago each moment was. Speech
+/// from before the recording started is left out. Announces the meeting
+/// when a new name appears, so the live view shows it.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) fn add_call_speech(app: &AppHandle, meeting_id: &str, speech: &[CallSpeechInput]) -> Result<(), BackendError> {
+    let position_ms = recording_position(app, meeting_id)?;
+    let now = now_ms();
+    let new_name = with_record(app, meeting_id, |record| {
+        let mut new_name = false;
+        for item in speech {
+            let Some((start_ms, end_ms)) = recording_span(position_ms, now, item.start_unix_ms, item.end_unix_ms) else {
+                continue;
+            };
+            new_name |= record.add_call_speech(&item.name, start_ms, end_ms)?;
+        }
+        Ok(new_name)
+    })?;
+    if new_name {
+        announce(app, meeting_id);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1075,8 +1271,10 @@ pub(crate) struct StoredNote {
 
 /// Writes `content` as the meeting note in `folder` of the library, over
 /// `previous` when it is still there and unchanged, or under a free name
-/// from `file_name`, and exports it to `export` when asked. Runs where the
-/// library is: this device, or the host for a client.
+/// from `file_name`, and exports it to `export` when asked. The meeting
+/// itself (`archive`) is kept next to it for «Reuniones anteriores». Runs
+/// where the library is: this device, or the host for a client.
+#[allow(clippy::too_many_arguments)]
 fn write_note_here(
     app: &AppHandle,
     library_id: &str,
@@ -1085,6 +1283,7 @@ fn write_note_here(
     content: &str,
     previous: Option<&PreviousNote>,
     export: Option<ExportFormat>,
+    archive: Option<MeetingArchive>,
 ) -> Result<StoredNote, BackendError> {
     let logical_path = crate::library_documents::with_documents(app, library_id, |documents| {
         if let Some(previous) = previous {
@@ -1125,13 +1324,29 @@ fn write_note_here(
         }
         None => None,
     };
-    crate::library_session::reindex_in_background(app, library_id);
-    Ok(StoredNote {
+    let stored = StoredNote {
         visible_path: crate::library_session::visible_path(app, library_id, &logical_path),
         logical_path,
         revision: crate::filesystem::types::content_revision(content),
         export_path,
-    })
+    };
+    if let Some(mut archive) = archive {
+        archive.record.saved_note = Some(SavedMeetingNote {
+            logical_path: stored.logical_path.clone(),
+            visible_path: stored.visible_path.clone(),
+            revision: stored.revision.clone(),
+        });
+        // The note is what the person asked for: without its archive it is
+        // only missing from the history.
+        let kept = meeting::archive_path(&archive.record.id).and_then(|path| {
+            crate::library_documents::with_documents(app, library_id, |documents| documents.write(&path, None, &archive.to_json()))
+        });
+        if let Err(error) = kept {
+            log::error!("[notia:meeting] the saved meeting could not be kept for the history ({:?})", error.code);
+        }
+    }
+    crate::library_session::reindex_in_background(app, library_id);
+    Ok(stored)
 }
 
 /// Saves the meeting note (and its export), over the one saved before when
@@ -1144,12 +1359,15 @@ fn save_note(
     export: Option<ExportFormat>,
 ) -> Result<StoredNote, BackendError> {
     let folder = note_folder(folder)?;
-    let record = with_record(app, meeting_id, |record| {
+    let (record, ai_context) = {
+        let inner = lock(app)?;
+        let record = inner.record.as_ref().filter(|record| record.id == meeting_id).ok_or_else(missing)?;
         if record.status != MeetingStatus::Completed {
             return Err(BackendError::invalid_input("La reunión todavía no terminó de procesarse."));
         }
-        Ok(record.clone())
-    })?;
+        (record.clone(), inner.ai_context.clone())
+    };
+    let archive = MeetingArchive::new(record.clone(), ai_context);
     let body = record.note_markdown();
     let content = notia_backend_core::markdown_editing::ensure_markdown_defaults(&body, record.start.unix_ms).unwrap_or(body);
     let previous = record
@@ -1169,10 +1387,11 @@ fn save_note(
                 "content": content,
                 "previous": previous,
                 "export": export,
+                "archive": archive,
             } }),
         )?
     } else {
-        write_note_here(app, library_id, &folder, &file_name, &content, previous.as_ref(), export)?
+        write_note_here(app, library_id, &folder, &file_name, &content, previous.as_ref(), export, Some(archive))?
     };
     with_record(app, meeting_id, |record| {
         record.saved_note = Some(SavedMeetingNote {
@@ -1245,6 +1464,9 @@ pub(crate) struct MeetingStoreNotePayload {
     previous: Option<PreviousNote>,
     #[serde(default)]
     export: Option<ExportFormat>,
+    /// The meeting, kept next to its note for «Reuniones anteriores».
+    #[serde(default)]
+    archive: Option<MeetingArchive>,
 }
 
 /// Writes in this host's library the note of a meeting a client recorded
@@ -1264,6 +1486,7 @@ pub(crate) async fn meeting_store_note(app: AppHandle, payload: MeetingStoreNote
             &payload.content,
             payload.previous.as_ref(),
             payload.export,
+            payload.archive,
         )
     })
     .await
@@ -1386,6 +1609,20 @@ pub(crate) async fn meeting_store_tasks(app: AppHandle, payload: MeetingStoreTas
 #[cfg(test)]
 mod tests {
     use super::note_folder;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn call_moments_land_on_the_recording_clock() {
+        use super::recording_span;
+        // The recording is at 60 s now (Unix 1 000 000).
+        assert_eq!(recording_span(60_000, 1_000_000, 995_000, 998_000), Some((55_000, 58_000)));
+        // Speech that began before the recording keeps the part after it.
+        assert_eq!(recording_span(60_000, 1_000_000, 900_000, 950_000), Some((0, 10_000)));
+        assert_eq!(recording_span(60_000, 1_000_000, 800_000, 900_000), None);
+        // A clock a little ahead counts as now; an inverted span as a moment.
+        assert_eq!(recording_span(60_000, 1_000_000, 999_000, 1_002_000), Some((59_000, 60_000)));
+        assert_eq!(recording_span(60_000, 1_000_000, 999_000, 990_000), Some((59_000, 59_000)));
+    }
 
     #[test]
     fn note_folders_stay_inside_the_library() {

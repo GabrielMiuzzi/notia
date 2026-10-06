@@ -42,9 +42,9 @@ describe('uploadMeetingMedia', () => {
 
   it('starts the transcription with speaker separation', async () => {
     callBackend.mockResolvedValueOnce({ sessionId: 's1' })
-    await expect(startMeetingFileSession({ mediaId: 'm1', language: 'es', expectedSpeakers: 3 })).resolves.toBe('s1')
+    await expect(startMeetingFileSession({ mediaId: 'm1', language: 'es', expectedSpeakers: 3, settings: null })).resolves.toBe('s1')
     expect(callBackend).toHaveBeenCalledWith('meeting_start_file_session', {
-      payload: { mediaId: 'm1', language: 'es', diarizationEnabled: true, expectedSpeakers: 3 },
+      payload: { mediaId: 'm1', language: 'es', diarizationEnabled: true, expectedSpeakers: 3, settings: null },
     })
   })
 })

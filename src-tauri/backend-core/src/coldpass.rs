@@ -390,6 +390,90 @@ fn notes_too_long() -> BackendError {
     BackendError::invalid_input(format!("Las notas admiten hasta {MAX_NOTES_CHARS} caracteres."))
 }
 
+/// The host a credential's website names: lowercase, without the scheme,
+/// user, port, path or a leading `www.`. `None` when nothing is left.
+pub fn site_host(website: &str) -> Option<String> {
+    let text = website.trim().to_lowercase();
+    let without_scheme = text.split_once("://").map_or(text.as_str(), |(_, rest)| rest);
+    let authority = without_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_and_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match host_and_port.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && port.chars().all(|character| character.is_ascii_digit()) => host,
+        _ => host_and_port,
+    };
+    let host = host.trim_end_matches('.');
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    (!host.is_empty() && !host.chars().any(char::is_whitespace)).then(|| host.to_string())
+}
+
+/// The host of a page the browser extension may fill or save for: HTTPS,
+/// or plain HTTP only on this computer, where nothing crosses the network.
+pub fn browser_page_host(page_url: &str) -> Option<String> {
+    let (scheme, _) = page_url.trim().split_once("://")?;
+    let host = site_host(page_url)?;
+    match scheme.to_ascii_lowercase().as_str() {
+        "https" => Some(host),
+        "http" if host == "localhost" || host == "127.0.0.1" => Some(host),
+        _ => None,
+    }
+}
+
+/// Whether a credential saved for `site` belongs on `page_host`: the same
+/// host, or a page under it («google.com» fills «accounts.google.com»).
+fn site_covers(site: &str, page_host: &str) -> bool {
+    site == page_host || (site.contains('.') && page_host.ends_with(&format!(".{site}")))
+}
+
+/// The credentials with a password that belong on the page, those saved
+/// for its exact host first and then the most recently changed.
+pub fn credentials_for_page<'a>(entries: &'a [ColdPassEntryDto], page_url: &str) -> Vec<&'a ColdPassEntryDto> {
+    let Some(page_host) = browser_page_host(page_url) else {
+        return Vec::new();
+    };
+    let mut matches: Vec<(bool, &ColdPassEntryDto)> = entries
+        .iter()
+        .filter(|entry| !entry.password.is_empty())
+        .filter_map(|entry| {
+            let site = site_host(&entry.website)?;
+            site_covers(&site, &page_host).then_some((site == page_host, entry))
+        })
+        .collect();
+    matches.sort_by(|(exact_a, a), (exact_b, b)| {
+        exact_b.cmp(exact_a).then(b.password_changed_at.unwrap_or(0).cmp(&a.password_changed_at.unwrap_or(0)))
+    });
+    matches.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Whether to offer saving a sign-in the person just used: the page can be
+/// saved for and no credential of it has that user yet.
+pub fn should_offer_saving(entries: &[ColdPassEntryDto], page_url: &str, username: &str, password: &str) -> bool {
+    if password.is_empty() || browser_page_host(page_url).is_none() {
+        return false;
+    }
+    let username = username.trim();
+    !credentials_for_page(entries, page_url)
+        .iter()
+        .any(|entry| entry.username.trim().eq_ignore_ascii_case(username))
+}
+
+/// The credential the browser extension saves for a page: named and dated
+/// by its host.
+pub fn browser_credential(page_url: &str, username: &str, password: &str) -> Result<ColdPassEntryDto, BackendError> {
+    let host = browser_page_host(page_url)
+        .ok_or_else(|| BackendError::invalid_input("Solo se guardan credenciales de páginas HTTPS."))?;
+    Ok(ColdPassEntryDto {
+        id: String::new(),
+        name: host.clone(),
+        website: host,
+        username: username.trim().to_string(),
+        secondary_username: String::new(),
+        password: password.to_string(),
+        notes: String::new(),
+        password_history: Vec::new(),
+        password_changed_at: None,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColdPassCsvImport {
@@ -759,6 +843,48 @@ mod tests {
         let legacy: PasswordOptions =
             serde_json::from_str(r#"{"length":16,"includeNumbers":true,"includeSpecialCharacters":false}"#).expect("options");
         assert!(legacy.include_uppercase && !legacy.avoid_ambiguous);
+    }
+
+    #[test]
+    fn site_hosts_drop_scheme_user_port_path_and_www() {
+        assert_eq!(site_host("https://ana@Accounts.Google.com:443/login?x=1").as_deref(), Some("accounts.google.com"));
+        assert_eq!(site_host("www.google.com.ar").as_deref(), Some("google.com.ar"));
+        assert_eq!(site_host("github.com/login").as_deref(), Some("github.com"));
+        assert_eq!(site_host("  "), None);
+        assert_eq!(site_host("mi banco"), None);
+        assert_eq!(browser_page_host("http://example.com/"), None, "plain HTTP outside this computer");
+        assert_eq!(browser_page_host("http://localhost:3000/").as_deref(), Some("localhost"));
+        assert_eq!(browser_page_host("chrome://settings"), None);
+    }
+
+    #[test]
+    fn a_page_gets_the_credentials_of_its_site_and_of_the_domains_above_it() {
+        let saved = |name: &str, website: &str, username: &str, changed: i64| ColdPassEntryDto {
+            username: username.into(),
+            website: website.into(),
+            password_changed_at: Some(changed),
+            ..entry(name, "secreta")
+        };
+        let entries = vec![
+            saved("Google", "www.google.com", "ana", 1),
+            saved("Cuentas", "https://accounts.google.com", "ana.trabajo", 2),
+            saved("Otro", "notgoogle.com", "eve", 3),
+            ColdPassEntryDto { website: "google.com".into(), ..entry("Sin contraseña", "") },
+        ];
+        let found = credentials_for_page(&entries, "https://accounts.google.com/signin");
+        let users: Vec<&str> = found.iter().map(|entry| entry.username.as_str()).collect();
+        assert_eq!(users, ["ana.trabajo", "ana"], "the exact host first, never a look-alike or an empty password");
+        assert!(credentials_for_page(&entries, "http://accounts.google.com/").is_empty());
+        assert!(credentials_for_page(&entries, "https://google.com.evil.io/").is_empty());
+
+        assert!(!should_offer_saving(&entries, "https://accounts.google.com/", "ANA", "otra"));
+        assert!(should_offer_saving(&entries, "https://accounts.google.com/", "nueva", "otra"));
+        assert!(should_offer_saving(&entries, "https://mercadopago.com.ar/", "ana", "x"));
+        assert!(!should_offer_saving(&entries, "https://mercadopago.com.ar/", "ana", ""));
+
+        let credential = browser_credential("https://www.mercadopago.com.ar/login", " ana ", "x").expect("credential");
+        assert_eq!((credential.name.as_str(), credential.website.as_str(), credential.username.as_str()), ("mercadopago.com.ar", "mercadopago.com.ar", "ana"));
+        assert!(browser_credential("http://mercadopago.com.ar/", "ana", "x").is_err());
     }
 
     #[test]

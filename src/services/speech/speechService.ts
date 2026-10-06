@@ -21,7 +21,7 @@ const SPEECH_STATE_EVENT = 'speech://state'
 const SPEECH_PARTIAL_EVENT = 'speech://partial'
 const SPEECH_SEGMENTS_EVENT = 'speech://segments'
 const SPEECH_LEVELS_EVENT = 'speech://levels'
-const FINALIZING_STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'assigning-turns']
+const FINALIZING_STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'assigning-turns', 'second-pass']
 const SPEECH_ERROR_CODES: SpeechErrorCode[] = [
   'permission-denied',
   'microphone-unavailable',
@@ -263,6 +263,48 @@ export function parseSpeechAudioInputStatus(value: unknown): SpeechAudioInputSta
     channels: value.channels,
     errorMessage: value.errorMessage,
   }
+}
+
+/** A microphone or output of this computer, as the backend lists it. */
+export interface AudioDevice {
+  name: string
+  isDefault: boolean
+  /** A voice changer, mixer or virtual cable: it processes the voice before Notia. */
+  isVirtual: boolean
+}
+
+/** The devices a recording may capture and the ones chosen (`null`: the default). */
+export interface AudioDevices {
+  supported: boolean
+  microphones: AudioDevice[]
+  outputs: AudioDevice[]
+  microphone: string | null
+  output: string | null
+}
+
+function parseAudioDevice(value: unknown): AudioDevice | null {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.isDefault === 'boolean' && typeof value.isVirtual === 'boolean'
+    ? { name: value.name, isDefault: value.isDefault, isVirtual: value.isVirtual }
+    : null
+}
+
+export function parseAudioDevices(value: unknown): AudioDevices {
+  if (!isRecord(value) || typeof value.supported !== 'boolean' || !Array.isArray(value.microphones) || !Array.isArray(value.outputs)) {
+    throw new Error('Respuesta de dispositivos de audio inválida.')
+  }
+  const list = (items: unknown[]) => items.map(parseAudioDevice).filter((device): device is AudioDevice => device !== null)
+  return {
+    supported: value.supported,
+    microphones: list(value.microphones),
+    outputs: list(value.outputs),
+    microphone: typeof value.microphone === 'string' ? value.microphone : null,
+    output: typeof value.output === 'string' ? value.output : null,
+  }
+}
+
+/** The microphones and outputs of this computer and the ones a recording captures. */
+export async function getAudioDevices(): Promise<AudioDevices> {
+  return parseAudioDevices(await callBackend<unknown>('speech_audio_devices'))
 }
 
 export async function probeSpeechAudioInput(): Promise<SpeechAudioInputStatus> {

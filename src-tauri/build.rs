@@ -165,11 +165,14 @@ fn validate_bundled_speech_models() {
         whisper.join("ggml-large-v3-turbo-q8_0.bin"),
         whisper.join("silero_vad.onnx"),
         models
-            .join("speaker-diarization-v1")
+            .join("speaker-diarization-v2")
             .join("segmentation.onnx"),
-        models.join("speaker-diarization-v1").join("embedding.onnx"),
+        models.join("speaker-diarization-v2").join("embedding.onnx"),
     ];
-    for path in required {
+    // Only Windows bundles Whisper large-v3: the final pass runs on its GPU.
+    let windows = std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() == Some(std::ffi::OsStr::new("windows"));
+    let final_pass = windows.then(|| models.join("whisper-large-v3").join("ggml-large-v3-q5_0.bin"));
+    for path in required.into_iter().chain(final_pass) {
         if !path.is_file() {
             panic!(
                 "missing bundled speech model: {}. Run scripts/install-speech.sh.",

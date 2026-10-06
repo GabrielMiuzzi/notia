@@ -5992,7 +5992,7 @@ ggml se compila con `GGML_BACKEND_DL`: cada backend es una biblioteca que el bri
 
 `whisper_runtime::runtime_path` resuelve `resources/whisper/runtime/windows-x86_64/notia_whisper.dll` (en debug, la del checkout) y `libnotia_whisper.so` en Android. Windows la carga por ruta absoluta normalizada con `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`: así sus dependencias salen de su carpeta y nunca de `PATH`, y esa búsqueda rechaza rutas con `..` o barras normales. `build.rs` copia las `.so` a `jniLibs` y falla si falta el runtime Android; `tauri.conf.json` empaqueta la carpeta de Windows. Los binarios no se versionan.
 
-Cada perfil de modelos se resuelve de forma independiente desde la primera carpeta que contiene todos sus archivos declarados: en debug, primero los recursos del checkout; después `app_data_dir/speech-models`, y por último los recursos empaquetados, contra los que se informan los archivos faltantes. Así, una instalación privada incompleta o de otro perfil no oculta un perfil empaquetado completo. El manifiesto declara el perfil `whisper-large-v3-turbo` (`whisperGgml`: `ggml-large-v3-turbo-q8_0.bin`, de 874 MB, y `silero_vad.onnx`), el único tipo de ASR que acepta `speech_model_repository`, y los modelos independientes de diarización. `build.rs` falla si faltan los archivos de Whisper o de la diarización; Whisper no se versiona en Git y se instala con `bash scripts/install-speech.sh`, que verifica los SHA-256 del manifiesto. Android empaqueta los dos archivos del perfil Whisper y la diarización, y los copia del APK a `app_data_dir/speech-models` la primera vez (ver «Meeting en Android y en un cliente del modo Host»). Las rutas, tamaños y SHA-256 se verifican antes de cargar. `tauri.conf.json` empaqueta solo las carpetas de los perfiles del manifiesto. En Android, antes de copiar un perfil, `remove_undeclared_profiles` borra las carpetas de `app_data_dir/speech-models` que el manifiesto no declara (no sigue enlaces y deja los archivos sueltos), así un modelo reemplazado no sigue ocupando espacio en el dispositivo; un fallo se registra con `log::error!` sin la ruta.
+Cada perfil de modelos se resuelve de forma independiente desde la primera carpeta que contiene todos sus archivos declarados: en debug, primero los recursos del checkout; después `app_data_dir/speech-models`, y por último los recursos empaquetados, contra los que se informan los archivos faltantes. Así, una instalación privada incompleta o de otro perfil no oculta un perfil empaquetado completo. El manifiesto declara el perfil `whisper-large-v3-turbo` (`whisperGgml`: `ggml-large-v3-turbo-q8_0.bin`, de 874 MB, y `silero_vad.onnx`), el único tipo de ASR que acepta `speech_model_repository`, el perfil opcional `whisper-large-v3` (`finalPass`: `ggml-large-v3-q5_0.bin`, solo en el EXE de Windows, para la segunda pasada de Meeting) y los modelos independientes de diarización (`speaker-diarization-v2`). `build.rs` falla si faltan los archivos de Whisper o de la diarización; Whisper no se versiona en Git y se instala con `bash scripts/install-speech.sh`, que verifica los SHA-256 del manifiesto. Android empaqueta los dos archivos del perfil Whisper y la diarización, y los copia del APK a `app_data_dir/speech-models` la primera vez (ver «Meeting en Android y en un cliente del modo Host»). Las rutas, tamaños y SHA-256 se verifican antes de cargar. `tauri.conf.json` empaqueta solo las carpetas de los perfiles del manifiesto. En Android, antes de copiar un perfil, `remove_undeclared_profiles` borra las carpetas de `app_data_dir/speech-models` que el manifiesto no declara (no sigue enlaces y deja los archivos sueltos), así un modelo reemplazado no sigue ocupando espacio en el dispositivo; un fallo se registra con `log::error!` sin la ruta.
 
 La preferencia de dispositivo `speechRecognition` es `{ enabled, language }`. `backend_core::device_preferences::normalize_device_preferences` lee la sección antigua `qwen3Asr` cuando `speechRecognition` no existe y descarta sus campos `model` y `device`; como el guardado normaliza el archivo completo, el siguiente `backend_save_device_preferences` escribe sólo `speechRecognition`. La migración desde el `localStorage` de versiones anteriores conserva la clave `notia:qwen3-asr:v1` únicamente para leerla y borrarla. `prepare_speech_model` recibe `{ language }` (`deny_unknown_fields`, por lo que rechaza los antiguos `model`/`device`) y `start_speech_session` recibe `{ language, diarizationEnabled, maxDurationSeconds, captureSystemAudio? }` (ignora campos extra). `speech_model_repository::resolve_asr_model(app, language)` devuelve la `WhisperAsrConfig` verificada (modelo, Silero VAD, hasta 6 threads e idioma).
 
@@ -6033,7 +6033,7 @@ Meeting solicita una sesión de hasta 12 horas mediante `maxDurationSeconds`. Du
 
 `MeetingView` reutiliza `useVoiceTranscription` y el contrato de sesiones de voz; la reunión en sí vive en Rust (ver «Meeting»). `speech_audio::PlatformAudioCapture::start(target, sources, meter)` abre las fuentes que resuelve `CaptureSources::resolve`: el micrófono con CPAL y, solo en Windows, el endpoint de render predeterminado con `AUDCLNT_STREAMFLAGS_LOOPBACK`. Con ambas, se convierten a mono de 16 kHz y se mezclan con ganancia limitada antes de entrar en la única cola acotada del reconocedor; con una sola, sus muestras pasan directo. Si el loopback falla con el micrófono activo, la captura sigue solo con el micrófono; si el audio de la computadora es la única fuente, el error se informa. Sin cola (`target = None`) la captura solo mide: es la prueba de audio. `CaptureMeter` guarda el pico RMS de cada fuente desde la última lectura y las muestras entregadas, que son la posición de la grabación sin pausas; `speech_levels::LevelReporter` lo lee cada 100 ms y emite `speech://levels`. El thread COM pertenece a la captura, se detiene y se une al destruir la sesión; pausa y cancelación afectan ambas fuentes.
 
-La diarización se ejecuta únicamente al finalizar la sesión, con ventanas acotadas cuando el audio supera 15 minutos y matching global de embeddings para conservar la identidad de los hablantes entre ventanas. `sherpa_diarization` usa segmentación pyannote, embeddings y clustering conservador (`threshold = 0.9`); cuando la sesión pide `expectedSpeakers` (2–10), fija `num_clusters` en cada ventana. Descarta activaciones menores a 500 ms y une pausas menores a 300 ms. Antes de asignar las líneas, `speaker_turns` deja los turnos sin audio compartido: la diarización marca el habla superpuesta para los dos hablantes y transcribirla dos veces repetía las palabras de quien seguía hablando (por ejemplo, un «sí» dicho encima de otra persona salía como turno propio con las palabras de la otra). La superposición queda en el turno que empezó primero, un resto de menos de 250 ms se descarta y los segmentos de un hablante separados por menos de 500 ms se unen. Los handles son RAII. Mientras procesa emite `finalizing` con `progress` y `stage` y, entre ventanas y líneas, comprueba si la persona pidió omitir la separación (`skip_speech_diarization`). Si la diarización falla o se omite, se conserva el ASR sin etiquetas.
+La diarización se ejecuta únicamente al finalizar la sesión, con ventanas acotadas cuando el audio supera 15 minutos y matching global de embeddings para conservar la identidad de los hablantes entre ventanas. `sherpa_diarization` corta el audio con la segmentación pyannote de sherpa-onnx y `speaker_clustering` agrupa los embeddings TitaNet de los tramos; cuando la sesión pide `expectedSpeakers` (2–10), cada ventana termina con esa cantidad (ver «Separación nueva, segunda pasada, repaso con IA y reuniones anteriores»). Descarta activaciones menores a 500 ms y une pausas menores a 300 ms. Antes de asignar las líneas, `speaker_turns` deja los turnos sin audio compartido: la diarización marca el habla superpuesta para los dos hablantes y transcribirla dos veces repetía las palabras de quien seguía hablando (por ejemplo, un «sí» dicho encima de otra persona salía como turno propio con las palabras de la otra). La superposición queda en el turno que empezó primero, un resto de menos de 250 ms se descarta y los segmentos de un hablante separados por menos de 500 ms se unen. Los handles son RAII. Mientras procesa emite `finalizing` con `progress` y `stage` y, entre ventanas y líneas, comprueba si la persona pidió omitir la separación (`skip_speech_diarization`). Si la diarización falla o se omite, se conserva el ASR sin etiquetas.
 
 El idioma configurado se valida y normaliza en Rust. Whisper transcribe en su subtag primario; con `auto` lo detecta en cada decodificación.
 
@@ -6130,8 +6130,8 @@ flowchart LR
 1. **Lista para grabar.** El hook prepara Whisper como antes. Las fuentes se eligen con interruptores; el audio de la computadora solo se ofrece si `get_speech_capabilities` informa `systemAudioSupported` (Windows). «Probar audio» llama a `start_audio_monitor { microphone, system }`: abre las fuentes sin cola de reconocimiento, solo para medir, y emite `speech://levels` con el `monitorId`. La prueba se cierra con `stop_audio_monitor`, al empezar una grabación, al cambiar una fuente, al desmontar la vista o sola a los 120 s. En Android pide el permiso del micrófono porque parte de una acción de la persona. Las opciones son el idioma (la misma preferencia `speechRecognition.language` de Configuraciones), la cantidad de hablantes (`expectedSpeakers`, automática por defecto) y la carpeta de la nota (`Meetings` por defecto, o una carpeta de `library_list_folders`). `Ctrl + Shift + R` inicia la grabación mientras la vista está lista.
 2. **Grabando.** `start_speech_session` recibe `captureMicrophone`, `captureSystemAudio`, `expectedSpeakers` y `meeting: { liveAnswers, settings }`. La sesión emite niveles cada 100 ms. Cada línea confirmada trae `RecognitionUpdate.span` (muestras de la sesión que abarcan los segmentos VAD confirmados) y `on_line` guarda la línea con su minuto real sin pausas. «Marcar momento» (`meeting_add_mark`) usa la posición de `CaptureMeter` (muestras entregadas) y rotula el momento con las primeras palabras de la última línea. Las notas rápidas se guardan con `meeting_set_notes` 600 ms después de dejar de escribir y al desmontar.
 3. **Respuestas en vivo.** Arrancan apagadas porque envían la transcripción reciente (hasta ~6000 caracteres) al proveedor de IA configurado. Con el interruptor (`meeting_set_live_answers`), cada línea con pregunta crea una respuesta y un thread la genera con `ai_tasks::stream_complete`; el texto se emite como `meeting://answer` como mucho cada 80 ms. Hay una sola respuesta en curso: una pregunta que llega mientras tanto queda en cola y reemplaza a la que ya esperaba. «Más corta» y «Reintentar» usan `meeting_regenerate_answer`, «Fijar a la nota» usa `meeting_pin_answer`, «Copiar» usa el portapapeles del WebView. Una pregunta repetida no se vuelve a responder y se conservan hasta 50 respuestas, empezando a descartar por las más viejas no fijadas.
-4. **Separando hablantes.** `stop_speech_session` emite `finalizing` con `stage: "transcribing"`. La diarización emite `progress` (0–1) y `stage` (`detecting-speakers`, `assigning-turns`) por ventana de 15 minutos y por turno transcripto, como mucho una vez por punto porcentual. «Cancelar separación» llama a `skip_speech_diarization`; la diarización lo comprueba entre ventanas y turnos y la sesión termina con el texto sin etiquetas. Sin hablantes, `MeetingRecord::complete` usa las líneas en vivo como segmentos para conservar el minuto de cada frase.
-5. **Finalizada.** Los hablantes se nombran «Hablante N» por orden de aparición; `meeting_rename_speaker` (1–60 caracteres en una línea) y `meeting_merge_speakers` (el origen pasa al destino, que conserva su nombre) actualizan turnos, estadísticas, contexto y nota. La búsqueda (250 ms después de escribir) y el filtro por hablante viajan en `meeting_snapshot { filter }`. «Pasar por IA» (`meeting_generate_insights`) corrige primero, si se pidió, en lotes de ~6000 caracteres con ids `S1…` y descarta correcciones con menos de la mitad o más de 1,6 veces el largo original; después pide resumen, puntos clave y tareas en un solo JSON. Las tareas se envían con `meeting_send_tasks` a un tablero de `meeting_task_boards`: se crean pendientes en el primer grupo del tablero, como el Owner, y quedan marcadas como enviadas. «Preguntale a la reunión» usa el turno `meeting` del motor de chat con `contextText`, y el prompt de ese turno pide citar el minuto. Sus sugerencias son `suggestedQuestions`: las tres primeras preguntas distintas de hasta 60 caracteres que detecta `detect_questions`, cada una con `atMs`, el inicio del segmento (o de la línea en vivo, si no hay segmentos) que la formula; la vista las lista como tarjetas con ese minuto y, al tocarlas, las pregunta. El chat lateral de Meeting pide ese mismo contexto con `meeting_context` al enviar cada pregunta, así que incluye las líneas de una grabación en curso sin que el texto viaje con cada línea.
+4. **Separando hablantes.** `stop_speech_session` emite `finalizing` con `stage: "transcribing"`. La diarización emite `progress` (0–1) y `stage` (`detecting-speakers`, y después `second-pass` con la segunda pasada o `assigning-turns` sin ella) por ventana de 15 minutos y por bloque o línea, como mucho una vez por punto porcentual. «Cancelar separación» llama a `skip_speech_diarization`; la diarización lo comprueba entre ventanas y turnos y la sesión termina con el texto sin etiquetas. Sin hablantes, `MeetingRecord::complete` usa las líneas en vivo como segmentos para conservar el minuto de cada frase.
+5. **Finalizada.** Los hablantes se nombran «Hablante N» por orden de aparición, y el repaso con IA puede nombrarlos por la conversación; `meeting_rename_speaker` (1–60 caracteres en una línea) y `meeting_merge_speakers` (el origen pasa al destino, que conserva su nombre) actualizan turnos, estadísticas, contexto y nota. La búsqueda (250 ms después de escribir) y el filtro por hablante viajan en `meeting_snapshot { filter }`. «Pasar por IA» (`meeting_generate_insights`) corrige primero, si se pidió, en lotes de ~6000 caracteres con ids `S1…` y descarta correcciones con menos de la mitad o más de 1,6 veces el largo original; después pide resumen, puntos clave y tareas en un solo JSON. Las tareas se envían con `meeting_send_tasks` a un tablero de `meeting_task_boards`: se crean pendientes en el primer grupo del tablero, como el Owner, y quedan marcadas como enviadas. «Preguntale a la reunión» usa el turno `meeting` del motor de chat con `contextText`, y el prompt de ese turno pide citar el minuto. Sus sugerencias son `suggestedQuestions`: las tres primeras preguntas distintas de hasta 60 caracteres que detecta `detect_questions`, cada una con `atMs`, el inicio del segmento (o de la línea en vivo, si no hay segmentos) que la formula; la vista las lista como tarjetas con ese minuto y, al tocarlas, las pregunta. El chat lateral de Meeting pide ese mismo contexto con `meeting_context` al enviar cada pregunta, así que incluye las líneas de una grabación en curso sin que el texto viaje con cada línea.
 6. **Guardar y exportar.** `meeting_save_note { meetingId, libraryId, folder }` compone la nota con `ensure_markdown_defaults` (frontmatter habitual con `createdAt` del inicio de la reunión) y la crea con `Documents::write`, que crea las carpetas faltantes en escritorio y la ruta completa por SAF en Android. Si el nombre existe, prueba `… (2).md` hasta 50 veces. Guardar de nuevo en la misma carpeta sobrescribe la nota solo si su revisión no cambió; si la persona la editó, responde un conflicto y no la pisa. `meeting_export { …, format: "pdf" | "docx" }` guarda la nota y la exporta junto a ella con `export_library_document`. Ambos devuelven la ruta visible del explorador, reindexan la biblioteca y la interfaz avisa al árbol. «Nueva grabación» (`meeting_discard`) solo descarta una reunión terminada.
 
 ### Contratos
@@ -6394,6 +6394,70 @@ El chat lateral ya no recibe la transcripción con cada línea. `meetingTranscri
 - Linux (WSL, `--no-default-features`): `check` sin errores (146 warnings, sin cambios); tests de `notia-app` 286 (los del filtro pasaron a `backend-core` y los nuevos de la separación solo compilan en Windows y Android) y `backend-core` 289.
 - Vitest 270 (nuevo: `keepNewerLines`; el del contexto del chat cambió a reunión y disponibilidad), `tsc` de `tsconfig.app.json` y `tsconfig.node.json`, ESLint de los archivos tocados.
 - Pendiente de prueba manual: tiempo de «Separando hablantes» en una reunión real de más de una hora frente al anterior; hablantes correctos en líneas con cambio de hablante; una reunión de más de 15 minutos para ver el corte de ventana; el chat lateral preguntando durante la grabación; el dictado desde el navegador; y lo mismo en Android.
+
+### Separación nueva, segunda pasada, repaso con IA y reuniones anteriores (2026-10-05)
+
+La separación de hablantes «funcionaba muy mal»: con sherpa-onnx agrupando las voces (ERes2Net chino, umbral 0,9), las conversaciones de prueba tenían alrededor del 20 % del tiempo con el hablante equivocado y hablantes de más. La persona pidió además una doble pasada al terminar (como WhisperX, dentro de Notia y con Whisper large-v3 en Windows), un repaso con IA de la transcripción y de los nombres, y el historial de reuniones del lienzo de Meeting.
+
+#### Separación en dos etapas
+
+```mermaid
+flowchart LR
+    Audio[Ventana de ~15 min] --> Cut[sherpa-onnx: pyannote segmentation-3.0, umbral 0,5]
+    Cut --> Pieces[Tramos sin cambio de voz]
+    Pieces --> Emb[TitaNet small: un embedding por tramo]
+    Emb --> Cluster[speaker_clustering]
+    Cluster --> Labels[Hablante de cada tramo]
+```
+
+- `sherpa_diarization::process` usa la diarización de sherpa-onnx solo para cortar (`cut_pieces`, umbral bajo para no unir nunca dos voces en un tramo) y descarta sus etiquetas.
+- `SpeakerEmbeddingExtractor::embed` saca el embedding de cada tramo con NeMo TitaNet small (perfil `speaker-diarization-v2`; `segmentation.onnx` pasó de la v1 y `embedding.onnx` es `nemo_en_titanet_small`).
+- `backend-core::speaker_clustering::cluster_speakers` agrupa por enlace promedio con distancia coseno 0,5 (`DIARIZATION_CLUSTERING_THRESHOLD`). Con la cantidad de hablantes elegida, baja el umbral de a 0,05 hasta 0,1 y después une hasta esa cantidad. Un grupo con menos del 10 % del habla (entre 2 y 12 s) se suma al grupo grande más cercano, y un tramo de menos de 1 s toma el hablante del tramo más cercano en el tiempo.
+- En las conversaciones de prueba (clips MLS en español, 2, 3, 4 y 6 hablantes, con códec de llamada y niveles distintos) encontró la cantidad exacta de hablantes en las cuatro, con 0,6–1,7 % de confusión (antes, ~20 % y hablantes de más). El embedding WeSpeaker de WhisperX separó peor que TitaNet en español.
+
+#### Segunda pasada con large-v3 (Windows con GPU)
+
+- Perfil opcional `whisper-large-v3` del manifiesto (`finalPass`: `ggml-large-v3-q5_0.bin`, 1,08 GB). Lo empaqueta solo el EXE (`tauri.conf.json`); `build.rs` lo exige solo al compilar para Windows, y `install-speech.sh` lo descarga. `resolve_final_pass_model` lo devuelve verificado; sin él no hay segunda pasada.
+- El bridge de whisper.cpp suma `notia_whisper_transcribe_timed` (una línea `inicio\tfin\ttexto` por token, en centésimas) y `notia_whisper_load_aligned`, que carga el modelo con las cabezas de alineación DTW de large-v3 (sin flash attention, que whisper.cpp no combina con DTW). `WhisperEngine::load_aligned` y `transcribe_timed` las usan; un bridge viejo sin la función deja el motor sin tiempos y no hay segunda pasada.
+- `WhisperFinalPass` (en `whisper_recognizer`) decodifica bloques de hasta 28 s armados por `final_pass_blocks`: las líneas en vivo con 200 ms de margen, juntas mientras la pausa entre ellas sea de hasta 3 s; un bloque más largo se corta en sus tramos más silenciosos. Cada bloque va con el mismo nivel y el mismo prompt de estilo que el texto en vivo, beam 5 y el final del texto anterior como contexto.
+- `backend-core::timed_transcript` arma las palabras con sus bytes juntos (un acento puede quedar partido entre dos tokens). Cada palabra empieza en su primera letra, porque Whisper ubica un «—», «¡» o «¿» inicial al final de la frase anterior, y termina donde empieza la siguiente. `words_by_span` le da cada palabra a la línea en vivo que contiene su inicio (o a la más cercana).
+- `final_pass_chunk` reemplaza el texto de cada línea por sus palabras. El hablante sigue saliendo de `line_pieces`: una línea con un solo hablante queda entera, y una que cruza un cambio de hablante se parte en la primera palabra dicha después del cambio, sin volver a transcribir. Una línea que recibió menos de la mitad de sus palabras en vivo conserva su texto en vivo, porque Whisper a veces saltea una oración entera de un bloque.
+- Primero se probó darle a cada palabra el hablante del turno de diarización que contenía su tiempo. Con los tiempos del decodificador, la última palabra antes de una pausa se estiraba hasta la voz siguiente, y con DTW seguía por debajo de las líneas en vivo (94–97 % de las palabras con su hablante, contra 95–99 %). Los cortes por pausa de Silero VAD separan mejor a los hablantes, por eso el texto nuevo entra en las líneas.
+- Resultados con `final_pass_probe_recordings` (RTX 4070 SUPER):
+  - Hablante correcto por palabra en las conversaciones de prueba: 98,6 / 95,5 / 97,4 / 96,0 %, contra 98,7 / 95,5 / 97,1 / 96,1 % de las líneas en vivo.
+  - Palabras erradas en las reuniones FLEURS: 2,6 % en total (2,5 / 2,8 / 2,5 / 2,5 %), contra 3,1 % del texto en vivo.
+  - Una segunda pasada con large-v3-turbo daba 3,4 %, peor que el texto en vivo, por eso no se usa.
+  - Tarda 23–30 s por cada 7–10 minutos de audio.
+- `diarize_recorded_audio` carga la segunda pasada una vez por grabación (`load_final_pass`) y la usa en cada ventana. En la CPU (la tablet), sin el modelo o si falla, cada ventana sigue con `attribute_lines`.
+- La etapa nueva es `second-pass` («Segunda pasada por palabra»), en lugar de `assigning-turns`, y avanza por bloque.
+
+#### Repaso con IA
+
+`meeting::on_completed` lanza `spawn_review` cuando la reunión tiene hablantes y una IA configurada. La sesión desde archivo ahora también recibe `settings` (`meeting_start_file_session`). El repaso corre en su hilo, toma el mismo candado que «Pasar por IA» (`generating`) para que nunca editen la transcripción a la vez, y deja su estado en `MeetingRecord::review` (`stage`: `cleanup`/`names`, `cleaned`, `named`, `error`), que viaja en el snapshot.
+
+1. **Orden** (`cleanup_batches`, `apply_cleanup`). Lotes de ~6000 caracteres con `S1 [Hablante 1]: …`. El prompt pide corregir palabras mal oídas por el contexto, quitar muletillas, repeticiones y arranques en falso, y ordenar cada intervención como un párrafo, sin unir ni dividir intervenciones ni cambiar quién habla. Un texto vacío borra el segmento solo si tenía hasta 6 palabras. Una versión con menos de un cuarto del largo o más de un tercio extra se descarta como reescritura, y un hablante sin segmentos desaparece.
+2. **Nombres** (`naming_request`, `parse_speaker_names`, `apply_speaker_names`). Hasta 40.000 caracteres de turnos con `[mm:ss] Hablante N (speaker-N)`. Solo se nombra con evidencia clara: alguien se presenta, le dan la palabra por su nombre y habla a continuación, o le responden por su nombre. Solo cambia a los hablantes que siguen con el nombre «Hablante N» de Notia, así que nunca pisa un nombre puesto por la persona ni uno de Teams, y no repite nombres.
+
+La vista muestra `MeetingReviewNotice` arriba de la reunión finalizada (en curso, hecho o error), y «Generar» espera («Esperando el repaso…»). Un paso que falla deja el error y la transcripción como estaba.
+
+#### Reuniones anteriores
+
+La persona eligió listar solo las reuniones guardadas como nota.
+
+- `write_note_here` escribe, junto a la nota, `.notia/meetings/<id>.json` con un `MeetingArchive` (`version` 1, el `MeetingRecord` completo con su `savedNote` y el `aiContext`). Un cliente lo manda al host en `meeting_store_note { archive }`. Si el archivo no se puede escribir, la nota igual queda guardada y el error se registra.
+- `meeting_history { libraryId, query }` lee los archivos de la carpeta y se queda con los que todavía tienen su nota. Busca la consulta en el título y en la transcripción, y los ordena del más nuevo al más viejo.
+- Cada fila trae su grupo (`HOY`, `AYER`, `ESTA SEMANA` o el mes, con el año si no es el actual, solo en la primera del grupo) y su hora (`10:15`, `Lun` o `28 sep`), calculados en la hora local. También trae la duración, la cantidad de hablantes, las tareas sin mandar al Task Manager (de «Pasar por IA» y de Notas IA) y el contexto: la carpeta, o un único contexto con su color.
+- `meeting_open_saved { libraryId, meetingId }` carga el archivo como la reunión actual con `MeetingRecord::reopened` (finalizada, sin pasadas ni respuestas en curso). Se niega si hay una grabación o una separación en marcha. Un cliente lee el archivo del host con `meeting_saved_archive`. `meeting_history` y `meeting_saved_archive` son `HOST_CLIENT_COMMANDS`.
+- En el escritorio, `MeetingHistoryPanel` es la columna derecha de 300 px de «Lista para grabar» y «Subir audio o video», y pasa abajo cuando la vista mide menos de 960 px. En el celular, el reloj de la barra abre `MeetingPhoneHistory` (tablero M0), con búsqueda y el botón flotante «Nueva reunión». La búsqueda espera 250 ms.
+
+#### Validación
+
+- `cargo test -p notia-backend-core`: 535 aprobados, 4 ignorados. Nuevos: clustering (dos voces, grupo suelto, tramos cortos, cantidad conocida, grabación corta, nada para comparar), palabras con acento partido, signo inicial y su línea, orden y nombres del repaso, y el archivo de una reunión guardada.
+- `cargo test -p notia-app --features bluetooth`: 490 aprobados, 10 ignorados (las sondas nativas, entre ellas la nueva `final_pass_probe_recordings`). Nuevos: bloques de la segunda pasada, grupos y horas del historial, y la etiqueta del contexto.
+- `cargo check --target aarch64-linux-android`: sin errores, 58 advertencias (antes 59); escritorio con `--tests`, 35.
+- Vitest 570 (nuevos: etapa `second-pass`, aviso del repaso, historial en escritorio y celular), `tsc -p tsconfig.app.json` y ESLint de Meeting, limpios.
+- Runtime de whisper.cpp recompilado para Windows (Vulkan) y Android (NDK 30) con las dos funciones nuevas.
+- Pendiente de prueba manual: una reunión real en Windows con GPU (tiempo de la segunda pasada en una hora de audio, memoria de video con turbo y large-v3 cargados a la vez), el repaso con el proveedor de IA real, los nombres en una reunión donde se presentan, el historial con un cliente del modo Host, y la tablet (que sigue sin segunda pasada).
 
 ### Ancho y responsive
 
@@ -11315,3 +11379,128 @@ El canvas «ColdPass — Gestor de contraseñas» (https://claude.ai/artifact/Lg
 **Validado.** Prueba nueva `finance::tests::a_service_occurrence_is_saved_and_replaced_keeping_its_creation`: corre la sentencia dos veces contra el esquema migrado en memoria y comprueba el importe nuevo, el `created_at` original y el `updated_at` nuevo. Un barrido de todos los `INSERT … VALUES` de `app` y `backend-core` no encontró otro desajuste de columnas.
 
 **Pendiente.** Recompilar la app que hace de host y volver a pedirle al agente las ocurrencias de octubre de AMP2008, Movistar y SANPAS30.
+
+## ColdPass: extensión de Chrome (2026-10-05)
+
+**Qué es.** `chrome-ext/coldpass/` es una extensión Manifest V3 sin paso de build: `manifest.json`, `background.js` (service worker), `content.js`, `popup.html`/`popup.js`/`popup.css` e `icons/`. Habla solo con el servidor del **modo Host** de Notia en esta computadora. Las reglas (qué credenciales van en qué página, cuándo ofrecer guardar, la generación y el guardado) están en Rust; la extensión dibuja y manda intención.
+
+**Rutas** (`app/src/server/api/browser.rs`, submódulo de `api.rs`; solo con `ServerKind::Host`, todas `POST`):
+- `/api/browser/login` `{ username, password }`: `app_auth::host_sign_in` (Owner, con cooldown) y luego abre el vault de la biblioteca servida → `{ token, library }`. Límite de 10 por minuto por dirección.
+- `/api/browser/logout`, `/api/browser/status`.
+- `/api/browser/credentials` `{ pageUrl }` → `{ credentials: [{ id, name, username, password }] }`.
+- `/api/browser/offer` `{ pageUrl, username, password }` → `{ offer }`.
+- `/api/browser/save` `{ pageUrl, username, password }`.
+- `/api/browser/generate` → `{ password }`.
+
+Cada pedido exige `Origin: chrome-extension://…`, que una página web no puede mandar, y todos menos el login llevan `Authorization: Bearer <token>`. No se usan cookies, porque las comparten todas las extensiones del navegador. Límite de 600 pedidos por minuto por sesión.
+
+**Transporte.** Chrome no deja que una extensión llegue a un HTTPS con certificado propio: se probó aceptar el certificado del host en una pestaña y el service worker igual no conectaba. Por eso `serve_connection` atiende en **HTTP plano** las rutas `/api/browser/*` cuando la conexión viene de loopback (`peer_addr().ip().is_loopback()`), en el mismo puerto del host. Ese tráfico no sale de la máquina. Cualquier otra ruta en HTTP plano, y todo lo que llega desde la red, sigue redirigiéndose a HTTPS (`http::http_redirect`, separado de `serve_http_redirect`). La extensión usa `http://127.0.0.1:<puerto>` y solo pide permiso de host para `http://127.0.0.1/*`.
+
+**Sesión del vault** (`app/src/coldpass/browser.rs`, `BrowserVaults`, campo de `ApiServer`):
+- Guarda por token la biblioteca y una copia de la clave del vault, aparte del desbloqueo de la ventana: bloquear ColdPass en Notia no bloquea el navegador.
+- Termina con `logout`, a las 12 h sin uso, cuando cambia la contraseña del Owner (`close_all`) o al cerrar Notia. La extensión la renueva cada 30 min con `chrome.alarms` mientras Chrome está abierto, y guarda el token en `chrome.storage.session`, que Chrome borra al cerrarse.
+- `with_entries` toma el lock de `ColdPassState`. Si la ventana tiene el vault desbloqueado con la misma clave, usa y actualiza su copia (todas las escrituras pasan por ella); si no, lee el archivo. Así un guardado del navegador y uno de la ventana no se pisan.
+- Un vault en el formato anterior (passkey propia) pide abrirlo una vez en Notia.
+
+**Reglas** (`backend-core/src/coldpass.rs`):
+- `site_host` normaliza el sitio: minúsculas, sin esquema, usuario, puerto, ruta ni `www.`.
+- `browser_page_host` acepta páginas HTTPS, o HTTP solo en `localhost` y `127.0.0.1`.
+- `credentials_for_page` devuelve las del mismo host o de un dominio padre con punto (`google.com` sirve en `accounts.google.com`; `google.com.evil.io` no). Primero las exactas y luego la más reciente; deja afuera las que no tienen contraseña.
+- `should_offer_saving` ofrece guardar si ninguna credencial de la página tiene ese usuario.
+- `browser_credential` arma la credencial con el host como nombre y sitio.
+
+**Extensión:**
+- `background.js` es lo único que habla con Notia. Toma la página de `sender.url` (lo que Chrome informa del frame), nunca de lo que dice el content script. Distingue las páginas propias (`chrome.runtime.getURL('')`) de los content scripts. Guarda por pestaña, en `storage.session`, la oferta pendiente (3 min) y el usuario de un primer paso sin contraseña (5 min), para inicios de sesión en dos pasos.
+- `content.js` corre en `https://*/*` y `http://localhost|127.0.0.1/*`, en todos los frames.
+  - **Detección**: campos de contraseña visibles y su campo de usuario: `autocomplete=username|email`, o el último texto, email o teléfono anterior.
+  - **Autocompletado**: llena una sola vez, y solo campos vacíos, de formularios de ingreso. Se saltean `new-password` y los formularios con más de un campo de contraseña.
+  - **Menú**: con las credenciales y **Generar contraseña** al tocar o enfocar el campo.
+  - **Captura**: `submit`, botones de envío o con texto de ingreso, y Enter.
+  - **Tarjeta**: «¿Guardar en ColdPass?» en el frame superior. Todo lo que dibuja va en un shadow root cerrado.
+
+**Validado:**
+- `cargo test`:
+  - backend-core: `site_hosts_drop_scheme_user_port_path_and_www` y `a_page_gets_the_credentials_of_its_site_and_of_the_domains_above_it`;
+  - notia-app: `the_browser_vault_saves_through_the_window_and_outlives_its_lock` y `the_extension_signs_in_fills_offers_saves_and_generates`.
+- Prueba de punta a punta con Chrome 154 headless: extensión cargada con `Extensions.loadUnpacked` por la tubería de DevTools (Chrome 137+ ignora `--load-extension`) contra un host real servido por la prueba ignorada `serves_a_host_for_the_extension_probe`. Pasaron 12 de 12 chequeos: desbloqueo, autocompletado, menú, generación con confirmación, oferta, guardado, las dos credenciales en el menú y sin oferta para una conocida.
+
+**Pendiente:**
+- Probarla en el Chrome de uso diario con el vault real y sitios reales (formularios en iframes, inicios en dos pasos, SPA).
+- Nada crea la carpeta `ColdPass/` de una biblioteca, y `upsert_text_locator` solo crea carpetas cuando la escritura falla con `NotFound`. Las pruebas la crean a mano: el primer desbloqueo de una biblioteca sin esa carpeta probablemente falle. Es un problema anterior a la extensión.
+
+## Meeting: hablantes de Microsoft Teams con la extensión NotIA (2026-10-05)
+
+**Qué es.** `chrome-ext/notia/` es una segunda extensión Manifest V3, sin build. En una llamada de Teams para la web informa quién habla a la grabación de Meeting en curso. La de ColdPass pasó a `chrome-ext/coldpass/`.
+
+**Rutas** (`app/src/server/api/meeting_call.rs`; solo con `ServerKind::Host`, todas `POST`, también en HTTP plano desde loopback como las de ColdPass):
+- `/api/meeting-call/login` `{ username, password }`: `host_sign_in` del Owner → `{ token, library }`.
+- `/api/meeting-call/logout`.
+- `/api/meeting-call/status` → `{ recording, meetingId?, title? }`.
+- `/api/meeting-call/speech` `{ meetingId, speech: [{ name, startedAt, endedAt }] }` (Unix ms) → `{ recording }`. Admite hasta 200 intervalos por pedido; si esa reunión ya no se graba, responde `recording: false` sin error.
+
+Las reglas comunes a las dos extensiones están en `api/extension.rs`: `origin_is_extension`, `bearer` y `ExtensionSessions`, que son tokens con 12 h sin uso y se cierran al cambiar la contraseña del Owner. `browser.rs` ahora las usa.
+
+**En la app** (`app/src/meeting.rs`):
+- `live_meeting` devuelve la reunión con estado `Live`.
+- `add_call_speech` pasa cada momento al reloj de la grabación con `recording_span`: posición actual de la sesión de voz (`session_position_ms`) menos cuánto hace que ocurrió. Un momento futuro cuenta como ahora y lo anterior al inicio queda afuera. Cuando aparece un nombre nuevo emite `meeting://changed`.
+- Bajo `cfg(test)`, `meeting::probe` simula una grabación sin audio para la prueba con Chrome.
+
+**En el núcleo** (`backend-core/src/meeting.rs`):
+- `MeetingRecord.call_speech: Vec<CallSpeech { name, start_ms, end_ms }>`.
+- `add_call_speech` solo funciona en `Live`. Valida el nombre (1 a 60 caracteres, una línea) y une el intervalo al último de esa persona si se superpone o está a menos de 1,5 s, porque la extensión lo reenvía mientras la persona sigue hablando. El tope es de 20 000 intervalos.
+- `MeetingLine.speaker` sale de `call_speaker_between`: el nombre con más solapamiento. Se calcula al llegar la frase (evento `meeting://line`) y de nuevo en cada snapshot, con lo que se sepa en ese momento.
+- `context_text`, `recent_lines` y la nota sin turnos llevan el nombre.
+- Al completar: con diarización, `name_speakers_from_call` le da a cada hablante el nombre que cubre más de su tiempo, si llega al 40 %. Sin diarización, `speakers_from_call` asigna los segmentos a hablantes `call-N`, uno por nombre.
+
+**Interfaz.** `MeetingLine.speaker` (TS) y `LiveLines` muestran el nombre arriba de la frase (`.notia-meeting-live-speaker`).
+
+**Extensión:**
+- `content.js` corre en `teams.microsoft.com`, `teams.live.com` y `teams.cloud.microsoft`, en todos los frames. Todos los selectores de Teams están en el bloque `TEAMS`, que se puede ajustar.
+  - **Fuente 1, subtítulos en directo**: `[data-tid="closed-caption-v2-window-wrapper"]` (y los contenedores del Teams clásico), con entradas `.fui-ChatMessageCompact` que tienen `[data-tid="author"]` y `[data-tid="closed-caption-text"]`. Cada cambio de texto de una entrada cuenta como habla de su autor, con 1,2 s de retraso descontado.
+  - **Fuente 2, contorno de las tarjetas**: `[data-tid="voice-level-stream-outline"]` dentro de `[data-cid="calling-participant-stream"]`, tomando el nombre del tile o de su `aria-label`. Si todas las tarjetas parecen hablar durante 5 s, la fuente se descarta. Cuando aparecen subtítulos, reemplazan a las tarjetas.
+  - Cada segundo manda los intervalos que crecieron y cierra los que llevan 3 s sin habla.
+- `background.js` guarda el token en `storage.session`, consulta el estado cada 5 s mientras hay habla y reintenta con la reunión nueva si la anterior terminó. Renueva la sesión cada 30 min con `chrome.alarms`.
+
+**Validado:**
+- `cargo test`:
+  - backend-core: `call_speech_names_the_live_lines_and_joins_while_the_person_talks` y `separated_speakers_take_the_name_that_covers_most_of_their_talk`;
+  - notia-app: `call_moments_land_on_the_recording_clock` y `the_call_extension_signs_in_and_learns_whether_a_recording_runs`.
+- vitest: `LiveLines` muestra el nombre.
+- Prueba de punta a punta en Chrome 154 headless (`Extensions.loadUnpacked`) contra un host real con una grabación simulada (`serves_a_recording_host_for_the_call_probe`). Una página falsa servida en lugar de `teams.microsoft.com` (DevTools `Fetch`) reproduce subtítulos de Ana, Beto y Ana. Pasaron 4 de 4 chequeos y la grabación recibió los tres turnos en orden y con nombre: Ana 6,2–8,3 s, Beto 9,9–12,3 s y Ana 13,3–14,5 s.
+- La extensión de ColdPass, desde su carpeta nueva, volvió a pasar 12 de 12.
+
+**Pendiente:**
+- Probarla en una llamada real de Teams: los selectores del DOM de Teams no se pudieron verificar contra el Teams actual, solo contra la página falsa. Si no detecta a nadie, hay que ajustar el bloque `TEAMS` con el HTML real de los subtítulos o de las tarjetas.
+- Probar una grabación real con separación de hablantes.
+
+## Meeting: precisión de la transcripción en vivo y elección de dispositivos (2026-10-05)
+
+**Reporte.** En Windows, con una RTX 4070 SUPER, la transcripción en vivo tenía poca precisión: palabras mal oídas y texto inventado. La grabación fue con micrófono y audio de la computadora, usando auriculares.
+
+**Medición del reconocedor.** Se armaron cuatro reuniones de unos 7 minutos con 36 oraciones de FLEURS `es_419` (español latinoamericano, voces distintas), usando `scratchpad/asr/build_meetings.py`:
+- **A**: oraciones limpias separadas por 1 s.
+- **B**: códec de llamada Opus 24 kbps a niveles dispares (−30 a −18 dBFS), pausas de 0,7 s dentro de las oraciones largas, turnos a 0,4–2 s, ruido de fondo del micrófono de auriculares a −58 dBFS y ruidos entre turnos (teclado, respiración, silla), mezclado como Notia (0,72 cada fuente).
+- **C**: B sin los ruidos.
+- **D**: A con los ruidos.
+
+Pasaron por `whisper_recognizer::native_smoke_tests::transcribes_probe_recordings`, con Whisper en la GPU, Silero y lotes de 200 ms. El WER fue de 3,1 % (A), 3,1 % (B), 3,3 % (C) y 3,1 % (D), sin ningún tramo inventado de 4 o más palabras. El reconocedor y su segmentación aguantan códec, pausas, ruido y mezcla.
+
+**Causa en el equipo.**
+- El micrófono predeterminado de Windows era «Micrófono (Voicemod)», el micrófono virtual de un modificador de voz. Notia siempre abría el predeterminado, así que la voz llegaba procesada.
+- La salida predeterminada era un auricular Logitech G935 en 7.1 (8 canales). `StreamResampler` promediaba los 8 canales por igual: la voz de una llamada, que está en el par frontal, bajaba 12 dB y se mezclaba con lo que el sonido envolvente virtual pone en los graves y en los canales envolventes.
+
+**Cambios:**
+- `backend-core/src/audio_resample.rs`: `speech_downmix_weights(channels, channel_mask)` pesa 0,5 los canales frontal izquierdo, frontal derecho y central y 0 los graves (LFE) y los envolventes, según la máscara de canales de Windows. Sin máscara usa los dos primeros canales. `StreamResampler::with_channel_mask` aplica esos pesos, y `new` usa los mismos (para 1 y 2 canales es lo de antes). El loopback WASAPI lee `dwChannelMask` del formato extensible.
+- `backend-core/src/audio_devices.rs`: `is_virtual_device` (Voicemod, VB-Audio, Voicemeeter, «virtual», Krisp, NVIDIA Broadcast, Steam Streaming, Wave Link, OBS; palabras completas), `device_list`, `connected_choice` (lo elegido solo vale mientras está conectado) y la sección `audioDevices { microphone, output }` de las preferencias del dispositivo.
+- `app/src/services/audio_devices.rs`: `list` arma la lista con cpal, quitando los nombres repetidos (dos monitores pueden llamarse igual) y marcando el predeterminado. `for_capture` resuelve lo elegido. Comando `speech_audio_devices`, local en un cliente. La elección se guarda con `backend_save_device_preferences`.
+- `speech_audio::PlatformAudioCapture::start` recibe `CaptureDevices`: abre el micrófono elegido por nombre y, para el loopback, busca el endpoint de salida activo por su `PKEY_Device_FriendlyName` (feature `Win32_UI_Shell_PropertiesSystem`). Si ya no está, usa el predeterminado. Lo usan la grabación y la prueba de audio de Meeting y el dictado.
+- Interfaz: `MeetingReadyPanel` muestra en cada fuente un selector («Predeterminado de Windows · nombre» y la lista, con «(virtual)») y un aviso si el dispositivo efectivo es virtual. `useAudioDevices` vuelve a leer la lista al volver a la ventana. Las vistas de celular no tienen el selector: en Android solo existe el micrófono predeterminado.
+
+**Validado:**
+- Pruebas de backend-core: `a_surround_output_keeps_the_front_and_center_and_drops_bass_and_surrounds`, `voice_changers_mixers_and_virtual_cables_are_flagged`, `a_chosen_device_counts_only_while_connected` y `the_saved_choice_is_a_name_or_the_default`.
+- vitest: `lets the person choose each device and warns about a virtual one`.
+- Prueba ignorada `opens_the_devices_of_this_computer_by_name`: en este equipo listó 3 micrófonos y 8 salidas y abrió por nombre el micrófono del G935 y una salida no predeterminada.
+
+**Pendiente:**
+- Grabar una reunión real eligiendo el micrófono real (Yeti X o el del G935) y comparar con lo anterior.
+- No se midió el loopback del G935 con audio real: el usuario prefirió no reproducir sonido.

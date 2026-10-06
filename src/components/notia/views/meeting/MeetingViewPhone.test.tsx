@@ -73,6 +73,17 @@ describe('Meeting view on a phone', () => {
     expect(screen.getByRole('tab', { name: /Grabar en vivo/ })).toBeTruthy()
   })
 
+  it('opens «Reuniones anteriores» from the clock and goes back with «Nueva reunión»', () => {
+    renderView()
+    const clock = screen.getByRole('button', { name: 'Reuniones anteriores' })
+    fireEvent.click(clock)
+    expect(clock.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('heading', { name: 'Reuniones' })).toBeTruthy()
+    expect(screen.getByText('Abrí una biblioteca para ver sus reuniones.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Nueva reunión' }))
+    expect(screen.getByRole('button', { name: 'Iniciar grabación' })).toBeTruthy()
+  })
+
   it('shows a recording that started elsewhere with the phone controls', async () => {
     backend.snapshot = {
       id: 'meet-1',
@@ -91,6 +102,7 @@ describe('Meeting view on a phone', () => {
       liveAnswers: false,
       aiNotes: { enabled: true, running: false, objective: '', decisions: [], openQuestions: [], topics: [], tasks: [] },
       insights: { keyPoints: [], tasks: [], corrected: false },
+      review: { cleaned: false, named: 0 },
       suggestedQuestions: [],
       contextText: '',
     }

@@ -17,6 +17,7 @@ use crate::services::spanish_transcript::normalize_spanish_transcript;
 use crate::services::speech_audio::SPEECH_SAMPLE_RATE;
 use crate::services::speech_worker::{RecognitionUpdate, SampleSpan, StreamingRecognizer};
 use crate::services::whisper_runtime::WhisperEngine;
+use notia_backend_core::timed_transcript::{words_from_timed_tokens, TimedWord};
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::ops::Range;
@@ -75,6 +76,12 @@ const DECODE_MAX_PEAK: f32 = 0.95;
 pub const MAX_ASR_THREADS: i32 = 4;
 #[cfg(not(target_os = "android"))]
 pub const MAX_ASR_THREADS: i32 = 6;
+/// Pauses between live lines up to this long stay inside one block of the
+/// final pass; a longer one would be silence for Whisper to fill.
+const FINAL_BLOCK_MAX_GAP_SAMPLES: usize = SAMPLE_RATE * 3;
+/// Audio kept before and after the live lines of a final-pass block, so the
+/// first and last words are whole.
+const FINAL_BLOCK_MARGIN_SAMPLES: usize = SAMPLE_RATE / 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperAsrConfig {
@@ -211,17 +218,9 @@ impl WhisperVadRecognizer {
         Ok(drop_known_hallucinations(text.trim()))
     }
 
-    /// The end of the text that precedes the audio. In Spanish it follows a
-    /// punctuated sentence: Whisper copies the style of its prompt, and one
-    /// utterance transcribed in lowercase without punctuation otherwise
-    /// carries that style to the rest of the session.
+    /// The end of the text that precedes the audio (see `decode_prompt`).
     fn prompt(&self, preceding: &str) -> String {
-        let tail = prompt_tail(preceding);
-        if self.spanish() {
-            format!("{SPANISH_STYLE_PROMPT} {tail}").trim_end().to_string()
-        } else {
-            tail.to_string()
-        }
+        decode_prompt(self.spanish(), preceding)
     }
 
     fn spanish(&self) -> bool {
@@ -411,6 +410,120 @@ impl StreamingRecognizer for WhisperVadRecognizer {
     }
 }
 
+/// Transcribes a finished recording again with the time of each word, block
+/// by block: Whisper large-v3 with beam search where the GPU makes it
+/// affordable. The live text came from short utterances decoded as they
+/// closed; here each block holds up to 28 s of conversation.
+pub struct WhisperFinalPass {
+    engine: WhisperEngine,
+    language: CString,
+    spanish: bool,
+    /// Text of the blocks already decoded; its end prompts the next one.
+    context: String,
+}
+
+impl WhisperFinalPass {
+    /// `None` without a GPU (a CPU would take about as long as the
+    /// recording) or with a bridge that gives no word times. `alignment`
+    /// names the model's DTW alignment heads ("large-v3", "large-v3-turbo"):
+    /// the decoder's own times stretch the last word before a pause over the
+    /// silence, and by its middle it went to the next speaker.
+    // Only Windows has the GPU and the model for it.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    pub fn load(runtime: &Path, model: &Path, alignment: &str, language: &str) -> Result<Option<Self>, String> {
+        let code = whisper_language(language);
+        let language = CString::new(code.as_str()).map_err(|_| "El idioma del reconocimiento de voz no es valido.".to_string())?;
+        let engine = WhisperEngine::load_aligned(runtime, model, true, MAX_ASR_THREADS, alignment)?;
+        if !engine.uses_gpu() || !engine.has_word_times() {
+            return Ok(None);
+        }
+        if !engine.supports_language(&language)? {
+            return Err(format!("Whisper no reconoce el idioma «{code}»."));
+        }
+        Ok(Some(Self { engine, language, spanish: code == "es", context: String::new() }))
+    }
+
+    /// The words of one block (at most `MAX_DECODE_SAMPLES`), timed from
+    /// `offset_ms`, where the block begins.
+    pub fn transcribe(&mut self, samples: &[f32], offset_ms: u64) -> Result<Vec<TimedWord>, String> {
+        let gain = speech_gain(samples);
+        let audio = samples.iter().map(|sample| sample * gain).collect::<Vec<_>>();
+        let prompt = decode_prompt(self.spanish, &self.context);
+        let started_at = Instant::now();
+        let raw = self.engine.transcribe_timed(&audio, &self.language, &prompt, GPU_FINAL_BEAM_SIZE)?;
+        log::info!(
+            "[notia:speech:inference] engine=whisper backend={} reason=final-pass audio_ms={} inference_ms={}",
+            self.engine.backend(),
+            samples.len() * 1_000 / SAMPLE_RATE,
+            started_at.elapsed().as_millis(),
+        );
+        let words = words_from_timed_tokens(&raw, offset_ms);
+        let text = words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>().join(" ");
+        remember(&mut self.context, &drop_known_hallucinations(&text));
+        Ok(words)
+    }
+
+    /// The text of a turn without the sentences Whisper invents, with the
+    /// Spanish repairs of the live text.
+    pub fn clean(&self, text: &str) -> String {
+        let text = drop_known_hallucinations(text);
+        if self.spanish {
+            normalize_spanish_transcript(&text)
+        } else {
+            text
+        }
+    }
+}
+
+/// The blocks the final pass decodes: the spoken ranges of `samples` with a
+/// short margin, joined while the pause between them is short and the block
+/// fits one decode window. A longer range is cut at its quiet frames.
+pub fn final_pass_blocks(samples: &[f32], spoken: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut sorted = spoken
+        .iter()
+        .map(|range| range.start.min(samples.len())..range.end.min(samples.len()))
+        .filter(|range| !range.is_empty())
+        .collect::<Vec<_>>();
+    sorted.sort_by_key(|range| range.start);
+    let mut joined: Vec<Range<usize>> = Vec::new();
+    for range in sorted {
+        let end = (range.end + FINAL_BLOCK_MARGIN_SAMPLES).min(samples.len());
+        match joined.last_mut() {
+            Some(block)
+                if range.start.saturating_sub(block.end) <= FINAL_BLOCK_MAX_GAP_SAMPLES
+                    && end - block.start <= MAX_DECODE_SAMPLES =>
+            {
+                block.end = block.end.max(end);
+            }
+            last => {
+                let floor = last.map_or(0, |block| block.end);
+                joined.push(range.start.saturating_sub(FINAL_BLOCK_MARGIN_SAMPLES).max(floor)..end);
+            }
+        }
+    }
+    joined
+        .into_iter()
+        .flat_map(|block| {
+            quiet_pieces(&samples[block.clone()], MIN_PIECE_SAMPLES, MAX_DECODE_SAMPLES)
+                .into_iter()
+                .map(move |piece| block.start + piece.start..block.start + piece.end)
+        })
+        .collect()
+}
+
+/// The prompt of a decode: the end of the preceding text, after a punctuated
+/// sentence in Spanish. Whisper copies the style of its prompt, and one
+/// utterance transcribed in lowercase without punctuation otherwise carries
+/// that style to the rest of the session.
+fn decode_prompt(spanish: bool, preceding: &str) -> String {
+    let tail = prompt_tail(preceding);
+    if spanish {
+        format!("{SPANISH_STYLE_PROMPT} {tail}").trim_end().to_string()
+    } else {
+        tail.to_string()
+    }
+}
+
 /// Whisper's code for a configured language: the primary subtag ("es-AR"
 /// transcribes as "es").
 fn whisper_language(language: &str) -> String {
@@ -554,9 +667,9 @@ fn collect_history_range(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_history_range, drop_known_hallucinations, partial_interval, prompt_tail, quiet_pieces, remember,
-        speech_gain, whisper_language, CONTEXT_CHARACTERS, DECODE_MAX_GAIN, DECODE_MAX_PEAK, MIN_PARTIAL_INTERVAL, PROMPT_CHARACTERS,
-        SAMPLE_RATE,
+        collect_history_range, drop_known_hallucinations, final_pass_blocks, partial_interval, prompt_tail, quiet_pieces, remember,
+        speech_gain, whisper_language, CONTEXT_CHARACTERS, DECODE_MAX_GAIN, DECODE_MAX_PEAK, MAX_DECODE_SAMPLES, MIN_PARTIAL_INTERVAL,
+        PROMPT_CHARACTERS, SAMPLE_RATE,
     };
     use std::collections::VecDeque;
     use std::time::Duration;
@@ -608,6 +721,26 @@ mod tests {
         assert_eq!(whisper_language("es-AR"), "es");
         assert_eq!(whisper_language("pt_BR"), "pt");
         assert_eq!(whisper_language("auto"), "auto");
+    }
+
+    #[test]
+    fn final_pass_blocks_join_close_lines_and_split_long_ones() {
+        let second = SAMPLE_RATE;
+        let samples = vec![0.01_f32; 120 * second];
+        // Two lines 1 s apart join; one 10 s later starts a new block.
+        let blocks = final_pass_blocks(&samples, &[0..5 * second, 6 * second..9 * second, 19 * second..22 * second]);
+        assert_eq!(blocks, vec![0..9 * second + second / 5, 19 * second - second / 5..22 * second + second / 5]);
+        // Lines that would exceed one decode window start a new block, and its
+        // margin never reaches back into the previous one.
+        let blocks = final_pass_blocks(&samples, &[0..20 * second, 20 * second..30 * second]);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1].start, blocks[0].end);
+        // A 60 s line is cut into pieces of one window at most.
+        let blocks = final_pass_blocks(&samples, &[10 * second..70 * second]);
+        assert!(blocks.len() >= 3);
+        assert!(blocks.iter().all(|block| block.len() <= MAX_DECODE_SAMPLES));
+        assert_eq!((blocks[0].start, blocks.last().unwrap().end), (10 * second - second / 5, 70 * second + second / 5));
+        assert!(final_pass_blocks(&samples, &[200 * second..210 * second]).is_empty());
     }
 
     #[test]
@@ -674,7 +807,7 @@ mod native_smoke_tests {
             &root.join("resources/whisper/runtime/windows-x86_64/notia_whisper.dll"),
             &root.join("resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll"),
             &WhisperAsrConfig {
-                model: models.join("ggml-large-v3-turbo-q8_0.bin"),
+                model: std::env::var("NOTIA_ASR_MODEL").map_or(models.join("ggml-large-v3-turbo-q8_0.bin"), PathBuf::from),
                 vad: models.join("silero_vad.onnx"),
                 num_threads: 4,
                 language: "es".to_string(),
@@ -740,7 +873,8 @@ mod native_smoke_tests {
             keep(recognizer.finish().expect("finish probe"), &mut lines);
             recognizer.reset_session().expect("reset probe");
             recognizer.enable_live_partials();
-            std::fs::write(wav.with_extension("out.txt"), lines.join("\n")).expect("write probe output");
+            let suffix = std::env::var("NOTIA_ASR_LABEL").map_or(String::new(), |label| format!(".{label}"));
+            std::fs::write(wav.with_extension(format!("out{suffix}.txt")), lines.join("\n")).expect("write probe output");
             std::fs::write(wav.with_extension("partial.txt"), partials.join("\n")).expect("write probe previews");
             eprintln!(
                 "{}: {} lines, {} previews, {:.1} s audio in {:.1} s",

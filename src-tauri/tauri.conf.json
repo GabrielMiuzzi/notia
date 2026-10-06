@@ -66,7 +66,8 @@
     "resources": [
       "resources/speech/runtime/**/*",
       "resources/speech/models/whisper-large-v3-turbo/**/*",
-      "resources/speech/models/speaker-diarization-v1/**/*",
+      "resources/speech/models/whisper-large-v3/**/*",
+      "resources/speech/models/speaker-diarization-v2/**/*",
       "resources/whisper/runtime/windows-x86_64/**/*",
       "resources/qwen3-tts/runtime/**/*",
       "resources/qwen3-tts/models/**/*"

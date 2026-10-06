@@ -78,6 +78,7 @@ mod library_registry;
 mod library_users;
 mod local_time;
 mod meeting;
+mod meeting_history;
 mod meeting_media;
 mod home;
 mod weather;
@@ -121,6 +122,7 @@ mod services {
     pub mod sherpa_runtime;
     pub mod sherpa_vad;
     pub mod spanish_transcript;
+    pub mod audio_devices;
     pub mod speech_audio;
     #[cfg(any(target_os = "windows", target_os = "android"))]
     pub mod speech_levels;

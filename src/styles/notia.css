@@ -3056,6 +3056,22 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 .notia-meeting-source-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .notia-meeting-source-text strong { font-size: 14px; font-weight: 600; }
 .notia-meeting-source-text small { overflow: hidden; font-size: 12px; color: var(--color-muted-text); text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-device-select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-card-bg);
+  color: var(--color-muted-text);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+.notia-meeting-device-select:focus-visible { outline: 2px solid var(--color-accent-text); outline-offset: 1px; }
+.notia-meeting-source-text small.notia-meeting-device-warning { white-space: normal; color: var(--color-amber); }
+@media (pointer: coarse) { .notia-meeting-device-select { min-height: 44px; } }
 .notia-meeting-source-meter { display: flex; align-items: center; gap: 10px; }
 .notia-meeting-source-meter > span { font-size: 11px; color: var(--color-muted-text); white-space: nowrap; }
 .notia-meeting-switch {
@@ -3269,6 +3285,7 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 .notia-meeting-live-line > time { width: 52px; flex-shrink: 0; padding-top: 3px; font-family: var(--meeting-mono); font-size: 12px; color: var(--color-muted-text); }
 .notia-meeting-live-line > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .notia-meeting-live-line p { margin: 0; font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }
+.notia-meeting-live-speaker { font-size: 12px; font-weight: 600; color: var(--color-accent-text); overflow-wrap: anywhere; }
 .notia-meeting-live-line--partial > time { color: var(--color-accent-text); }
 .notia-meeting-live-line--partial p { color: var(--color-muted-text); }
 .notia-meeting-caret {
@@ -8372,4 +8389,39 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
     border: none;
     border-radius: 0;
   }
+}
+.notia-meeting-review { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 14px; border: 1px solid var(--color-border-soft); border-radius: 10px; background: var(--color-sidebar-bg); font-size: 13px; color: var(--color-muted-text); }
+.notia-meeting-review--done { color: var(--color-accent-text); }
+.notia-meeting-review--error { color: var(--color-coral); }
+.notia-meeting-review-spin { flex-shrink: 0; animation: notia-meeting-spin 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .notia-meeting-review-spin { animation: none; } }
+
+/* «Reuniones anteriores» beside the ready stage (canvas Main, aside). */
+.notia-meeting-ready-layout { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+.notia-meeting-ready-main { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
+.notia-meeting-history { position: sticky; top: 0; max-height: 760px; min-height: 320px; display: flex; flex-direction: column; overflow: hidden; }
+.notia-meeting-history-head { display: flex; flex-direction: column; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--color-border-soft); }
+.notia-meeting-history-title { display: flex; align-items: center; gap: 8px; color: var(--color-muted-text); }
+.notia-meeting-history-title h2 { flex: 1 1 auto; margin: 0; font-size: 15px; font-weight: 600; }
+.notia-meeting-history-search { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--color-border-soft); border-radius: 8px; background: var(--color-main-bg); color: var(--color-muted-text); }
+.notia-meeting-history-search input { flex: 1 1 auto; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--color-body-text); font: inherit; font-size: 13px; }
+.notia-meeting-history-search:focus-within { border-color: var(--color-focus-ring); }
+.notia-meeting-history-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
+.notia-meeting-history-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.notia-meeting-history-group { margin: 0; padding: 12px 8px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--color-muted-text); }
+.notia-meeting-history-item { width: 100%; display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--color-body-text); font: inherit; text-align: left; cursor: pointer; touch-action: manipulation; }
+.notia-meeting-history-item:hover:not(:disabled) { background: var(--color-card-bg); border-color: var(--color-border-soft); }
+.notia-meeting-history-item:disabled { cursor: default; opacity: 0.7; }
+.notia-meeting-history-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.notia-meeting-history-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-history-time { color: var(--color-muted-text); }
+.notia-meeting-history-chevron { flex-shrink: 0; color: var(--color-muted-text); }
+.notia-meeting-history-meta { gap: 10px; font-size: 12px; color: var(--color-muted-text); }
+.notia-meeting-history-context { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notia-meeting-history-swatch { width: 7px; height: 7px; flex-shrink: 0; border-radius: 2px; background: var(--color-muted-text); }
+.notia-meeting-history-tasks { align-self: flex-start; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 6px; background: color-mix(in srgb, var(--color-amber) 14%, transparent); color: var(--color-amber); font-size: 11px; }
+.notia-meeting-history-empty { margin: 0; padding: 16px 8px; font-size: 13px; line-height: 1.45; color: var(--color-muted-text); }
+@container meeting (max-width: 960px) {
+  .notia-meeting-ready-layout { grid-template-columns: minmax(0, 1fr); }
+  .notia-meeting-history { position: static; max-height: 480px; }
 }

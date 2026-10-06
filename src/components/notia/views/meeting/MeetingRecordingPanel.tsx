@@ -87,6 +87,7 @@ export const LiveLines = memo(function LiveLines({ lines, answers }: { lines: Me
       <div key={line.id} id={`meeting-line-${line.id}`} className="notia-meeting-live-line">
         <time>{formatClock(line.startMs)}</time>
         <div>
+          {line.speaker ? <span className="notia-meeting-live-speaker">{line.speaker}</span> : null}
           <p>{line.text}</p>
           {answer ? (
             <span className="notia-meeting-question-chip">

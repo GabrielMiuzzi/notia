@@ -51,7 +51,8 @@ export interface SpeechError {
   message: string
 }
 
-export type SpeechFinalizingStage = 'transcribing' | 'detecting-speakers' | 'assigning-turns'
+/** `second-pass` replaces `assigning-turns` where the backend transcribes the recording again (a GPU). */
+export type SpeechFinalizingStage = 'transcribing' | 'detecting-speakers' | 'assigning-turns' | 'second-pass'
 
 export type SpeechSessionState =
   | { status: 'idle' }

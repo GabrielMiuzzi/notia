@@ -151,6 +151,7 @@ fn perceived_level(rms: f32) -> f32 {
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod native {
     use super::{CaptureSources, SharedCaptureMeter, SharedPcmBuffer, SpeechAudioInputStatusDto};
+    use crate::services::audio_devices::CaptureDevices;
     use notia_backend_core::audio_resample::StreamResampler;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
@@ -250,19 +251,28 @@ mod native {
     }
 
     impl PlatformAudioCapture {
-        /// Opens `sources` and feeds `target` with their mix. Without a
-        /// target the capture only feeds `meter` (an audio check).
+        /// Opens `sources` on `devices` (the defaults where it names none)
+        /// and feeds `target` with their mix. Without a target the capture
+        /// only feeds `meter` (an audio check).
         pub fn start(
             target: Option<SharedPcmBuffer>,
             sources: CaptureSources,
             meter: Option<SharedCaptureMeter>,
+            devices: &CaptureDevices,
         ) -> Result<Self, String> {
             let paused = Arc::new(AtomicBool::new(false));
             let mixer = Arc::new(Mutex::new(MeetingMixer::new(target, sources, meter)));
+            #[cfg(not(target_os = "windows"))]
+            let _ = devices;
             let stream = if sources.microphone {
                 let host = cpal::default_host();
-                let device = host
-                    .default_input_device()
+                let chosen = devices.microphone.as_deref().and_then(|name| {
+                    host.input_devices()
+                        .ok()?
+                        .find(|device| device.name().is_ok_and(|device_name| device_name == name))
+                });
+                let device = chosen
+                    .or_else(|| host.default_input_device())
                     .ok_or_else(|| "El sistema no informa un microfono predeterminado.".to_string())?;
                 let supported_config = device.default_input_config().map_err(|error| {
                     format!("No se pudo consultar el formato del microfono: {error}")
@@ -278,7 +288,7 @@ mod native {
             // activa), el micrófono sigue funcionando. Sin micrófono es la
             // única fuente y su error se informa.
             let loopback = if sources.system {
-                match WindowsLoopbackCapture::start(Arc::clone(&mixer), Arc::clone(&paused)) {
+                match WindowsLoopbackCapture::start(Arc::clone(&mixer), Arc::clone(&paused), devices.output.clone()) {
                     Ok(capture) => Some(capture),
                     Err(error) if sources.microphone => {
                         log::warn!("[notia:speech_audio] captura de salida no disponible: {error}");
@@ -382,7 +392,9 @@ mod native {
 
     #[cfg(target_os = "windows")]
     impl WindowsLoopbackCapture {
-        fn start(mixer: Arc<Mutex<MeetingMixer>>, paused: Arc<AtomicBool>) -> Result<Self, String> {
+        /// Captures what the output named `output` plays (the default
+        /// output when it names none or that output is gone).
+        fn start(mixer: Arc<Mutex<MeetingMixer>>, paused: Arc<AtomicBool>, output: Option<String>) -> Result<Self, String> {
             let stop = Arc::new(AtomicBool::new(false));
             let thread_stop = Arc::clone(&stop);
             let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
@@ -391,7 +403,7 @@ mod native {
                 .name("notia-wasapi-loopback".to_string())
                 .spawn(move || {
                     if let Err(error) =
-                        run_wasapi_loopback(mixer, paused, thread_stop, ready_sender)
+                        run_wasapi_loopback(mixer, paused, thread_stop, ready_sender, output.as_deref())
                     {
                         let _ = error_sender.try_send(Err(error.clone()));
                         log::error!("[notia:speech_audio] WASAPI loopback error: {error}");
@@ -438,6 +450,7 @@ mod native {
         paused: Arc<AtomicBool>,
         stop: Arc<AtomicBool>,
         ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+        output: Option<&str>,
     ) -> Result<(), String> {
         use std::slice;
         use std::time::Duration;
@@ -467,11 +480,13 @@ mod native {
                     CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|error| {
                         format!("No se pudo consultar la salida de audio: {error}")
                     })?;
-                let device = enumerator
-                    .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .map_err(|error| {
+                let chosen = output.and_then(|name| render_endpoint_named(&enumerator, name));
+                let device = match chosen {
+                    Some(device) => device,
+                    None => enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|error| {
                         format!("No hay una salida de audio predeterminada: {error}")
-                    })?;
+                    })?,
+                };
                 let client: IAudioClient = device
                     .Activate(CLSCTX_ALL, None)
                     .map_err(|error| format!("No se pudo abrir la salida de audio: {error}"))?;
@@ -481,8 +496,12 @@ mod native {
                 let format: WAVEFORMATEX = *format_ptr;
                 let format_tag = format.wFormatTag;
                 let bits_per_sample = format.wBitsPerSample;
-                let extensible_subformat = (format_tag == 0xfffe && format.cbSize >= 22)
-                    .then(|| (*(format_ptr.cast::<WAVEFORMATEXTENSIBLE>())).SubFormat);
+                let extensible = (format_tag == 0xfffe && format.cbSize >= 22)
+                    .then(|| *(format_ptr.cast::<WAVEFORMATEXTENSIBLE>()));
+                let extensible_subformat = extensible.map(|extensible| extensible.SubFormat);
+                // Which speaker each channel feeds: a 7.1 headset carries the
+                // call in its front pair only.
+                let channel_mask = extensible.map(|extensible| extensible.dwChannelMask).filter(|mask| *mask != 0);
                 let is_float = format_tag == WAVE_FORMAT_IEEE_FLOAT as u16
                     || extensible_subformat == Some(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
                 let is_pcm = format_tag == WAVE_FORMAT_PCM as u16
@@ -512,7 +531,7 @@ mod native {
                     .Start()
                     .map_err(|error| format!("No se pudo iniciar WASAPI loopback: {error}"))?;
                 let _ = ready.send(Ok(()));
-                let mut resampler = StreamResampler::new(format.nChannels, format.nSamplesPerSec);
+                let mut resampler = StreamResampler::with_channel_mask(format.nChannels, channel_mask, format.nSamplesPerSec);
                 while !stop.load(Ordering::Acquire) {
                     let mut packet_size = capture
                         .GetNextPacketSize()
@@ -578,6 +597,37 @@ mod native {
             })();
             CoUninitialize();
             result
+        }
+    }
+
+    /// The active output whose name Windows shows as `name`.
+    #[cfg(target_os = "windows")]
+    fn render_endpoint_named(
+        enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+        name: &str,
+    ) -> Option<windows::Win32::Media::Audio::IMMDevice> {
+        use windows::Win32::Foundation::PROPERTYKEY;
+        use windows::Win32::Media::Audio::{eRender, DEVICE_STATE_ACTIVE};
+        use windows::Win32::System::Com::STGM_READ;
+        // PKEY_Device_FriendlyName.
+        const FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+            fmtid: windows::core::GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+            pid: 14,
+        };
+        // SAFETY: the collection, the devices and their property stores are
+        // COM objects owned by this thread; the value is a PROPVARIANT that
+        // clears itself when dropped.
+        unsafe {
+            let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE).ok()?;
+            for index in 0..devices.GetCount().ok()? {
+                let Ok(device) = devices.Item(index) else { continue };
+                let Ok(store) = device.OpenPropertyStore(STGM_READ) else { continue };
+                let Ok(value) = store.GetValue(&FRIENDLY_NAME) else { continue };
+                if value.to_string() == name {
+                    return Some(device);
+                }
+            }
+            None
         }
     }
 

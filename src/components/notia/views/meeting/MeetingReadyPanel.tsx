@@ -5,6 +5,8 @@ import { MeetingOptions, type MeetingOptionsProps } from './MeetingOptions'
 import { MEETING_SOURCE_PANEL_ID } from './MeetingSourceTabs'
 import { sourceStatus } from './meetingDisplay'
 import type { MeetingAiContextState } from './useMeetingAiContext'
+import type { AudioDevicesState } from './useAudioDevices'
+import type { AudioDevice } from '../../../../services/speech/speechService'
 import type { SpeechLevelHistory } from './useSpeechLevels'
 
 export type MeetingSource = 'microphone' | 'system'
@@ -27,6 +29,48 @@ export interface MeetingLiveSetupProps {
 interface MeetingReadyPanelProps extends MeetingOptionsProps, MeetingLiveSetupProps {
   microphoneLabel: string
   aiContext: MeetingAiContextState
+  /** The devices to choose from, where the platform lets the person choose. */
+  audioDevices?: AudioDevicesState
+}
+
+/** What a source records: a chosen device, or the system default. */
+function DevicePicker({
+  source,
+  label,
+  devices,
+  chosen,
+  onChoose,
+}: {
+  source: MeetingSource
+  label: string
+  devices: AudioDevice[]
+  chosen: string | null
+  onChoose: (source: MeetingSource, name: string | null) => void
+}) {
+  const fallback = devices.find((device) => device.isDefault)
+  const effective = devices.find((device) => device.name === chosen) ?? fallback
+  return (
+    <>
+      <select
+        className="notia-meeting-device-select"
+        aria-label={`Dispositivo de ${label.toLowerCase()}`}
+        value={chosen ?? ''}
+        onChange={(event) => onChoose(source, event.target.value || null)}
+      >
+        <option value="">Predeterminado de Windows{fallback ? ` · ${fallback.name}` : ''}</option>
+        {devices.map((device) => (
+          <option key={device.name} value={device.name}>
+            {device.name}{device.isVirtual ? ' (virtual)' : ''}
+          </option>
+        ))}
+      </select>
+      {effective?.isVirtual ? (
+        <small className="notia-meeting-device-warning">
+          Es un dispositivo virtual: procesa el audio antes de Notia y puede bajar la precisión de la transcripción.
+        </small>
+      ) : null}
+    </>
+  )
 }
 
 export function MeetingReadyPanel({
@@ -35,6 +79,7 @@ export function MeetingReadyPanel({
   onStart,
   microphoneLabel,
   aiContext,
+  audioDevices,
   systemAudioSupported,
   sources,
   onToggleSource,
@@ -61,6 +106,8 @@ export function MeetingReadyPanel({
       levels: levels.system,
     },
   ]
+
+  const choices = audioDevices?.devices?.supported ? { ...audioDevices.devices, choose: audioDevices.choose } : null
 
   return (
     <div className="notia-meeting-ready" id={MEETING_SOURCE_PANEL_ID} role="tabpanel">
@@ -93,7 +140,17 @@ export function MeetingReadyPanel({
                   <span className="notia-meeting-source-icon" aria-hidden="true"><Icon size={17} /></span>
                   <span className="notia-meeting-source-text">
                     <strong>{source.name}</strong>
-                    <small>{source.device}</small>
+                    {choices && source.available ? (
+                      <DevicePicker
+                        source={source.id}
+                        label={source.name}
+                        devices={source.id === 'microphone' ? choices.microphones : choices.outputs}
+                        chosen={source.id === 'microphone' ? choices.microphone : choices.output}
+                        onChoose={choices.choose}
+                      />
+                    ) : (
+                      <small>{source.device}</small>
+                    )}
                   </span>
                   <button
                     type="button"
@@ -121,7 +178,7 @@ export function MeetingReadyPanel({
 
         <div className="notia-meeting-setup-footer">
           <p>{systemAudioSupported
-            ? 'Notia mezcla ambas fuentes internamente. No requiere dispositivos virtuales ni cambiar la entrada de Windows.'
+            ? 'Notia mezcla ambas fuentes internamente. No requiere dispositivos virtuales ni cambiar la entrada de Windows; los dispositivos elegidos también se usan para el dictado.'
             : 'En este dispositivo Notia graba el micrófono; el audio interno de otras aplicaciones solo se captura en Windows.'}</p>
           <button type="button" className="notia-meeting-chip-button" aria-pressed={isChecking} onClick={onToggleCheck}>
             <Activity size={14} aria-hidden="true" />

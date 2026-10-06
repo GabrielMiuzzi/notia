@@ -1,7 +1,8 @@
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod windows {
     use crate::services::speech_model_repository::ResolvedDiarizationModel;
-    use std::collections::{BTreeMap, BTreeSet};
+    use notia_backend_core::speaker_clustering::{cluster_speakers, ClusteringOptions, SpeakerPiece};
+    use std::collections::BTreeSet;
     use std::ffi::{c_char, c_void, CString};
     use std::path::Path;
     use std::ptr::NonNull;
@@ -27,21 +28,61 @@ mod windows {
 
     const MIN_EMBEDDING_SAMPLES: usize = 16_000;
     const MAX_EMBEDDING_SAMPLES: usize = 16_000 * 60;
+    /// Distance threshold of sherpa's own clustering, used only to cut the
+    /// audio: low enough that two speakers are never joined into one piece.
+    const SEGMENTER_THRESHOLD: f32 = 0.5;
 
-    /// Separates the speakers of `samples`. With `expected_speakers` the
-    /// clustering produces exactly that many; otherwise it decides with a
-    /// conservative distance threshold.
+    /// Separates the speakers of `samples`. sherpa-onnx (pyannote
+    /// segmentation) cuts the audio where the speaker changes; each piece
+    /// gets its own voice embedding and `speaker_clustering` decides who is
+    /// who, exactly `expected_speakers` when the person said how many. The
+    /// diarizer's own clustering split one person into several and joined
+    /// others on Spanish calls.
     pub fn process(
         runtime_path: &Path,
         model: &ResolvedDiarizationModel,
         samples: &[f32],
         expected_speakers: Option<u32>,
     ) -> Result<DiarizationResult, String> {
+        let pieces = cut_pieces(runtime_path, model, samples)?;
+        if pieces.is_empty() {
+            return Ok(DiarizationResult { speaker_count: 0, segments: Vec::new() });
+        }
+        let extractor = SpeakerEmbeddingExtractor::new(runtime_path, model)?;
+        let embedded = pieces
+            .iter()
+            .map(|piece| {
+                Ok(SpeakerPiece {
+                    start_seconds: piece.start_seconds,
+                    end_seconds: piece.end_seconds,
+                    embedding: extractor.embed(samples, piece)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let options = ClusteringOptions::for_pieces(
+            &embedded,
+            model.clustering_threshold,
+            expected_speakers.map(|count| count as usize),
+        );
+        let labels = cluster_speakers(&embedded, options);
+        let speaker_count = labels.iter().copied().max().map_or(0, |last| last as u32 + 1);
+        let segments = pieces
+            .into_iter()
+            .zip(labels)
+            .map(|(piece, label)| DiarizationSegment { speaker: label as i32, ..piece })
+            .collect();
+        Ok(DiarizationResult { speaker_count, segments })
+    }
+
+    /// Where the speaker changes in `samples`: the pieces of sherpa-onnx's
+    /// diarization, whose labels are discarded.
+    fn cut_pieces(
+        runtime_path: &Path,
+        model: &ResolvedDiarizationModel,
+        samples: &[f32],
+    ) -> Result<Vec<DiarizationSegment>, String> {
         if samples.is_empty() {
-            return Ok(DiarizationResult {
-                speaker_count: 0,
-                segments: Vec::new(),
-            });
+            return Ok(Vec::new());
         }
         if samples.len() > i32::MAX as usize || !(1..=8).contains(&model.num_threads) {
             return Err("La entrada de diarizacion excede los limites permitidos.".to_string());
@@ -65,11 +106,8 @@ mod windows {
                 provider: provider.as_ptr(),
             },
             clustering: FastClusteringConfig {
-                num_clusters: expected_speakers.map_or(0, |count| count as i32),
-                // Sherpa uses a distance threshold: larger values merge more
-                // embeddings. 0.5 over-segments normal meeting audio and tends
-                // to turn channel/noise variation into phantom speakers.
-                threshold: 0.9,
+                num_clusters: 0,
+                threshold: SEGMENTER_THRESHOLD,
             },
             min_duration_on: 0.5,
             min_duration_off: 0.3,
@@ -99,21 +137,13 @@ mod windows {
             value: result,
             destroy: api.destroy_result,
         };
-        let speaker_count = checked_count(
-            unsafe { (api.num_speakers)(result_guard.value.as_ptr()) },
-            100,
-            "speakers",
-        )? as u32;
         let segment_count = checked_count(
             unsafe { (api.num_segments)(result_guard.value.as_ptr()) },
             100_000,
             "segmentos",
         )?;
         if segment_count == 0 {
-            return Ok(DiarizationResult {
-                speaker_count,
-                segments: Vec::new(),
-            });
+            return Ok(Vec::new());
         }
         let segments = NonNull::new(
             unsafe { (api.sorted_segments)(result_guard.value.as_ptr()) }
@@ -124,8 +154,7 @@ mod windows {
             value: segments,
             destroy: api.destroy_segments,
         };
-        let segments =
-            unsafe { std::slice::from_raw_parts(segment_guard.value.as_ptr(), segment_count) }
+        unsafe { std::slice::from_raw_parts(segment_guard.value.as_ptr(), segment_count) }
                 .iter()
                 .map(|segment| {
                     if !segment.start.is_finite()
@@ -144,9 +173,7 @@ mod windows {
                         speaker: segment.speaker,
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?;
-        let _reported_speaker_count = speaker_count;
-        Ok(stabilize_speakers(segments))
+                .collect::<Result<Vec<_>, _>>()
     }
 
     pub struct SpeakerEmbeddingExtractor {
@@ -190,6 +217,15 @@ mod windows {
                 api,
                 dimension,
             })
+        }
+
+        /// The voice embedding of one piece; `None` when it is too short.
+        pub fn embed(&self, samples: &[f32], piece: &DiarizationSegment) -> Result<Option<Vec<f32>>, String> {
+            let one = DiarizationResult {
+                speaker_count: 1,
+                segments: vec![DiarizationSegment { speaker: 0, ..piece.clone() }],
+            };
+            self.extract_for_speaker(samples, &one, 0)
         }
 
         pub fn extract(
@@ -395,81 +431,6 @@ mod windows {
         provider: *const c_char,
     }
 
-    fn stabilize_speakers(mut segments: Vec<DiarizationSegment>) -> DiarizationResult {
-        const MIN_SPEAKER_EVIDENCE_SECONDS: f32 = 1.5;
-        const MIN_SPEAKER_SHARE: f32 = 0.04;
-        const MIN_RECORDING_FOR_EVIDENCE_FILTER_SECONDS: f32 = 10.0;
-
-        let mut durations = BTreeMap::<i32, f32>::new();
-        for segment in &segments {
-            *durations.entry(segment.speaker).or_default() +=
-                (segment.end_seconds - segment.start_seconds).max(0.0);
-        }
-        let total_duration = durations.values().sum::<f32>();
-        let weak_speakers = durations
-            .iter()
-            .filter_map(|(&speaker, &duration)| {
-                let too_short = total_duration >= MIN_RECORDING_FOR_EVIDENCE_FILTER_SECONDS
-                    && duration < MIN_SPEAKER_EVIDENCE_SECONDS;
-                let too_rare =
-                    total_duration > 0.0 && duration / total_duration < MIN_SPEAKER_SHARE;
-                (too_short || too_rare).then_some(speaker)
-            })
-            .collect::<BTreeSet<_>>();
-
-        for index in 0..segments.len() {
-            if !weak_speakers.contains(&segments[index].speaker) {
-                continue;
-            }
-            let previous = segments[..index]
-                .iter()
-                .rev()
-                .find(|segment| !weak_speakers.contains(&segment.speaker));
-            let next = segments[index + 1..]
-                .iter()
-                .find(|segment| !weak_speakers.contains(&segment.speaker));
-            let replacement = match (previous, next) {
-                (Some(previous), Some(next)) if previous.speaker == next.speaker => {
-                    Some(previous.speaker)
-                }
-                (Some(previous), Some(next)) => {
-                    let previous_gap = (segments[index].start_seconds - previous.end_seconds).abs();
-                    let next_gap = (next.start_seconds - segments[index].end_seconds).abs();
-                    Some(if previous_gap <= next_gap {
-                        previous.speaker
-                    } else {
-                        next.speaker
-                    })
-                }
-                (Some(previous), None) => Some(previous.speaker),
-                (None, Some(next)) => Some(next.speaker),
-                (None, None) => None,
-            };
-            if let Some(speaker) = replacement {
-                segments[index].speaker = speaker;
-            }
-        }
-
-        let speaker_ids = segments
-            .iter()
-            .map(|segment| segment.speaker)
-            .collect::<BTreeSet<_>>();
-        let normalized_ids = speaker_ids
-            .into_iter()
-            .enumerate()
-            .map(|(normalized, original)| (original, normalized as i32))
-            .collect::<BTreeMap<_, _>>();
-        for segment in &mut segments {
-            if let Some(&normalized) = normalized_ids.get(&segment.speaker) {
-                segment.speaker = normalized;
-            }
-        }
-        DiarizationResult {
-            speaker_count: normalized_ids.len() as u32,
-            segments,
-        }
-    }
-
     fn path_string(path: &Path, label: &str) -> Result<CString, String> {
         if !path.is_absolute() || !path.is_file() {
             return Err(format!("El modelo de {label} no es valido."));
@@ -547,7 +508,6 @@ mod windows {
         destroy: Destroy,
         sample_rate: SampleRate,
         process: Process,
-        num_speakers: Count,
         num_segments: Count,
         sorted_segments: Sorted,
         destroy_segments: DestroySegments,
@@ -573,10 +533,6 @@ mod windows {
                     SampleRate
                 ),
                 process: symbol!(b"SherpaOnnxOfflineSpeakerDiarizationProcess\0", Process),
-                num_speakers: symbol!(
-                    b"SherpaOnnxOfflineSpeakerDiarizationResultGetNumSpeakers\0",
-                    Count
-                ),
                 num_segments: symbol!(
                     b"SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments\0",
                     Count
@@ -630,39 +586,79 @@ mod windows {
 
     #[cfg(test)]
     mod tests {
-        use super::{stabilize_speakers, DiarizationSegment, OfflineSpeakerDiarizationConfig};
+        use super::OfflineSpeakerDiarizationConfig;
 
         #[test]
         fn c_struct_layout_matches_sherpa_onnx_1_13_4() {
             assert_eq!(std::mem::size_of::<OfflineSpeakerDiarizationConfig>(), 64);
         }
 
+        /// Diarizes every 16 kHz mono WAV of `NOTIA_DIAR_PROBE_DIR` with the
+        /// packaged segmentation, the embedding `NOTIA_DIAR_EMBEDDING` (the
+        /// packaged one by default) and each threshold of
+        /// `NOTIA_DIAR_THRESHOLDS` (comma separated), and writes
+        /// `<name>.<NOTIA_DIAR_LABEL>-<threshold>.diar.txt` (`start end speaker`).
+        /// With `NOTIA_DIAR_EXPECTED` it also clusters into the number in
+        /// `<name>.speakers.txt` (written as threshold `k`).
+        #[cfg(target_os = "windows")]
         #[test]
-        fn removes_a_short_phantom_speaker_between_interview_speakers() {
-            let result = stabilize_speakers(vec![
-                DiarizationSegment {
-                    start_seconds: 0.0,
-                    end_seconds: 8.0,
-                    speaker: 0,
-                },
-                DiarizationSegment {
-                    start_seconds: 8.0,
-                    end_seconds: 18.0,
-                    speaker: 1,
-                },
-                DiarizationSegment {
-                    start_seconds: 18.0,
-                    end_seconds: 18.7,
-                    speaker: 2,
-                },
-                DiarizationSegment {
-                    start_seconds: 18.7,
-                    end_seconds: 30.0,
-                    speaker: 1,
-                },
-            ]);
-            assert_eq!(result.speaker_count, 2);
-            assert_eq!(result.segments[2].speaker, 1);
+        #[ignore = "requires NOTIA_DIAR_PROBE_DIR and the packaged diarization models"]
+        fn diarizes_probe_recordings() {
+            use crate::services::speech_model_repository::{ResolvedDiarizationModel, DIARIZATION_CLUSTERING_THRESHOLD};
+            use std::path::PathBuf;
+            let Ok(dir) = std::env::var("NOTIA_DIAR_PROBE_DIR") else {
+                return;
+            };
+            let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+            let models = root.join("resources/speech/models/speaker-diarization-v2");
+            let runtime = root.join("resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll");
+            let embedding = std::env::var("NOTIA_DIAR_EMBEDDING").map_or(models.join("embedding.onnx"), PathBuf::from);
+            let label = std::env::var("NOTIA_DIAR_LABEL").unwrap_or_else(|_| "current".into());
+            let thresholds: Vec<f32> = std::env::var("NOTIA_DIAR_THRESHOLDS")
+                .map(|list| list.split(',').filter_map(|value| value.trim().parse().ok()).collect())
+                .unwrap_or_else(|_| vec![DIARIZATION_CLUSTERING_THRESHOLD]);
+            let expected = std::env::var("NOTIA_DIAR_EXPECTED").is_ok();
+            let mut wavs = std::fs::read_dir(&dir)
+                .expect("probe dir")
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().is_some_and(|extension| extension == "wav"))
+                .collect::<Vec<_>>();
+            wavs.sort();
+            for wav in wavs {
+                let samples = hound::WavReader::open(&wav)
+                    .expect("wav")
+                    .into_samples::<i16>()
+                    .map(|sample| f32::from(sample.expect("sample")) / f32::from(i16::MAX))
+                    .collect::<Vec<_>>();
+                let mut runs: Vec<(String, f32, Option<u32>)> =
+                    thresholds.iter().map(|threshold| (format!("{threshold}"), *threshold, None)).collect();
+                if expected {
+                    let count = std::fs::read_to_string(wav.with_extension("speakers.txt"))
+                        .ok()
+                        .and_then(|text| text.trim().parse().ok());
+                    if let Some(count) = count {
+                        runs.push(("k".into(), DIARIZATION_CLUSTERING_THRESHOLD, Some(count)));
+                    }
+                }
+                for (name, threshold, count) in runs {
+                    let model = ResolvedDiarizationModel {
+                        segmentation: models.join("segmentation.onnx"),
+                        embedding: embedding.clone(),
+                        num_threads: 4,
+                        clustering_threshold: threshold,
+                    };
+                    let started = std::time::Instant::now();
+                    let result = super::process(&runtime, &model, &samples, count).expect("diarize");
+                    let lines = result
+                        .segments
+                        .iter()
+                        .map(|segment| format!("{:.2} {:.2} {}", segment.start_seconds, segment.end_seconds, segment.speaker))
+                        .collect::<Vec<_>>();
+                    let stem = wav.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_string();
+                    std::fs::write(wav.with_file_name(format!("{stem}.{label}-{name}.diar.txt")), lines.join("\n")).expect("write");
+                    eprintln!("{stem} {label}-{name}: {} speakers in {:.1} s", result.speaker_count, started.elapsed().as_secs_f32());
+                }
+            }
         }
     }
 }

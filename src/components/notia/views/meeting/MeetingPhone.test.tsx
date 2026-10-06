@@ -69,6 +69,7 @@ const snapshot: MeetingSnapshot = {
   liveAnswers: false,
   aiNotes: { enabled: false, running: false, objective: '', decisions: [], openQuestions: [], topics: [], tasks: [] },
   insights: { keyPoints: [], tasks: [], corrected: false },
+  review: { cleaned: false, named: 0 },
   suggestedQuestions: [{ question: '¿Por qué renunció?', atMs: 160_000 }],
   contextText: '[00:00] Hablante 1: Bien, buenas.',
 }

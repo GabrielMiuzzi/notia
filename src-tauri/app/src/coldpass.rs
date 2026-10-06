@@ -32,6 +32,12 @@ mod biometric;
 pub(crate) use biometric::{
     coldpass_biometric_status, coldpass_disable_biometric, coldpass_enable_biometric, coldpass_unlock_biometric,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod browser;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) use browser::BrowserVaults;
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+pub(crate) use browser::test_support;
 
 const VAULT_HEADER: &str = "<!-- NOTIA_COLDPASS_OWNER_V1 -->";
 const LEGACY_HEADER: &str = "<!-- NOTIA_COLDPASS_AES256_PBKDF2_V1 -->";
@@ -359,6 +365,16 @@ pub(crate) async fn coldpass_status(app: AppHandle, payload: ColdPassPayload) ->
 /// A random password with the chosen options and how long a brute-force
 /// attack would take.
 pub(crate) fn coldpass_generate_password(payload: GeneratePasswordPayload) -> Result<GeneratedPasswordDto, BackendError> {
+    let password = random_password(&payload.options)?;
+    Ok(GeneratedPasswordDto {
+        rating: crate::backend::coldpass::rate_password(&password, &[]),
+        password,
+        brute_force_seconds: crate::backend::coldpass::brute_force_seconds(&payload.options),
+    })
+}
+
+/// A password drawn with the system's random source.
+fn random_password(options: &crate::backend::coldpass::PasswordOptions) -> Result<String, BackendError> {
     let random = SystemRandom::new();
     let mut failed = false;
     // Rejection sampling keeps every character equally likely.
@@ -376,15 +392,11 @@ pub(crate) fn coldpass_generate_password(payload: GeneratePasswordPayload) -> Re
             }
         }
     };
-    let password = crate::backend::coldpass::generate_password(&payload.options, &mut index);
+    let password = crate::backend::coldpass::generate_password(options, &mut index);
     if failed {
         return Err(BackendError::new(BackendErrorCode::Internal, "No se pudo generar la password.", true));
     }
-    Ok(GeneratedPasswordDto {
-        rating: crate::backend::coldpass::rate_password(&password, &[]),
-        password,
-        brute_force_seconds: crate::backend::coldpass::brute_force_seconds(&payload.options),
-    })
+    Ok(password)
 }
 
 /// How strong the password typed in the form reads.

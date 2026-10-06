@@ -48,6 +48,7 @@ const snapshot: MeetingSnapshot = {
     ],
   },
   insights: { keyPoints: [], tasks: [], corrected: false },
+  review: { cleaned: false, named: 0 },
   suggestedQuestions: [],
   contextText: '',
 }

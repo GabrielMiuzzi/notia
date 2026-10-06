@@ -383,6 +383,7 @@ pub fn start_platform_session(
         Some(Arc::clone(&buffer)),
         sources,
         Some(Arc::clone(&meter)),
+        &crate::services::audio_devices::for_capture(app),
     )?;
     let levels = meeting
         .then(|| {
@@ -551,6 +552,7 @@ fn start_session_worker(
         .map(|_| crate::services::sherpa_runtime::resolve_platform_runtime_path(app))
         .transpose()?;
     let recognizer_app = app.clone();
+    let final_pass_asr = model.clone();
     let recognizer_cache = Arc::clone(&state.preloaded_recognizer);
     let recycler_cache = Arc::clone(&recognizer_cache);
     let session_id = session_id.to_string();
@@ -586,6 +588,7 @@ fn start_session_worker(
                     runtime_path: diarization_runtime_path.as_deref(),
                     model: diarization_model.as_ref(),
                     expected_speakers,
+                    asr: &final_pass_asr,
                 },
                 event,
             );
@@ -636,7 +639,8 @@ pub fn start_audio_monitor(
     stop_any_audio_monitor(state);
     let id = uuid::Uuid::new_v4().to_string();
     let meter: crate::services::speech_audio::SharedCaptureMeter = Arc::default();
-    let capture = crate::services::speech_audio::PlatformAudioCapture::start(None, sources, Some(Arc::clone(&meter)))?;
+    let devices = crate::services::audio_devices::for_capture(app);
+    let capture = crate::services::speech_audio::PlatformAudioCapture::start(None, sources, Some(Arc::clone(&meter)), &devices)?;
     let expiry_app = app.clone();
     let expiry_id = id.clone();
     let levels = crate::services::speech_levels::LevelReporter::start(
@@ -958,6 +962,8 @@ struct DiarizationSetup<'a> {
     runtime_path: Option<&'a std::path::Path>,
     model: Option<&'a crate::services::speech_model_repository::ResolvedDiarizationModel>,
     expected_speakers: Option<u32>,
+    /// The session's recognition model and language, for the final pass.
+    asr: &'a WhisperAsrConfig,
 }
 
 /// Returned when the person skipped the speaker separation.
@@ -1067,6 +1073,7 @@ fn handle_worker_event(
                             runtime_path,
                             model,
                             diarization.expected_speakers,
+                            diarization.asr,
                             &audio,
                             &lines,
                         )
@@ -1122,9 +1129,11 @@ fn emit_finalizing(app: &AppHandle, session_id: &str, stage: &'static str, progr
     );
 }
 
-/// Separates the speakers of the recording window by window and gives each
-/// live line its speaker. Reports the stage and progress of each window and
-/// stops when the person skips it.
+/// Separates the speakers of the recording window by window. On a GPU the
+/// final pass transcribes each window again and gives every word its speaker;
+/// elsewhere, or when that pass fails, each live line takes its speaker.
+/// Reports the stage and progress of each window and stops when the person
+/// skips it.
 #[cfg(any(target_os = "windows", target_os = "android"))]
 #[allow(clippy::too_many_arguments)]
 fn diarize_recorded_audio(
@@ -1133,6 +1142,7 @@ fn diarize_recorded_audio(
     runtime_path: &std::path::Path,
     model: &crate::services::speech_model_repository::ResolvedDiarizationModel,
     expected_speakers: Option<u32>,
+    asr: &WhisperAsrConfig,
     audio: &crate::services::speech_worker::RecordedAudio,
     lines: &[ConfirmedLine],
 ) -> Result<DiarizedTranscriptDto, String> {
@@ -1152,6 +1162,7 @@ fn diarize_recorded_audio(
                 None
             }
         };
+    let mut final_pass = load_final_pass(app, asr);
     let mut speaker_registry = GlobalSpeakerRegistry::new();
     let mut transcript = DiarizedTranscriptDto {
         text: String::new(),
@@ -1174,7 +1185,8 @@ fn diarize_recorded_audio(
         if diarization_skipped(app, session_id) {
             return Err(DIARIZATION_SKIPPED.to_string());
         }
-        emit_finalizing(app, session_id, "assigning-turns", (window + 0.5) / window_count);
+        let mut stage = if final_pass.is_some() { "second-pass" } else { "assigning-turns" };
+        emit_finalizing(app, session_id, stage, (window + 0.5) / window_count);
         let embeddings = match embedding_extractor.as_ref() {
             Some(extractor) => match extractor.extract(samples, &diarization) {
                 Ok(embeddings) => embeddings,
@@ -1199,17 +1211,43 @@ fn diarize_recorded_audio(
             })
             .collect::<Vec<_>>();
         let mut last_reported = -1.0_f32;
-        let chunk = attribute_lines(app, samples, window_start, &diarization, &window_lines, &mut |done, total| {
+        let mut report = |stage: &'static str, done: usize, total: usize| {
             if diarization_skipped(app, session_id) {
                 return Err(DIARIZATION_SKIPPED.to_string());
             }
             let progress = (window + 0.5 + 0.5 * done as f32 / total.max(1) as f32) / window_count;
             if progress - last_reported >= 0.01 {
                 last_reported = progress;
-                emit_finalizing(app, session_id, "assigning-turns", progress);
+                emit_finalizing(app, session_id, stage, progress);
             }
             Ok(())
-        })?;
+        };
+        let retranscribed = match final_pass.as_mut() {
+            Some(pass) => match final_pass_chunk(
+                pass,
+                samples,
+                window_start,
+                &diarization,
+                &window_lines,
+                &mut |done, total| report("second-pass", done, total),
+            ) {
+                Ok(chunk) => Some(chunk),
+                Err(message) if message == DIARIZATION_SKIPPED => return Err(message),
+                Err(message) => {
+                    log::warn!("[notia:speech] the final pass failed; the recording keeps its live text: {message}");
+                    final_pass = None;
+                    stage = "assigning-turns";
+                    None
+                }
+            },
+            None => None,
+        };
+        let chunk = match retranscribed {
+            Some(chunk) => chunk,
+            None => attribute_lines(app, samples, window_start, &diarization, &window_lines, &mut |done, total| {
+                report(stage, done, total)
+            })?,
+        };
         append_diarized_chunk(
             &mut transcript,
             chunk,
@@ -1225,6 +1263,118 @@ fn diarize_recorded_audio(
         return Err("La diarización no produjo segmentos de voz.".to_string());
     }
     Ok(transcript)
+}
+
+/// The final pass: Whisper large-v3 on a GPU. `None` on a CPU or without the
+/// model, where the live lines keep their text: a second pass with the live
+/// model (large-v3-turbo) wrote worse text than the live one on the probe
+/// meetings (3.4 % of words wrong against 3.1 %; large-v3, 2.6 %).
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn load_final_pass(app: &AppHandle, asr: &WhisperAsrConfig) -> Option<crate::services::whisper_recognizer::WhisperFinalPass> {
+    #[cfg(target_os = "windows")]
+    {
+        let model = crate::services::speech_model_repository::resolve_final_pass_model(app)?;
+        let loaded = crate::services::whisper_runtime::runtime_path(app).and_then(|runtime| {
+            crate::services::whisper_recognizer::WhisperFinalPass::load(&runtime, &model, "large-v3", &asr.language)
+        });
+        match loaded {
+            Ok(pass) => pass,
+            Err(message) => {
+                log::warn!("[notia:speech] the final pass is unavailable; the recording keeps its live text: {message}");
+                None
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, asr);
+        None
+    }
+}
+
+/// A window transcribed again by the final pass. Its live lines are decoded
+/// again in blocks of up to 28 s with the time of each word, and each word
+/// replaces the live text of the line that holds it: the lines keep the cuts
+/// the voice detector made at each pause, which separated speakers better on
+/// the probe conversations than the word times (98 % of the words with their
+/// speaker against 95 %). A line keeps its speakers as `attribute_lines`
+/// gives them; across a speaker change it splits at the first word said
+/// after the change, without transcribing again. A line the pass heard
+/// less than half of its live words in keeps its live text: Whisper may skip
+/// a whole sentence of a block. `on_block` hears the progress before each
+/// block and stops the pass with an error.
+#[cfg(any(target_os = "windows", target_os = "android"))]
+fn final_pass_chunk(
+    pass: &mut crate::services::whisper_recognizer::WhisperFinalPass,
+    samples: &[f32],
+    window_start: usize,
+    diarization: &crate::services::sherpa_diarization::DiarizationResult,
+    lines: &[&ConfirmedLine],
+    on_block: &mut dyn FnMut(usize, usize) -> Result<(), String>,
+) -> Result<DiarizedTranscriptDto, String> {
+    use crate::services::speech_worker::samples_to_ms;
+    use notia_backend_core::timed_transcript::{words_by_span, TimedWord};
+
+    let turns = speaker_turns(&diarization.segments);
+    // Samples of each line inside this window.
+    let local = |line: &ConfirmedLine| {
+        let start = (line.span.start.saturating_sub(window_start as u64) as usize).min(samples.len());
+        start..(line.span.end.saturating_sub(window_start as u64) as usize).clamp(start, samples.len())
+    };
+    let ranges = lines.iter().map(|line| local(line)).collect::<Vec<_>>();
+    let blocks = crate::services::whisper_recognizer::final_pass_blocks(samples, &ranges);
+    let mut words = Vec::<TimedWord>::new();
+    for (index, block) in blocks.iter().enumerate() {
+        on_block(index, blocks.len())?;
+        words.extend(pass.transcribe(&samples[block.clone()], samples_to_ms(block.start as u64))?);
+    }
+    let spans = ranges.iter().map(|range| (samples_to_ms(range.start as u64), samples_to_ms(range.end as u64))).collect::<Vec<_>>();
+    let mut segments = Vec::<SpeechTranscriptSegmentDto>::with_capacity(lines.len());
+    let mut push = |start_ms: u64, end_ms: u64, speaker: Option<i32>, text: String| {
+        if !text.is_empty() {
+            segments.push(SpeechTranscriptSegmentDto {
+                id: format!("segment-{}", segments.len() + 1),
+                start_ms,
+                end_ms,
+                speaker_id: speaker.map(|speaker| format!("speaker-{}", speaker + 1)),
+                text,
+                is_final: true,
+            });
+        }
+    };
+    let joined = |words: &[TimedWord]| pass.clean(&words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>().join(" "));
+    for ((line, range), line_words) in lines.iter().zip(&ranges).zip(words_by_span(&words, &spans)) {
+        let pieces = line_pieces(&turns, samples_to_seconds(range.start), samples_to_seconds(range.end));
+        let (start_ms, end_ms) = (samples_to_ms(range.start as u64), samples_to_ms(range.end as u64));
+        let text = joined(&line_words);
+        // Whisper sometimes skips a whole sentence of a block: a line that
+        // lost more than half of its live words keeps them.
+        let skipped = text.split_whitespace().count() * 2 < line.text.split_whitespace().count();
+        if pieces.len() == 1 || skipped {
+            let speaker = pieces
+                .iter()
+                .max_by(|left, right| left.duration().total_cmp(&right.duration()))
+                .and_then(|piece| piece.speaker);
+            push(start_ms, end_ms, speaker, if skipped { line.text.clone() } else { text });
+            continue;
+        }
+        for piece in &pieces {
+            let (piece_start, piece_end) = piece.sample_range();
+            let (piece_start, piece_end) = (samples_to_ms(piece_start as u64), samples_to_ms(piece_end as u64));
+            let inside = line_words
+                .iter()
+                .filter(|word| (piece_start..piece_end).contains(&word.start_ms.clamp(start_ms, end_ms.saturating_sub(1))))
+                .cloned()
+                .collect::<Vec<_>>();
+            push(piece_start, piece_end, piece.speaker, joined(&inside));
+        }
+    }
+    let text = segments.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
+    Ok(DiarizedTranscriptDto {
+        text,
+        segments,
+        speaker_count: diarization.speaker_count,
+    })
 }
 
 /// Where each diarization window ends: about every 15 minutes, in the pause
@@ -2315,5 +2465,133 @@ mod tests {
             "Cuáles son las causas de la contaminación del agua?"
         );
         assert_eq!(words[boundary..].join(" "), "Hombre hay muchos factores");
+    }
+
+    /// Runs every 16 kHz mono WAV of `NOTIA_FINAL_PROBE_DIR` through the live
+    /// recognizer, the diarization and both ways of giving the text its
+    /// speakers: live lines (`.attr.txt`, re-transcribing the lines across a
+    /// speaker change) and the final pass with turbo (`.final-turbo.txt`) and
+    /// large-v3 (`.final-large.txt`). Each line is `start_ms end_ms speaker
+    /// text`. `NOTIA_FINAL_EXPECTED` passes the count of `<stem>.speakers.txt`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires the speech models, the whisper.cpp and sherpa-onnx runtimes and a GPU"]
+    fn final_pass_probe_recordings() {
+        use super::{final_pass_chunk, transcribe_piece};
+        use crate::dto::speech::SpeechTranscriptSegmentDto;
+        use crate::services::speech_model_repository::{ResolvedDiarizationModel, DIARIZATION_CLUSTERING_THRESHOLD};
+        use crate::services::speech_worker::{samples_to_ms, StreamingRecognizer};
+        use crate::services::whisper_recognizer::{WhisperAsrConfig, WhisperFinalPass, WhisperVadRecognizer};
+        use std::path::PathBuf;
+
+        let Ok(dir) = std::env::var("NOTIA_FINAL_PROBE_DIR") else {
+            return;
+        };
+        let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+        let whisper_runtime = root.join("resources/whisper/runtime/windows-x86_64/notia_whisper.dll");
+        let sherpa_runtime = root.join("resources/speech/runtime/windows-x86_64/sherpa-onnx-c-api.dll");
+        let models = root.join("resources/speech/models");
+        let turbo = models.join("whisper-large-v3-turbo/ggml-large-v3-turbo-q8_0.bin");
+        let large = models.join("whisper-large-v3/ggml-large-v3-q5_0.bin");
+        let asr = WhisperAsrConfig {
+            model: turbo.clone(),
+            vad: models.join("whisper-large-v3-turbo/silero_vad.onnx"),
+            num_threads: 4,
+            language: "es".to_string(),
+        };
+        let diarization_model = ResolvedDiarizationModel {
+            segmentation: models.join("speaker-diarization-v2/segmentation.onnx"),
+            embedding: models.join("speaker-diarization-v2/embedding.onnx"),
+            num_threads: 4,
+            clustering_threshold: DIARIZATION_CLUSTERING_THRESHOLD,
+        };
+        let format = |segments: &[SpeechTranscriptSegmentDto]| {
+            segments
+                .iter()
+                .map(|segment| {
+                    format!("{} {} {} {}", segment.start_ms, segment.end_ms, segment.speaker_id.as_deref().unwrap_or("-"), segment.text)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut wavs = std::fs::read_dir(&dir)
+            .expect("probe dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "wav"))
+            .collect::<Vec<_>>();
+        wavs.sort();
+        for wav in wavs {
+            let samples = hound::WavReader::open(&wav)
+                .expect("wav")
+                .into_samples::<i16>()
+                .map(|sample| f32::from(sample.expect("sample")) / f32::from(i16::MAX))
+                .collect::<Vec<_>>();
+            let stem = wav.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_string();
+            let output = |suffix: &str, text: String| std::fs::write(wav.with_file_name(format!("{stem}.{suffix}.txt")), text).expect("write");
+
+            let mut recognizer = WhisperVadRecognizer::load(&whisper_runtime, &sherpa_runtime, &asr).expect("recognizer");
+            recognizer.enable_live_partials();
+            let mut confirmed = ConfirmedSpeech::default();
+            for batch in samples.chunks(3_200) {
+                let update = recognizer.accept_waveform(batch).expect("accept");
+                if update.endpoint_detected {
+                    confirmed.confirm(&update.text, update.span);
+                }
+            }
+            let update = recognizer.finish().expect("finish");
+            confirmed.confirm(&update.text, update.span);
+            let lines = confirmed.lines.iter().collect::<Vec<_>>();
+
+            let expected = std::env::var("NOTIA_FINAL_EXPECTED")
+                .ok()
+                .and_then(|_| std::fs::read_to_string(wav.with_extension("speakers.txt")).ok())
+                .and_then(|text| text.trim().parse().ok());
+            let diarization =
+                crate::services::sherpa_diarization::process(&sherpa_runtime, &diarization_model, &samples, expected).expect("diarize");
+
+            // Live lines, as `attribute_lines` gives them their speakers.
+            let turns = speaker_turns(&diarization.segments);
+            let mut keep_live = |lines: &[&super::ConfirmedLine]| -> Result<Vec<SpeechTranscriptSegmentDto>, String> {
+                let mut segments = Vec::new();
+                for line in lines {
+                    let (start, end) = (line.span.start as usize, (line.span.end as usize).min(samples.len()));
+                    let pieces = line_pieces(&turns, start as f32 / 16_000.0, end as f32 / 16_000.0);
+                    let mut push = |start: usize, end: usize, speaker: Option<i32>, text: String| {
+                        segments.push(SpeechTranscriptSegmentDto {
+                            id: String::new(),
+                            start_ms: samples_to_ms(start as u64),
+                            end_ms: samples_to_ms(end as u64),
+                            speaker_id: speaker.map(|speaker| format!("speaker-{}", speaker + 1)),
+                            text,
+                            is_final: true,
+                        })
+                    };
+                    if pieces.len() > 1 {
+                        for piece in pieces {
+                            let (piece_start, piece_end) = piece.sample_range();
+                            let text = transcribe_piece(&mut recognizer, &samples[piece_start..piece_end.min(samples.len())])?;
+                            if !text.is_empty() {
+                                push(piece_start, piece_end, piece.speaker, text);
+                            }
+                        }
+                    } else {
+                        push(start, end, pieces[0].speaker, line.text.clone());
+                    }
+                }
+                Ok(segments)
+            };
+            output("attr", format(&keep_live(&lines).expect("attribute")));
+            drop(keep_live);
+            drop(recognizer);
+
+            for (label, model, alignment) in [("final-turbo", &turbo, "large-v3-turbo"), ("final-large", &large, "large-v3")] {
+                let started = std::time::Instant::now();
+                let mut pass = WhisperFinalPass::load(&whisper_runtime, model, alignment, "es").expect("final pass").expect("a GPU");
+                let chunk = final_pass_chunk(&mut pass, &samples, 0, &diarization, &lines, &mut |_, _| Ok(())).expect("final pass");
+                output(label, format(&chunk.segments));
+                eprintln!("{stem} {label}: {} segments in {:.1} s", chunk.segments.len(), started.elapsed().as_secs_f32());
+            }
+            eprintln!("{stem}: {} live lines, {} speakers", lines.len(), diarization.speaker_count);
+        }
     }
 }

@@ -182,6 +182,7 @@ fn route(command: &str) -> Option<Route> {
         "prepare_device_speech_model" => prepare_speech_model,
         "get_speech_model_status" => get_speech_model_status,
         "probe_speech_audio_input" => probe_speech_audio_input,
+        "speech_audio_devices" => speech_audio_devices,
         "probe_sherpa_runtime" => probe_sherpa_runtime,
         "start_speech_session" => start_speech_session,
         "pause_speech_session" => pause_speech_session,
@@ -227,6 +228,9 @@ fn route(command: &str) -> Option<Route> {
         "meeting_store_note" => meeting_store_note,
         "meeting_store_tasks" => meeting_store_tasks,
         "meeting_ai_complete" => meeting_ai_complete,
+        "meeting_history" => meeting_history,
+        "meeting_open_saved" => meeting_open_saved,
+        "meeting_saved_archive" => meeting_saved_archive,
         "get_qwen3_tts_status" => get_qwen3_tts_status,
         "reload_qwen3_tts" => reload_qwen3_tts,
         "synthesize_qwen3_tts_speech" => synthesize_qwen3_tts_speech,
@@ -459,6 +463,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "prepare_device_speech_model",
     "get_speech_model_status",
     "probe_speech_audio_input",
+    "speech_audio_devices",
     "probe_sherpa_runtime",
     "start_speech_session",
     "pause_speech_session",
@@ -504,6 +509,9 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_store_note",
     "meeting_store_tasks",
     "meeting_ai_complete",
+    "meeting_history",
+    "meeting_open_saved",
+    "meeting_saved_archive",
     "get_qwen3_tts_status",
     "reload_qwen3_tts",
     "synthesize_qwen3_tts_speech",
@@ -571,6 +579,7 @@ pub const COMMAND_NAMES: &[&str] = &[
 /// may call them; remote clients of the headless server cannot.
 pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "probe_speech_audio_input",
+    "speech_audio_devices",
     // The recognizer of this device (a client records on its own device).
     "prepare_device_speech_model",
     "start_speech_session",
@@ -610,6 +619,9 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_store_note",
     "meeting_store_tasks",
     "meeting_ai_complete",
+    "meeting_history",
+    "meeting_open_saved",
+    "meeting_saved_archive",
     "coldpass_bluetooth_status",
     "coldpass_bluetooth_connect",
     "coldpass_bluetooth_submit_pin",
@@ -657,6 +669,8 @@ pub const HOST_CLIENT_COMMANDS: &[&str] = &[
     "meeting_store_note",
     "meeting_store_tasks",
     "meeting_ai_complete",
+    "meeting_history",
+    "meeting_saved_archive",
 ];
 
 pub fn is_host_client_command(command: &str) -> bool {
@@ -1394,6 +1408,10 @@ fn probe_speech_audio_input(app: &AppHandle, _window_label: &str, _command: &str
     Ok(Dispatch::Ready(reply_value(crate::commands::speech::probe_speech_audio_input(app.state()))))
 }
 
+fn speech_audio_devices(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_value(crate::services::audio_devices::list(app))))
+}
+
 fn probe_sherpa_runtime(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_value(crate::commands::speech::probe_sherpa_runtime(app.clone()))))
 }
@@ -1581,6 +1599,24 @@ fn meeting_generate_insights(app: &AppHandle, _window_label: &str, command: &str
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting::meeting_generate_insights(arg0, arg1).await) })))
+}
+
+fn meeting_history(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting_history::meeting_history(arg0, arg1).await) })))
+}
+
+fn meeting_open_saved(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting_history::meeting_open_saved(arg0, arg1).await) })))
+}
+
+fn meeting_saved_archive(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::meeting_history::meeting_saved_archive(arg0, arg1).await) })))
 }
 
 fn meeting_save_note(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

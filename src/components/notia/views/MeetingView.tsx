@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { shallowEqual } from 'react-redux'
-import { ArrowUpFromLine, Check, ChevronDown, CircleStop, Download, EllipsisVertical, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, Search, X } from 'lucide-react'
+import { ArrowUpFromLine, Check, ChevronDown, CircleStop, Clock, Download, EllipsisVertical, FileText, Flag, Lock, Mic, Pause, Play, RotateCcw, Search, X } from 'lucide-react'
 import { useVoiceTranscription } from './chat/useVoiceTranscription'
 import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import { useAppDispatch, useAppSelector } from '../../../store/hooks'
@@ -40,9 +40,12 @@ import { MeetingPhoneProcessing } from './meeting/MeetingPhoneProcessing'
 import { MeetingPhoneCompleted } from './meeting/MeetingPhoneCompleted'
 import { MeetingPhoneMenu } from './meeting/MeetingPhoneMenu'
 import { useMeetingSnapshot } from './meeting/useMeetingSnapshot'
+import { useMeetingHistory } from './meeting/useMeetingHistory'
+import { MeetingHistoryPanel, MeetingPhoneHistory } from './meeting/MeetingHistoryPanel'
 import { useFollowMeetingSession } from './meeting/useFollowMeetingSession'
 import { useSpeechLevels } from './meeting/useSpeechLevels'
 import { useMeetingAiContext } from './meeting/useMeetingAiContext'
+import { useAudioDevices } from './meeting/useAudioDevices'
 import { MeetingMarkComposer, type MeetingAiNotesActions } from './meeting/MeetingAiNotesPanel'
 import { formatClock } from './meeting/meetingDisplay'
 import './meeting/meetingPhone.css'
@@ -80,6 +83,7 @@ function MeetingViewComponent() {
   // Notas IA starts on (canvas «Grabando»); the backend keeps it off without an AI configured.
   const [aiNotes, setAiNotes] = useState(true)
   const { state: aiContextState, aiContext } = useMeetingAiContext(library)
+  const audioDevices = useAudioDevices()
   // «Nueva marca» open, with the minute it was opened at.
   const [markDraft, setMarkDraft] = useState<{ atMs: number | undefined } | null>(null)
   const [monitorId, setMonitorId] = useState<string | null>(null)
@@ -103,6 +107,7 @@ function MeetingViewComponent() {
   const phone = useNarrowContainer(root, PHONE_MAX_WIDTH)
   const [phoneSheet, setPhoneSheet] = useState<MeetingPhoneSheet | null>(null)
   const [phoneSearchOpen, setPhoneSearchOpen] = useState(false)
+  const [phoneHistoryOpen, setPhoneHistoryOpen] = useState(false)
 
   const meetingOptions = useMemo(
     () => ({ liveAnswers, aiNotes, settings: meetingAiSettings(aiPreferences), aiContext }),
@@ -141,6 +146,7 @@ function MeetingViewComponent() {
     if (await ensureFollowing()) await action()
   }
   const levels = useSpeechLevels(stage === 'recording' ? snapshot?.id ?? null : monitorId, LEVEL_HISTORY)
+  const history = useMeetingHistory(library?.id ?? null, stage === 'ready')
 
   const contextMeetingId = snapshot?.id ?? null
   const hasTranscript = Boolean(snapshot && (snapshot.lines.length > 0 || snapshot.totalTurns > 0 || snapshot.notes.trim()))
@@ -154,6 +160,7 @@ function MeetingViewComponent() {
     setExportMenuOpen(false)
     setPhoneSheet(null)
     setPhoneSearchOpen(false)
+    setPhoneHistoryOpen(false)
     setMarkDraft(null)
   }, [stage])
 
@@ -278,6 +285,7 @@ function MeetingViewComponent() {
         mediaId: fileState.media.mediaId,
         language: speechRecognition.language,
         expectedSpeakers,
+        settings: meetingAiSettings(aiPreferences),
       })
       // The session owns the file now; the view follows it as a meeting.
       readyMediaIdRef.current = null
@@ -540,6 +548,15 @@ function MeetingViewComponent() {
                 <span className="notia-meeting-pill-dot" aria-hidden="true" />
                 <span className="notia-meeting-phone-pill-text">{readyLabelFor('Lista')}</span>
               </span>
+              <button
+                type="button"
+                className="notia-meeting-phone-icon"
+                aria-label="Reuniones anteriores"
+                aria-pressed={phoneHistoryOpen}
+                onClick={() => setPhoneHistoryOpen((open) => !open)}
+              >
+                <Clock size={19} aria-hidden="true" />
+              </button>
             </>
           ) : stage === 'recording' ? (
             <>
@@ -595,7 +612,9 @@ function MeetingViewComponent() {
           )}
         </header>
         {errorMessage || notice ? <div className="notia-meeting-phone-banners">{banners}</div> : null}
-        {stage === 'ready' ? (
+        {stage === 'ready' && phoneHistoryOpen ? (
+          <MeetingPhoneHistory history={history} hasLibrary={Boolean(library)} onNewMeeting={() => setPhoneHistoryOpen(false)} />
+        ) : stage === 'ready' ? (
           <MeetingPhoneSetup
             tab={sourceTab}
             onSelectTab={setSourceTab}
@@ -649,154 +668,163 @@ function MeetingViewComponent() {
   return (
     <main className="notia-main notia-meeting-view" {...rootProps}>
       {stage === 'ready' ? (
-        <header className="notia-meeting-intro">
-          <div>
-            <span className="notia-meeting-eyebrow"><Lock size={14} aria-hidden="true" /> Transcripción local</span>
-            <h1>Meeting</h1>
-            <p>{sourceTab === 'file'
-              ? 'Subí una grabación que ya tengas y Notia la transcribe entera, separada por hablante.'
-              : 'Nombrá la reunión y elegí las fuentes. Al finalizar, Notia separa las intervenciones por hablante.'}</p>
+        <div className="notia-meeting-ready-layout">
+          <div className="notia-meeting-ready-main">
+            <header className="notia-meeting-intro">
+              <div>
+                <span className="notia-meeting-eyebrow"><Lock size={14} aria-hidden="true" /> Transcripción local</span>
+                <h1>Meeting</h1>
+                <p>{sourceTab === 'file'
+                  ? 'Subí una grabación que ya tengas y Notia la transcribe entera, separada por hablante.'
+                  : 'Nombrá la reunión y elegí las fuentes. Al finalizar, Notia separa las intervenciones por hablante.'}</p>
           </div>
           <span className="notia-meeting-pill" role="status" aria-live="polite" data-ready={fileReady ? 'true' : undefined}>
             <span className="notia-meeting-pill-dot" aria-hidden="true" />{readyLabel}
           </span>
         </header>
-      ) : (
-        <header className="notia-meeting-bar">
-          <div className="notia-meeting-bar-title">
-            <h1>Meeting</h1>
-            {stage === 'recording' ? (
-              <span className="notia-meeting-pill notia-meeting-pill--recording" role="status">
-                <span className="notia-meeting-pill-dot" aria-hidden="true" />
-                {status === 'paused' ? 'En pausa' : 'Grabando'}
-                <span className="notia-meeting-mono">{formatClock(elapsedMs)}</span>
-              </span>
-            ) : stage === 'processing' ? (
-              <span className="notia-meeting-pill" role="status">
-                <span className="notia-meeting-pill-dot" aria-hidden="true" />{transcribingFile ? 'Transcribiendo archivo' : 'Separando hablantes'}
-              </span>
-            ) : (
-              <span className="notia-meeting-pill notia-meeting-pill--done" role="status">
-                <Check size={13} aria-hidden="true" />Finalizada
-                <span className="notia-meeting-pill-detail">
-                  · {formatClock(snapshot?.durationMs ?? 0)}{speakerCount > 0 ? ` · ${speakerCount} ${speakerCount === 1 ? 'hablante' : 'hablantes'}` : ''}
-                </span>
-              </span>
-            )}
+        {banners}
+        <MeetingSourceTabs selected={sourceTab} onSelect={setSourceTab} />
+        {sourceTab === 'file' ? (
+          <MeetingUploadPanel {...fileSetup} {...optionProps} />
+        ) : (
+          <MeetingReadyPanel
+            {...liveSetup}
+            {...optionProps}
+            aiContext={aiContextState}
+            audioDevices={audioDevices}
+            microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'}
+          />
+        )}
           </div>
-          {stage === 'recording' ? (
-            <div className="notia-meeting-actions">
-              <div className="notia-meeting-menu">
-                <button
-                  type="button"
-                  className="notia-meeting-secondary-button"
-                  aria-expanded={markDraft !== null}
-                  aria-controls={markDraft ? 'meeting-mark-popover' : undefined}
-                  data-open={markDraft ? 'true' : undefined}
-                  onClick={() => (markDraft ? setMarkDraft(null) : openMarkComposer())}
-                  disabled={!meetingId || status !== 'recording'}
-                >
-                  <Flag size={14} aria-hidden="true" /> Marcar momento
-                </button>
-                {markDraft ? (
-                  <MeetingMarkComposer atMs={markDraft.atMs ?? elapsedMs} onSave={saveMark} onCancel={() => setMarkDraft(null)} />
-                ) : null}
-              </div>
-              {status === 'paused' ? (
-                <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.resume().catch(() => undefined)}>
-                  <Play size={14} aria-hidden="true" /> Reanudar
-                </button>
+          <MeetingHistoryPanel history={history} hasLibrary={Boolean(library)} />
+        </div>
+      ) : (
+        <>
+          <header className="notia-meeting-bar">
+            <div className="notia-meeting-bar-title">
+              <h1>Meeting</h1>
+              {stage === 'recording' ? (
+                <span className="notia-meeting-pill notia-meeting-pill--recording" role="status">
+                  <span className="notia-meeting-pill-dot" aria-hidden="true" />
+                  {status === 'paused' ? 'En pausa' : 'Grabando'}
+                  <span className="notia-meeting-mono">{formatClock(elapsedMs)}</span>
+                </span>
+              ) : stage === 'processing' ? (
+                <span className="notia-meeting-pill" role="status">
+                  <span className="notia-meeting-pill-dot" aria-hidden="true" />{transcribingFile ? 'Transcribiendo archivo' : 'Separando hablantes'}
+                </span>
               ) : (
-                <button type="button" className="notia-meeting-secondary-button" onClick={() => void onSession(voice.pause)()}>
-                  <Pause size={14} aria-hidden="true" /> Pausar
-                </button>
+                <span className="notia-meeting-pill notia-meeting-pill--done" role="status">
+                  <Check size={13} aria-hidden="true" />Finalizada
+                  <span className="notia-meeting-pill-detail">
+                    · {formatClock(snapshot?.durationMs ?? 0)}{speakerCount > 0 ? ` · ${speakerCount} ${speakerCount === 1 ? 'hablante' : 'hablantes'}` : ''}
+                  </span>
+                </span>
               )}
-              <button type="button" className="notia-meeting-primary-button" onClick={() => void onSession(voice.stop)()}>
-                <CircleStop size={14} aria-hidden="true" /> Finalizar
-              </button>
-              <button type="button" className="notia-meeting-ghost-button" onClick={() => void onSession(voice.cancel)()}>
-                <RotateCcw size={14} aria-hidden="true" /> Cancelar
-              </button>
             </div>
-          ) : stage === 'completed' ? (
-            <div className="notia-meeting-actions">
-              <button type="button" className="notia-meeting-secondary-button" onClick={() => void newRecording()} disabled={busyAction !== null}>
-                <Mic size={14} aria-hidden="true" /> Nueva grabación
-              </button>
-              <div className="notia-meeting-menu">
+            {stage === 'recording' ? (
+              <div className="notia-meeting-actions">
+                <div className="notia-meeting-menu">
+                  <button
+                    type="button"
+                    className="notia-meeting-secondary-button"
+                    aria-expanded={markDraft !== null}
+                    aria-controls={markDraft ? 'meeting-mark-popover' : undefined}
+                    data-open={markDraft ? 'true' : undefined}
+                    onClick={() => (markDraft ? setMarkDraft(null) : openMarkComposer())}
+                    disabled={!meetingId || status !== 'recording'}
+                  >
+                    <Flag size={14} aria-hidden="true" /> Marcar momento
+                  </button>
+                  {markDraft ? (
+                    <MeetingMarkComposer atMs={markDraft.atMs ?? elapsedMs} onSave={saveMark} onCancel={() => setMarkDraft(null)} />
+                  ) : null}
+                </div>
+                {status === 'paused' ? (
+                  <button type="button" className="notia-meeting-secondary-button" onClick={() => void voice.resume().catch(() => undefined)}>
+                    <Play size={14} aria-hidden="true" /> Reanudar
+                  </button>
+                ) : (
+                  <button type="button" className="notia-meeting-secondary-button" onClick={() => void onSession(voice.pause)()}>
+                    <Pause size={14} aria-hidden="true" /> Pausar
+                  </button>
+                )}
+                <button type="button" className="notia-meeting-primary-button" onClick={() => void onSession(voice.stop)()}>
+                  <CircleStop size={14} aria-hidden="true" /> Finalizar
+                </button>
+                <button type="button" className="notia-meeting-ghost-button" onClick={() => void onSession(voice.cancel)()}>
+                  <RotateCcw size={14} aria-hidden="true" /> Cancelar
+                </button>
+              </div>
+            ) : stage === 'completed' ? (
+              <div className="notia-meeting-actions">
+                <button type="button" className="notia-meeting-secondary-button" onClick={() => void newRecording()} disabled={busyAction !== null}>
+                  <Mic size={14} aria-hidden="true" /> Nueva grabación
+                </button>
+                <div className="notia-meeting-menu">
+                  <button
+                    type="button"
+                    className="notia-meeting-secondary-button"
+                    aria-haspopup="menu"
+                    aria-expanded={exportMenuOpen}
+                    onClick={() => setExportMenuOpen((open) => !open)}
+                    disabled={!library || busyAction !== null}
+                  >
+                    <Download size={14} aria-hidden="true" /> {busyAction === 'export' ? 'Exportando…' : 'Exportar'}
+                    <ChevronDown size={13} aria-hidden="true" />
+                  </button>
+                  {exportMenuOpen ? (
+                    <div className="notia-meeting-menu-list" role="menu">
+                      <button type="button" role="menuitem" onClick={() => void exportAs('pdf')}>PDF</button>
+                      <button type="button" role="menuitem" onClick={() => void exportAs('docx')}>Word (.docx)</button>
+                    </div>
+                  ) : null}
+                </div>
+                {snapshot?.savedNotePath ? (
+                  <button type="button" className="notia-meeting-secondary-button" onClick={() => void openFile(snapshot.savedNotePath ?? '')}>
+                    <FileText size={14} aria-hidden="true" /> Abrir nota
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  className="notia-meeting-secondary-button"
-                  aria-haspopup="menu"
-                  aria-expanded={exportMenuOpen}
-                  onClick={() => setExportMenuOpen((open) => !open)}
+                  className="notia-meeting-primary-button"
+                  onClick={() => void saveNote()}
                   disabled={!library || busyAction !== null}
+                  title={library ? undefined : 'Abrí una biblioteca para guardar la reunión'}
                 >
-                  <Download size={14} aria-hidden="true" /> {busyAction === 'export' ? 'Exportando…' : 'Exportar'}
-                  <ChevronDown size={13} aria-hidden="true" />
+                  <FileText size={14} aria-hidden="true" />
+                  {busyAction === 'save' ? 'Guardando…' : snapshot?.savedNotePath ? 'Actualizar nota' : 'Guardar como nota'}
                 </button>
-                {exportMenuOpen ? (
-                  <div className="notia-meeting-menu-list" role="menu">
-                    <button type="button" role="menuitem" onClick={() => void exportAs('pdf')}>PDF</button>
-                    <button type="button" role="menuitem" onClick={() => void exportAs('docx')}>Word (.docx)</button>
-                  </div>
-                ) : null}
               </div>
-              {snapshot?.savedNotePath ? (
-                <button type="button" className="notia-meeting-secondary-button" onClick={() => void openFile(snapshot.savedNotePath ?? '')}>
-                  <FileText size={14} aria-hidden="true" /> Abrir nota
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="notia-meeting-primary-button"
-                onClick={() => void saveNote()}
-                disabled={!library || busyAction !== null}
-                title={library ? undefined : 'Abrí una biblioteca para guardar la reunión'}
-              >
-                <FileText size={14} aria-hidden="true" />
-                {busyAction === 'save' ? 'Guardando…' : snapshot?.savedNotePath ? 'Actualizar nota' : 'Guardar como nota'}
-              </button>
-            </div>
-          ) : null}
-        </header>
+            ) : null}
+          </header>
+
+        {banners}
+
+        {stage === 'recording' ? (
+          <MeetingRecordingPanel
+            snapshot={snapshot}
+            partialText={voice.visiblePartialText}
+            levels={levels}
+            onToggleLiveAnswers={answerActions.onToggleLiveAnswers}
+            onRegenerateAnswer={answerActions.onRegenerateAnswer}
+            onPinAnswer={answerActions.onPinAnswer}
+            notesActions={notesActions}
+            canAddNote={Boolean(meetingId)}
+          />
+        ) : stage === 'processing' ? (
+          <MeetingProcessingPanel {...processingProps} />
+        ) : snapshot ? (
+          <MeetingCompletedPanel
+            snapshot={snapshot}
+            filter={filter}
+            onFilterChange={setFilter}
+            aiPreferences={aiPreferences}
+            library={library}
+          />
+        ) : null}
+        </>
       )}
-
-      {banners}
-
-      {stage === 'ready' ? <MeetingSourceTabs selected={sourceTab} onSelect={setSourceTab} /> : null}
-
-      {stage === 'ready' && sourceTab === 'file' ? (
-        <MeetingUploadPanel {...fileSetup} {...optionProps} />
-      ) : stage === 'ready' ? (
-        <MeetingReadyPanel
-          {...liveSetup}
-          {...optionProps}
-          aiContext={aiContextState}
-          microphoneLabel={voice.audioInput?.deviceLabel ?? 'Micrófono predeterminado'}
-        />
-      ) : stage === 'recording' ? (
-        <MeetingRecordingPanel
-          snapshot={snapshot}
-          partialText={voice.visiblePartialText}
-          levels={levels}
-          onToggleLiveAnswers={answerActions.onToggleLiveAnswers}
-          onRegenerateAnswer={answerActions.onRegenerateAnswer}
-          onPinAnswer={answerActions.onPinAnswer}
-          notesActions={notesActions}
-          canAddNote={Boolean(meetingId)}
-        />
-      ) : stage === 'processing' ? (
-        <MeetingProcessingPanel {...processingProps} />
-      ) : snapshot ? (
-        <MeetingCompletedPanel
-          snapshot={snapshot}
-          filter={filter}
-          onFilterChange={setFilter}
-          aiPreferences={aiPreferences}
-          library={library}
-        />
-      ) : null}
     </main>
   )
 }

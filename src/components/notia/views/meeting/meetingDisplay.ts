@@ -58,9 +58,11 @@ export function lineAtMoment(lines: MeetingLine[], atMs: number): MeetingLine | 
 }
 
 const PROCESSING_STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'assigning-turns']
+const SECOND_PASS_STAGES: SpeechFinalizingStage[] = ['transcribing', 'detecting-speakers', 'second-pass']
 const LATER_STEP_LABELS: Record<Exclude<SpeechFinalizingStage, 'transcribing'>, string> = {
   'detecting-speakers': 'Detectando voces',
   'assigning-turns': 'Asignando intervenciones',
+  'second-pass': 'Segunda pasada por palabra',
 }
 
 export type MeetingProcessingStepState = 'done' | 'current' | 'pending'
@@ -76,10 +78,11 @@ interface ProcessingInput {
 /** Title, steps and progress of the processing stage, the same for both layouts. */
 export function describeMeetingProcessing({ progress, stage, sourceFile, isSkipping }: ProcessingInput) {
   const currentStage = stage ?? 'transcribing'
-  const current = PROCESSING_STAGES.indexOf(currentStage)
+  const stages = currentStage === 'second-pass' ? SECOND_PASS_STAGES : PROCESSING_STAGES
+  const current = stages.indexOf(currentStage)
   // A file is transcribed here; a recording was already transcribed live.
   const transcribingFile = Boolean(sourceFile) && currentStage === 'transcribing'
-  const steps = PROCESSING_STAGES.map((step, index) => ({
+  const steps = stages.map((step, index) => ({
     stage: step,
     state: (index < current ? 'done' : index === current ? 'current' : 'pending') as MeetingProcessingStepState,
     label: step !== 'transcribing' ? LATER_STEP_LABELS[step]
@@ -91,3 +94,7 @@ export function describeMeetingProcessing({ progress, stage, sourceFile, isSkipp
   const percent = Math.round((progress ?? 0) * 100)
   return { transcribingFile, steps, title, percent }
 }
+
+/** «Pasar por IA» waits for the AI review: both never edit the transcript at once. */
+export const generateLabel = (isGenerating: boolean, reviewing: boolean) =>
+  isGenerating ? 'Generando…' : reviewing ? 'Esperando el repaso…' : 'Generar'

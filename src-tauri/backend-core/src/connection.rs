@@ -196,6 +196,7 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     // transcribes a meeting in the room, also without the network.
     "get_speech_capabilities",
     "probe_speech_audio_input",
+    "speech_audio_devices",
     "probe_sherpa_runtime",
     "prepare_device_speech_model",
     "start_speech_session",

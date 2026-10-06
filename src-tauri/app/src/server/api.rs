@@ -18,6 +18,9 @@
 //! - `GET /api/file?path=`: a file of a registered library.
 //! - `GET /api/events[?since=N]` (WebSocket): every event of the
 //!   application as `{ seq, event, payload }`.
+//! - `POST /api/browser/*` and `POST /api/meeting-call/*`: the ColdPass
+//!   and NotIA Chrome extensions (`browser`, `meeting_call`), also over
+//!   plain HTTP from this same computer.
 //! - Anything else: files of the interface, when the server has them.
 
 use std::collections::HashMap;
@@ -36,7 +39,7 @@ use tungstenite::{accept_with_config, protocol::WebSocketConfig, Message};
 
 use super::events::EventHub;
 use super::http::{
-    http_body, is_websocket_upgrade, json_response, json_response_with_headers, read_http_request_limited,
+    http_body, http_redirect, is_websocket_upgrade, json_response, json_response_with_headers, read_http_request_limited,
     request_cookie, request_line_parts, request_origin_is_expected, request_query_param, response,
     response_with_headers, serve_http_redirect, text_response, websocket_timeout, PrefixedStream,
 };
@@ -44,6 +47,10 @@ use super::owner;
 use super::rate::RateWindows;
 use crate::host::{AppContext, AssetSource, DataDirLock};
 use crate::registry::{dispatch_app_invoke, is_remote_command, Dispatch, COMMAND_NAMES, LOCAL_ONLY_COMMANDS};
+
+mod browser;
+mod extension;
+mod meeting_call;
 
 pub(crate) const PROTOCOL_VERSION: u16 = crate::backend::connection::HOST_PROTOCOL_VERSION;
 const SESSION_COOKIE: &str = "notia_session";
@@ -53,6 +60,8 @@ const MAX_CONNECTIONS: usize = 128;
 /// Chat attachments travel inside commands, so requests may be large.
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EVENT_CLIENT_MESSAGE_BYTES: usize = 64 * 1024;
+/// The extension sends a page address and a sign-in, never files.
+const MAX_BROWSER_REQUEST_BYTES: usize = 64 * 1024;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const EVENT_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -97,6 +106,10 @@ pub(crate) struct ApiServer {
     pub(crate) server_dir: Option<PathBuf>,
     pub(crate) stop: Arc<AtomicBool>,
     sessions: Mutex<HashMap<String, Instant>>,
+    /// Vaults the ColdPass extension opened (Host mode).
+    browser: crate::coldpass::BrowserVaults,
+    /// Sessions of the NotIA extension (Host mode).
+    call_sessions: extension::ExtensionSessions,
     rates: Mutex<RateWindows>,
     connections: AtomicUsize,
     _lock: Option<DataDirLock>,
@@ -119,6 +132,8 @@ impl ApiServer {
             server_dir,
             stop: Arc::new(AtomicBool::new(false)),
             sessions: Mutex::new(HashMap::new()),
+            browser: crate::coldpass::BrowserVaults::default(),
+            call_sessions: extension::ExtensionSessions::default(),
             rates: Mutex::new(RateWindows::default()),
             connections: AtomicUsize::new(0),
             _lock: lock,
@@ -218,7 +233,12 @@ fn serve_connection(stream: TcpStream, server: &ApiServer, tls: Arc<ServerConfig
     let mut first_byte = [0_u8; 1];
     let is_tls = matches!(stream.peek(&mut first_byte), Ok(1)) && first_byte[0] == 22;
     if !is_tls {
-        serve_http_redirect(stream);
+        let loopback = stream.peer_addr().is_ok_and(|address| address.ip().is_loopback());
+        if loopback {
+            serve_loopback_plain(stream, server, &peer);
+        } else {
+            serve_http_redirect(stream);
+        }
         return;
     }
     let Ok(raw) = stream.try_clone() else {
@@ -228,6 +248,24 @@ fn serve_connection(stream: TcpStream, server: &ApiServer, tls: Arc<ServerConfig
         return;
     };
     serve_request(StreamOwned::new(connection, stream), &raw, server, &peer);
+}
+
+/// Plain HTTP from this same computer: the routes of the extensions are
+/// served (the traffic never leaves the machine, and Chrome does not let an
+/// extension reach a self-signed HTTPS address); anything else is sent to
+/// HTTPS as from any other address.
+fn serve_loopback_plain(mut stream: TcpStream, server: &ApiServer, peer: &str) {
+    let response = match read_http_request_limited(&mut stream, MAX_BROWSER_REQUEST_BYTES) {
+        Ok(request) => match request_line_parts(&request) {
+            Some((method, path)) if path.starts_with("/api/browser/") => browser::route(&request, method, &path, server, peer),
+            Some((method, path)) if path.starts_with("/api/meeting-call/") => {
+                meeting_call::route(&request, method, &path, server, peer)
+            }
+            _ => http_redirect(&request),
+        },
+        Err(status) => text_response(status, "Solicitud HTTP inválida."),
+    };
+    let _ = stream.write_all(&response);
 }
 
 fn session_cookie(token: &str, max_age: u64) -> String {
@@ -275,6 +313,13 @@ fn serve_request<S: Read + Write>(mut stream: S, raw: &TcpStream, server: &ApiSe
 
 fn route(request: &[u8], method: &str, path: &str, session: Option<&str>, server: &ApiServer, peer: &str) -> Vec<u8> {
     let is_api = path == "/api" || path.starts_with("/api/");
+    // The extensions' own origin and token; see `extension`.
+    if path.starts_with("/api/browser/") {
+        return browser::route(request, method, path, server, peer);
+    }
+    if path.starts_with("/api/meeting-call/") {
+        return meeting_call::route(request, method, path, server, peer);
+    }
     if method == "POST" && !request_origin_is_expected(request) {
         return error_body("403 Forbidden", "Origen no autorizado.");
     }
@@ -398,6 +443,8 @@ fn owner_password_flow(path: &str, body: &[u8], server: &ApiServer, peer: &str) 
         _ => crate::app_auth::host_change_password(&server.app, &text("username"), &text("current"), &text("new")).inspect(|_| {
             // Sessions opened with the old password end.
             server.close_all_sessions();
+            server.browser.close_all();
+            server.call_sessions.close_all();
         }),
     };
     match result {

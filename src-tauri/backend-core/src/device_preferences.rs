@@ -108,6 +108,7 @@ pub fn normalize_device_preferences(value: &Value) -> Value {
         "qwen3Tts": normalize_tts(&section("qwen3Tts")),
         "editorPage": crate::page_setup::normalize_editor_page(&section("editorPage")),
         "pen": normalize_pen(&section("pen")),
+        "audioDevices": crate::audio_devices::normalize_audio_devices(&section("audioDevices")),
     })
 }
 

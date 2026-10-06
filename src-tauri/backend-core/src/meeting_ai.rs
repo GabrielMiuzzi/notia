@@ -373,7 +373,7 @@ fn contains_word(text: &str, word: &str) -> bool {
 
 // --- Notas IA --------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingNoteTopic {
     pub title: String,
@@ -381,7 +381,7 @@ pub struct MeetingNoteTopic {
     pub items: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingNoteTask {
     pub id: String,
@@ -395,7 +395,7 @@ pub struct MeetingNoteTask {
 }
 
 /// The notes the agent keeps while the meeting goes on.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingAiNotes {
     pub objective: String,
@@ -437,7 +437,7 @@ impl MeetingAiNotes {
 }
 
 /// Notas IA of a meeting: the notes and how their passes go.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeetingAiNotesState {
     pub enabled: bool,
     /// A pass is running.

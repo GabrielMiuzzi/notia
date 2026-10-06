@@ -4,6 +4,7 @@ import type {
   MeetingContextOptions,
   MeetingExportFormat,
   MeetingFilter,
+  MeetingHistoryItem,
   MeetingInsightsRequest,
   MeetingLine,
   MeetingMark,
@@ -119,6 +120,14 @@ export const generateMeetingInsights = (meetingId: string, request: MeetingInsig
 export const saveMeetingNote = (meetingId: string, libraryId: string, folder: string) =>
   call<{ path: string }>('meeting_save_note', { meetingId, libraryId, folder }, 'No se pudo guardar la nota.')
 
+/** The meetings of the library saved as notes, newest first, that mention `query`. */
+export const listMeetingHistory = (libraryId: string, query: string) =>
+  call<MeetingHistoryItem[]>('meeting_history', { libraryId, query }, 'No se pudieron leer las reuniones anteriores.')
+
+/** Opens a saved meeting as the current, finished one. */
+export const openSavedMeeting = (libraryId: string, meetingId: string) =>
+  call<void>('meeting_open_saved', { libraryId, meetingId }, 'No se pudo abrir la reunión.')
+
 export const exportMeeting = (meetingId: string, libraryId: string, folder: string, format: MeetingExportFormat) =>
   call<{ path: string; notePath: string }>('meeting_export', { meetingId, libraryId, folder, format }, 'No se pudo exportar la reunión.')
 
@@ -142,7 +151,14 @@ function readMeetingLine(value: unknown): MeetingLine | null {
     && typeof line.endMs === 'number'
     && typeof line.text === 'string'
     && typeof line.question === 'boolean'
-    ? { id: line.id, startMs: line.startMs, endMs: line.endMs, text: line.text, question: line.question }
+    ? {
+        id: line.id,
+        startMs: line.startMs,
+        endMs: line.endMs,
+        text: line.text,
+        question: line.question,
+        ...(typeof line.speaker === 'string' ? { speaker: line.speaker } : {}),
+      }
     : null
 }
 

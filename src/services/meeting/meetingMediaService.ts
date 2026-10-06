@@ -86,6 +86,8 @@ export interface StartMeetingFileInput {
   mediaId: string
   language: string
   expectedSpeakers: number | null
+  /** The AI that reviews the transcript once it is finished; `null` without one. */
+  settings: unknown
 }
 
 /** Transcribes an uploaded file as a meeting; returns its session id, which is also the meeting's. */
@@ -97,6 +99,7 @@ export async function startMeetingFileSession(input: StartMeetingFileInput): Pro
       language: input.language,
       diarizationEnabled: true,
       expectedSpeakers: input.expectedSpeakers,
+      settings: input.settings,
     },
     'No se pudo empezar a transcribir el archivo.',
   )

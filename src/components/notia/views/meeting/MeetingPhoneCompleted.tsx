@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from
 import { Check, FileText, Mic, NotebookText, Pencil, Search, Sparkles, X } from 'lucide-react'
 import { MeetingAskConversation, MeetingAskForm } from './MeetingAskPanel'
 import { InsightsResults, MeetingSpeakerFilter, MeetingTurns, NO_SPEAKERS_TEXT } from './MeetingCompletedPanel'
-import { formatClock, speakerColorClass } from './meetingDisplay'
+import { MeetingReviewNotice } from './MeetingReviewNotice'
+import { formatClock, generateLabel, speakerColorClass } from './meetingDisplay'
 import { useMeetingAsk, type MeetingAsk } from './useMeetingAsk'
 import { useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit } from './useMeetingCompleted'
 import type { MeetingFilter, MeetingInsightsRequest, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
@@ -90,6 +91,7 @@ export function MeetingPhoneCompleted({
             {' '}· {formatClock(snapshot.durationMs)}{speakerCount > 0 ? ` · ${speakerCount} ${speakerCount === 1 ? 'hablante' : 'hablantes'}` : ''}
           </span>
         </span>
+        <MeetingReviewNotice review={snapshot.review} />
         <PhoneSpeakers snapshot={snapshot} />
         <div className="notia-meeting-phone-view-tabs" role="tablist" aria-label="Vista" onKeyDown={handleTabsKeyDown}>
           {TABS.map((id) => (
@@ -271,6 +273,7 @@ interface PhoneAiProps {
 
 function PhoneAi({ snapshot, library, insights, conversation }: PhoneAiProps) {
   const { request, choose, isGenerating, error, nothingChosen, generate } = insights
+  const reviewing = Boolean(snapshot.review.stage)
   return (
     <div className="notia-meeting-phone-ai">
       <section className="notia-meeting-phone-ai-section" aria-labelledby="meeting-phone-insights-title">
@@ -289,8 +292,8 @@ function PhoneAi({ snapshot, library, insights, conversation }: PhoneAiProps) {
             </label>
           ))}
         </div>
-        <button type="button" className="notia-meeting-phone-generate" onClick={() => void generate()} disabled={isGenerating || nothingChosen}>
-          {isGenerating ? 'Generando…' : 'Generar'}
+        <button type="button" className="notia-meeting-phone-generate" onClick={() => void generate()} disabled={isGenerating || nothingChosen || reviewing}>
+          {generateLabel(isGenerating, reviewing)}
         </button>
         {error ? <p className="notia-meeting-error-text" role="alert">{error}</p> : null}
       </section>

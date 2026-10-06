@@ -48,8 +48,8 @@ target-check*/
 src-tauri/resources/speech/models/*
 !src-tauri/resources/speech/models/README.md
 # Modelos base distribuidos con el APK/EXE (no requieren instalación manual).
-!src-tauri/resources/speech/models/speaker-diarization-v1/
-!src-tauri/resources/speech/models/speaker-diarization-v1/**
+!src-tauri/resources/speech/models/speaker-diarization-v2/
+!src-tauri/resources/speech/models/speaker-diarization-v2/**
 src-tauri/resources/speech/runtime/*
 !src-tauri/resources/speech/runtime/README.md
 src-tauri/resources/qwen3-tts/models/*

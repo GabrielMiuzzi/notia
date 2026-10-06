@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>NotIA</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<main class="popup">
+  <header class="head">
+    <img src="icons/icon-32.png" width="28" height="28" alt="">
+    <div class="head__text">
+      <h1>NotIA</h1>
+      <span id="library" class="muted">Hablantes de Teams en Meeting</span>
+    </div>
+    <span id="state" class="pill" data-state="off">Desconectado</span>
+  </header>
+
+  <form id="connect" class="form" hidden>
+    <label class="field">
+      <span>Puerto de Notia (modo Host)</span>
+      <input id="port" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="52480">
+    </label>
+    <label class="field">
+      <span>Usuario Owner</span>
+      <input id="username" autocomplete="username" spellcheck="false" required>
+    </label>
+    <label class="field">
+      <span>Contraseña del Owner</span>
+      <input id="password" type="password" autocomplete="current-password" required>
+    </label>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button id="submit" type="submit" class="primary">Conectar</button>
+    <p class="muted small">Queda conectada mientras Chrome esté abierto. Notia tiene que estar en modo Host.</p>
+  </form>
+
+  <section id="connected" class="form" hidden>
+    <div class="row">
+      <span class="dot" id="recording-dot" data-on="false"></span>
+      <div class="row__text">
+        <strong id="recording">Sin grabación en curso</strong>
+        <span id="recording-hint" class="muted small">Empezá a grabar en Meeting para que se marquen los hablantes.</span>
+      </div>
+    </div>
+    <div class="row">
+      <span class="dot" id="call-dot" data-on="false"></span>
+      <div class="row__text">
+        <strong id="call">Sin llamada de Teams</strong>
+        <span id="call-hint" class="muted small">Abrí la reunión en Teams para la web, en Chrome.</span>
+      </div>
+    </div>
+    <p class="muted small">Para nombres exactos activá los subtítulos en directo de Teams (Más → Idioma y voz → Activar subtítulos en directo).</p>
+    <button id="disconnect" type="button" class="ghost">Desconectar</button>
+  </section>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>

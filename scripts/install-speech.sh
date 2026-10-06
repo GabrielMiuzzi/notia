@@ -22,5 +22,21 @@ SUMS
   mkdir -p "$dir"
   cp -f -- "$tmp/ggml-large-v3-turbo-q8_0.bin" "$tmp/silero_vad.onnx" "$dir/"
 }
+# Whisper large-v3 q5_0: la pasada final de Meeting en Windows con GPU. Solo
+# el EXE lo empaqueta.
+install_final_pass(){
+  local dir="$MODELS/whisper-large-v3" tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp"' RETURN
+  curl -fL --retry 3 -o "$tmp/ggml-large-v3-q5_0.bin" \
+    'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin'
+  (cd "$tmp" && sha256sum -c - <<'SUMS'
+d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1  ggml-large-v3-q5_0.bin
+SUMS
+  )
+  mkdir -p "$dir"
+  cp -f -- "$tmp/ggml-large-v3-q5_0.bin" "$dir/"
+}
 install_whisper
+install_final_pass
 printf '%s\n' 'Modelos de voz instalados. El runtime whisper.cpp se compila con scripts/build-whisper-runtime.ps1.'

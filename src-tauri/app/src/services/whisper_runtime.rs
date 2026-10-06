@@ -17,6 +17,8 @@ const ANDROID_RUNTIME_LIBRARY_NAME: &str = "libnotia_whisper.so";
 const LOAD_ERROR_CAPACITY: usize = 512;
 
 type LoadFn = unsafe extern "C" fn(*const c_char, *const c_char, c_int, c_int, *mut c_char, usize) -> *mut c_void;
+type LoadAlignedFn =
+    unsafe extern "C" fn(*const c_char, *const c_char, c_int, c_int, *const c_char, *mut c_char, usize) -> *mut c_void;
 type FreeFn = unsafe extern "C" fn(*mut c_void);
 type BackendFn = unsafe extern "C" fn(*const c_void) -> *const c_char;
 type LanguageSupportedFn = unsafe extern "C" fn(*const c_char) -> c_int;
@@ -51,6 +53,8 @@ pub struct WhisperEngine {
     engine: *mut c_void,
     free: FreeFn,
     transcribe: TranscribeFn,
+    /// Missing in a bridge built before word timestamps.
+    transcribe_timed: Option<TranscribeFn>,
     last_error: LastErrorFn,
     backend: String,
     // Dropped last: the function pointers above live in it.
@@ -61,6 +65,20 @@ impl WhisperEngine {
     /// Loads the bridge at `runtime` and the model. `use_gpu` asks for the
     /// Vulkan backend; without one the model runs on the CPU.
     pub fn load(runtime: &Path, model: &Path, use_gpu: bool, threads: i32) -> Result<Self, String> {
+        Self::load_with(runtime, model, use_gpu, threads, None)
+    }
+
+    /// Like `load`, with the DTW alignment heads of `alignment`
+    /// ("large-v3" or "large-v3-turbo"): `transcribe_timed` then gives the
+    /// aligned start of each token. Without flash attention, which whisper.cpp
+    /// does not combine with DTW.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    pub fn load_aligned(runtime: &Path, model: &Path, use_gpu: bool, threads: i32, alignment: &str) -> Result<Self, String> {
+        let alignment = CString::new(alignment).map_err(|_| "Modelo de alineacion de Whisper invalido.".to_string())?;
+        Self::load_with(runtime, model, use_gpu, threads, Some(&alignment))
+    }
+
+    fn load_with(runtime: &Path, model: &Path, use_gpu: bool, threads: i32, alignment: Option<&CStr>) -> Result<Self, String> {
         // Android resolves the bridge and its backends by library name inside
         // the APK. Windows loads them by fully qualified path, without `..`
         // or forward slashes, as the DLL folder search requires.
@@ -75,20 +93,30 @@ impl WhisperEngine {
             path_string(runtime.parent().unwrap_or(Path::new("")))?
         };
         unsafe {
-            let load: LoadFn = symbol(&library, b"notia_whisper_load\0")?;
             let free: FreeFn = symbol(&library, b"notia_whisper_free\0")?;
             let backend: BackendFn = symbol(&library, b"notia_whisper_backend\0")?;
             let transcribe: TranscribeFn = symbol(&library, b"notia_whisper_transcribe\0")?;
+            let transcribe_timed: Option<TranscribeFn> = symbol(&library, b"notia_whisper_transcribe_timed\0").ok();
             let last_error: LastErrorFn = symbol(&library, b"notia_whisper_last_error\0")?;
             let mut error = [0 as c_char; LOAD_ERROR_CAPACITY];
-            let engine = load(
-                model_path.as_ptr(),
-                backend_directory.as_ptr(),
-                c_int::from(use_gpu),
-                threads,
-                error.as_mut_ptr(),
-                error.len(),
-            );
+            let engine = match alignment {
+                None => {
+                    let load: LoadFn = symbol(&library, b"notia_whisper_load\0")?;
+                    load(model_path.as_ptr(), backend_directory.as_ptr(), c_int::from(use_gpu), threads, error.as_mut_ptr(), error.len())
+                }
+                Some(alignment) => {
+                    let load: LoadAlignedFn = symbol(&library, b"notia_whisper_load_aligned\0")?;
+                    load(
+                        model_path.as_ptr(),
+                        backend_directory.as_ptr(),
+                        c_int::from(use_gpu),
+                        threads,
+                        alignment.as_ptr(),
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            };
             if engine.is_null() {
                 let message = CStr::from_ptr(error.as_ptr()).to_string_lossy().into_owned();
                 return Err(if message.is_empty() {
@@ -102,6 +130,7 @@ impl WhisperEngine {
                 engine,
                 free,
                 transcribe,
+                transcribe_timed,
                 last_error,
                 backend,
                 library,
@@ -130,11 +159,31 @@ impl WhisperEngine {
     /// is earlier text that steers spelling and punctuation; `beam_size` 1
     /// decodes greedily.
     pub fn transcribe(&mut self, samples: &[f32], language: &CStr, prompt: &str, beam_size: i32) -> Result<String, String> {
+        let transcribe = self.transcribe;
+        self.call(transcribe, samples, language, prompt, beam_size)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Whether the bridge gives the time of each word.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    pub fn has_word_times(&self) -> bool {
+        self.transcribe_timed.is_some()
+    }
+
+    /// The timed tokens of `samples`, one `start\tend\ttext` line each (see
+    /// `timed_transcript::words_from_timed_tokens`), as raw bytes: a token
+    /// may hold half of a letter.
+    pub fn transcribe_timed(&mut self, samples: &[f32], language: &CStr, prompt: &str, beam_size: i32) -> Result<Vec<u8>, String> {
+        let transcribe = self.transcribe_timed.ok_or_else(|| "El runtime whisper.cpp no da los tiempos de las palabras.".to_string())?;
+        self.call(transcribe, samples, language, prompt, beam_size)
+    }
+
+    fn call(&mut self, transcribe: TranscribeFn, samples: &[f32], language: &CStr, prompt: &str, beam_size: i32) -> Result<Vec<u8>, String> {
         let count = c_int::try_from(samples.len()).map_err(|_| "El audio a transcribir es demasiado largo.".to_string())?;
         // A prompt never holds NUL bytes; if it did, it is dropped, not the decode.
         let prompt = CString::new(prompt).unwrap_or_default();
         unsafe {
-            let text = (self.transcribe)(
+            let text = transcribe(
                 self.engine,
                 samples.as_ptr(),
                 count,
@@ -150,7 +199,7 @@ impl WhisperEngine {
                     message
                 });
             }
-            Ok(read_string(text))
+            Ok(CStr::from_ptr(text).to_bytes().to_vec())
         }
     }
 }

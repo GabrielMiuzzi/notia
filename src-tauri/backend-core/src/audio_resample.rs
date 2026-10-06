@@ -9,6 +9,43 @@ const CUTOFF_HZ: f64 = 7_300.0;
 // Taps per unit of the downsampling ratio: 127 taps at 48 kHz, whose
 // transition band ends before 8 kHz.
 const TAPS_PER_RATIO: f64 = 21.0;
+// Speaker positions of a Windows channel mask (`dwChannelMask`).
+const SPEAKER_FRONT_LEFT: u32 = 0x1;
+const SPEAKER_FRONT_RIGHT: u32 = 0x2;
+const SPEAKER_FRONT_CENTER: u32 = 0x4;
+
+/// Weight of each channel of a frame in the mono speech the recognizer
+/// hears. Speech lives in the front left, front right and center channels;
+/// the bass (LFE) and the surround channels of a 5.1 or 7.1 output carry no
+/// words, and a virtual surround fills them with delayed or filtered copies
+/// that blur the voice, so they are left out. Each front channel weighs a
+/// half, so a call playing in the front pair keeps its level. Without a
+/// channel mask the first two channels are taken as front left and right.
+pub fn speech_downmix_weights(channels: u16, channel_mask: Option<u32>) -> Vec<f32> {
+    let channels = usize::from(channels.max(1));
+    if channels == 1 {
+        return vec![1.0];
+    }
+    let positions: Vec<u32> = channel_mask
+        .map(|mask| (0..32).map(|bit| 1_u32 << bit).filter(|position| mask & position != 0).collect())
+        .unwrap_or_default();
+    let mut weights = if positions.len() == channels {
+        positions
+            .iter()
+            .map(|position| match *position {
+                SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER => 0.5,
+                _ => 0.0,
+            })
+            .collect::<Vec<f32>>()
+    } else {
+        (0..channels).map(|index| if index < 2 { 0.5 } else { 0.0 }).collect()
+    };
+    if weights.iter().all(|weight| *weight == 0.0) {
+        let even = 1.0 / channels as f32;
+        weights.iter_mut().for_each(|weight| *weight = even);
+    }
+    weights
+}
 
 /// Converts one source to mono 16 kHz as its buffers arrive. Above 16 kHz a
 /// low-pass FIR removes what would fold into the speech band, then the
@@ -16,7 +53,8 @@ const TAPS_PER_RATIO: f64 = 21.0;
 /// buffers (the filter history and the position between two input samples),
 /// so buffers of any size join without clicks or drift.
 pub struct StreamResampler {
-    channels: usize,
+    /// Weight of each channel of a frame in the mono signal.
+    weights: Vec<f32>,
     /// Input samples per output sample.
     step: f64,
     /// Low-pass FIR, empty when the source does not need downsampling.
@@ -32,10 +70,16 @@ pub struct StreamResampler {
 
 impl StreamResampler {
     pub fn new(channels: u16, input_sample_rate: u32) -> Self {
+        Self::with_channel_mask(channels, None, input_sample_rate)
+    }
+
+    /// A source whose channels follow `channel_mask` (Windows speaker
+    /// positions): see [`speech_downmix_weights`].
+    pub fn with_channel_mask(channels: u16, channel_mask: Option<u32>, input_sample_rate: u32) -> Self {
         let step = f64::from(input_sample_rate.max(1)) / f64::from(RECOGNIZER_SAMPLE_RATE);
         let taps = if step > 1.0 { low_pass_taps(input_sample_rate, step) } else { Vec::new() };
         Self {
-            channels: usize::from(channels.max(1)),
+            weights: speech_downmix_weights(channels, channel_mask),
             step,
             history: vec![0.0; taps.len()],
             taps,
@@ -47,10 +91,11 @@ impl StreamResampler {
     }
 
     pub fn process(&mut self, interleaved_samples: &[f32]) -> Vec<f32> {
-        let frames = interleaved_samples.len() / self.channels;
+        let channels = self.weights.len();
+        let frames = interleaved_samples.len() / channels;
         let mut output = Vec::with_capacity((frames as f64 / self.step) as usize + 1);
-        for frame in interleaved_samples.chunks_exact(self.channels) {
-            let mono = frame.iter().copied().sum::<f32>() / self.channels as f32;
+        for frame in interleaved_samples.chunks_exact(channels) {
+            let mono = frame.iter().zip(&self.weights).map(|(sample, weight)| sample * weight).sum::<f32>();
             if !self.started {
                 // The recording starts at its first level instead of rising from silence.
                 self.started = true;
@@ -165,6 +210,27 @@ mod tests {
         }
         assert_eq!(chunked, whole);
         assert!(whole.len().abs_diff(48_000) <= 1, "{} samples for 3 s", whole.len());
+    }
+
+    #[test]
+    fn a_surround_output_keeps_the_front_and_center_and_drops_bass_and_surrounds() {
+        // 7.1 (FL FR FC LFE BL BR SL SR), as a gaming headset reports it.
+        let mask = 0x63F;
+        let weights = super::speech_downmix_weights(8, Some(mask));
+        assert_eq!(weights.len(), 8);
+        let mut resampler = StreamResampler::with_channel_mask(8, Some(mask), 16_000);
+        // A call plays in the front pair: its level stays whole.
+        let front = resampler.process(&[0.4, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!((front[0] - 0.4).abs() < 1e-6, "{front:?}");
+        // What a virtual surround adds to the rest does not reach the voice.
+        let rest = StreamResampler::with_channel_mask(8, Some(mask), 16_000).process(&[0.0, 0.0, 0.0, 0.9, 0.5, -0.5, 0.3, -0.3]);
+        assert_eq!(rest, vec![0.0]);
+        // Without a mask, the first two channels are the front pair.
+        assert_eq!(super::speech_downmix_weights(4, None), vec![0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(super::speech_downmix_weights(2, Some(0x3)), vec![0.5, 0.5]);
+        assert_eq!(super::speech_downmix_weights(1, None), vec![1.0]);
+        // A mask without a front channel still hears every channel.
+        assert_eq!(super::speech_downmix_weights(2, Some(0x30)), vec![0.5, 0.5]);
     }
 
     #[test]

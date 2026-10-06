@@ -90,6 +90,9 @@ pub(crate) struct StartFileSessionPayload {
     diarization_enabled: bool,
     #[serde(default)]
     expected_speakers: Option<u32>,
+    /// The AI that reviews the transcript once it is finished.
+    #[serde(default)]
+    settings: Option<notia_backend_core::ai_settings::AiSettingsInput>,
 }
 
 fn enabled() -> bool {
@@ -330,7 +333,7 @@ pub(crate) async fn meeting_start_file_session(
             *state.phase.lock().map_err(|_| internal("No se pudo leer el estado de voz."))? = SpeechPhase::Preparing;
         }
         speech_service::emit_session_state(&app, &session_id, crate::dto::speech::SpeechSessionStateDto::Preparing { progress: None });
-        crate::meeting::begin_file(&app, &session_id, file);
+        crate::meeting::begin_file(&app, &session_id, file, payload.settings.as_ref().map(|settings| settings.normalize()));
         let worker_app = app.clone();
         let worker_session_id = session_id.clone();
         let failure_path = path.clone();

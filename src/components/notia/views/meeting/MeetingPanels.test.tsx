@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MeetingAskPanel } from './MeetingAskPanel'
 import { MeetingProcessingPanel } from './MeetingProcessingPanel'
 import { MeetingReadyPanel } from './MeetingReadyPanel'
+import { LiveLines } from './MeetingRecordingPanel'
 import { formatClock } from './meetingDisplay'
 
 const readyProps = {
@@ -53,9 +54,50 @@ describe('Meeting panels', () => {
     vi.clearAllMocks()
   })
 
+  it('names the live lines with who the call says was speaking', () => {
+    render(
+      <LiveLines
+        lines={[
+          { id: 'line-1', startMs: 0, endMs: 2_000, text: 'Arranquemos.', question: false, speaker: 'Ana Pérez' },
+          { id: 'line-2', startMs: 2_000, endMs: 4_000, text: 'Sin llamada.', question: false },
+        ]}
+        answers={[]}
+      />,
+    )
+    expect(screen.getByText('Ana Pérez')).toBeTruthy()
+    expect(screen.getByText('Sin llamada.').parentElement?.querySelector('.notia-meeting-live-speaker')).toBeNull()
+  })
+
   it('formats minutes past the first hour', () => {
     expect(formatClock(65_000)).toBe('01:05')
     expect(formatClock(3_725_000)).toBe('1:02:05')
+  })
+
+  it('lets the person choose each device and warns about a virtual one', () => {
+    const choose = vi.fn()
+    const devices = {
+      supported: true,
+      microphones: [
+        { name: 'Micrófono (Voicemod)', isDefault: true, isVirtual: true },
+        { name: 'Micrófono (Yeti X)', isDefault: false, isVirtual: false },
+      ],
+      outputs: [{ name: 'Altavoces (G935)', isDefault: true, isVirtual: false }],
+      microphone: null,
+      output: null,
+    }
+    const { rerender } = render(<MeetingReadyPanel {...readyProps} systemAudioSupported audioDevices={{ devices, choose }} />)
+    const microphone = screen.getByRole('combobox', { name: 'Dispositivo de micrófono' }) as HTMLSelectElement
+    expect(microphone.value).toBe('')
+    expect(screen.getByRole('option', { name: 'Predeterminado de Windows · Micrófono (Voicemod)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Micrófono (Voicemod) (virtual)' })).toBeTruthy()
+    expect(screen.getByText(/Es un dispositivo virtual/)).toBeTruthy()
+    fireEvent.change(microphone, { target: { value: 'Micrófono (Yeti X)' } })
+    expect(choose).toHaveBeenCalledWith('microphone', 'Micrófono (Yeti X)')
+
+    rerender(<MeetingReadyPanel {...readyProps} systemAudioSupported audioDevices={{ devices: { ...devices, microphone: 'Micrófono (Yeti X)' }, choose }} />)
+    expect(screen.queryByText(/Es un dispositivo virtual/)).toBeNull()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Dispositivo de audio de la computadora' }), { target: { value: '' } })
+    expect(choose).toHaveBeenLastCalledWith('system', null)
   })
 
   it('offers the computer audio only where the platform captures it', () => {
@@ -140,5 +182,20 @@ describe('Meeting panels', () => {
     expect(screen.getByText('Hola a todos.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar separación' }))
     expect(onSkip).toHaveBeenCalled()
+  })
+
+  it('names the second pass when the backend transcribes the recording again', () => {
+    render(
+      <MeetingProcessingPanel
+        durationMs={60_000}
+        progress={0.7}
+        stage="second-pass"
+        lines={[]}
+        isSkipping={false}
+        onSkip={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Segunda pasada por palabra').closest('li')?.getAttribute('data-state')).toBe('current')
+    expect(screen.queryByText('Asignando intervenciones')).toBeNull()
   })
 })
