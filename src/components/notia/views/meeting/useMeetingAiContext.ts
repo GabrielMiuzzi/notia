@@ -1,80 +1,90 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { getMeetingContextOptions } from '../../../../services/meeting/meetingService'
-import type { MeetingAiContext, MeetingContextOptions } from '../../../../services/meeting/meetingTypes'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getMeetingContextOptions, saveMeetingContextChoice } from '../../../../services/meeting/meetingService'
+import type { MeetingAiContext, MeetingContextChoice, MeetingContextOptions } from '../../../../services/meeting/meetingTypes'
 
 /** What the person chose in «Contexto para la IA» before recording. */
-export interface MeetingAiContextChoice {
-  wholeLibrary: boolean
-  /** The chosen folder; used when `wholeLibrary` is off. */
-  folder: string | null
-  /** The allowed contexts; used with the whole library. */
-  contexts: string[]
-}
+export type MeetingAiContextChoice = MeetingContextChoice
 
 export interface MeetingAiContextState {
   libraryName: string | null
   options: MeetingContextOptions | null
   error: string | null
+  /** The last change could not be kept for the next recording. */
+  saveError: string | null
   choice: MeetingAiContextChoice
   setWholeLibrary: (wholeLibrary: boolean) => void
-  setFolder: (folder: string) => void
+  /** A folder of the library; `null` is «Ninguna». */
+  setFolder: (folder: string | null) => void
   toggleContext: (tag: string) => void
   setAllContexts: (selected: boolean) => void
 }
 
 const EMPTY_CHOICE: MeetingAiContextChoice = { wholeLibrary: true, folder: null, contexts: [] }
 
+const errorText = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
+
 /**
  * The folders and contexts of the open library and the person's choice. The
- * backend lists them and decides which notes the choice admits; this keeps
- * the choice until the recording starts.
+ * backend lists them, keeps the choice of each library between recordings
+ * and decides which notes it admits; this shows it and sends each change.
  */
 export function useMeetingAiContext(library: { id: string; name: string } | null) {
   const libraryId = library?.id ?? null
   const [options, setOptions] = useState<MeetingContextOptions | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [choice, setChoice] = useState<MeetingAiContextChoice>(EMPTY_CHOICE)
+  const choiceRef = useRef(choice)
+  choiceRef.current = choice
 
   useEffect(() => {
     let current = true
     setOptions(null)
     setError(null)
+    setSaveError(null)
     setChoice(EMPTY_CHOICE)
     if (!libraryId) return
     void getMeetingContextOptions(libraryId).then((loaded) => {
       if (!current) return
       setOptions(loaded)
-      setChoice({
-        wholeLibrary: true,
-        folder: loaded.folders[0]?.path ?? null,
-        contexts: loaded.contexts.filter((context) => context.selectedByDefault).map((context) => context.tag),
-      })
+      setChoice(loaded.choice)
     }).catch((reason: unknown) => {
-      if (current) setError(reason instanceof Error ? reason.message : 'No se pudieron leer las carpetas y los contextos.')
+      if (current) setError(errorText(reason, 'No se pudieron leer las carpetas y los contextos.'))
     })
     return () => { current = false }
   }, [libraryId])
 
+  const change = useCallback((next: (current: MeetingAiContextChoice) => MeetingAiContextChoice) => {
+    if (!libraryId) return
+    const updated = next(choiceRef.current)
+    choiceRef.current = updated
+    setChoice(updated)
+    void saveMeetingContextChoice(libraryId, updated).then(
+      () => setSaveError(null),
+      (reason: unknown) => setSaveError(errorText(reason, 'No se pudo guardar el contexto para la IA.')),
+    )
+  }, [libraryId])
+
   const setWholeLibrary = useCallback((wholeLibrary: boolean) => {
-    setChoice((current) => ({ ...current, wholeLibrary }))
-  }, [])
-  const setFolder = useCallback((folder: string) => {
-    setChoice((current) => ({ ...current, folder }))
-  }, [])
+    change((current) => ({ ...current, wholeLibrary }))
+  }, [change])
+  const setFolder = useCallback((folder: string | null) => {
+    change((current) => ({ ...current, folder }))
+  }, [change])
   const toggleContext = useCallback((tag: string) => {
-    setChoice((current) => ({
+    change((current) => ({
       ...current,
       contexts: current.contexts.includes(tag) ? current.contexts.filter((known) => known !== tag) : [...current.contexts, tag],
     }))
-  }, [])
+  }, [change])
   const setAllContexts = useCallback((selected: boolean) => {
-    setChoice((current) => ({ ...current, contexts: selected ? (options?.contexts.map((context) => context.tag) ?? []) : [] }))
-  }, [options])
+    change((current) => ({ ...current, contexts: selected ? (options?.contexts.map((context) => context.tag) ?? []) : [] }))
+  }, [change, options])
 
-  // Without the options the backend could not list, the AI reads nothing of the library.
+  // Without the options the backend could not list, or with «Ninguna», the AI reads nothing of the library.
   const aiContext = useMemo<MeetingAiContext | null>(() => {
     if (!libraryId || !options) return null
-    if (!choice.wholeLibrary && choice.folder) return { libraryId, folder: choice.folder, contexts: null }
+    if (!choice.wholeLibrary) return choice.folder ? { libraryId, folder: choice.folder, contexts: null } : null
     return { libraryId, folder: null, contexts: choice.contexts }
   }, [choice, libraryId, options])
 
@@ -82,6 +92,7 @@ export function useMeetingAiContext(library: { id: string; name: string } | null
     libraryName: library?.name ?? null,
     options,
     error,
+    saveError,
     choice,
     setWholeLibrary,
     setFolder,
@@ -91,10 +102,10 @@ export function useMeetingAiContext(library: { id: string; name: string } | null
   return { state, aiContext }
 }
 
-/** `Facultad · 24 notas`, `Toda la librería · 2 de 3`, for the summaries of the choice. */
+/** `Facultad`, `Ninguna carpeta`, `Toda la librería · 2 de 3`, for the summaries of the choice. */
 export function describeAiContext({ options, error, choice, libraryName }: MeetingAiContextState): string {
   if (!libraryName) return 'Abrí una biblioteca'
   if (!options) return error ? 'No disponible' : 'Cargando…'
-  if (!choice.wholeLibrary && choice.folder) return choice.folder
+  if (!choice.wholeLibrary) return choice.folder ?? 'Ninguna carpeta'
   return `Toda la librería · ${choice.contexts.length} de ${options.contexts.length}`
 }

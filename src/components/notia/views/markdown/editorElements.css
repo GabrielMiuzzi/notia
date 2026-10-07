@@ -394,6 +394,28 @@
   padding: 10px 16px;
 }
 
+/* Long text wraps inside its cell instead of running over the next one:
+   the app-wide table rule keeps cells on one line, and ProseMirror's fixed
+   layout gives every column the same width. Columns take the width their
+   text needs; a table wider than the page scrolls sideways (also by touch). */
+.notia-markdown-editor-root .milkdown .milkdown-table-block table {
+  table-layout: auto;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block :is(th, td) {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block :is(th, td):not([data-colwidth]) {
+  min-width: 72px;
+}
+
+.notia-markdown-editor-root .milkdown .milkdown-table-block .table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* ---------- Code blocks: bar, line numbers, syntax colors ---------- */
 
 .notia-markdown-editor-root .milkdown .milkdown-code-block {

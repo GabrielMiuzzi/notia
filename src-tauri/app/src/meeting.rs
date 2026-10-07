@@ -1050,10 +1050,44 @@ pub(crate) async fn meeting_ai_context_options(
     crate::host::async_runtime::spawn_blocking(move || {
         let (files, _) = crate::library_inventory::inventory_files(&app, &payload.library_id)?;
         let catalog = crate::library_graph::context_tags(&app, &payload.library_id);
-        Ok(meeting_ai::context_options(&files, &catalog))
+        let mut options = meeting_ai::context_options(&files, &catalog);
+        let saved = crate::device_preferences::section(&app, CONTEXT_CHOICES_SECTION);
+        meeting_ai::apply_saved_choice(&mut options, &saved[payload.library_id.as_str()]);
+        Ok(options)
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron leer las carpetas y los contextos.", true))?
+}
+
+/// Device preferences section with the «Contexto para la IA» of each library.
+const CONTEXT_CHOICES_SECTION: &str = "meetingAiContext";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingSaveContextChoicePayload {
+    library_id: String,
+    choice: meeting_ai::MeetingContextChoice,
+}
+
+/// Keeps the person's «Contexto para la IA» for the library, so the next
+/// recording starts from it. Runs where the options are read.
+pub(crate) fn meeting_save_ai_context_choice(app: AppHandle, payload: MeetingSaveContextChoicePayload) -> Result<(), BackendError> {
+    crate::device_preferences::update_section(&app, CONTEXT_CHOICES_SECTION, |saved| {
+        meeting_ai::with_context_choice(saved, &payload.library_id, &payload.choice)
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeetingNotesTextPayload {
+    meeting_id: String,
+}
+
+/// The Notas IA and marks of the meeting as text, for «Copiar notas».
+pub(crate) fn meeting_notes_text(app: AppHandle, payload: MeetingNotesTextPayload) -> Result<String, BackendError> {
+    let inner = lock(&app)?;
+    let record = inner.record.as_ref().filter(|record| record.id == payload.meeting_id).ok_or_else(missing)?;
+    record.notes_text().ok_or_else(|| BackendError::invalid_input("Todavía no hay notas para copiar."))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1339,7 +1373,10 @@ fn write_note_here(
         // The note is what the person asked for: without its archive it is
         // only missing from the history.
         let kept = meeting::archive_path(&archive.record.id).and_then(|path| {
-            crate::library_documents::with_documents(app, library_id, |documents| documents.write(&path, None, &archive.to_json()))
+            crate::library_documents::with_documents(app, library_id, |documents| {
+                documents.write(&path, None, &archive.to_json())?;
+                crate::meeting_history::index_archive(app, documents, library_id, &archive.record.id)
+            })
         });
         if let Err(error) = kept {
             log::error!("[notia:meeting] the saved meeting could not be kept for the history ({:?})", error.code);

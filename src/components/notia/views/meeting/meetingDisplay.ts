@@ -13,6 +13,15 @@ export function formatClock(milliseconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`
 }
 
+/** `1:42`, `11:18`, `1:02:05`: a length, without the leading zero of the minutes. */
+export function formatDuration(milliseconds: number): string {
+  const clock = formatClock(milliseconds)
+  return clock.startsWith('0') && clock.length === 5 ? clock.slice(1) : clock
+}
+
+/** The minutes under a timeline of `durationMs`: start, quarters and end. */
+export const timelineTicks = (durationMs: number) => [0, 0.25, 0.5, 0.75, 1].map((share) => formatClock(durationMs * share))
+
 /** Size of a file as a person reads it: `850 KB`, `142 MB`, `1.4 GB`. */
 export function formatBytes(bytes: number): string {
   const megabytes = bytes / (1024 * 1024)

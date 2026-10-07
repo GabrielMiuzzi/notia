@@ -186,6 +186,9 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     // Rating a password being typed needs nothing from the host, and keeps
     // each keystroke's text off the network.
     "coldpass_rate_password",
+    // The diagram editor's rules need nothing from the host.
+    "mermaid_document",
+    "mermaid_edit",
     // The fingerprint sensor of the device the person is using: the
     // unlock it opens still runs on the host.
     "coldpass_biometric_status",
@@ -216,6 +219,7 @@ pub const CLIENT_LOCAL_COMMANDS: &[&str] = &[
     "meeting_start_file_session",
     "meeting_snapshot",
     "meeting_context",
+    "meeting_notes_text",
     "meeting_discard",
     "meeting_add_mark",
     "meeting_remove_mark",

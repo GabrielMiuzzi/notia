@@ -25,12 +25,33 @@ let pendingDispatchTimerId: number | null = null
 const pendingTreeChangeDetails: LibraryTreeChangedDetail[] = []
 let lastFlushTimestamp = 0
 
-function resolveSharedPath(paths: string[]): string | undefined {
+/** `//?/` (a Windows verbatim root, as the desktop catalog keeps it), `//`, `/` or nothing (`C:/…`). */
+function pathPrefix(pathValue: string): string {
+  return /^(\/\/\?\/|\/\/|\/)?/.exec(pathValue)?.[0] ?? ''
+}
+
+/**
+ * The folder every hint of a batch is under, written as the hints write it.
+ * A prefix that changed would make the hint miss its library and the tree
+ * would not refresh. SAF URIs are opaque: they are only kept when they are
+ * all the same; otherwise the batch carries no hint (the active library
+ * refreshes).
+ */
+export function resolveSharedPath(paths: string[]): string | undefined {
   if (paths.length === 0) {
     return undefined
   }
 
-  const [firstPath, ...restPaths] = paths.map((pathValue) => normalizeFilesystemPath(pathValue))
+  const normalized = paths.map((pathValue) => normalizeFilesystemPath(pathValue))
+  if (normalized.some((pathValue) => /^[a-z][a-z0-9+.-]*:\/\//i.test(pathValue))) {
+    return normalized.every((pathValue) => pathValue === normalized[0]) ? normalized[0] : undefined
+  }
+  const prefix = pathPrefix(normalized[0])
+  if (normalized.some((pathValue) => pathPrefix(pathValue) !== prefix)) {
+    return undefined
+  }
+
+  const [firstPath, ...restPaths] = normalized.map((pathValue) => pathValue.slice(prefix.length))
   let sharedSegments = firstPath.split('/').filter(Boolean)
 
   for (const currentPath of restPaths) {
@@ -50,14 +71,14 @@ function resolveSharedPath(paths: string[]): string | undefined {
   }
 
   if (sharedSegments.length === 0) {
-    return paths[0]
+    return normalized.length === 1 ? normalized[0] : undefined
   }
 
-  if (/^[a-zA-Z]:$/.test(sharedSegments[0] ?? '')) {
-    return `${sharedSegments[0]}/${sharedSegments.slice(1).join('/')}`.replace(/\/+$/, '')
+  if (/^[a-zA-Z]:$/.test(sharedSegments[0] ?? '') && sharedSegments.length === 1) {
+    return `${prefix}${sharedSegments[0]}/`
   }
 
-  return `/${sharedSegments.join('/')}`.replace(/\/+$/, '')
+  return `${prefix}${sharedSegments.join('/')}`
 }
 
 function emitLibraryTreeChanged(detail: LibraryTreeChangedDetail): void {

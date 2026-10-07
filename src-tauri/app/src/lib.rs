@@ -79,6 +79,7 @@ mod library_users;
 mod local_time;
 mod meeting;
 mod meeting_history;
+mod mermaid_editor;
 mod meeting_media;
 mod home;
 mod weather;

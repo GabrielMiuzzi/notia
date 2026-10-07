@@ -3478,9 +3478,6 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 .notia-meeting-speaker-color--3 { --speaker-color: var(--color-violet); }
 .notia-meeting-speaker-color--4 { --speaker-color: var(--color-sage); }
 .notia-meeting-speaker-color--5 { --speaker-color: var(--color-gold); }
-.notia-meeting-speakers-block { display: flex; flex-direction: column; gap: 10px; }
-.notia-meeting-speakers { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; }
-.notia-meeting-speaker { flex: 1 1 240px; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 12px; }
 .notia-meeting-avatar {
   width: 36px;
   height: 36px;
@@ -3495,12 +3492,8 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   font-weight: 700;
 }
 .notia-meeting-avatar--small { width: 28px; height: 28px; font-size: 11px; }
-.notia-meeting-speaker-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .notia-meeting-speaker-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .notia-meeting-speaker-name strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.notia-meeting-speaker-name .notia-meeting-mono { margin-left: auto; color: var(--color-muted-text); white-space: nowrap; }
-.notia-meeting-share { height: 4px; overflow: hidden; border-radius: 999px; background: var(--color-border-soft); }
-.notia-meeting-share > div { height: 100%; background: var(--speaker-color); }
 .notia-meeting-rename { display: flex; align-items: center; gap: 4px; }
 .notia-meeting-rename input,
 .notia-meeting-search input,

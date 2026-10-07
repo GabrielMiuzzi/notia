@@ -18,6 +18,11 @@ pub const UNTAGGED: &str = "sin-contexto";
 /// The context that is off until the person turns it on.
 const CONFIDENTIAL_CONTEXT: &str = "#Confidencial";
 const MAX_FOLDER_CHARS: usize = 400;
+/// Libraries whose «Contexto para la IA» this device remembers, and the
+/// contexts kept of each.
+pub const MAX_SAVED_CHOICES: usize = 32;
+const MAX_CHOICE_CONTEXTS: usize = 200;
+const MAX_LIBRARY_ID_CHARS: usize = 200;
 /// Notes and characters a meeting keeps of its library context.
 pub const MAX_CORPUS_NOTES: usize = 3_000;
 pub const MAX_CORPUS_CHARS: usize = 12_000_000;
@@ -145,6 +150,108 @@ pub struct MeetingContextOptionDto {
 pub struct MeetingContextOptionsDto {
     pub folders: Vec<MeetingContextFolderDto>,
     pub contexts: Vec<MeetingContextOptionDto>,
+    /// The choice to start from: the one saved for the library, or the
+    /// default (the whole library with the contexts on by default).
+    pub choice: MeetingContextChoice,
+}
+
+/// What the person chose in «Contexto para la IA», kept between recordings:
+/// the whole library limited to some contexts, or else one folder, or
+/// nothing of the library (no folder).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingContextChoice {
+    pub whole_library: bool,
+    /// The folder used when `whole_library` is off; `None` is «Ninguna».
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// The contexts allowed with the whole library.
+    #[serde(default)]
+    pub contexts: Vec<String>,
+}
+
+impl MeetingContextChoice {
+    /// A stored choice made valid: a safe folder (or none) and well-formed
+    /// contexts, once each; `None` for a value that is not a choice.
+    pub fn from_stored(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let whole_library = object.get("wholeLibrary").and_then(Value::as_bool).unwrap_or(true);
+        let folder = object
+            .get("folder")
+            .and_then(Value::as_str)
+            .and_then(|folder| normalized_folder(folder).ok().flatten());
+        let mut seen = HashSet::new();
+        let contexts = object
+            .get("contexts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter_map(|tag| if tag.trim() == UNTAGGED { Some(UNTAGGED.to_string()) } else { normalize_context_tag(tag) })
+            .filter(|tag| seen.insert(tag.to_lowercase()))
+            .take(MAX_CHOICE_CONTEXTS)
+            .collect();
+        Some(Self { whole_library, folder, contexts })
+    }
+
+    /// The choice against the library as it is now: a folder without notes
+    /// any more becomes «Ninguna» and contexts it no longer has are dropped.
+    fn within(mut self, options: &MeetingContextOptionsDto) -> Self {
+        if !options.folders.iter().any(|known| Some(&known.path) == self.folder.as_ref()) {
+            self.folder = None;
+        }
+        self.contexts = self
+            .contexts
+            .iter()
+            .filter_map(|tag| options.contexts.iter().find(|known| known.tag.eq_ignore_ascii_case(tag)))
+            .map(|known| known.tag.clone())
+            .collect();
+        self
+    }
+}
+
+/// The options with the choice saved for their library (`saved`, from the
+/// device preferences); nothing saved keeps the default.
+pub fn apply_saved_choice(options: &mut MeetingContextOptionsDto, saved: &Value) {
+    if let Some(choice) = MeetingContextChoice::from_stored(saved) {
+        options.choice = choice.within(options);
+    }
+}
+
+fn valid_library_key(library_id: &str) -> bool {
+    !library_id.trim().is_empty() && library_id.chars().count() <= MAX_LIBRARY_ID_CHARS
+}
+
+/// The choices saved by library, each valid, at most [`MAX_SAVED_CHOICES`].
+pub fn normalize_context_choices(value: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for (library_id, choice) in value.as_object().into_iter().flatten() {
+        if out.len() == MAX_SAVED_CHOICES {
+            break;
+        }
+        let Some(choice) = MeetingContextChoice::from_stored(choice).filter(|_| valid_library_key(library_id)) else { continue };
+        out.insert(library_id.trim().to_string(), serde_json::to_value(choice).unwrap_or(Value::Null));
+    }
+    Value::Object(out)
+}
+
+/// The saved choices with `choice` for `library_id`; when they are full,
+/// another library's goes away to make room.
+pub fn with_context_choice(saved: &Value, library_id: &str, choice: &MeetingContextChoice) -> Result<Value, BackendError> {
+    if !valid_library_key(library_id) {
+        return Err(BackendError::invalid_input("Falta la biblioteca del contexto de la reunión."));
+    }
+    let stored = serde_json::to_value(choice).unwrap_or(Value::Null);
+    let choice = MeetingContextChoice::from_stored(&stored).ok_or_else(|| BackendError::invalid_input("El contexto elegido no es válido."))?;
+    let mut choices = normalize_context_choices(saved);
+    let Some(map) = choices.as_object_mut() else { return Ok(choices) };
+    let key = library_id.trim().to_string();
+    while map.len() >= MAX_SAVED_CHOICES && !map.contains_key(&key) {
+        let Some(other) = map.keys().next().cloned() else { break };
+        map.remove(&other);
+    }
+    map.insert(key, serde_json::to_value(choice).unwrap_or(Value::Null));
+    Ok(choices)
 }
 
 /// The folders holding notes (hidden ones left out) and every context of
@@ -180,7 +287,12 @@ pub fn context_options(note_paths: &[String], catalog: &[(String, String)]) -> M
         locked: false,
         selected_by_default: true,
     });
-    MeetingContextOptionsDto { folders, contexts }
+    let choice = MeetingContextChoice {
+        whole_library: true,
+        folder: None,
+        contexts: contexts.iter().filter(|context| context.selected_by_default).map(|context| context.tag.clone()).collect(),
+    };
+    MeetingContextOptionsDto { folders, contexts, choice }
 }
 
 fn is_note(path: &str) -> bool {
@@ -487,7 +599,7 @@ pub struct MeetingAiNotesDto {
     pub objective: String,
     pub decisions: Vec<String>,
     pub open_questions: Vec<String>,
-    /// The newest topic first.
+    /// The newest topic first while recording; in order once finished.
     pub topics: Vec<MeetingNoteTopicDto>,
     pub tasks: Vec<MeetingNoteTaskDto>,
 }
@@ -504,18 +616,23 @@ impl MeetingAiNotesState {
             objective: notes.objective.clone(),
             decisions: notes.decisions.clone(),
             open_questions: notes.open_questions.clone(),
-            topics: notes
-                .topics
-                .iter()
-                .enumerate()
-                .rev()
-                .map(|(index, topic)| MeetingNoteTopicDto {
-                    title: topic.title.clone(),
-                    at_ms: topic.at_ms,
-                    items: topic.items.clone(),
-                    current: recording && index == last,
-                })
-                .collect(),
+            topics: {
+                let mut topics = notes
+                    .topics
+                    .iter()
+                    .enumerate()
+                    .map(|(index, topic)| MeetingNoteTopicDto {
+                        title: topic.title.clone(),
+                        at_ms: topic.at_ms,
+                        items: topic.items.clone(),
+                        current: recording && index == last,
+                    })
+                    .collect::<Vec<_>>();
+                if recording {
+                    topics.reverse();
+                }
+                topics
+            },
             tasks: notes
                 .tasks
                 .iter()
@@ -797,6 +914,61 @@ mod tests {
         );
         assert_eq!(options.contexts[0].label, "Personal");
         assert_eq!(options.contexts[3].color, None);
+        assert_eq!(
+            options.choice,
+            MeetingContextChoice { whole_library: true, folder: None, contexts: vec!["#Personal".into(), "#Viaje1".into(), UNTAGGED.into()] }
+        );
+    }
+
+    #[test]
+    fn a_saved_choice_comes_back_against_the_library_as_it_is_now() {
+        let catalog = vec![("#Personal".to_string(), "#6FCF97".to_string()), ("#Laboral".to_string(), "#6C8EFF".to_string())];
+        let paths = vec!["Facultad/clase.md".to_string(), "Cursos/a.md".to_string()];
+        let mut options = context_options(&paths, &catalog);
+        apply_saved_choice(
+            &mut options,
+            &serde_json::json!({ "wholeLibrary": false, "folder": "Cursos", "contexts": ["personal", "#Borrado", "#Personal"] }),
+        );
+        assert_eq!(
+            options.choice,
+            MeetingContextChoice { whole_library: false, folder: Some("Cursos".into()), contexts: vec!["#Personal".into()] }
+        );
+
+        // A folder that no longer holds notes is «Ninguna».
+        let mut gone = context_options(&paths, &catalog);
+        apply_saved_choice(&mut gone, &serde_json::json!({ "wholeLibrary": false, "folder": "Viejo" }));
+        assert_eq!(gone.choice.folder, None);
+        assert!(!gone.choice.whole_library);
+
+        // Nothing saved keeps the default.
+        let mut fresh = context_options(&paths, &catalog);
+        apply_saved_choice(&mut fresh, &Value::Null);
+        assert!(fresh.choice.whole_library);
+        assert_eq!(fresh.choice.contexts.len(), 3);
+    }
+
+    #[test]
+    fn saved_choices_are_valid_and_bounded() {
+        let saved = serde_json::json!({
+            "gaia": { "wholeLibrary": false, "folder": "../fuera", "contexts": ["dos palabras", "#Ok", "#ok"] },
+            "  ": { "wholeLibrary": true },
+            "otra": "no es una elección",
+        });
+        assert_eq!(
+            normalize_context_choices(&saved),
+            serde_json::json!({ "gaia": { "wholeLibrary": false, "folder": null, "contexts": ["#Ok"] } })
+        );
+
+        let choice = MeetingContextChoice { whole_library: false, folder: Some("Facultad".into()), contexts: Vec::new() };
+        let mut full = Value::Object(Default::default());
+        for index in 0..MAX_SAVED_CHOICES {
+            full = with_context_choice(&full, &format!("lib-{index:02}"), &choice).expect("saved");
+        }
+        let updated = with_context_choice(&full, "nueva", &choice).expect("saved");
+        let map = updated.as_object().expect("object");
+        assert_eq!(map.len(), MAX_SAVED_CHOICES);
+        assert_eq!(map["nueva"]["folder"], "Facultad");
+        assert!(with_context_choice(&full, " ", &choice).is_err());
     }
 
     #[test]

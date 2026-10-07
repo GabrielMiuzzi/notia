@@ -495,7 +495,15 @@ impl<'a> TauriFilesystemDocumentAdapter<'a> {
         locator: &DocumentLocatorDto,
         content: &str,
     ) -> Result<(), BackendError> {
-        match self.write_locator(locator, content, None) {
+        // A write of a missing file under a missing folder fails with the
+        // system's own words («no se puede encontrar la ruta»), not NotFound:
+        // a document that is not there yet is created instead.
+        let written = if self.exists_locator(locator)? {
+            self.write_locator(locator, content, None)
+        } else {
+            Err(BackendError::new(BackendErrorCode::NotFound, "El documento no existe.", false))
+        };
+        match written {
             Err(error) if error.code == BackendErrorCode::NotFound => {
                 #[cfg(not(target_os = "android"))]
                 self.create_desktop_parent_directories(locator)?;
@@ -1090,6 +1098,26 @@ mod tests {
         let long_name = format!("Ideas/{}.md", "idea larga ".repeat(20).trim());
         let long = DocumentLocatorDto::new("library-one", &long_name, None, None).expect("locator");
         adapter.create_text_locator(&long, "# Idea larga\n").expect("long name created");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn upserts_a_json_file_under_a_new_hidden_folder() {
+        let root = std::env::temp_dir().join(format!("notia-adapter-hidden-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".notia")).expect("root");
+        let state = state();
+        let registry = LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-one", &root).expect("binding");
+        let adapter = TauriFilesystemDocumentAdapter::for_library(&registry, "library-one", &state)
+            .expect("adapter");
+        let locator = DocumentLocatorDto::new("library-one", ".notia/meetings/m1.json", None, None)
+            .expect("locator");
+        assert!(!adapter.exists_locator(&locator).expect("exists"));
+        let content = format!("{{\"text\":\"{}\"}}", "palabra ".repeat(20_000));
+        adapter.upsert_text_locator(&locator, &content).expect("written");
+        assert_eq!(std::fs::read_to_string(root.join(".notia").join("meetings").join("m1.json")).expect("file"), content);
+        adapter.upsert_text_locator(&locator, "{}").expect("rewritten");
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

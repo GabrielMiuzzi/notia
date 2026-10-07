@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react'
-import { Check, ChevronDown, Folder, Lock, Sparkles, X } from 'lucide-react'
+import { Ban, Check, ChevronDown, Folder, Lock, Sparkles, X } from 'lucide-react'
 import { NotiaModalShell } from '../../NotiaModalShell'
 import type { MeetingContextOption } from '../../../../services/meeting/meetingTypes'
 import type { MeetingAiContextState } from './useMeetingAiContext'
@@ -13,6 +13,8 @@ import type { MeetingAiContextState } from './useMeetingAiContext'
 
 const VISIBLE_CONTEXTS = 8
 const SUBTITLE = 'Respuestas en vivo y Notas IA solo consultan lo que elijas.'
+/** Without the whole library and without a folder the AI reads nothing of the library. */
+const NO_FOLDER = 'Ninguna'
 
 const chipStyle = (context: MeetingContextOption) => (
   context.color ? { '--meeting-context-color': context.color } as CSSProperties : undefined
@@ -76,7 +78,9 @@ export function MeetingAiContextSection({ state }: { state: MeetingAiContextStat
   const { options, choice, libraryName } = state
   const folders = options?.folders ?? []
   const folder = folders.find((candidate) => candidate.path === choice.folder)
-  const folderDisabled = choice.wholeLibrary || folders.length === 0
+  const folderDisabled = choice.wholeLibrary
+  const folderName = choice.wholeLibrary ? `Toda la librería ${libraryName}`
+    : folder ? `${libraryName} / ${folder.path}` : NO_FOLDER
   return (
     <section className="notia-meeting-ai-context" aria-labelledby="meeting-ai-context-title">
       <div className="notia-meeting-ai-context-title">
@@ -95,17 +99,16 @@ export function MeetingAiContextSection({ state }: { state: MeetingAiContextStat
           <div className="notia-meeting-ai-context-row">
             <label className="notia-meeting-ai-folder" data-disabled={folderDisabled ? 'true' : undefined}>
               <Folder size={15} strokeWidth={1.8} aria-hidden="true" />
-              <span className="notia-meeting-ai-folder-name">
-                {choice.wholeLibrary || !folder ? `Toda la librería ${libraryName}` : `${libraryName} / ${folder.path}`}
-              </span>
+              <span className="notia-meeting-ai-folder-name">{folderName}</span>
               {!choice.wholeLibrary && folder ? <span className="notia-meeting-ai-folder-meta">{`${folder.noteCount} notas`}</span> : null}
               <ChevronDown size={12} aria-hidden="true" />
               <select
                 aria-label="Carpeta de contexto"
                 value={choice.folder ?? ''}
                 disabled={folderDisabled}
-                onChange={(event) => state.setFolder(event.target.value)}
+                onChange={(event) => state.setFolder(event.target.value || null)}
               >
+                <option value="">{NO_FOLDER}</option>
                 {folders.map((candidate) => (
                   <option key={candidate.path} value={candidate.path}>
                     {`${libraryName} / ${candidate.path} (${candidate.noteCount} notas)`}
@@ -121,7 +124,6 @@ export function MeetingAiContextSection({ state }: { state: MeetingAiContextStat
                 className="notia-meeting-switch"
                 aria-checked={choice.wholeLibrary}
                 aria-labelledby="meeting-ai-whole-library"
-                disabled={folders.length === 0}
                 onClick={() => state.setWholeLibrary(!choice.wholeLibrary)}
               >
                 <span aria-hidden="true" />
@@ -131,6 +133,7 @@ export function MeetingAiContextSection({ state }: { state: MeetingAiContextStat
           <ContextChips state={state} />
         </>
       )}
+      {state.saveError ? <p className="notia-meeting-error-text" role="alert">{state.saveError}</p> : null}
     </section>
   )
 }
@@ -172,37 +175,32 @@ export function MeetingAiContextSheet({ state, onClose }: MeetingAiContextSheetP
                 className="notia-meeting-phone-switch"
                 aria-checked={choice.wholeLibrary}
                 aria-labelledby="meeting-ai-sheet-whole"
-                disabled={folders.length === 0}
                 onClick={() => state.setWholeLibrary(!choice.wholeLibrary)}
               >
                 <span aria-hidden="true" />
               </button>
             </div>
-            {folders.length ? (
-              <div className="notia-meeting-ai-sheet-folders" data-disabled={choice.wholeLibrary ? 'true' : undefined}>
-                <span id="meeting-ai-sheet-folders">O elegí una carpeta</span>
-                <div role="radiogroup" aria-labelledby="meeting-ai-sheet-folders">
-                  {folders.map((folder) => {
-                    const selected = !choice.wholeLibrary && choice.folder === folder.path
-                    return (
-                      <button
-                        key={folder.path}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        disabled={choice.wholeLibrary}
-                        onClick={() => state.setFolder(folder.path)}
-                      >
-                        <Folder size={16} strokeWidth={1.8} aria-hidden="true" />
-                        <span>{folder.path}</span>
-                        <i aria-hidden="true" />
-                      </button>
-                    )
-                  })}
-                </div>
+            <div className="notia-meeting-ai-sheet-folders" data-disabled={choice.wholeLibrary ? 'true' : undefined}>
+              <span id="meeting-ai-sheet-folders">O elegí una carpeta</span>
+              <div role="radiogroup" aria-labelledby="meeting-ai-sheet-folders">
+                {[null, ...folders.map((folder) => folder.path)].map((path) => (
+                  <button
+                    key={path ?? ''}
+                    type="button"
+                    role="radio"
+                    aria-checked={!choice.wholeLibrary && choice.folder === path}
+                    disabled={choice.wholeLibrary}
+                    onClick={() => state.setFolder(path)}
+                  >
+                    {path ? <Folder size={16} strokeWidth={1.8} aria-hidden="true" /> : <Ban size={16} strokeWidth={1.8} aria-hidden="true" />}
+                    <span>{path ?? NO_FOLDER}</span>
+                    <i aria-hidden="true" />
+                  </button>
+                ))}
               </div>
-            ) : null}
+            </div>
             <ContextChips state={state} showAll />
+            {state.saveError ? <p className="notia-meeting-error-text" role="alert">{state.saveError}</p> : null}
           </>
         )}
       </div>

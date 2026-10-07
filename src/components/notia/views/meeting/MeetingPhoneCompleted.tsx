@@ -1,30 +1,37 @@
 import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Check, FileText, Mic, NotebookText, Pencil, Search, Sparkles, X } from 'lucide-react'
 import { MeetingAskConversation, MeetingAskForm } from './MeetingAskPanel'
-import { InsightsResults, MeetingSpeakerFilter, MeetingTurns, NO_SPEAKERS_TEXT } from './MeetingCompletedPanel'
+import {
+  INSIGHT_OPTIONS,
+  InsightsResults,
+  MeetingFinishedNotesBody,
+  MeetingNotesTools,
+  MeetingSpeakerFilter,
+  MeetingTalkTimeline,
+  MeetingTurns,
+  NO_SPEAKERS_TEXT,
+} from './MeetingCompletedPanel'
 import { MeetingReviewNotice } from './MeetingReviewNotice'
-import { formatClock, generateLabel, speakerColorClass } from './meetingDisplay'
+import { formatClock, formatDuration, generateLabel, speakerColorClass } from './meetingDisplay'
 import { useMeetingAsk, type MeetingAsk } from './useMeetingAsk'
-import { useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit } from './useMeetingCompleted'
-import type { MeetingFilter, MeetingInsightsRequest, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
+import { useMeetingFinishedNotes, useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit, useTranscriptJump } from './useMeetingCompleted'
+import type { MeetingFilter, MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 
 /*
  * Finished stage of Meeting in the space of a phone (canvas «Notia ·
- * Meeting», board M4 «Finalizada»): the speakers on top, the transcript or
- * the AI in two tabs, and the tab's action at the bottom.
+ * Meeting», board M4 «Finalizada»): the speakers and the talk timeline on
+ * top, the transcript, the notes or the AI in three tabs, and the tab's
+ * action at the bottom.
  */
 
-type PhoneTab = 'transcript' | 'ai'
+type PhoneTab = 'transcript' | 'notes' | 'ai'
 
-const TABS: PhoneTab[] = ['transcript', 'ai']
-
-const INSIGHT_OPTIONS: Array<{ key: keyof MeetingInsightsRequest; label: string; hint?: string }> = [
-  { key: 'summary', label: 'Resumen' },
-  { key: 'keyPoints', label: 'Puntos clave' },
-  { key: 'tasks', label: 'Tareas', hint: '→ Task Manager' },
-  { key: 'correct', label: 'Corregir transcripción' },
+const TABS: Array<{ id: PhoneTab; label: string }> = [
+  { id: 'transcript', label: 'Transcripción' },
+  { id: 'notes', label: 'Notas' },
+  { id: 'ai', label: 'IA' },
 ]
 
 interface MeetingPhoneCompletedProps {
@@ -62,6 +69,8 @@ export function MeetingPhoneCompleted({
   // Both live here so a change of tab keeps the chosen options and the conversation.
   const insights = useMeetingInsights(snapshot.id, aiPreferences)
   const conversation = useMeetingAsk({ transcript: snapshot.contextText, aiPreferences, library })
+  const notes = useMeetingFinishedNotes(snapshot.id, aiPreferences)
+  const jump = useTranscriptJump(snapshot.turns, filter, onFilterChange)
   const speakersById = useMemo(
     () => new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker])),
     [snapshot.speakers],
@@ -73,10 +82,16 @@ export function MeetingPhoneCompleted({
     if (searchOpen) setTab('transcript')
   }, [searchOpen])
 
+  const showMoment = (atMs: number) => {
+    setTab('transcript')
+    jump.showMoment(atMs)
+  }
+
   const handleTabsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
-    const next = tab === 'transcript' ? 'ai' : 'transcript'
+    const index = TABS.findIndex((candidate) => candidate.id === tab)
+    const next = TABS[(index + (event.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length].id
     setTab(next)
     event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus()
   }
@@ -93,8 +108,16 @@ export function MeetingPhoneCompleted({
         </span>
         <MeetingReviewNotice review={snapshot.review} />
         <PhoneSpeakers snapshot={snapshot} />
+        {snapshot.talkTimeline.length ? (
+          <div className="notia-meeting-phone-timeline">
+            <MeetingTalkTimeline snapshot={snapshot} compact />
+            <div className="notia-meeting-mono" aria-hidden="true">
+              <span>00:00</span><span>Tiempo de habla</span><span>{formatClock(snapshot.durationMs)}</span>
+            </div>
+          </div>
+        ) : null}
         <div className="notia-meeting-phone-view-tabs" role="tablist" aria-label="Vista" onKeyDown={handleTabsKeyDown}>
-          {TABS.map((id) => (
+          {TABS.map(({ id, label }) => (
             <button
               key={id}
               type="button"
@@ -106,19 +129,29 @@ export function MeetingPhoneCompleted({
               tabIndex={tab === id ? 0 : -1}
               onClick={() => setTab(id)}
             >
-              {id === 'ai' ? <><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" />IA</> : 'Transcripción'}
+              {id === 'ai' ? <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> : null}{label}
             </button>
           ))}
         </div>
       </div>
 
       <div className="notia-meeting-phone-content" id="meeting-phone-view" role="tabpanel" aria-labelledby={`meeting-phone-tab-${tab}`}>
-        {tab === 'transcript'
-          ? <MeetingTurns snapshot={snapshot} speakersById={speakersById} />
-          : <PhoneAi snapshot={snapshot} library={library} insights={insights} conversation={conversation} />}
+        {tab === 'transcript' ? (
+          <MeetingTurns snapshot={snapshot} speakersById={speakersById} highlightId={jump.highlightId} />
+        ) : tab === 'notes' ? (
+          <div className="notia-meeting-phone-notes">
+            <div className="notia-meeting-phone-notes-head">
+              <span>Generadas por la IA · se guardan con la nota</span>
+              <MeetingNotesTools snapshot={snapshot} notes={notes} />
+            </div>
+            <MeetingFinishedNotesBody snapshot={snapshot} notes={notes} library={library} onShowMoment={showMoment} />
+          </div>
+        ) : (
+          <PhoneAi snapshot={snapshot} library={library} insights={insights} conversation={conversation} />
+        )}
       </div>
 
-      {tab === 'transcript' ? (
+      {tab !== 'ai' ? (
         <div className="notia-meeting-phone-foot notia-meeting-phone-note-bar">
           <button type="button" className="notia-meeting-phone-square" aria-label="Nueva grabación" onClick={onNewRecording} disabled={isBusy}>
             <Mic size={18} aria-hidden="true" />
@@ -221,7 +254,7 @@ function PhoneSpeakers({ snapshot }: { snapshot: MeetingSnapshot }) {
                 <Pencil size={11} aria-hidden="true" />
               </span>
               <span className="notia-meeting-phone-share" aria-hidden="true"><span style={{ width: `${speaker.sharePercent}%` }} /></span>
-              <span className="notia-meeting-mono">{speaker.sharePercent}% · {formatClock(speaker.talkMs)}</span>
+              <span className="notia-meeting-mono">{formatDuration(speaker.talkMs)} · {speaker.sharePercent}%</span>
             </span>
           </button>
         ))}

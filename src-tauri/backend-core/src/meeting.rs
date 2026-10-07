@@ -8,7 +8,7 @@
 //! are derived here. Pure: the app crate owns the state, the audio and the
 //! adapters.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,6 +96,44 @@ pub fn archive_path(meeting_id: &str) -> Result<String, BackendError> {
         return Err(BackendError::invalid_input("La reunión no es válida."));
     }
     Ok(format!("{MEETING_ARCHIVE_FOLDER}/{meeting_id}.json"))
+}
+
+#[path = "meeting_note_import.rs"]
+mod note_import;
+pub use note_import::{archive_from_note, imported_meeting_id, is_meeting_note_name};
+
+/// The saved meetings of a library, by id, oldest first. The library
+/// inventory only holds notes, so the history finds the archives here.
+pub const MEETING_ARCHIVE_INDEX: &str = ".notia/meetings/index.json";
+const MAX_INDEXED_MEETINGS: usize = 5_000;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct MeetingArchiveIndex {
+    #[serde(default)]
+    meetings: Vec<String>,
+}
+
+/// The valid ids of an index file, once each; none for an unreadable one.
+pub fn parse_archive_index(text: &str) -> Vec<String> {
+    let index = serde_json::from_str::<MeetingArchiveIndex>(text).unwrap_or_default();
+    let mut seen = HashSet::new();
+    index
+        .meetings
+        .into_iter()
+        .filter(|id| archive_path(id).is_ok() && seen.insert(id.clone()))
+        .collect()
+}
+
+/// The index of `ids` with `meeting_id` added last (once); the oldest go
+/// away past [`MAX_INDEXED_MEETINGS`].
+pub fn archive_index_with(ids: &[String], meeting_id: &str) -> Result<String, BackendError> {
+    archive_path(meeting_id)?;
+    let mut meetings = ids.iter().filter(|id| id.as_str() != meeting_id).cloned().collect::<Vec<_>>();
+    meetings.push(meeting_id.to_string());
+    let excess = meetings.len().saturating_sub(MAX_INDEXED_MEETINGS);
+    meetings.drain(..excess);
+    serde_json::to_string(&MeetingArchiveIndex { meetings })
+        .map_err(|_| BackendError::invalid_input("No se pudo guardar la lista de reuniones."))
 }
 
 /// Line recognized while recording, before the speakers are separated.
@@ -341,6 +379,20 @@ pub struct MeetingSpeakerDto {
     pub share_percent: u32,
     /// Position of the speaker, for its color.
     pub color_index: u32,
+    /// Turns (consecutive segments of the speaker), the longest one and
+    /// their average length.
+    pub turn_count: usize,
+    pub longest_turn_ms: u64,
+    pub average_turn_ms: u64,
+}
+
+/// A turn of a known speaker on the «Tiempo de habla» timeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingTalkSpanDto {
+    pub speaker_id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
 }
 
 /// Question asked in the meeting and the minute it was asked.
@@ -374,6 +426,8 @@ pub struct MeetingSnapshotDto {
     pub source_file: Option<MeetingSourceFile>,
     pub lines: Vec<MeetingLine>,
     pub speakers: Vec<MeetingSpeakerDto>,
+    /// Who spoke when, over the whole meeting (the filter does not apply).
+    pub talk_timeline: Vec<MeetingTalkSpanDto>,
     /// Turns that match the filter.
     pub turns: Vec<MeetingTurnDto>,
     pub total_turns: usize,
@@ -899,7 +953,10 @@ impl MeetingRecord {
     /// Starts a notes pass. An automatic one (`manual` false) returns `None`
     /// while no line arrived since the last pass.
     pub fn begin_notes_pass(&mut self, manual: bool) -> Result<Option<NotesPass>, BackendError> {
-        if !self.ai_notes.enabled {
+        // «Regenerar» on a finished meeting writes its notes even when Notas
+        // IA was off while recording.
+        let regenerate = manual && self.status == MeetingStatus::Completed;
+        if !self.ai_notes.enabled && !regenerate {
             return Err(BackendError::invalid_input("Activá Notas IA para llamar al agente."));
         }
         if self.ai_notes.running {
@@ -916,6 +973,7 @@ impl MeetingRecord {
         if !manual && !unread {
             return Ok(None);
         }
+        self.ai_notes.enabled = true;
         self.ai_notes.running = true;
         self.ai_notes.error = None;
         self.ai_notes.seen_lines = self.lines.len();
@@ -1039,23 +1097,61 @@ impl MeetingRecord {
             })
             .collect::<Vec<_>>();
         let shares = whole_percents(&talk);
+        let turns = self.turns();
         self.speakers
             .iter()
             .enumerate()
-            .map(|(index, speaker)| MeetingSpeakerDto {
-                id: speaker.id.clone(),
-                name: speaker.name.clone(),
-                initials: initials(&speaker.name),
-                talk_ms: talk[index],
-                share_percent: shares[index],
-                color_index: index as u32,
+            .map(|(index, speaker)| {
+                let lengths = turns
+                    .iter()
+                    .filter(|turn| turn.speaker_id.as_deref() == Some(speaker.id.as_str()))
+                    .map(|turn| turn.end_ms.saturating_sub(turn.start_ms))
+                    .collect::<Vec<_>>();
+                MeetingSpeakerDto {
+                    id: speaker.id.clone(),
+                    name: speaker.name.clone(),
+                    initials: initials(&speaker.name),
+                    talk_ms: talk[index],
+                    share_percent: shares[index],
+                    color_index: index as u32,
+                    turn_count: lengths.len(),
+                    longest_turn_ms: lengths.iter().copied().max().unwrap_or(0),
+                    average_turn_ms: if lengths.is_empty() { 0 } else { lengths.iter().sum::<u64>() / lengths.len() as u64 },
+                }
             })
             .collect()
+    }
+
+    /// The turns of known speakers, in order, for «Tiempo de habla».
+    fn talk_timeline(turns: &[MeetingTurnDto]) -> Vec<MeetingTalkSpanDto> {
+        turns
+            .iter()
+            .filter_map(|turn| {
+                Some(MeetingTalkSpanDto { speaker_id: turn.speaker_id.clone()?, start_ms: turn.start_ms, end_ms: turn.end_ms })
+            })
+            .collect()
+    }
+
+    /// The Notas IA and the person's marks as text to copy; `None` while
+    /// there are none.
+    pub fn notes_text(&self) -> Option<String> {
+        let mut out = meeting_ai::notes_markdown(&self.ai_notes.notes).unwrap_or_default();
+        if !self.marks.is_empty() {
+            if out.is_empty() {
+                out.push_str("## Notas IA\n\n");
+            }
+            out.push_str("### Tus marcas\n\n");
+            for mark in &self.marks {
+                out.push_str(&format!("- `{}` {}\n", format_clock(mark.at_ms), single_line(&mark.label)));
+            }
+        }
+        (!out.trim().is_empty()).then(|| format!("{}\n", out.trim_end()))
     }
 
     pub fn snapshot(&self, filter: &MeetingFilter) -> MeetingSnapshotDto {
         let turns = self.turns();
         let total_turns = turns.len();
+        let talk_timeline = Self::talk_timeline(&turns);
         let query = filter.query.trim().chars().take(MAX_QUERY_CHARS).collect::<String>().to_lowercase();
         let visible = turns
             .into_iter()
@@ -1072,6 +1168,7 @@ impl MeetingRecord {
             source_file: self.source_file.clone(),
             lines: self.lines_with_speakers(),
             speakers: self.speaker_stats(),
+            talk_timeline,
             turns: visible,
             total_turns,
             notes: self.notes.clone(),
@@ -1697,6 +1794,21 @@ mod tests {
     }
 
     #[test]
+    fn the_archive_index_keeps_valid_ids_once_newest_last() {
+        assert!(parse_archive_index("no es json").is_empty());
+        let ids = parse_archive_index("{\"meetings\": [\"m1\", \"../m2\", \"m3\", \"m1\"]}");
+        assert_eq!(ids, vec!["m1".to_string(), "m3".to_string()]);
+        let updated = archive_index_with(&ids, "m1").expect("index");
+        assert_eq!(parse_archive_index(&updated), vec!["m3".to_string(), "m1".to_string()]);
+        assert!(archive_index_with(&ids, "a/b").is_err());
+        let many = (0..MAX_INDEXED_MEETINGS).map(|index| format!("m{index}")).collect::<Vec<_>>();
+        let capped = parse_archive_index(&archive_index_with(&many, "nueva").expect("index"));
+        assert_eq!(capped.len(), MAX_INDEXED_MEETINGS);
+        assert_eq!(capped.first().map(String::as_str), Some("m1"), "the oldest went away");
+        assert_eq!(capped.last().map(String::as_str), Some("nueva"));
+    }
+
+    #[test]
     fn the_cleanup_replaces_text_drops_filler_and_keeps_rewrites_out() {
         let mut record = reviewed_record();
         let batches = record.cleanup_batches();
@@ -1984,6 +2096,36 @@ mod tests {
         assert_eq!(speakers[0].talk_ms, 8_000);
         assert_eq!(speakers.iter().map(|speaker| speaker.share_percent).sum::<u32>(), 100);
         assert_eq!((speakers[0].share_percent, speakers[1].share_percent), (67, 33));
+        assert_eq!((speakers[0].turn_count, speakers[0].longest_turn_ms, speakers[0].average_turn_ms), (2, 6_000, 4_000));
+        assert_eq!((speakers[1].turn_count, speakers[1].longest_turn_ms, speakers[1].average_turn_ms), (1, 4_000, 4_000));
+
+        // The timeline covers every turn, whatever the filter shows.
+        let snapshot = record.snapshot(&MeetingFilter { query: "viaje".into(), speaker_id: None });
+        assert_eq!(snapshot.turns.len(), 1);
+        let spans = snapshot.talk_timeline.iter().map(|span| (span.speaker_id.as_str(), span.start_ms, span.end_ms)).collect::<Vec<_>>();
+        assert_eq!(spans, vec![("speaker-2", 0, 6_000), ("speaker-1", 6_000, 10_000), ("speaker-2", 10_000, 12_000)]);
+    }
+
+    #[test]
+    fn a_finished_meeting_regenerates_its_notes_in_order_and_copies_them() {
+        let mut record = completed();
+        assert_eq!(record.notes_text(), None);
+        assert!(!record.ai_notes.enabled);
+        assert!(record.begin_notes_pass(false).is_err(), "only the person regenerates them");
+        let pass = record.begin_notes_pass(true).unwrap().expect("regenerate");
+        assert!(pass.prompt.contains("Empecemos."));
+        assert!(record.ai_notes.enabled);
+        record.finish_notes_pass(
+            Ok("{\"objective\": \"Viaje\", \"topics\": [{\"title\": \"Saludo\", \"minute\": \"00:00\"}, {\"title\": \"Arranque\", \"minute\": \"00:10\"}]}".into()),
+            None,
+        );
+        let topics = record.snapshot(&MeetingFilter::default()).ai_notes.topics;
+        assert_eq!(topics.iter().map(|topic| topic.title.as_str()).collect::<Vec<_>>(), vec!["Saludo", "Arranque"]);
+        record.add_mark(8_000, Some("Llegó bien")).unwrap();
+        let text = record.notes_text().expect("notes");
+        assert!(text.contains("**Objetivo:** Viaje"));
+        assert!(text.contains("### Saludo (`00:00`)"));
+        assert!(text.contains("### Tus marcas\n\n- `00:08` Llegó bien"));
     }
 
     #[test]

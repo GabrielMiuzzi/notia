@@ -19,6 +19,16 @@ export interface MeetingSpeaker {
   talkMs: number
   sharePercent: number
   colorIndex: number
+  turnCount: number
+  longestTurnMs: number
+  averageTurnMs: number
+}
+
+/** A turn of a known speaker on the «Tiempo de habla» timeline. */
+export interface MeetingTalkSpan {
+  speakerId: string
+  startMs: number
+  endMs: number
 }
 
 export interface MeetingTurn {
@@ -165,9 +175,20 @@ export interface MeetingContextOption {
   selectedByDefault: boolean
 }
 
+/** What the person chose in «Contexto para la IA», saved by the backend for the library. */
+export interface MeetingContextChoice {
+  wholeLibrary: boolean
+  /** The folder used without the whole library; `null` is «Ninguna». */
+  folder: string | null
+  /** The contexts allowed with the whole library. */
+  contexts: string[]
+}
+
 export interface MeetingContextOptions {
   folders: MeetingContextFolder[]
   contexts: MeetingContextOption[]
+  /** The saved choice, against the library as it is now, or the default. */
+  choice: MeetingContextChoice
 }
 
 export interface MeetingSnapshot {
@@ -181,6 +202,8 @@ export interface MeetingSnapshot {
   sourceFile?: MeetingSourceFile
   lines: MeetingLine[]
   speakers: MeetingSpeaker[]
+  /** Who spoke when over the whole meeting; the filter does not apply. */
+  talkTimeline: MeetingTalkSpan[]
   turns: MeetingTurn[]
   totalTurns: number
   notes: string

@@ -11,6 +11,7 @@
 - Wikilinks y enlaces bidireccionales entre notas, que en el editor se leen sin corchetes y se deshabilitan borrando un corchete.
 - Enlaces secuenciales entre páginas mediante `nextPage` y `previousPage`.
 - Diagramas Mermaid en archivos `.mmd` y bloques Markdown.
+- Editor visual de `.mmd` para flujo, secuencia, estados, clases y entidad-relación: código sincronizado, paletas, inspector, menú flotante, unión por toque, temas, deshacer/rehacer y exportación PNG/SVG.
 - Gráficos XGraph interactivos en notas Markdown.
 - Graph View 2D de relaciones entre documentos, con zoom, paneo, colores por contexto, grafo local, filtros por etiqueta, inspector de nota y resumen de la biblioteca, halos por carpeta, fuerzas ajustables y minimapa.
 - Contextos configurables por biblioteca mediante tabla, alta, color y eliminación (`#Laboral`, `#Personal`, `#Academico` y `#Confidencial` rojo por defecto), con chips por etiqueta y coloración de nodos en Graph View.
@@ -43,9 +44,10 @@
 - Agente autónomo por Telegram (solo al Owner): al llegar mails nuevos a Gmail los revisa y, si vale la pena, recuerda, pregunta o propone mejoras sin repetirse; solo lee y se apaga desde Configuraciones → Telegram (la revisión de cada hora es una acción de Acciones IA).
 - Meeting: grabación de micrófono y audio de la computadora (Windows) con interruptores, prueba de audio y medidores; transcripción offline en vivo con el minuto de cada frase, momentos marcados, notas rápidas y respuestas en vivo de IA a las preguntas detectadas; la grabación sigue al cambiar de módulo.
 - Meeting: elección del micrófono y de la salida a grabar (Windows), recordada por equipo y usada también por el dictado, con aviso para dispositivos virtuales como Voicemod; la salida envolvente se convierte a mono con los canales frontales.
-- Meeting: contexto para la IA elegido al grabar (una carpeta, o toda la biblioteca con los contextos permitidos) y Notas IA que el agente reescribe cada 5 minutos o al llamarlo (objetivo, decisiones, preguntas abiertas, notas por tema, tareas al Task Manager), con marcas y notas propias.
+- Meeting: contexto para la IA elegido al grabar (una carpeta, ninguna, o toda la biblioteca con los contextos permitidos), recordado por biblioteca, y Notas IA que el agente reescribe cada 5 minutos o al llamarlo (objetivo, decisiones, preguntas abiertas, notas por tema, tareas al Task Manager), con marcas y notas propias.
 - Meeting: transcripción de archivos de audio (MP3, WAV, M4A, OGG, FLAC) y video (MP4, MOV, MKV, WEBM) elegidos o arrastrados, con duración, onda, progreso y cancelación; después, separación de hablantes y todo lo de una reunión grabada.
-- Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, hablantes con porcentaje y tiempo de habla, renombrar y unir hablantes, búsqueda y filtro por hablante.
+- Meeting: separación de hablantes con progreso y opción de cancelarla, cantidad de hablantes automática o fija, tiempo de habla con línea de tiempo por hablante, intervenciones, la más larga y el promedio, renombrar y unir hablantes, búsqueda y filtro por hablante.
+- Meeting: notas de la reunión finalizada (Notas IA) con «Regenerar», copia como texto y salto de cada tema a su minuto de la transcripción.
 - Meeting: segunda pasada al terminar en Windows con GPU (Whisper large-v3 con tiempos por palabra), cuyo texto reemplaza al en vivo línea por línea.
 - Meeting: repaso automático con IA al terminar la separación: ordena la transcripción (palabras mal oídas, muletillas, repeticiones) y nombra a los hablantes que la conversación identifica.
 - Meeting: «Reuniones anteriores» (panel en escritorio, pantalla propia en el celular) con las reuniones guardadas como nota, agrupadas por fecha, con búsqueda por título o contenido, y apertura de una reunión guardada para seguir trabajando con ella.

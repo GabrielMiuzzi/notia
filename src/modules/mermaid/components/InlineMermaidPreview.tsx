@@ -15,7 +15,7 @@ interface InlineMermaidPreviewProps {
 function InlineMermaidPreviewInner({ code }: Omit<InlineMermaidPreviewProps, 'storageKey'>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appTheme = useAppSelector(selectTheme)
-  const theme = appTheme === 'dark' ? 'dark' : 'default'
+  const theme = appTheme === 'dark' ? 'dark' : 'light'
 
   const { result, error, isLoading } = useMermaidLazyRender({
     code,
@@ -36,7 +36,6 @@ function InlineMermaidPreviewInner({ code }: Omit<InlineMermaidPreviewProps, 'st
         initialZoom={1}
         initialPanX={0}
         initialPanY={0}
-        readOnly={true}
       />
     </div>
   )

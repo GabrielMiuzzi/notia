@@ -27,6 +27,10 @@ import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
+import { useAgentDocumentChanges } from './hooks/useAgentDocumentChanges'
+import { store } from '../../store/index'
+import { isTextFileDocument } from '../../types/views/fileDocument'
+import { readLibraryDocument } from '../../services/libraries/libraryDocumentRuntime'
 import { useResumeWorkout } from '../../modules/gym/hooks/useResumeWorkout'
 import { useAppDispatch, useAppSelector, type RootState } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
@@ -392,6 +396,9 @@ function NotiaMenuComponent() {
   }, [handleExternalTextDocumentChange])
 
   const handleActiveMarkdownDocumentChanged = useCallback((documentPath: string, source: string, revision?: string) => {
+    // The note already shows it (the agent's write was reloaded as it happened).
+    const open = store.getState().documents.openTabs.find((tab) => tab.document.path === documentPath)
+    if (open && isTextFileDocument(open.document) && open.document.source === source) return
     handleExternalTextDocumentChange(documentPath, source, revision)
     markdownExternalUpdateRevisionRef.current += 1
     setMarkdownExternalUpdate({
@@ -400,6 +407,28 @@ function NotiaMenuComponent() {
       revision: markdownExternalUpdateRevisionRef.current,
     })
   }, [handleExternalTextDocumentChange])
+
+  // A note the agent of a chat writes (a confirmed edit included) shows the
+  // change in its open tab right away.
+  const getOpenTextPaths = useCallback(() => (
+    store.getState().documents.openTabs.filter((tab) => isTextFileDocument(tab.document)).map((tab) => tab.document.path)
+  ), [])
+  const reloadAgentChangedDocuments = useCallback((paths: string[]) => {
+    const libraryId = activeLibraryId
+    if (!libraryId) return
+    for (const path of paths) {
+      const tab = store.getState().documents.openTabs.find((item) => item.document.path === path)
+      if (!tab || !isTextFileDocument(tab.document)) continue
+      const markdown = tab.document.viewKind === 'markdown'
+      void readLibraryDocument(libraryId, path, { markdownDefaults: markdown }).then((read) => {
+        const current = store.getState().documents.openTabs.find((item) => item.document.path === path)
+        if (!read.ok || !current || !isTextFileDocument(current.document) || current.document.source === read.content) return
+        if (markdown) handleActiveMarkdownDocumentChanged(path, read.content, read.revision)
+        else handleExternalTextDocumentChange(path, read.content, read.revision)
+      })
+    }
+  }, [activeLibraryId, handleActiveMarkdownDocumentChanged, handleExternalTextDocumentChange])
+  useAgentDocumentChanges(activeLibraryId, getOpenTextPaths, reloadAgentChangedDocuments)
 
   // --- Derived values ---
 

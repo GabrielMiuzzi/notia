@@ -110,6 +110,8 @@ fn route(command: &str) -> Option<Route> {
         "coldpass_status" => coldpass_status,
         "coldpass_generate_password" => coldpass_generate_password,
         "coldpass_rate_password" => coldpass_rate_password,
+        "mermaid_document" => mermaid_document,
+        "mermaid_edit" => mermaid_edit,
         "coldpass_lock" => coldpass_lock,
         "coldpass_save_entry" => coldpass_save_entry,
         "coldpass_delete_entry" => coldpass_delete_entry,
@@ -208,6 +210,7 @@ fn route(command: &str) -> Option<Route> {
         "meeting_start_file_session" => meeting_start_file_session,
         "meeting_snapshot" => meeting_snapshot,
         "meeting_context" => meeting_context,
+        "meeting_notes_text" => meeting_notes_text,
         "meeting_discard" => meeting_discard,
         "meeting_add_mark" => meeting_add_mark,
         "meeting_remove_mark" => meeting_remove_mark,
@@ -216,6 +219,7 @@ fn route(command: &str) -> Option<Route> {
         "meeting_set_ai_notes" => meeting_set_ai_notes,
         "meeting_call_notes_agent" => meeting_call_notes_agent,
         "meeting_ai_context_options" => meeting_ai_context_options,
+        "meeting_save_ai_context_choice" => meeting_save_ai_context_choice,
         "meeting_regenerate_answer" => meeting_regenerate_answer,
         "meeting_pin_answer" => meeting_pin_answer,
         "meeting_rename_speaker" => meeting_rename_speaker,
@@ -391,6 +395,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "coldpass_status",
     "coldpass_generate_password",
     "coldpass_rate_password",
+    "mermaid_document",
+    "mermaid_edit",
     "coldpass_lock",
     "coldpass_save_entry",
     "coldpass_delete_entry",
@@ -489,6 +495,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_start_file_session",
     "meeting_snapshot",
     "meeting_context",
+    "meeting_notes_text",
     "meeting_discard",
     "meeting_add_mark",
     "meeting_remove_mark",
@@ -497,6 +504,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "meeting_set_ai_notes",
     "meeting_call_notes_agent",
     "meeting_ai_context_options",
+    "meeting_save_ai_context_choice",
     "meeting_regenerate_answer",
     "meeting_pin_answer",
     "meeting_rename_speaker",
@@ -599,6 +607,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_start_file_session",
     "meeting_snapshot",
     "meeting_context",
+    "meeting_notes_text",
     "meeting_discard",
     "meeting_add_mark",
     "meeting_remove_mark",
@@ -607,6 +616,7 @@ pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "meeting_set_ai_notes",
     "meeting_call_notes_agent",
     "meeting_ai_context_options",
+    "meeting_save_ai_context_choice",
     "meeting_regenerate_answer",
     "meeting_pin_answer",
     "meeting_rename_speaker",
@@ -666,6 +676,7 @@ pub fn is_remote_command(command: &str) -> bool {
 pub const HOST_CLIENT_COMMANDS: &[&str] = &[
     "meeting_task_boards",
     "meeting_ai_context_options",
+    "meeting_save_ai_context_choice",
     "meeting_store_note",
     "meeting_store_tasks",
     "meeting_ai_complete",
@@ -1094,6 +1105,14 @@ fn coldpass_generate_password(_app: &AppHandle, _window_label: &str, command: &s
 
 fn coldpass_rate_password(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::coldpass::coldpass_rate_password(arg(command, args, "payload")?))))
+}
+
+fn mermaid_document(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::mermaid_editor::mermaid_document(arg(command, args, "payload")?))))
+}
+
+fn mermaid_edit(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::mermaid_editor::mermaid_edit(arg(command, args, "payload")?))))
 }
 
 fn coldpass_lock(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -1525,6 +1544,14 @@ fn meeting_snapshot(app: &AppHandle, _window_label: &str, command: &str, args: &
 
 fn meeting_context(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_context(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_notes_text(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_notes_text(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn meeting_save_ai_context_choice(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::meeting::meeting_save_ai_context_choice(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn meeting_discard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

@@ -3654,38 +3654,44 @@ La autenticación y autorización vigentes de ese flujo son las descritas en el 
 ### 2.9 Mermaid Editor
 
 #### Descripción
-Editor visual integrado para diagramas Mermaid. Crea, edita y persiste archivos `.mmd` con sintaxis Mermaid estándar. El editor ofrece canvas interactivo con nodos, conectores, paleta de formas y zoom/pan.
+Editor de archivos `.mmd` que sigue el lienzo «Munin · Editor Mermaid» (claude.ai/artifact/Yao5Hgt91dBgDXDDw67Pvf). Edita cinco tipos de diagrama —flujo, secuencia, estados, clases y entidad-relación— tocando el dibujo, desde el código o desde los paneles. El archivo sigue siendo texto Mermaid estándar: el editor nunca guarda otra cosa que el código.
 
-#### Endpoints (Commands Tauri)
-No hay commands exclusivos. Reutiliza filesystem genérico:
-- `read_library_file`, `write_library_file`.
+#### Frontera Rust / React
+- **Rust (`backend-core/src/mermaid/`)** lee el código y aplica cada edición. `mod.rs` define `DiagramKind`, `MermaidModel` (etiqueta `kind`: `empty`, `flowchart`, `sequence`, `state`, `class`, `er`, `other{keyword}`), `Selection{kind,key}`, `MermaidEdit` (etiqueta `diagram` y, dentro, `op`), `MermaidEditResult{source, model, selection?}`, `read_model`, `template(kind)` y `apply_edit` (límite de 500 000 caracteres). Cada tipo tiene su módulo (`flowchart.rs`, `sequence.rs`, `state.rs`, `class.rs`, `er.rs`) con su lector y sus operaciones; `text.rs` reúne las utilidades de líneas, comillas (`#quot;`), etiquetas e identificadores. Las ediciones reescriben solo las líneas afectadas, conservan comentarios y separan una línea compuesta (`a --> b --> c`, `a & b`) antes de tocar una de sus partes.
+- **App (`app/src/mermaid_editor.rs`)**: comandos `mermaid_document` (`{source}` → `MermaidModel`) y `mermaid_edit` (`{source, edit}` → `MermaidEditResult`), registrados en `registry.rs` y en `CLIENT_LOCAL_COMMANDS` (no tocan la biblioteca; en un cliente Host/Client corren en el propio dispositivo).
+- **React (`src/modules/mermaid/editor/`)** solo muestra el modelo y envía intenciones. `useMermaidDocument.ts` guarda el código, pide el modelo 120 ms después de cada cambio, aplica las ediciones del backend (selecciona lo que la edición creó), lleva deshacer/rehacer (100 pasos; el tecleo seguido es un paso) y guarda la pestaña 800 ms después del último cambio y al cerrar. `diagramSvg.ts` traduce un toque sobre el SVG a la selección del modelo y la selección a sus elementos dibujados.
 
-#### Entradas
-- `source: string` — texto del diagrama Mermaid (ej. `flowchart TD`).
-- Interacciones de puntero: selección de nodos, modo conexión (`isConnecting`), colocación de formas (`placingShape`).
+#### Correspondencia entre el SVG y el modelo (Mermaid 11)
+- Nodos `-flowchart-<id>-<n>`, estados `-state-<id>-<n>` (`root_start`/`root_end` y `X_start` no se seleccionan, pero sirven de extremo `[*]`), clases `-classId-<Nombre>-<n>`, entidades `-entity-<NOMBRE>-<n>`.
+- Conexiones `path.flowchart-link`, transiciones `path.transition`, relaciones `path.relation` y `path.relationshipLine`: se toman por su orden, que es el del código (las cadenas y `&` ya expandidas por el lector de Rust). La etiqueta se une por `data-id`.
+- Secuencia: participantes por `[data-id=<alias>]` (los repetidos abajo, por su etiqueta); mensajes por el orden de `.messageLine0/.messageLine1` y `.messageText`.
 
-#### Salidas
-- Archivo `.mmd` con sintaxis Mermaid canónica.
-- Estado local `MermaidDiagram` (nodos, aristas, `selectedNodeId`).
+#### Interfaz
+- **Encabezado**: nombre y `.mmd`, selector de tipo (cambiar de tipo pide confirmación y reemplaza el diagrama por la plantilla de Rust), palabra clave, estado de guardado, deshacer/rehacer y **Exportar** (PNG o SVG).
+- **Panel izquierdo**: **Código** (numeración, coloreado, líneas de la selección resaltadas, estado de sintaxis con conteos y posición del cursor; en flujo, dirección, formatear y copiar) y **Formas**/**Íconos** (flujo; packs Iconify `fa`, `fa-solid`, `fa-brands`, `gcp`, `simple-icons`) o **Elementos** (otros tipos). Tocar una ficha agrega el elemento o, si hay un nodo seleccionado, le cambia la forma o el ícono.
+- **Lienzo**: SVG a tamaño natural centrado, paneo y zoom, barra de herramientas por tipo, modo de unión (tocar origen y destino), menú flotante (centrado sobre conexiones, mensajes, transiciones y relaciones; arriba o abajo de los nodos), grilla, trazo **A mano** (flujo y estados), tema (`Munin`, `Oscuro`, `Claro`, `Neutral`, `Bosque`) o dirección (estados y clases). Las preferencias de vista quedan en `localStorage` (`notia:mermaid-editor-view:v1`).
+- **Panel derecho**: inspector de la selección (texto, forma, ícono, colores de la paleta, tamaño de texto, tipo de línea y extremo, multiplicidades, cardinalidades, miembros, claves, activación, etc.) con la sintaxis resultante.
+- **Teclado**: `Ctrl+Z`/`Ctrl+Y`, `Esc` (cancela la unión o la selección) y `Supr` (borra la selección). Debajo de 900 px de ancho del editor (container queries), los paneles pasan a superposiciones con botones para abrirlos; los controles táctiles miden al menos 36–44 px.
 
-#### Pasos del proceso
-1. **Apertura**: `MermaidView.tsx` recibe `source` y `onSourcePersist`.
-2. **Parseo**: `useMermaidEditor.ts` invoca `parseMermaidSource(source)` (en `mermaidEngine.ts`) para generar un `MermaidDiagram`.
-3. **Renderizado**: `MermaidCanvas.tsx` importa dinámicamente la librería `mermaid`, llama a `mermaid.render(id, source)` e inyecta el SVG resultante en el DOM. Agrega clases CSS para selección.
-4. **Edición**:
-   - **Nodo**: seleccionar en paleta → clic en canvas → `createNode`.
-   - **Conexión**: togglear modo conexión → clic nodo origen → clic nodo destino → `createEdge`.
-   - **Texto**: editar label del nodo/arista.
-5. **Persistencia**: `useTextDocumentAutosave.ts` debounce (800 ms) serializa el diagrama a texto Mermaid (`serializeMermaidDiagram`) y escribe vía `write_library_file`.
+#### Diferencias con el lienzo
+- La herramienta **Imagen** no se ofrece: Mermaid no tiene una forma de imagen portable entre temas y exportación.
+- No se ofrecen notas en estados, estados compuestos ni regiones concurrentes, ni operadores sin equivalente en Mermaid en algunos menús.
+- El mensaje fallido de muestra usa `M--x-U`, porque `B--x-M` del lienzo no es válido en Mermaid 11.
+- Los temas integrados de Mermaid se llaman en el motor `mermaid-dark`, `mermaid-default`, `mermaid-neutral` y `mermaid-forest` para no chocar con los temas de la app.
 
 #### Dependencias
-- **Frontend**: `MermaidView.tsx`, `useMermaidEditor.ts`, `MermaidCanvas.tsx`, `MermaidToolbar.tsx`, `MermaidShapePalette.tsx`, `mermaidEngine.ts`.
-- **Backend**: `read_library_file`, `write_library_file`.
+- **Frontend**: `MermaidView.tsx` (exporta `MermaidEditorView`), `editor/*`, `hooks/useMermaidRender.ts`, `hooks/useMermaidPanZoom.ts`, `mermaidEngine.ts`.
+- **Backend**: `mermaid_document`, `mermaid_edit`; la pestaña guarda con `write_library_file`.
+
+#### Validación
+- `cargo test -p notia-backend-core mermaid` (18 pruebas: lectura y ediciones de los cinco tipos, líneas compuestas, plantillas, límites).
+- `diagramSvg.test.ts` y `useMermaidDocument.test.ts` (selección desde el SVG, ediciones, deshacer/rehacer, guardado al cerrar).
+- Revisión visual con un arnés temporal (Vite + Chrome sin ventana) de los cinco diagramas del lienzo, en tema oscuro y claro. Pendiente: prueba manual en Windows y en Android (toque, teclado virtual, paneles superpuestos).
 
 ### 2.9b Mermaid Inline Preview (MarkdownView)
 
 #### Descripción
-Renderizado de bloques de código `mermaid` embebidos dentro del editor Markdown (Milkdown Crepe). Reutiliza el **mismo pipeline** que `MermaidView` (archivos `.mmd`) para garantizar consistencia visual: mismos colores de tema, manejo de errores, zoom/pan interactivo y estilos CSS compartidos. Los diagramas embebidos son **solo lectura** (sin edición de nodos ni flechas).
+Renderizado de bloques de código `mermaid` embebidos dentro del editor Markdown (Milkdown Crepe). Reutiliza el **mismo pipeline** que `MermaidView` (archivos `.mmd`) para garantizar consistencia visual: mismos colores de tema, manejo de errores, zoom/pan interactivo y estilos CSS compartidos. Los diagramas embebidos son **solo lectura**: `MermaidCanvas.tsx` quedó como visor (render, paneo, zoom, pantalla completa y exportación); la edición vive en el editor de `.mmd` (2.9).
 
 Desde la versión 1.0.13, el motor incorpora optimizaciones de rendimiento:
 - **Lazy render**: los diagramas fuera del viewport no se renderizan hasta que `IntersectionObserver` detecta que el contenedor es visible.
@@ -3693,8 +3699,7 @@ Desde la versión 1.0.13, el motor incorpora optimizaciones de rendimiento:
 - **Recuperación de inicialización**: si la carga del chunk `mermaid` falla, `initMermaid` reintenta hasta 2 veces y resetea el singleton `initPromise` para permitir recuperación sin reiniciar la app.
 - **Caché LRU con peso**: `renderCache` limita a 20 entradas y 5 MB de SVG strings, expulsando la menos recientemente usada.
 - **IDs únicos por bloque**: `renderMermaidPreview` genera IDs de host únicos por bloque para evitar colisiones cuando dos diagramas tienen el mismo contenido.
-- **Cleanup de listeners**: `MermaidCanvas` limpia el SVG anterior entre renders y vacía el contenedor al desmontar; `useMermaidNodeInteraction` observa solo el `<svg>` directo.
-- **Altura ajustable**: los previews inline permiten redimensionar verticalmente con un handle; la altura se persiste en `localStorage` por `storageKey`.
+- **Cleanup**: `MermaidCanvas` limpia el SVG anterior entre renders y vacía el contenedor al desmontar.
 
 #### Endpoints (Commands Tauri)
 Ninguno. Todo el renderizado ocurre en el frontend.
@@ -3712,17 +3717,16 @@ Ninguno. Todo el renderizado ocurre en el frontend.
 2. **Generación de host**: se crea un `<div>` con `class="notia-mermaid-inline-host"` y `id` único determinado por `quickHash(content)`, un índice de bloque y un nonce aleatorio. Se pasa `outerHTML` a `applyPreview`.
 3. **Montaje**: tras `requestAnimationFrame`, se busca el nodo en el DOM y se invoca `mountInlineMermaidPreview(host, content, storageKey)`. El helper usa `WeakMap<HTMLElement, ReactDOM.Root>` para evitar doble montaje.
 4. **Renderizado lazy del portal**:
-   - `InlineMermaidPreview.tsx` lee el tema global (`preferences.theme`) desde Redux.
+   - `InlineMermaidPreview.tsx` lee el tema global (`preferences.theme`) desde Redux y pide al motor `dark` o `light`.
    - Usa `useMermaidLazyRender({ code, theme, containerRef })`, que crea un `IntersectionObserver` sobre el contenedor.
    - Solo cuando el host es visible, delega a `renderMermaid()` en `mermaidEngine.ts` (misma función que usa `MermaidView`) con un `AbortController`.
-   - Renderiza `MermaidCanvas` con `readOnly={true}`, `panZoomEnabled={true}`, `gridEnabled={false}`. El zoom/pan usa refs internas (`useMermaidPanZoom`), sin persistir en Redux.
-5. **Altura ajustable**: `InlineMermaidPreview.tsx` usa `useMermaidInlineResize(storageKey)` para calcular una altura inicial natural desde el SVG y permite redimensionar el host verticalmente arrastrando el handle inferior. La altura final se persiste en `localStorage`.
+   - Renderiza `MermaidCanvas` con `panZoomEnabled={true}`, `gridEnabled={false}`. El zoom/pan usa refs internas (`useMermaidPanZoom`), sin persistir en Redux.
 6. **Desmontaje seguro**: al destruirse el editor Crepe o cambiar el documento, `MarkdownView` invoca `cleanupInlinePreviews()` que desmonta todos los roots inline y libera los hosts.
 6. **Cleanup del editor**: en el `return` del efecto de inicialización de Milkdown, se desconectan observers y se desmontan todos los roots inline pendientes.
 7. **Limpieza de canvas**: `MermaidCanvas` remueve el SVG anterior antes de inyectar uno nuevo y vacía el contenedor en su cleanup de unmount.
 
 #### Dependencias
-- **Frontend**: `MarkdownView.tsx`, `mermaidPreviewRuntime.tsx` (portal), `InlineMermaidPreview.tsx`, `useMermaidRender.ts`, `useMermaidLazyRender.ts`, `useMermaidInlineResize.ts`, `MermaidCanvas.tsx` (modo `readOnly`), `mermaidEngine.ts`, `mermaid.css`.
+- **Frontend**: `MarkdownView.tsx`, `mermaidPreviewRuntime.tsx` (portal), `InlineMermaidPreview.tsx`, `useMermaidLazyRender.ts`, `useMermaidPanZoom.ts`, `MermaidCanvas.tsx`, `mermaidEngine.ts`, `mermaid.css`.
 - **Backend**: ninguno.
 
 #### Decisiones de arquitectura
@@ -3732,9 +3736,7 @@ Ninguno. Todo el renderizado ocurre en el frontend.
 - **Recuperación de inicialización**: `initMermaid` resetea `initPromise` y reintenta la importación hasta 2 veces ante fallos, evitando que un error puntual bloquee todos los renders futuros.
 - **Caché LRU con límite de peso**: `WeightedLruCache` limita tanto la cantidad de entradas (20) como el tamaño estimado total (5 MB), expulsando la menos recientemente usada.
 - **IDs únicos por bloque**: el `containerId` incluye un índice de bloque y un nonce, evitando que dos diagramas con el mismo contenido compartan host.
-- **Altura ajustable con persistencia**: `useMermaidInlineResize` permite redimensionar el preview verticalmente y guarda la altura en `localStorage` por `storageKey`.
-- **Limpieza de listeners y observadores**: `MermaidCanvas` limpia nodos SVG entre renders; `useMermaidNodeInteraction` observa solo el `<svg>` directo (`subtree: false`), reduciendo trabajo innecesario cuando Milkdown destruye/recreate el DOM.
-- `readOnly` en `MermaidCanvas`: desactiva `useMermaidNodeInteraction` y `useMermaidEdgeInteraction` pasando `enabled = false`, oculta `MermaidEdgeToolbar` y deshabilita doble-clicks de edición de labels. El zoom/pan permanece activo.
+- **Limpieza**: `MermaidCanvas` limpia nodos SVG entre renders.
 - `WeakMap` en `mermaidPreviewRuntime`: evita doble montaje cuando Milkdown re-renderiza el preview del bloque. Como no es iterable, `MarkdownView` mantiene un `Set` de hosts para desmontar todos eficientemente al cerrar el documento.
 
 ---
@@ -6445,7 +6447,7 @@ La vista muestra `MeetingReviewNotice` arriba de la reunión finalizada (en curs
 La persona eligió listar solo las reuniones guardadas como nota.
 
 - `write_note_here` escribe, junto a la nota, `.notia/meetings/<id>.json` con un `MeetingArchive` (`version` 1, el `MeetingRecord` completo con su `savedNote` y el `aiContext`). Un cliente lo manda al host en `meeting_store_note { archive }`. Si el archivo no se puede escribir, la nota igual queda guardada y el error se registra.
-- `meeting_history { libraryId, query }` lee los archivos de la carpeta y se queda con los que todavía tienen su nota. Busca la consulta en el título y en la transcripción, y los ordena del más nuevo al más viejo.
+- `meeting_history { libraryId, query }` lee los archivos del índice `.notia/meetings/index.json` (ver «Meeting: «Transcripción finalizada», reuniones anteriores y contexto guardado») y se queda con los que todavía tienen su nota. Busca la consulta en el título y en la transcripción, y los ordena del más nuevo al más viejo.
 - Cada fila trae su grupo (`HOY`, `AYER`, `ESTA SEMANA` o el mes, con el año si no es el actual, solo en la primera del grupo) y su hora (`10:15`, `Lun` o `28 sep`), calculados en la hora local. También trae la duración, la cantidad de hablantes, las tareas sin mandar al Task Manager (de «Pasar por IA» y de Notas IA) y el contexto: la carpeta, o un único contexto con su color.
 - `meeting_open_saved { libraryId, meetingId }` carga el archivo como la reunión actual con `MeetingRecord::reopened` (finalizada, sin pasadas ni respuestas en curso). Se niega si hay una grabación o una separación en marcha. Un cliente lee el archivo del host con `meeting_saved_archive`. `meeting_history` y `meeting_saved_archive` son `HOST_CLIENT_COMMANDS`.
 - En el escritorio, `MeetingHistoryPanel` es la columna derecha de 300 px de «Lista para grabar» y «Subir audio o video», y pasa abajo cuando la vista mide menos de 960 px. En el celular, el reloj de la barra abre `MeetingPhoneHistory` (tablero M0), con búsqueda y el botón flotante «Nueva reunión». La búsqueda espera 250 ms.
@@ -11244,16 +11246,16 @@ Sigue el lienzo «Notia · Meeting» (claude.ai/artifact/XKw8V1GNpg31pGxa91WRWm)
   - al terminar cada pasada, la próxima queda a 5 minutos;
   - al detener la grabación espera la pasada en curso y hace una última con lo dicho desde la anterior; después termina;
   - encender Notas IA (`meeting_set_ai_notes`) con líneas sin leer la programa ya; sin líneas, a 5 minutos. Una reunión de un archivo no tiene Notas IA.
-- **Llamar agente** (`meeting_call_notes_agent`): valida y marca la pasada en curso enseguida, y la corre en su propio hilo. Con una pasada en curso responde «El agente ya está tomando notas.»; sin transcripción, «Todavía no hay nada transcripto para tomar notas.»; apagado, «Activá Notas IA para llamar al agente.».
+- **Llamar agente** (`meeting_call_notes_agent`): valida y marca la pasada en curso enseguida, y la corre en su propio hilo. Con una pasada en curso responde «El agente ya está tomando notas.»; sin transcripción, «Todavía no hay nada transcripto para tomar notas.»; apagado, «Activá Notas IA para llamar al agente.», salvo en una reunión terminada, donde «Regenerar» lo enciende.
 - **Pasada** (`MeetingRecord::begin_notes_pass` / `finish_notes_pass`): el prompt (`meeting_ai::notes_prompt` + `NOTES_SYSTEM_PROMPT`) lleva las notas anteriores en JSON, las marcas de la persona con su minuto y la transcripción con minutos (los últimos 24 000 caracteres de `context_text`, que incluye las notas rápidas), y pide reescribir las notas completas sin perder nada importante ni inventar. `parse_notes` acepta el JSON con texto o bloque de código alrededor, recorta cada campo (20 ítems por lista, 40 temas de 12 ítems, 30 tareas) y lee el minuto `mm:ss` de cada tema. Una tarea con el mismo texto que una anterior conserva su id y si ya se envió; las nuevas reciben `note-task-N`. Una respuesta vacía no borra notas que ya había y una respuesta inválida deja las notas y guarda el error.
-- **Snapshot** (`aiNotes`): `{ enabled, running, error?, nextPassAt? (solo mientras graba), objective, decisions, openQuestions, topics (el más nuevo primero, con current en el último mientras graba), tasks (con ownerInitials) }`.
+- **Snapshot** (`aiNotes`): `{ enabled, running, error?, nextPassAt? (solo mientras graba), objective, decisions, openQuestions, topics (el más nuevo primero y current en el último mientras graba; en orden una vez terminada), tasks (con ownerInitials) }`.
 - **Marcas y notas propias.** `meeting_add_mark { meetingId, label?, atMs? }`: con `label` (una línea, hasta 300 caracteres) la marca lleva ese texto; sin él, las primeras palabras de la última línea, como antes. `atMs` es el minuto en que se abrió «Nueva marca»; si es posterior a la posición de la grabación, se usa la posición. «Agregar una nota propia…» crea una marca con ese texto en el minuto actual.
 - **Tareas.** «Al Task Manager» manda una tarea de las notas con `meeting_send_tasks` (las de «Pasar por IA» y las de Notas IA comparten `pending_tasks` y `mark_tasks_sent`). El título son los primeros 120 caracteres; el detalle, el texto completo si se cortó, «Responsable: …» y «Plazo: …». Con un solo tablero se envía directo; con varios se elige en un menú.
 - **Nota guardada.** `note_markdown` suma «## Notas IA» (objetivo, decisiones, preguntas abiertas, cada tema con su minuto y tareas `- [ ]`) antes de las notas rápidas.
 
 ### Interfaz
 
-- `useMeetingAiContext(library)` pide las opciones al cambiar de biblioteca y guarda la elección: empieza en toda la biblioteca con los contextos encendidos por defecto. Si las opciones no se pudieron leer, la grabación empieza sin contexto de biblioteca.
+- `useMeetingAiContext(library)` pide las opciones al cambiar de biblioteca y empieza en la elección que Rust guardó para ella (o en toda la biblioteca con los contextos encendidos por defecto); cada cambio se guarda con `meeting_save_ai_context_choice`. Sin «Toda la librería» y sin carpeta («Ninguna»), la grabación empieza sin contexto de biblioteca. Si las opciones no se pudieron leer, la grabación empieza sin contexto de biblioteca.
 - `MeetingAiContextSection` (escritorio, dentro de la tarjeta de preparación): carpeta con su cantidad de notas (un `select` nativo sobre el campo), interruptor «Toda la librería», «Contextos permitidos n de m», «Todos» y «Ninguno», y chips con el color de cada contexto y candado en los sensibles. Muestra los primeros 8 y «+N más» abre el resto. Con una carpeta, los chips quedan atenuados y deshabilitados.
 - Teléfono: la fila «Contexto IA» (primera de las opciones) abre `MeetingAiContextSheet`, con «Toda la librería», «O elegí una carpeta» como lista de radios, los chips y «Listo».
 - Grabando (escritorio): el panel derecho pasa a pestañas «Notas IA» (con la cantidad de temas) y «Respuestas en vivo» (con un punto mientras están encendidas). `MeetingAiNotesPanel`:
@@ -11504,3 +11506,102 @@ Pasaron por `whisper_recognizer::native_smoke_tests::transcribes_probe_recording
 **Pendiente:**
 - Grabar una reunión real eligiendo el micrófono real (Yeti X o el del G935) y comparar con lo anterior.
 - No se midió el loopback del G935 con audio real: el usuario prefirió no reproducir sonido.
+
+## Meeting: «Transcripción finalizada», reuniones anteriores y contexto guardado (2026-10-06)
+
+Pedido de la persona sobre el lienzo «Notia · Meeting» (claude.ai/artifact/XKw8V1GNpg31pGxa91WRWm): «Reuniones anteriores» no funcionaba, «Transcripción finalizada» no seguía el lienzo, y en «Contexto para la IA» sin «Toda la librería» la carpeta debe ser «Ninguna» salvo que se elija una, con la elección guardada.
+
+### Reuniones anteriores: causa y arreglo
+
+- **Causa.** `meeting_history` buscaba los archivos con `library_documents::inventory_paths(".notia/meetings")`, pero el inventario de la biblioteca solo indexa archivos `.md`. Los `.json` nunca aparecían y la lista quedaba vacía siempre.
+- **Índice.** `backend-core::meeting` suma `MEETING_ARCHIVE_INDEX` (`.notia/meetings/index.json`, `{"meetings":["<id>", …]}`, del más viejo al más nuevo). `parse_archive_index` se queda con los ids válidos (`archive_path`) sin repetir, y un archivo ilegible cuenta como vacío. `archive_index_with` agrega el id al final (una vez) y descarta los más viejos pasadas 5000 reuniones.
+- **Escritura.** `write_note_here` escribe el `MeetingArchive` y después `meeting_history::index_archive` actualiza el índice con la misma escritura condicionada de `Documents::write`. Si falla, la nota igual queda guardada y el error se registra (`log::error!`, solo el código).
+- **Lectura.** `saved_archives` lee el índice, abre cada `<id>.json` y se queda con los que todavía tienen su nota. El resto del flujo (orden, grupos, búsqueda, `meeting_open_saved`) no cambió.
+- **Segunda causa: el archivo nunca se escribía.** `upsert_text_locator` intentaba primero `write_locator`, que en el escritorio crea un temporal dentro de la carpeta del destino. Sin `.notia/meetings`, Windows responde «El sistema no puede encontrar la ruta especificada», que `map_filesystem_error` no reconoce como `NotFound`, así que no se creaba la carpeta y el guardado fallaba en silencio (solo `log::error!`). En la biblioteca real no existía `.notia/meetings` aunque la nota del 06/10 09:03 se guardó con esa versión. Ahora `upsert_text_locator` pregunta primero si el documento existe y, si no, crea las carpetas y el archivo. Prueba: `filesystem::adapter::upserts_a_json_file_under_a_new_hidden_folder`.
+- **Reuniones guardadas antes del índice.** Mientras no existe el índice, en el escritorio `archives_without_index` lista con `std::fs` los `.json` de la carpeta de la biblioteca (menos `index.json`), por fecha de modificación. El primer guardado escribe el índice con ellos incluidos. En Android (árbol SAF) no se listan. Un cliente del modo Host lee el historial del host.
+- **Notas sin archivo.** Las reuniones guardadas solo como nota (todas las anteriores al arreglo) se reconstruyen desde la nota. `meeting_history` toma del inventario las notas cuyo nombre empieza con «Reunión » o «Transcripción de » (`is_meeting_note_name`) y que ningún archivo indexado referencia. Para cada una, `backend-core::meeting::archive_from_note` (módulo `meeting_note_import.rs`) lee lo que escribe `note_markdown`:
+  - el título (fecha, o archivo y fecha de transcripción), la duración y los hablantes;
+  - el resumen, los puntos clave y las tareas, y las Notas IA (objetivo, decisiones, preguntas, temas con su minuto y tareas con responsable y plazo);
+  - las notas, los momentos marcados y la transcripción por turnos (hablante y minuto; cada turno termina donde empieza el siguiente).
+
+  El id es estable (`nota-` + FNV-1a de la ruta), la fecha usa la hora local (`local_start_ms`) o, si no, el `createdAt` del frontmatter, y `savedNote` lleva la revisión de la nota, así que guardar de nuevo actualiza esa misma nota. El archivo se escribe e indexa una sola vez. Lo que la nota no guarda (líneas en vivo, respuestas fijadas, el habla de Teams y el contexto de la IA) queda vacío. Una nota con ese nombre que no es de Meeting, o sin transcripción, se ignora. Pruebas: `a_note_meeting_wrote_comes_back_as_its_meeting` (ida y vuelta por `note_markdown`), `other_notes_are_not_meetings` y la ignorada `rebuilds_the_meeting_notes_of_a_folder` (`NOTIA_MEETING_NOTES_DIR`), que reconstruyó las 4 notas reales de la biblioteca: 95, 38, 154 y 15 turnos con 6, 7, 10 y 3 hablantes.
+
+### Contexto para la IA: «Ninguna» y elección guardada
+
+- **Contrato.** `meeting_ai_context_options` devuelve además `choice: { wholeLibrary, folder: string | null, contexts: string[] }` (`meeting_ai::MeetingContextChoice`). Sin nada guardado, es toda la biblioteca, sin carpeta y con los contextos encendidos por defecto.
+- **«Ninguna».** Con «Toda la librería» apagado y `folder: null`, `useMeetingAiContext` manda `aiContext: null`: la IA no lee la biblioteca. Ya no se elige la primera carpeta por defecto. El `select` del escritorio y la lista de radios del celular empiezan con «Ninguna». El interruptor ya no se deshabilita en una biblioteca sin carpetas.
+- **Guardado.** Cada cambio llama `meeting_save_ai_context_choice { libraryId, choice }`. Rust lo valida (`MeetingContextChoice::from_stored`: carpeta segura o ninguna, etiquetas válidas sin repetir, hasta 200) y lo guarda en la sección `meetingAiContext` de las preferencias del dispositivo, `{ "<libraryId>": choice }`, hasta 32 bibliotecas. Pasado ese límite, se va la de otra biblioteca (`with_context_choice`). `normalize_device_preferences` normaliza la sección. `device_preferences::update_section` hace la lectura, el cambio y la escritura bajo el mismo lock que `backend_save_device_preferences`.
+- **Al volver a leer.** `apply_saved_choice` contrasta lo guardado con la biblioteca actual: una carpeta que ya no tiene notas pasa a «Ninguna» y los contextos que ya no existen se descartan.
+- **Dónde corre.** El guardado es `HOST_CLIENT_COMMANDS`, igual que las opciones: un cliente del modo Host guarda y lee la elección en el host, donde está la biblioteca. Un error al guardar se muestra debajo del selector y no cambia la elección en pantalla.
+
+### Transcripción finalizada según el lienzo
+
+- **Snapshot.** Cada `MeetingSpeakerDto` suma `turnCount`, `longestTurnMs` y `averageTurnMs`, calculados sobre los turnos (segmentos seguidos de un hablante). `MeetingSnapshotDto` suma `talkTimeline: [{ speakerId, startMs, endMs }]`, los turnos de hablantes conocidos de toda la reunión (el filtro no se aplica). Con la reunión terminada, `aiNotes.topics` llega en orden de la conversación; mientras graba sigue llegando el más nuevo primero.
+- **Regenerar.** `begin_notes_pass(manual)` sobre una reunión `completed` enciende Notas IA si estaba apagado y corre la pasada con toda la transcripción. Una pasada automática sobre una reunión terminada con Notas IA apagado sigue rechazándose. La interfaz usa `meeting_call_notes_agent`.
+- **Copiar notas.** `meeting_notes_text { meetingId }` (comando local, también para un cliente) devuelve `MeetingRecord::notes_text`: la sección Notas IA de la nota (`notes_markdown`) más «Tus marcas» con su minuto. Sin notas responde «Todavía no hay notas para copiar.». La interfaz copia el texto con `navigator.clipboard`.
+- **Escritorio** (`MeetingCompletedPanel`, estilos en `meeting/meetingFinished.css`):
+  - tarjeta «Tiempo de habla»: total y cantidad de hablantes, «Unir hablantes», la línea de tiempo coloreada por hablante (cada tramo con su nombre y minutos en el `title`), las marcas de minuto en cuartos de la duración y una tarjeta por hablante (iniciales, nombre con lápiz para renombrar, intervenciones, tiempo y porcentaje, «Más larga» y «Promedio»);
+  - transcripción con búsqueda y filtro, como antes;
+  - a la derecha, pestañas «Notas de la reunión» (por defecto) y «Preguntar a la IA». Notas: «Generadas por la IA · se guardan con la nota», copiar, «Regenerar» y las Notas IA sin la fila de saltos. Cada tema es un botón que lleva a su minuto de la transcripción. Si hay búsqueda o filtro, primero los limpia (`useTranscriptJump`), y el turno queda resaltado 2 s. «Preguntar a la IA» tiene «Pasar por IA», sus resultados y «Preguntale a la reunión».
+- **Celular** (`MeetingPhoneCompleted`, tablero M4): la línea de tiempo de 10 px con «00:00 · Tiempo de habla · duración», cada hablante con «tiempo · %», y las pestañas «Transcripción», «Notas» e «IA». La barra «Guardar como nota» está en Transcripción y Notas; IA tiene la pregunta abajo. Tocar un tema vuelve a Transcripción en su minuto.
+- **Desvíos del lienzo.** «Pasar por IA» conserva la cuarta opción «Corregir la transcripción». Sus resultados quedan en la pestaña de la IA, debajo de su tarjeta. Las marcas mantienen la × para quitarlas. Notas del celular suma una fila con copiar y «Regenerar», que el lienzo no dibuja. Los colores son los tokens de la paleta.
+
+### Validación
+
+- `backend-core`: `the_archive_index_keeps_valid_ids_once_newest_last`, `a_finished_meeting_regenerates_its_notes_in_order_and_copies_them`, `a_saved_choice_comes_back_against_the_library_as_it_is_now`, `saved_choices_are_valid_and_bounded`, y estadísticas y línea de tiempo en `speakers_are_named_by_appearance_and_turns_join_consecutive_segments`.
+- vitest: `MeetingCompletedPanel.test.tsx` (tiempo de habla, pestañas, «Regenerar», salto desde un tema, pestaña Notas del celular) y la elección guardada en `MeetingAiNotes.test.tsx`.
+- Totales: `backend-core` 541 aprobadas y 5 ignoradas; `notia-app` 491 y 10 ignoradas (`--features bluetooth`); vitest 574 en 126 archivos; `tsc` de app y node sin errores; `cargo check --target aarch64-linux-android` con 58 advertencias y `--tests` de escritorio con 35, las mismas de antes.
+- Vista previa con Vite y Chrome sin interfaz (escritorio a 1144 × 860 y celular a 390 px) comparada con los tableros 4 y M4. El panel derecho mide 380 px, como en el lienzo.
+- Pendiente: probarlo en la app con una reunión guardada (también una guardada antes de este cambio), en la tablet y como cliente del modo Host; revisar la vista contra el lienzo en pantalla.
+
+## Editor Markdown: tablas con texto largo (2026-10-06)
+
+- **Síntoma.** En una tabla del editor (Milkdown), el texto largo de una celda se pisaba con el de las celdas vecinas.
+- **Causa.** La regla global `th, td { white-space: nowrap }` de `styles/notia.css` (de las tablas de Finanzas) también alcanza las celdas del editor. Junto con `table-layout: fixed` de `prosemirror-tables`, que da a todas las columnas el mismo ancho, el texto no podía bajar de línea y desbordaba.
+- **Arreglo** (solo en el editor, `views/markdown/editorElements.css`):
+  - `table-layout: auto`, para que cada columna tome el ancho que pide su texto;
+  - `white-space: normal` y `overflow-wrap: break-word` en `th` y `td`;
+  - `min-width: 72px` en las celdas sin ancho propio (`data-colwidth`);
+  - `.table-wrapper` con `overflow-x: auto`: una tabla más ancha que la página se desplaza de costado, también con el dedo.
+
+  La regla global no se tocó, así que las tablas de Finanzas siguen en una línea.
+- **Validación.** Página estática con las mismas reglas y la tabla de la persona (10 columnas, celdas de hasta 50 caracteres), capturada con Chrome sin interfaz antes y después: antes se superponía, después cada celda ajusta su texto. Falta verlo en la app con la nota real y en la tablet.
+
+## Chat: la nota abierta muestra al instante lo que escribe el agente (2026-10-06)
+
+- **Síntoma.** El chat desplegable de la derecha proponía una edición de la nota abierta. Al tocar «Confirmar», el archivo cambiaba en el disco, pero el editor seguía mostrando el texto viejo hasta cerrar y volver a abrir la nota.
+- **Causa.** El editor solo se recargaba en un paso de `useChatSubmitMessage` que corre cuando termina todo el turno del chat: la respuesta final del modelo, el guardado del chat y el regreso del IPC. Ese paso no corre si el turno falla, se cancela o el panel se desmonta. El chat principal no lo tenía, y el backend no avisaba de ninguna forma que el agente había escrito una nota. La edición confirmada (`agent.rs`, rama de confirmación) tampoco emite `ToolCompleted`.
+- **Evento nuevo.** `notia://library-documents-changed` `{ libraryId, paths, visiblePaths }` (`backend_runtime::announce_documents_changed`).
+  - Se emite en `TauriBackendToolExecutor::execute` cuando una tool de documentos cambia algo: `create_library_note`, `replace_library_document`, `delete_library_document`, `apply_markdown_edit` y `apply_multi_document_markdown_edit`. Las confirmadas pasan por `execute_confirmed`, que llama a `execute`.
+  - También se emite al deshacer una operación.
+  - `paths` sale de `path` o `documents[].path` del resultado. `visiblePaths` es la misma nota como la muestran el explorador y las pestañas (`library_session::visible_path`); sin catálogo, como en una prueba sin interfaz, repite `paths`.
+- **Interfaz.**
+  - `useAgentDocumentChanges` (en `NotiaMenu`) escucha el evento de la biblioteca activa. `changedOpenPaths` cruza el evento con las pestañas de texto abiertas, por ruta visible (sin importar `\\` ni el prefijo `//?/`) o por terminación en la ruta interna.
+  - Para cada pestaña cruzada, `NotiaMenu` relee la nota (`readLibraryDocument`, con `markdownDefaults` si es Markdown). Si cambió, la aplica con `handleActiveMarkdownDocumentChanged`: actualiza la pestaña y su revisión guardada, y el editor Milkdown abierto hace `replaceAll`. Una pestaña de texto plano usa `handleExternalTextDocumentChange`.
+  - `handleActiveMarkdownDocumentChanged` ignora un contenido igual al que ya tiene la pestaña, así que la recarga que corre al final del turno ya no mueve el cursor.
+  - Vale para el chat lateral, el chat principal y la acción de deshacer.
+- **Pendiente.** Telegram y las acciones de IA escriben con el mismo ejecutor, así que deberían emitir el evento, pero no lo verifiqué. Tampoco verifiqué si a un cliente del modo Host le llega el evento del host.
+- **Validación.**
+  - `backend_runtime::document_tools_report_the_notes_they_wrote`.
+  - `useAgentDocumentChanges.test.ts`: cruce por ruta visible o interna, y que solo cuenta la biblioteca activa.
+  - Totales: `notia-app` 492 y 10 ignoradas, vitest 576 en 127 archivos, `tsc` sin errores y chequeo de Android con 58 advertencias.
+  - Falta probarlo en la app con una edición confirmada real.
+
+## Explorador: el árbol se actualiza al crear, mover o renombrar (2026-10-06)
+
+- **Síntoma.** Al crear una nota, carpeta, subcarpeta o diagrama, o al mover o renombrar, el árbol del explorador recién mostraba el cambio un rato después (al volver a la ventana, por ejemplo).
+- **Causa.** Todas las acciones avisan con `notifyLibraryTreeChanged(pathHint)`. El watcher de escritorio también avisa. `libraryTreeEvents.resolveSharedPath`, que une las rutas de un lote de avisos, partía cada ruta en segmentos y la rearmaba con una sola `/` adelante:
+  - en escritorio, el catálogo guarda la biblioteca como `//?/C:/…` (raíz canónica de `fs::canonicalize` normalizada), y quedaba `/?/C:/…`;
+  - en Android, `content://…` quedaba `/content:/…`.
+
+  `useLibraryTreeSync` comparaba ese aviso con la ruta de la biblioteca, no coincidía y lo descartaba. Así se perdía el refresco forzado y el aumento de `libraryIndexRevision`, que usan la búsqueda y el grafo. Solo quedaba el refresco no forzado al recuperar el foco o la visibilidad: en escritorio con watcher no hay intervalo, y en Android el intervalo por defecto es 0.
+- **Arreglo.**
+  - `resolveSharedPath` (ahora exportada) conserva el prefijo (`//?/`, `//`, `/` o una unidad `C:`).
+  - Con prefijos distintos, o con rutas que no tienen nada en común, el lote va sin ruta, y un aviso sin ruta refresca la biblioteca activa.
+  - Las URI SAF se tratan como opacas: solo se conservan si son todas iguales.
+  - El `normalizePath` del listener ignora el prefijo `//?/` al comparar, por si el watcher lo omite.
+  - Si el efecto del listener se desmonta con un aviso todavía esperando los 120 ms, queda `deferred` en vez de perderse.
+- **Validación.**
+  - `libraryTreeEvents.test.ts`: prefijo verbatim, unidad, rutas absolutas y de red, SAF opaco y raíces mezcladas.
+  - vitest 579 en 128 archivos y `tsc` sin errores.
+  - Falta verlo en la app de Windows y en la tablet.

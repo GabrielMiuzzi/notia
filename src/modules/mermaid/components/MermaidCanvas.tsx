@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { MermaidRenderResult, MermaidEdgeType } from '../types/mermaidTypes'
+import type { MermaidRenderResult } from '../types/mermaidTypes'
 import { useMermaidPanZoom } from '../hooks/useMermaidPanZoom'
-import { useMermaidNodeInteraction } from '../hooks/useMermaidNodeInteraction'
-import { useMermaidEdgeInteraction, type EdgeInfo } from '../hooks/useMermaidEdgeInteraction'
 import { MermaidPanZoomToolbar } from './MermaidPanZoomToolbar'
 import { MermaidExportMenu } from './MermaidExportMenu'
-import { MermaidEdgeToolbar } from './MermaidEdgeToolbar'
-import { notiaTimer } from '../../../services/runtime/notiaLogger'
+
+/**
+ * A rendered Mermaid diagram that can be panned, zoomed, shown full screen
+ * and exported. Markdown notes show their `mermaid` blocks with it; `.mmd`
+ * files open in the editor (`editor/MermaidEditorView`).
+ */
 
 interface MermaidCanvasProps {
   result: MermaidRenderResult | null
@@ -15,28 +17,10 @@ interface MermaidCanvasProps {
   gridEnabled: boolean
   panZoomEnabled: boolean
   theme: string
-  onZoomChange?: (zoom: number) => void
-  onPanChange?: (x: number, y: number) => void
-  onConnect?: (fromNodeId: string, toNodeId: string) => void
-  onNodeLabelEdit?: (nodeId: string, newLabel: string) => void
-  onEdgeSelect?: (edge: EdgeInfo | null) => void
-}
-
-interface MermaidCanvasExtendedProps extends MermaidCanvasProps {
   roughEnabled?: boolean
   initialZoom?: number
   initialPanX?: number
   initialPanY?: number
-  onConnect?: (fromNodeId: string, toNodeId: string) => void
-  onNodeLabelEdit?: (nodeId: string, newLabel: string) => void
-  onEdgeSelect?: (edge: EdgeInfo | null) => void
-  onEdgeTypeChange?: (fromNodeId: string, toNodeId: string, type: MermaidEdgeType) => void
-  onEdgeColorChange?: (fromNodeId: string, toNodeId: string, color: string) => void
-  onEdgeLabelChange?: (fromNodeId: string, toNodeId: string, label: string) => void
-  canvasRef?: React.RefObject<HTMLDivElement | null>
-  readOnly?: boolean
-  onSvgInjected?: (container: HTMLDivElement) => void
-  focusRequest?: { element: Element; requestId: number } | null
 }
 
 function MermaidCanvasComponent({
@@ -50,63 +34,12 @@ function MermaidCanvasComponent({
   initialPanX,
   initialPanY,
   initialZoom,
-  onZoomChange,
-  onPanChange,
-  onConnect,
-  onNodeLabelEdit,
-  onEdgeSelect,
-  onEdgeTypeChange,
-  onEdgeColorChange,
-  onEdgeLabelChange,
-  canvasRef,
-  readOnly,
-  onSvgInjected,
-  focusRequest,
-}: MermaidCanvasExtendedProps) {
-  const mountTimerRef = useRef(
-    notiaTimer('mermaid', 'MermaidCanvas mount', {
-      hasResult: Boolean(result?.svg),
-      gridEnabled,
-      panZoomEnabled,
-      theme,
-      roughEnabled: roughEnabled ?? false,
-      readOnly: readOnly ?? false,
-    }),
-  )
-  useEffect(() => {
-    const mountTimer = mountTimerRef.current
-    return () => {
-      mountTimer.success()
-    }
-  }, [])
-
+}: MermaidCanvasProps) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const transformLayerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)
-  const handledFocusRequestIdRef = useRef<number | null>(null)
 
-  const setWrapperRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      const mutableWrapperRef = wrapperRef as React.MutableRefObject<HTMLDivElement | null>
-      mutableWrapperRef.current = node
-      if (canvasRef && 'current' in canvasRef) {
-        const mutableCanvasRef = canvasRef as React.MutableRefObject<HTMLDivElement | null>
-        mutableCanvasRef.current = node
-      }
-    },
-    [canvasRef],
-  )
-
-  const interactionEnabled = readOnly !== true
-
-  useMermaidNodeInteraction(svgContainerRef, onConnect, onNodeLabelEdit, interactionEnabled)
-  const { selectedEdge } = useMermaidEdgeInteraction(svgContainerRef, onEdgeSelect, interactionEnabled)
-
-  const panZoomCallbacks = useMemo(() => ({
-    onZoomChange,
-    onPanChange,
-  }), [onPanChange, onZoomChange])
-
+  const panZoomCallbacks = useMemo(() => ({}), [])
   const {
     handlePointerDown,
     handlePointerMove,
@@ -118,14 +51,7 @@ function MermaidCanvasComponent({
     resetView,
     fitView,
     restoreView,
-    focusElement,
   } = useMermaidPanZoom(wrapperRef, transformLayerRef, panZoomEnabled, panZoomCallbacks)
-
-  useEffect(() => {
-    if (!focusRequest || handledFocusRequestIdRef.current === focusRequest.requestId) return
-    handledFocusRequestIdRef.current = focusRequest.requestId
-    focusElement(focusRequest.element)
-  }, [focusElement, focusRequest])
 
   const handleWheelRef = useRef(handleWheel)
   useEffect(() => {
@@ -136,13 +62,11 @@ function MermaidCanvasComponent({
   useEffect(() => {
     const el = wrapperRef.current
     if (!el) return
-
     const onWheelNative = (e: WheelEvent) => {
       if (!panZoomEnabled) return
       e.preventDefault()
       handleWheelRef.current?.(e as unknown as React.WheelEvent<HTMLDivElement>)
     }
-
     el.addEventListener('wheel', onWheelNative, { passive: false })
     return () => {
       el.removeEventListener('wheel', onWheelNative)
@@ -150,8 +74,6 @@ function MermaidCanvasComponent({
   }, [panZoomEnabled])
 
   const hasRestoredRef = useRef(false)
-
-  // Restore persisted view state once on mount
   useEffect(() => {
     if (!hasRestoredRef.current && transformLayerRef.current) {
       hasRestoredRef.current = true
@@ -160,7 +82,6 @@ function MermaidCanvasComponent({
   }, [restoreView, initialPanX, initialPanY, initialZoom])
 
   const [isFullscreen, setIsFullscreen] = useState(false)
-
   const handleFullscreen = useCallback(() => {
     const wrapper = wrapperRef.current
     if (!wrapper) return
@@ -170,40 +91,25 @@ function MermaidCanvasComponent({
       void document.exitFullscreen()
     }
   }, [])
-
-  // Sync fullscreen state
   useEffect(() => {
-    const handler = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement))
-    }
+    const handler = () => setIsFullscreen(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', handler)
-    return () => {
-      document.removeEventListener('fullscreenchange', handler)
-    }
+    return () => document.removeEventListener('fullscreenchange', handler)
   }, [])
 
-  // Inject SVG when result changes
+  // Inject the SVG when the result changes
   useEffect(() => {
     const container = svgContainerRef.current
     if (!container) return
-    if (!result?.svg) {
-      container.innerHTML = ''
-      return
-    }
-
-    // Limpiar SVG anterior para evitar nodos huérfanos y listeners acumulados
     container.innerHTML = ''
-
-    // Inyección directa — evita DOMParser + XMLSerializer (mucho más rápido)
+    if (!result?.svg) return
     container.innerHTML = result.svg
     const svgEl = container.querySelector('svg')
     if (!svgEl) return
-
     svgEl.setAttribute('width', '100%')
     svgEl.setAttribute('height', '100%')
     svgEl.style.display = 'block'
 
-    // Inject rough filter if enabled
     if (roughEnabled) {
       let defs = svgEl.querySelector('defs')
       if (!defs) {
@@ -228,18 +134,12 @@ function MermaidCanvasComponent({
       svgEl.removeAttribute('filter')
     }
 
-    if (result.bindFunctions) {
-      try {
-        result.bindFunctions(container)
-      } catch {
-        // ignore
-      }
+    try {
+      result.bindFunctions?.(container)
+    } catch {
+      // ignore
     }
-
-    if (onSvgInjected) {
-      onSvgInjected(container)
-    }
-  }, [result, roughEnabled, onSvgInjected])
+  }, [result, roughEnabled])
 
   const isDark = theme === 'dark'
   const gridBackground = gridEnabled
@@ -248,31 +148,9 @@ function MermaidCanvasComponent({
       : 'radial-gradient(circle, #e4e4e48c 1px, transparent 1px) 0 0 / 20px 20px'
     : 'none'
 
-  const handleSelectedEdgeTypeChange = useCallback(
-    (type: MermaidEdgeType) => {
-      if (!selectedEdge) return
-      onEdgeTypeChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, type)
-    },
-    [onEdgeTypeChange, selectedEdge],
-  )
-  const handleSelectedEdgeColorChange = useCallback(
-    (color: string) => {
-      if (!selectedEdge) return
-      onEdgeColorChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, color)
-    },
-    [onEdgeColorChange, selectedEdge],
-  )
-  const handleSelectedEdgeLabelChange = useCallback(
-    (label: string) => {
-      if (!selectedEdge) return
-      onEdgeLabelChange?.(selectedEdge.fromNodeId, selectedEdge.toNodeId, label)
-    },
-    [onEdgeLabelChange, selectedEdge],
-  )
-
   return (
     <div
-      ref={setWrapperRef}
+      ref={wrapperRef}
       className="mermaid-canvas-wrapper"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -310,7 +188,7 @@ function MermaidCanvasComponent({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: '#ff5555',
+          color: 'var(--color-coral)',
           fontSize: 13,
           padding: 16,
           textAlign: 'center',
@@ -325,16 +203,6 @@ function MermaidCanvasComponent({
         style={{ transformOrigin: '0 0', width: '100%', height: '100%', position: 'relative' }}
       >
         <div ref={svgContainerRef} style={{ width: '100%', height: '100%' }} />
-        {!error && interactionEnabled && selectedEdge && (
-          <MermaidEdgeToolbar
-            visible={!!selectedEdge}
-            x={selectedEdge.layerX ?? 0}
-            y={selectedEdge.layerY ?? 0}
-            onTypeChange={handleSelectedEdgeTypeChange}
-            onColorChange={handleSelectedEdgeColorChange}
-            onLabelChange={handleSelectedEdgeLabelChange}
-          />
-        )}
       </div>
 
       {!error && (
@@ -354,100 +222,5 @@ function MermaidCanvasComponent({
   )
 }
 
-function areMermaidCanvasPropsEqual(
-  previous: MermaidCanvasExtendedProps,
-  next: MermaidCanvasExtendedProps,
-): boolean {
-  if (previous.result !== next.result) {
-    return false
-  }
-
-  if (previous.isLoading !== next.isLoading) {
-    return false
-  }
-
-  if (previous.error !== next.error) {
-    return false
-  }
-
-  if (previous.gridEnabled !== next.gridEnabled) {
-    return false
-  }
-
-  if (previous.panZoomEnabled !== next.panZoomEnabled) {
-    return false
-  }
-
-  if (previous.theme !== next.theme) {
-    return false
-  }
-
-  if (previous.roughEnabled !== next.roughEnabled) {
-    return false
-  }
-
-  if (previous.initialZoom !== next.initialZoom) {
-    return false
-  }
-
-  if (previous.initialPanX !== next.initialPanX) {
-    return false
-  }
-
-  if (previous.initialPanY !== next.initialPanY) {
-    return false
-  }
-
-  if (previous.readOnly !== next.readOnly) {
-    return false
-  }
-
-  if (previous.onZoomChange !== next.onZoomChange) {
-    return false
-  }
-
-  if (previous.onPanChange !== next.onPanChange) {
-    return false
-  }
-
-  if (previous.onConnect !== next.onConnect) {
-    return false
-  }
-
-  if (previous.onNodeLabelEdit !== next.onNodeLabelEdit) {
-    return false
-  }
-
-  if (previous.onEdgeSelect !== next.onEdgeSelect) {
-    return false
-  }
-
-  if (previous.onEdgeTypeChange !== next.onEdgeTypeChange) {
-    return false
-  }
-
-  if (previous.onEdgeColorChange !== next.onEdgeColorChange) {
-    return false
-  }
-
-  if (previous.onEdgeLabelChange !== next.onEdgeLabelChange) {
-    return false
-  }
-
-  if (previous.onSvgInjected !== next.onSvgInjected) {
-    return false
-  }
-
-  if (previous.canvasRef !== next.canvasRef) {
-    return false
-  }
-
-  if (previous.focusRequest !== next.focusRequest) {
-    return false
-  }
-
-  return true
-}
-
-export const MermaidCanvas = memo(MermaidCanvasComponent, areMermaidCanvasPropsEqual)
+export const MermaidCanvas = memo(MermaidCanvasComponent)
 MermaidCanvas.displayName = 'MermaidCanvas'

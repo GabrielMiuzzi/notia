@@ -135,12 +135,15 @@ function TaskCard({ task, sending, boards, menuOpen, onSend, onCloseMenu }: Task
 
 interface NotesBodyProps {
   snapshot: MeetingSnapshot
-  actions: MeetingAiNotesActions
+  actions: Pick<MeetingAiNotesActions, 'libraryId' | 'onRemoveMark' | 'onError'>
   onShowMoment: (atMs: number) => void
+  /** The row of section links above the notes (the recording shows it). */
+  showJumps?: boolean
+  emptyText?: string
 }
 
 /** The notes themselves: objective, decisions, questions, marks, topics and tasks. */
-export function MeetingAiNotesBody({ snapshot, actions, onShowMoment }: NotesBodyProps) {
+export function MeetingAiNotesBody({ snapshot, actions, onShowMoment, showJumps = true, emptyText = EMPTY_TEXT }: NotesBodyProps) {
   const notes = snapshot.aiNotes
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [boards, setBoards] = useState<string[] | null>(null)
@@ -202,15 +205,17 @@ export function MeetingAiNotesBody({ snapshot, actions, onShowMoment }: NotesBod
 
   return (
     <>
-      <nav className="notia-meeting-ai-jumps" aria-label="Secciones de las notas">
-        {sections.map((section) => (
-          <button key={section.id} type="button" data-tone={section.tone} disabled={section.count === 0} onClick={() => jump(section.id)}>
-            <span aria-hidden="true" />{section.label} <small>{section.count}</small>
-          </button>
-        ))}
-      </nav>
+      {showJumps ? (
+        <nav className="notia-meeting-ai-jumps" aria-label="Secciones de las notas">
+          {sections.map((section) => (
+            <button key={section.id} type="button" data-tone={section.tone} disabled={section.count === 0} onClick={() => jump(section.id)}>
+              <span aria-hidden="true" />{section.label} <small>{section.count}</small>
+            </button>
+          ))}
+        </nav>
+      ) : null}
       <div ref={scrollRef} className="notia-meeting-ai-scroll">
-        {empty ? <p className="notia-meeting-empty-text">{EMPTY_TEXT}</p> : null}
+        {empty ? <p className="notia-meeting-empty-text">{emptyText}</p> : null}
         {notes.objective ? (
           <div className="notia-meeting-ai-objective">
             <span>Objetivo</span>
@@ -252,11 +257,16 @@ export function MeetingAiNotesBody({ snapshot, actions, onShowMoment }: NotesBod
           <NotesSection id="meeting-notes-topics" title="Notas de la reunión" tone="topics" divided>
             {notes.topics.map((topic, index) => (
               <div key={`${topic.atMs}-${index}`} className="notia-meeting-ai-topic">
-                <div className="notia-meeting-ai-topic-head">
+                <button
+                  type="button"
+                  className="notia-meeting-ai-topic-head"
+                  aria-label={`${topic.title}, ir al minuto ${formatClock(topic.atMs)}`}
+                  onClick={() => onShowMoment(topic.atMs)}
+                >
                   <strong>{topic.title}</strong>
                   <time>{formatClock(topic.atMs)}</time>
                   {topic.current ? <span className="notia-meeting-ai-live">En curso</span> : null}
-                </div>
+                </button>
                 {topic.items.length ? <ul>{topic.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul> : null}
               </div>
             ))}

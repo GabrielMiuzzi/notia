@@ -48,8 +48,8 @@ fn read(app: &AppHandle) -> Option<Value> {
 }
 
 /// Normalized preferences of one section (`taskManagerPublication`,
-/// `speechRecognition`, `qwen3Tts`, `editorPage`, `pen`); defaults when
-/// nothing was saved.
+/// `speechRecognition`, `qwen3Tts`, `editorPage`, `pen`, `audioDevices`,
+/// `meetingAiContext`); defaults when nothing was saved.
 pub(crate) fn section(app: &AppHandle, key: &str) -> Value {
     normalize_device_preferences(&read(app).unwrap_or(Value::Null))[key].clone()
 }
@@ -79,22 +79,47 @@ pub(crate) fn backend_device_preferences(app: AppHandle) -> DevicePreferences {
 }
 
 pub(crate) fn backend_save_device_preferences(app: AppHandle, preferences: Value) -> Result<Value, BackendError> {
+    // Sections not sent keep their stored value.
+    let normalized = update(&app, |merged| {
+        if let (Some(target), Some(source)) = (merged.as_object_mut(), preferences.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        Ok(())
+    })?;
+    Ok(with_page_setup(normalized))
+}
+
+/// Replaces the section `key` with what `change` makes of the stored one.
+pub(crate) fn update_section(
+    app: &AppHandle,
+    key: &str,
+    change: impl FnOnce(&Value) -> Result<Value, BackendError>,
+) -> Result<(), BackendError> {
+    update(app, |merged| {
+        let next = change(&normalize_device_preferences(merged)[key])?;
+        if let Some(target) = merged.as_object_mut() {
+            target.insert(key.to_string(), next);
+        }
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+/// Stores the preferences as `change` leaves them, normalized, under the lock.
+fn update(app: &AppHandle, change: impl FnOnce(&mut Value) -> Result<(), BackendError>) -> Result<Value, BackendError> {
     let state = app.state::<DevicePreferencesState>();
     let _guard = state.lock.lock().map_err(|_| storage())?;
-    // Sections not sent keep their stored value.
-    let mut merged = read(&app).filter(Value::is_object).unwrap_or_else(|| Value::Object(Default::default()));
-    if let (Some(target), Some(source)) = (merged.as_object_mut(), preferences.as_object()) {
-        for (key, value) in source {
-            target.insert(key.clone(), value.clone());
-        }
-    }
+    let mut merged = read(app).filter(Value::is_object).unwrap_or_else(|| Value::Object(Default::default()));
+    change(&mut merged)?;
     let normalized = normalize_device_preferences(&merged);
-    let path = file(&app)?;
+    let path = file(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| storage())?;
     }
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_string_pretty(&normalized).map_err(|_| storage())?).map_err(|_| storage())?;
     std::fs::rename(&temporary, &path).map_err(|_| storage())?;
-    Ok(with_page_setup(normalized))
+    Ok(normalized)
 }

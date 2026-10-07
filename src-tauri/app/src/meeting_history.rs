@@ -1,18 +1,25 @@
 //! «Reuniones anteriores»: the meetings saved as notes of a library. Saving
 //! the note also writes the whole meeting to `.notia/meetings/<id>.json`
-//! (see `meeting::write_note_here`); the history lists those whose note is
+//! and adds it to `.notia/meetings/index.json` (see
+//! `meeting::write_note_here`); the history lists those whose note is
 //! still in the library, newest first, and opens one again as the current,
 //! finished meeting. A client of Host mode reads them from the host, where
 //! the library is.
 
+use std::collections::HashSet;
+
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone};
-use notia_backend_core::meeting::{archive_path, MeetingArchive, MEETING_ARCHIVE_FOLDER};
+use notia_backend_core::meeting::{
+    archive_from_note, archive_index_with, archive_path, is_meeting_note_name, parse_archive_index, MeetingArchive,
+    SavedMeetingNote, MEETING_ARCHIVE_INDEX,
+};
 use notia_backend_core::meeting_ai::MeetingAiContext;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::backend::{BackendError, BackendErrorCode};
 use crate::host::AppHandle;
+use crate::library_documents::Documents;
 
 const MAX_QUERY_CHARS: usize = 200;
 const MONTHS: [&str; 12] = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -111,24 +118,102 @@ fn read_archive(app: &AppHandle, library_id: &str, meeting_id: &str) -> Result<M
     Ok(archive)
 }
 
+/// Adds `meeting_id` to the list of saved meetings of the library.
+pub(crate) fn index_archive(app: &AppHandle, documents: &Documents<'_>, library_id: &str, meeting_id: &str) -> Result<(), BackendError> {
+    let (ids, current) = indexed_ids(app, documents, library_id)?;
+    documents.write(MEETING_ARCHIVE_INDEX, current.as_deref(), &archive_index_with(&ids, meeting_id)?)
+}
+
+/// The ids in the index and its text. Without an index yet, the archives
+/// saved before it existed (read from the folder where the platform can).
+fn indexed_ids(app: &AppHandle, documents: &Documents<'_>, library_id: &str) -> Result<(Vec<String>, Option<String>), BackendError> {
+    Ok(match documents.read(MEETING_ARCHIVE_INDEX)? {
+        Some(text) => (parse_archive_index(&text), Some(text)),
+        None => (archives_without_index(app, library_id), None),
+    })
+}
+
+/// The archives of a desktop library folder, oldest first. The library
+/// inventory only lists notes, and an Android tree is not listed here.
+#[cfg(not(target_os = "android"))]
+fn archives_without_index(app: &AppHandle, library_id: &str) -> Vec<String> {
+    use notia_backend_core::meeting::MEETING_ARCHIVE_FOLDER;
+    let Some(library) = crate::library_catalog::catalog_library(app, library_id) else { return Vec::new() };
+    let index_name = MEETING_ARCHIVE_INDEX.rsplit('/').next().unwrap_or_default();
+    let Ok(entries) = std::fs::read_dir(std::path::Path::new(&library.path).join(MEETING_ARCHIVE_FOLDER)) else { return Vec::new() };
+    let mut found = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let id = name.strip_suffix(".json").filter(|_| name != index_name)?.to_string();
+            archive_path(&id).ok()?;
+            let modified = entry.metadata().and_then(|metadata| metadata.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            Some((modified, id))
+        })
+        .collect::<Vec<_>>();
+    found.sort();
+    found.into_iter().map(|(_, id)| id).collect()
+}
+
+#[cfg(target_os = "android")]
+fn archives_without_index(_app: &AppHandle, _library_id: &str) -> Vec<String> {
+    Vec::new()
+}
+
 /// The archives of the library whose note still exists; an unreadable one
 /// is skipped.
 fn saved_archives(app: &AppHandle, library_id: &str) -> Result<Vec<MeetingArchive>, BackendError> {
-    let paths = crate::library_documents::inventory_paths(app, library_id, MEETING_ARCHIVE_FOLDER)?;
+    let meeting_notes = crate::library_inventory::inventory_files(app, library_id)
+        .map(|(files, _)| files.into_iter().filter(|path| is_meeting_note_name(path)).collect::<Vec<_>>())
+        .unwrap_or_default();
     crate::library_documents::with_documents(app, library_id, |documents| {
+        let (ids, _) = indexed_ids(app, documents, library_id)?;
         let mut archives = Vec::new();
-        for path in paths.iter().filter(|path| path.ends_with(".json")) {
-            let Some(archive) = documents.read(path)?.and_then(|text| MeetingArchive::parse(&text).ok()) else {
+        let mut archived_notes = HashSet::new();
+        for id in &ids {
+            let Some(archive) = documents.read(&archive_path(id)?)?.and_then(|text| MeetingArchive::parse(&text).ok()) else {
                 log::warn!("[notia:meeting] a saved meeting could not be read");
                 continue;
             };
             let Some(note) = archive.record.saved_note.as_ref() else { continue };
+            archived_notes.insert(note.logical_path.clone());
             if documents.adapter.exists_locator(&documents.locator(&note.logical_path)?)? {
                 archives.push(archive);
             }
         }
+        // Meeting notes saved before their archive existed join the history
+        // once, rebuilt from the note.
+        for path in meeting_notes.iter().filter(|path| !archived_notes.contains(*path)) {
+            match import_note(app, documents, library_id, path) {
+                Ok(Some(archive)) => archives.push(archive),
+                Ok(None) => {}
+                Err(error) => log::error!("[notia:meeting] a saved meeting note could not be added to the history ({:?})", error.code),
+            }
+        }
         Ok(archives)
     })
+}
+
+/// The archive of a meeting note without one, written and indexed; `None`
+/// when the note is not a meeting.
+fn import_note(app: &AppHandle, documents: &Documents<'_>, library_id: &str, path: &str) -> Result<Option<MeetingArchive>, BackendError> {
+    let Some(text) = documents.read(path)? else { return Ok(None) };
+    let note = SavedMeetingNote {
+        logical_path: path.to_string(),
+        visible_path: crate::library_session::visible_path(app, library_id, path),
+        revision: crate::filesystem::types::content_revision(&text),
+    };
+    let Some(archive) = archive_from_note(&text, note, local_start_ms) else { return Ok(None) };
+    documents.write(&archive_path(&archive.record.id)?, None, &archive.to_json())?;
+    index_archive(app, documents, library_id, &archive.record.id)?;
+    Ok(Some(archive))
+}
+
+/// `06/10/2026 09:03` in this computer's time zone, in ms since the epoch.
+fn local_start_ms(label: &str) -> Option<u64> {
+    let moment = NaiveDateTime::parse_from_str(label.trim(), "%d/%m/%Y %H:%M").ok()?;
+    let local = Local.from_local_datetime(&moment).earliest()?;
+    u64::try_from(local.timestamp_millis()).ok()
 }
 
 /// The rows of the history: `archives` newest first, with their group,

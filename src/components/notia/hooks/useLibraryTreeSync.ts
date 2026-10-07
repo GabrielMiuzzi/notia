@@ -122,8 +122,13 @@ function resolveTreeNodeUpdate(
     : update
 }
 
+/**
+ * A path as the tree events are compared: forward slashes, no trailing one
+ * and no Windows verbatim prefix (`\\?\`), which the desktop catalog keeps
+ * and the watcher may leave out. SAF URIs keep their `content://`.
+ */
 function normalizePath(pathValue: string): string {
-  return pathValue.replace(/\\/g, '/').replace(/\/+$/, '')
+  return pathValue.replace(/\\/g, '/').replace(/^\/\/\?\//, '').replace(/\/+$/, '')
 }
 
 function isSameOrNestedPath(basePath: string, candidatePath: string): boolean {
@@ -508,6 +513,8 @@ export function useLibraryTreeSync({
       if (treeChangeTimerRef.current !== null) {
         window.clearTimeout(treeChangeTimerRef.current)
         treeChangeTimerRef.current = null
+        // A change still waiting is not lost: the next visible refresh runs it.
+        refreshStateRef.current.deferred = true
       }
     }
   }, [activeLibrary?.path, bumpLibraryIndexRevision, refreshActiveLibraryTree, shouldRefreshActiveLibraryTree])

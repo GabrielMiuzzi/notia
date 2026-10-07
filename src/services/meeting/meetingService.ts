@@ -1,6 +1,7 @@
 import { callBackend, subscribeBackend, type Unsubscribe } from '../transport'
 import { resolveAiPreferencesForTransport, type AiPreferences } from '../preferences/aiSettingsStorage'
 import type {
+  MeetingContextChoice,
   MeetingContextOptions,
   MeetingExportFormat,
   MeetingFilter,
@@ -89,9 +90,17 @@ export const callMeetingNotesAgent = (meetingId: string, preferences: AiPreferen
     settings: meetingAiSettings(preferences),
   }, 'No se pudo llamar al agente.')
 
-/** The folders and contexts the AI of a recording can be limited to. */
+/** The folders and contexts the AI of a recording can be limited to, with the saved choice. */
 export const getMeetingContextOptions = (libraryId: string) =>
   call<MeetingContextOptions>('meeting_ai_context_options', { libraryId }, 'No se pudieron leer las carpetas y los contextos.')
+
+/** Keeps the choice so the next recording of the library starts from it. */
+export const saveMeetingContextChoice = (libraryId: string, choice: MeetingContextChoice) =>
+  call<void>('meeting_save_ai_context_choice', { libraryId, choice }, 'No se pudo guardar el contexto para la IA.')
+
+/** The Notas IA and marks as text, for «Copiar notas». */
+export const getMeetingNotesText = (meetingId: string) =>
+  call<string>('meeting_notes_text', { meetingId }, 'No se pudieron copiar las notas.')
 
 export const regenerateMeetingAnswer =(meetingId: string, answerId: string, shorter: boolean, preferences: AiPreferences) =>
   call<void>('meeting_regenerate_answer', {

@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Check, Combine, Pencil, Search, Sparkles, X } from 'lucide-react'
-import { formatClock, generateLabel, speakerColorClass } from './meetingDisplay'
+import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { Check, Combine, Copy, Pencil, RotateCw, Search, Sparkles, X } from 'lucide-react'
+import { formatClock, formatDuration, generateLabel, speakerColorClass, timelineTicks } from './meetingDisplay'
 import { MeetingAskPanel } from './MeetingAskPanel'
+import { MeetingAiNotesBody } from './MeetingAiNotesPanel'
 import { MeetingReviewNotice } from './MeetingReviewNotice'
-import { useMeetingInsights, useMeetingSearch, useMeetingSpeakerEdit } from './useMeetingCompleted'
+import {
+  useMeetingFinishedNotes,
+  useMeetingInsights,
+  useMeetingSearch,
+  useMeetingSpeakerEdit,
+  useTranscriptJump,
+  type MeetingFinishedNotes,
+} from './useMeetingCompleted'
 import { listMeetingTaskBoards, sendMeetingTasks } from '../../../../services/meeting/meetingService'
 import type {
   MeetingFilter,
@@ -14,7 +22,15 @@ import type {
 import type { AiPreferences } from '../../../../services/preferences/aiSettingsStorage'
 import type { NotiaLibrary } from '../../../../types/notia'
 
+/*
+ * Finished stage of Meeting (canvas «Notia · Meeting», board 4
+ * «Transcripción finalizada»): who spoke and how much, the transcript, and
+ * an aside with the meeting notes or the AI tools.
+ */
+
 const errorText = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback)
+
+type FinishedTab = 'notes' | 'ai'
 
 interface MeetingCompletedPanelProps {
   snapshot: MeetingSnapshot
@@ -25,26 +41,53 @@ interface MeetingCompletedPanelProps {
 }
 
 export function MeetingCompletedPanel({ snapshot, filter, onFilterChange, aiPreferences, library }: MeetingCompletedPanelProps) {
+  const [tab, setTab] = useState<FinishedTab>('notes')
   const speakersById = useMemo(
     () => new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker])),
     [snapshot.speakers],
   )
+  const notes = useMeetingFinishedNotes(snapshot.id, aiPreferences)
+  const jump = useTranscriptJump(snapshot.turns, filter, onFilterChange)
   return (
     <div className="notia-meeting-finished">
       <MeetingReviewNotice review={snapshot.review} />
-      <SpeakersRow snapshot={snapshot} />
+      <MeetingTalkTime snapshot={snapshot} />
       <div className="notia-meeting-columns">
-        <TranscriptCard snapshot={snapshot} speakersById={speakersById} filter={filter} onFilterChange={onFilterChange} />
-        <aside className="notia-meeting-aside" aria-label="Trabajar con la reunión">
-          <InsightsCard meetingId={snapshot.id} aiPreferences={aiPreferences} reviewing={Boolean(snapshot.review.stage)} />
-          <InsightsResults snapshot={snapshot} library={library} />
-          <MeetingAskPanel
-            key={snapshot.id}
-            transcript={snapshot.contextText}
-            suggestions={snapshot.suggestedQuestions}
-            aiPreferences={aiPreferences}
-            library={library}
-          />
+        <TranscriptCard
+          snapshot={snapshot}
+          speakersById={speakersById}
+          filter={filter}
+          onFilterChange={onFilterChange}
+          highlightId={jump.highlightId}
+        />
+        <aside className="notia-meeting-aside notia-meeting-aside--assistant" aria-label="Trabajar con la reunión">
+          <FinishedTabs selected={tab} onSelect={setTab} />
+          <div className="notia-meeting-assistant-panel" role="tabpanel" id={`meeting-finished-panel-${tab}`} aria-labelledby={`meeting-finished-tab-${tab}`}>
+            {tab === 'notes' ? (
+              <section className="notia-meeting-card notia-meeting-finished-notes" aria-labelledby="meeting-finished-notes-title">
+                <header className="notia-meeting-finished-notes-head">
+                  <div>
+                    <h2 id="meeting-finished-notes-title">Notas de la reunión</h2>
+                    <span>Generadas por la IA · se guardan con la nota</span>
+                  </div>
+                  <MeetingNotesTools snapshot={snapshot} notes={notes} />
+                </header>
+                <MeetingFinishedNotesBody snapshot={snapshot} notes={notes} library={library} onShowMoment={jump.showMoment} />
+              </section>
+            ) : (
+              <div className="notia-meeting-finished-ai">
+                <InsightsCard meetingId={snapshot.id} aiPreferences={aiPreferences} reviewing={Boolean(snapshot.review.stage)} />
+                <InsightsResults snapshot={snapshot} library={library} />
+                <MeetingAskPanel
+                  key={snapshot.id}
+                  transcript={snapshot.contextText}
+                  suggestions={snapshot.suggestedQuestions}
+                  aiPreferences={aiPreferences}
+                  library={library}
+                />
+              </div>
+            )}
+          </div>
         </aside>
       </div>
     </div>
@@ -52,8 +95,126 @@ export function MeetingCompletedPanel({ snapshot, filter, onFilterChange, aiPref
 }
 
 export const NO_SPEAKERS_TEXT = 'Esta reunión quedó sin separar por hablante. La transcripción conserva el minuto de cada frase.'
+const NO_NOTES_TEXT = 'Todavía no hay notas de esta reunión. Tocá «Regenerar» y Munin las arma con la transcripción.'
 
-function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
+function FinishedTabs({ selected, onSelect }: { selected: FinishedTab; onSelect: (tab: FinishedTab) => void }) {
+  const tabs: Array<{ id: FinishedTab; label: string }> = [
+    { id: 'notes', label: 'Notas de la reunión' },
+    { id: 'ai', label: 'Preguntar a la IA' },
+  ]
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const next = selected === 'notes' ? 'ai' : 'notes'
+    onSelect(next)
+    event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus()
+  }
+  return (
+    <div role="tablist" aria-label="Panel de la reunión" className="notia-meeting-assistant-tabs" onKeyDown={handleKeyDown}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          data-tab={tab.id}
+          id={`meeting-finished-tab-${tab.id}`}
+          aria-selected={selected === tab.id}
+          aria-controls={`meeting-finished-panel-${tab.id}`}
+          tabIndex={selected === tab.id ? 0 : -1}
+          onClick={() => onSelect(tab.id)}
+        >
+          {tab.id === 'ai' ? <Sparkles size={13} strokeWidth={1.8} aria-hidden="true" /> : null}
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+interface NotesToolsProps {
+  snapshot: MeetingSnapshot
+  notes: MeetingFinishedNotes
+}
+
+/** «Copiar notas» and «Regenerar», the same on both layouts. */
+export function MeetingNotesTools({ snapshot, notes }: NotesToolsProps) {
+  const running = snapshot.aiNotes.running
+  return (
+    <div className="notia-meeting-notes-tools">
+      <button
+        type="button"
+        className="notia-meeting-icon-button notia-meeting-outline-icon"
+        aria-label={notes.copied ? 'Notas copiadas' : 'Copiar notas'}
+        title={notes.copied ? 'Notas copiadas' : 'Copiar notas'}
+        onClick={() => void notes.copy()}
+      >
+        {notes.copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+      </button>
+      <button type="button" className="notia-meeting-outline-button" disabled={running} onClick={() => void notes.regenerate()}>
+        <RotateCw size={13} aria-hidden="true" className={running ? 'notia-meeting-spinning' : undefined} />
+        {running ? 'Generando…' : 'Regenerar'}
+      </button>
+    </div>
+  )
+}
+
+interface FinishedNotesBodyProps {
+  snapshot: MeetingSnapshot
+  notes: MeetingFinishedNotes
+  library: NotiaLibrary | null
+  onShowMoment: (atMs: number) => void
+}
+
+/** The Notas IA of the finished meeting, with its errors. */
+export function MeetingFinishedNotesBody({ snapshot, notes, library, onShowMoment }: FinishedNotesBodyProps) {
+  const agentError = snapshot.aiNotes.running ? undefined : snapshot.aiNotes.error
+  return (
+    <div className="notia-meeting-finished-notes-body">
+      {snapshot.aiNotes.running ? (
+        <p className="notia-meeting-finished-notes-status" role="status">
+          <span className="notia-meeting-ai-agent-spinner" aria-hidden="true" />El agente está escribiendo las notas…
+        </p>
+      ) : null}
+      {agentError ? <p className="notia-meeting-error-text" role="alert">{agentError}</p> : null}
+      {notes.error ? <p className="notia-meeting-error-text" role="alert">{notes.error}</p> : null}
+      <MeetingAiNotesBody
+        snapshot={snapshot}
+        actions={{ libraryId: library?.id ?? null, onRemoveMark: notes.removeMark, onError: notes.setError }}
+        onShowMoment={onShowMoment}
+        showJumps={false}
+        emptyText={NO_NOTES_TEXT}
+      />
+    </div>
+  )
+}
+
+/** Speaker spans laid on the length of the meeting. */
+export function MeetingTalkTimeline({ snapshot, compact = false }: { snapshot: MeetingSnapshot; compact?: boolean }) {
+  const duration = Math.max(1, snapshot.durationMs, ...snapshot.talkTimeline.map((span) => span.endMs))
+  const colors = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker]))
+  return (
+    <div
+      className={compact ? 'notia-meeting-timeline notia-meeting-timeline--compact' : 'notia-meeting-timeline'}
+      role="img"
+      aria-label="Línea de tiempo de quién habló en cada momento"
+    >
+      {snapshot.talkTimeline.map((span) => {
+        const speaker = colors.get(span.speakerId)
+        return (
+          <span
+            key={`${span.speakerId}-${span.startMs}`}
+            className={speaker ? speakerColorClass(speaker.colorIndex) : undefined}
+            title={`${speaker?.name ?? ''} · ${formatClock(span.startMs)} – ${formatClock(span.endMs)}`}
+            style={{ left: `${(span.startMs / duration) * 100}%`, width: `${((span.endMs - span.startMs) / duration) * 100}%` }}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+/** «Tiempo de habla»: the timeline, each speaker's time and turns, renaming and joining them. */
+function MeetingTalkTime({ snapshot }: { snapshot: MeetingSnapshot }) {
   const { editingId, draft, setDraft, error, setError, startEditing, stopEditing, saveName, merge: mergeSpeakers } = useMeetingSpeakerEdit(snapshot.id)
   const [merging, setMerging] = useState(false)
   const [mergeSource, setMergeSource] = useState('')
@@ -81,12 +242,25 @@ function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
   }
 
   return (
-    <div className="notia-meeting-speakers-block">
-      <div className="notia-meeting-speakers">
+    <section className="notia-meeting-card notia-meeting-talk" aria-labelledby="meeting-talk-title">
+      <div className="notia-meeting-talk-head">
+        <h2 id="meeting-talk-title">Tiempo de habla</h2>
+        <span>{`${formatDuration(snapshot.durationMs)} en total · ${speakers.length} ${speakers.length === 1 ? 'hablante' : 'hablantes'}`}</span>
+        <button type="button" className="notia-meeting-merge-button" onClick={openMerge} disabled={speakers.length < 2 || merging}>
+          <Combine size={13} aria-hidden="true" /> Unir hablantes
+        </button>
+      </div>
+      <div className="notia-meeting-talk-timeline">
+        <MeetingTalkTimeline snapshot={snapshot} />
+        <div className="notia-meeting-talk-ticks notia-meeting-mono" aria-hidden="true">
+          {timelineTicks(snapshot.durationMs).map((tick, index) => <span key={index}>{tick}</span>)}
+        </div>
+      </div>
+      <div className="notia-meeting-talk-speakers">
         {speakers.map((speaker) => (
-          <div key={speaker.id} className={`notia-meeting-card notia-meeting-speaker ${speakerColorClass(speaker.colorIndex)}`}>
+          <div key={speaker.id} className={`notia-meeting-talk-speaker ${speakerColorClass(speaker.colorIndex)}`}>
             <span className="notia-meeting-avatar" aria-hidden="true">{speaker.initials}</span>
-            <div className="notia-meeting-speaker-body">
+            <div className="notia-meeting-talk-who">
               {editingId === speaker.id ? (
                 <form className="notia-meeting-rename" onSubmit={(event) => void saveName(event)}>
                   <input
@@ -104,21 +278,25 @@ function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
                 <div className="notia-meeting-speaker-name">
                   <strong>{speaker.name}</strong>
                   <button type="button" className="notia-meeting-icon-button" aria-label={`Renombrar ${speaker.name}`} onClick={() => startEditing(speaker)}>
-                    <Pencil size={13} aria-hidden="true" />
+                    <Pencil size={12} aria-hidden="true" />
                   </button>
-                  <span className="notia-meeting-mono">{speaker.sharePercent}% · {formatClock(speaker.talkMs)}</span>
                 </div>
               )}
-              <div className="notia-meeting-share" aria-hidden="true"><div style={{ width: `${speaker.sharePercent}%` }} /></div>
+              <span>{`${speaker.turnCount} ${speaker.turnCount === 1 ? 'intervención' : 'intervenciones'}`}</span>
+            </div>
+            <div className="notia-meeting-talk-share">
+              <strong className="notia-meeting-mono">{formatDuration(speaker.talkMs)}</strong>
+              <span className="notia-meeting-mono">{speaker.sharePercent}%</span>
+            </div>
+            <div className="notia-meeting-talk-extra">
+              <span>Más larga <strong className="notia-meeting-mono">{formatDuration(speaker.longestTurnMs)}</strong></span>
+              <span>Promedio <strong className="notia-meeting-mono">{formatDuration(speaker.averageTurnMs)}</strong></span>
             </div>
           </div>
         ))}
-        <button type="button" className="notia-meeting-merge-button" onClick={openMerge} disabled={speakers.length < 2 || merging}>
-          <Combine size={14} aria-hidden="true" /> Unir hablantes
-        </button>
       </div>
       {merging ? (
-        <form className="notia-meeting-card notia-meeting-merge-form" onSubmit={(event) => void merge(event)}>
+        <form className="notia-meeting-merge-form" onSubmit={(event) => void merge(event)}>
           <label>
             <span>Unir</span>
             <select value={mergeSource} onChange={(event) => setMergeSource(event.target.value)}>
@@ -139,7 +317,7 @@ function SpeakersRow({ snapshot }: { snapshot: MeetingSnapshot }) {
         </form>
       ) : null}
       {error ? <p className="notia-meeting-error-text" role="alert">{error}</p> : null}
-    </div>
+    </section>
   )
 }
 
@@ -148,6 +326,7 @@ interface TranscriptCardProps {
   speakersById: Map<string, MeetingSpeaker>
   filter: MeetingFilter
   onFilterChange: (filter: MeetingFilter) => void
+  highlightId: string | null
 }
 
 interface MeetingSpeakerFilterProps {
@@ -183,7 +362,7 @@ export function MeetingSpeakerFilter({ speakers, filter, onFilterChange }: Meeti
   )
 }
 
-function TranscriptCard({ snapshot, speakersById, filter, onFilterChange }: TranscriptCardProps) {
+function TranscriptCard({ snapshot, speakersById, filter, onFilterChange, highlightId }: TranscriptCardProps) {
   const [query, setQuery] = useMeetingSearch(filter, onFilterChange)
 
   return (
@@ -201,13 +380,20 @@ function TranscriptCard({ snapshot, speakersById, filter, onFilterChange }: Tran
         </label>
         <MeetingSpeakerFilter speakers={snapshot.speakers} filter={filter} onFilterChange={onFilterChange} />
       </div>
-      <MeetingTurns snapshot={snapshot} speakersById={speakersById} />
+      <MeetingTurns snapshot={snapshot} speakersById={speakersById} highlightId={highlightId} />
     </section>
   )
 }
 
+interface MeetingTurnsProps {
+  snapshot: MeetingSnapshot
+  speakersById: Map<string, MeetingSpeaker>
+  /** The turn a jump just showed. */
+  highlightId?: string | null
+}
+
 /** The turns of the finished meeting, each with its speaker and minute. */
-export function MeetingTurns({ snapshot, speakersById }: { snapshot: MeetingSnapshot; speakersById: Map<string, MeetingSpeaker> }) {
+export function MeetingTurns({ snapshot, speakersById, highlightId = null }: MeetingTurnsProps) {
   return (
     <div className="notia-meeting-turns">
       {snapshot.turns.length === 0 ? (
@@ -217,7 +403,12 @@ export function MeetingTurns({ snapshot, speakersById }: { snapshot: MeetingSnap
       ) : snapshot.turns.map((turn) => {
         const speaker = turn.speakerId ? speakersById.get(turn.speakerId) : undefined
         return (
-          <article key={turn.id} className={`notia-meeting-turn ${speaker ? speakerColorClass(speaker.colorIndex) : ''}`}>
+          <article
+            key={turn.id}
+            id={`meeting-turn-${turn.id}`}
+            className={`notia-meeting-turn ${speaker ? speakerColorClass(speaker.colorIndex) : ''}`}
+            data-highlight={highlightId === turn.id ? 'true' : undefined}
+          >
             {speaker ? <span className="notia-meeting-avatar notia-meeting-avatar--small" aria-hidden="true">{speaker.initials}</span> : null}
             <div>
               <div className="notia-meeting-turn-meta">
@@ -233,7 +424,7 @@ export function MeetingTurns({ snapshot, speakersById }: { snapshot: MeetingSnap
   )
 }
 
-const INSIGHT_OPTIONS: Array<{ key: keyof MeetingInsightsRequest; label: string; hint?: string }> = [
+export const INSIGHT_OPTIONS: Array<{ key: keyof MeetingInsightsRequest; label: string; hint?: string }> = [
   { key: 'summary', label: 'Resumen' },
   { key: 'keyPoints', label: 'Puntos clave' },
   { key: 'tasks', label: 'Tareas', hint: '→ Task Manager' },

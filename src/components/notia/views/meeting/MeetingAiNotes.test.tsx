@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { callBackend } from '../../../../services/transport'
 import { MeetingAiNotesPanel, MeetingMarkComposer } from './MeetingAiNotesPanel'
 import { MeetingRecordingPanel } from './MeetingRecordingPanel'
-import { useMeetingAiContext } from './useMeetingAiContext'
+import { describeAiContext, useMeetingAiContext } from './useMeetingAiContext'
 import type { MeetingSnapshot } from '../../../../services/meeting/meetingTypes'
 
 vi.mock('../../../../services/transport', () => ({
@@ -25,6 +25,7 @@ const snapshot: MeetingSnapshot = {
   sources: { microphone: true, system: false },
   lines: [{ id: 'l1', startMs: 700_000, endMs: 705_000, text: 'Sentí que ya había aprendido.', question: false }],
   speakers: [],
+  talkTimeline: [],
   turns: [],
   totalTurns: 0,
   notes: '',
@@ -183,22 +184,30 @@ describe('Meeting AI notes', () => {
     expect(onCancel).toHaveBeenCalledOnce()
   })
 
-  it('loads the folders and contexts and starts from the whole library without the sensitive ones', async () => {
-    backend.mockImplementation(async () => ({
+  it('starts from the choice the backend kept and saves every change', async () => {
+    backend.mockImplementation(async (command) => (command === 'meeting_ai_context_options' ? {
       folders: [{ path: 'Facultad', noteCount: 24 }],
       contexts: [
         { tag: '#Personal', label: 'Personal', color: '#6FCF97', locked: false, selectedByDefault: true },
         { tag: '#Confidencial', label: 'Confidencial', color: '#FF6B6B', locked: true, selectedByDefault: false },
         { tag: 'sin-contexto', label: 'Sin contexto', locked: false, selectedByDefault: true },
       ],
-    }) as never)
+      choice: { wholeLibrary: true, folder: null, contexts: ['#Personal', 'sin-contexto'] },
+    } : undefined) as never)
     const { result } = renderHook(() => useMeetingAiContext({ id: 'lib-1', name: 'gaia' }))
     await waitFor(() => expect(result.current.state.options).not.toBeNull())
     expect(backend).toHaveBeenCalledWith('meeting_ai_context_options', { payload: { libraryId: 'lib-1' } })
     expect(result.current.aiContext).toEqual({ libraryId: 'lib-1', folder: null, contexts: ['#Personal', 'sin-contexto'] })
     act(() => result.current.state.toggleContext('#Confidencial'))
     expect(result.current.aiContext?.contexts).toEqual(['#Personal', 'sin-contexto', '#Confidencial'])
+    // Without the whole library and without a folder («Ninguna») the AI reads nothing of the library.
     act(() => result.current.state.setWholeLibrary(false))
+    expect(result.current.aiContext).toBeNull()
+    expect(describeAiContext(result.current.state)).toBe('Ninguna carpeta')
+    act(() => result.current.state.setFolder('Facultad'))
     expect(result.current.aiContext).toEqual({ libraryId: 'lib-1', folder: 'Facultad', contexts: null })
+    expect(backend).toHaveBeenLastCalledWith('meeting_save_ai_context_choice', {
+      payload: { libraryId: 'lib-1', choice: { wholeLibrary: false, folder: 'Facultad', contexts: ['#Personal', 'sin-contexto', '#Confidencial'] } },
+    })
   })
 })

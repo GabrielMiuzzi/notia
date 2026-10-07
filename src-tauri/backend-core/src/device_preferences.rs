@@ -109,6 +109,7 @@ pub fn normalize_device_preferences(value: &Value) -> Value {
         "editorPage": crate::page_setup::normalize_editor_page(&section("editorPage")),
         "pen": normalize_pen(&section("pen")),
         "audioDevices": crate::audio_devices::normalize_audio_devices(&section("audioDevices")),
+        "meetingAiContext": crate::meeting_ai::normalize_context_choices(&section("meetingAiContext")),
     })
 }
 

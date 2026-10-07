@@ -58,9 +58,10 @@ const snapshot: MeetingSnapshot = {
   sources: { microphone: true, system: false },
   lines: [{ id: 'l1', startMs: 750_000, endMs: 765_000, text: '¿Qué te agradaba de tu trabajo?', question: true }],
   speakers: [
-    { id: 's1', name: 'Hablante 1', initials: 'H1', talkMs: 678_000, sharePercent: 61, colorIndex: 0 },
-    { id: 's2', name: 'Hablante 2', initials: 'H2', talkMs: 434_000, sharePercent: 39, colorIndex: 1 },
+    { id: 's1', name: 'Hablante 1', initials: 'H1', talkMs: 678_000, sharePercent: 61, colorIndex: 0, turnCount: 14, longestTurnMs: 102_000, averageTurnMs: 48_000 },
+    { id: 's2', name: 'Hablante 2', initials: 'H2', talkMs: 434_000, sharePercent: 39, colorIndex: 1, turnCount: 12, longestTurnMs: 71_000, averageTurnMs: 36_000 },
   ],
+  talkTimeline: [{ speakerId: 's1', startMs: 0, endMs: 20_000 }],
   turns: [{ id: 't1', speakerId: 's1', startMs: 0, endMs: 20_000, text: 'Bien, buenas.' }],
   totalTurns: 1,
   notes: '',
@@ -82,8 +83,10 @@ const aiContext = {
       { tag: '#Personal', label: 'Personal', color: '#6FCF97', locked: false, selectedByDefault: true },
       { tag: '#Confidencial', label: 'Confidencial', color: '#FF6B6B', locked: true, selectedByDefault: false },
     ],
+    choice: { wholeLibrary: true, folder: null, contexts: ['#Personal'] },
   },
   error: null,
+  saveError: null,
   choice: { wholeLibrary: true, folder: 'Facultad', contexts: ['#Personal'] },
   setWholeLibrary: vi.fn(),
   setFolder: vi.fn(),
@@ -305,7 +308,7 @@ describe('Meeting phone layout', () => {
         {...actions}
       />,
     )
-    expect(screen.getByText('61% · 11:18')).toBeTruthy()
+    expect(screen.getByText('11:18 · 61%')).toBeTruthy()
     expect(screen.getByText('Bien, buenas.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Abrir nota' }))
     expect(actions.onOpenNote).toHaveBeenCalledOnce()

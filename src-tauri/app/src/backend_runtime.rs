@@ -734,6 +734,7 @@ impl OperationReviewPort for TauriOperationReviewPort {
         }
         self.journal.finish_undo(&key, operation_id)?;
         let _ = crate::agent_history::mark_undone(&self.app, &context.library_id, operation_id);
+        announce_documents_changed(&self.app, &context.library_id, Some(&json!({ "path": entry.logical_path })));
         Ok(UndoResult {
             operation: request.operation.clone(),
             result: ToolResult {
@@ -750,6 +751,51 @@ impl OperationReviewPort for TauriOperationReviewPort {
             },
         })
     }
+}
+
+/// The agent wrote notes of a library (`{ libraryId, paths }`): the
+/// interface reloads the open ones right away, without waiting for the end
+/// of the turn.
+pub(crate) const DOCUMENTS_CHANGED_EVENT: &str = "notia://library-documents-changed";
+
+fn is_document_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "create_library_note"
+            | "replace_library_document"
+            | "delete_library_document"
+            | "apply_markdown_edit"
+            | "apply_multi_document_markdown_edit"
+    )
+}
+
+/// Logical paths a document tool reports: `path`, or `documents[].path`.
+fn changed_document_paths(data: Option<&Value>) -> Vec<String> {
+    let Some(data) = data else { return Vec::new() };
+    let single = data.get("path").and_then(Value::as_str).map(str::to_string);
+    let many = data
+        .get("documents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|document| document.get("path").and_then(Value::as_str).map(str::to_string));
+    single.into_iter().chain(many).collect()
+}
+
+fn announce_documents_changed(app: &AppHandle, library_id: &str, data: Option<&Value>) {
+    use crate::host::Emitter;
+    let paths = changed_document_paths(data);
+    if paths.is_empty() {
+        return;
+    }
+    // The tabs hold the path the explorer shows; without the catalog (a
+    // headless test), the paths inside the library.
+    let catalog = app.try_state::<crate::library_catalog::LibraryCatalogState>().is_some();
+    let visible_paths = paths
+        .iter()
+        .map(|path| if catalog { crate::library_session::visible_path(app, library_id, path) } else { path.clone() })
+        .collect::<Vec<_>>();
+    let _ = app.emit(DOCUMENTS_CHANGED_EVENT, json!({ "libraryId": library_id, "paths": paths, "visiblePaths": visible_paths }));
 }
 
 /// How a cancelled request ended, for the reflection on it.
@@ -4257,6 +4303,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
             error: None,
             preview: None,
         })
+        .inspect(|result| {
+            if result.changed && is_document_write_tool(&call.name) {
+                announce_documents_changed(&self.app, &context.library_id, result.data.as_ref());
+            }
+        })
     }
 }
 
@@ -5068,6 +5119,20 @@ fn request_identity(request: &BackendRequest) -> (&BackendRequestContext, &str) 
 #[cfg(test)]
 mod tests {
     use super::TauriBackendToolExecutor;
+
+    #[test]
+    fn document_tools_report_the_notes_they_wrote() {
+        use serde_json::json;
+        assert_eq!(super::changed_document_paths(Some(&json!({ "path": "Ideas/a.md", "changed": true }))), vec!["Ideas/a.md"]);
+        assert_eq!(
+            super::changed_document_paths(Some(&json!({ "documents": [{ "path": "a.md" }, { "path": "b/c.md" }] }))),
+            vec!["a.md", "b/c.md"]
+        );
+        assert!(super::changed_document_paths(Some(&json!({ "changed": false }))).is_empty());
+        assert!(super::changed_document_paths(None).is_empty());
+        assert!(super::is_document_write_tool("apply_markdown_edit"));
+        assert!(!super::is_document_write_tool("save_finance_account"));
+    }
 
     /// Telegram, 2026-10-02: a lunch photo sent at 17:00 rode along with
     /// every later request for hours, so the agent kept offering to load it

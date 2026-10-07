@@ -50,6 +50,7 @@ import { MeetingMarkComposer, type MeetingAiNotesActions } from './meeting/Meeti
 import { formatClock } from './meeting/meetingDisplay'
 import './meeting/meetingPhone.css'
 import './meeting/meetingAi.css'
+import './meeting/meetingFinished.css'
 
 const MEETING_MAX_DURATION_SECONDS = 12 * 60 * 60
 const LEVEL_HISTORY = 90
