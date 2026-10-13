@@ -144,6 +144,9 @@ pub(crate) struct ConnectionView {
     collaboration: bool,
     /// Name of this device, shown to the others in a shared note.
     device_name: String,
+    /// The state of the link goes in a system notification (Android), so
+    /// the window shows no notice of its own.
+    status_in_notification: bool,
 }
 
 fn view(app: &AppHandle) -> ConnectionView {
@@ -170,6 +173,7 @@ fn view(app: &AppHandle) -> ConnectionView {
         copy: crate::host_mirror::last_status(app),
         collaboration: collaboration(app),
         device_name: device_name(),
+        status_in_notification: cfg!(target_os = "android"),
     }
 }
 

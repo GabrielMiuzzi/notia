@@ -66,6 +66,42 @@ pub(crate) struct SyncDeletePayload {
 pub(crate) struct DatabaseSnapshot {
     pub(crate) content_base64: String,
     pub(crate) modified_ms: i64,
+    /// The id of the host's database and the last change the snapshot
+    /// holds: the copy asks for the changes after it.
+    #[serde(default)]
+    pub(crate) database_id: Option<String>,
+    #[serde(default)]
+    pub(crate) seq: i64,
+}
+
+/// Most row changes in one request, either way.
+pub(crate) const MAX_ROW_CHANGES: usize = 500;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DatabaseChangesPayload {
+    library_id: String,
+    since: i64,
+    /// The host database the copy follows; another one needs a snapshot.
+    database_id: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DatabaseChanges {
+    #[serde(flatten)]
+    pub(crate) batch: crate::row_sync::ChangeBatch,
+    /// The copy follows another database, or a newer one than this host's:
+    /// it needs a snapshot.
+    #[serde(default)]
+    pub(crate) reset: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DatabasePushPayload {
+    library_id: String,
+    changes: Vec<crate::row_sync::RowChange>,
 }
 
 fn storage(message: &str) -> BackendError {
@@ -218,8 +254,28 @@ fn plain_root(root: &Path) -> String {
     }
 }
 
+/// The host's database, migrated (with its log of row changes).
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn host_database(_root: &Path) -> Result<rusqlite::Connection, BackendError> {
+    Err(BackendError::new(BackendErrorCode::Unsupported, "Solo un host de Windows o Linux comparte su biblioteca.", false))
+}
+
+/// The host's database, migrated (with its log of row changes).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn host_database(root: &Path) -> Result<rusqlite::Connection, BackendError> {
+    let connection = crate::database::open_library_connection(&root.to_string_lossy()).map_err(|message| storage(&message))?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| storage("No se pudo abrir la base de datos."))?;
+    Ok(connection)
+}
+
+fn database_error(_: rusqlite::Error) -> BackendError {
+    storage("No se pudo leer o escribir la base de datos de la biblioteca.")
+}
+
 /// A consistent copy of the database (`VACUUM INTO`), even while the host
-/// writes it.
+/// writes it. Its log has nothing pending: none of it changed on the copy.
 pub(crate) fn host_sync_database(app: &AppHandle, payload: SyncLibraryPayload) -> Result<Option<DatabaseSnapshot>, BackendError> {
     let root = library_root(app, &payload.library_id)?;
     let database = root.join(".notia").join("notia.db");
@@ -233,15 +289,52 @@ pub(crate) fn host_sync_database(app: &AppHandle, payload: SyncLibraryPayload) -
         .join("host-server");
     std::fs::create_dir_all(&directory).map_err(|_| storage("No se pudo preparar la copia de la base de datos."))?;
     let snapshot = directory.join(format!("snapshot-{}.db", uuid::Uuid::new_v4()));
-    let copied = rusqlite::Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .and_then(|connection| connection.execute("VACUUM INTO ?1", [snapshot.to_string_lossy().as_ref()]));
-    let bytes = copied.ok().and_then(|_| std::fs::read(&snapshot).ok());
+    let copied = host_database(&root).and_then(|connection| {
+        connection.execute("VACUUM INTO ?1", [snapshot.to_string_lossy().as_ref()]).map_err(database_error)?;
+        drop(connection);
+        let copy = rusqlite::Connection::open(&snapshot).map_err(database_error)?;
+        crate::row_sync::clear_pending(&copy).map_err(database_error)?;
+        let database_id = crate::row_sync::database_id(&copy).map_err(database_error)?;
+        let seq = crate::row_sync::last_seq(&copy).map_err(database_error)?;
+        drop(copy);
+        let bytes = std::fs::read(&snapshot).map_err(|_| storage("No se pudo copiar la base de datos."))?;
+        Ok((bytes, database_id, seq))
+    });
     let _ = std::fs::remove_file(&snapshot);
-    let bytes = bytes.ok_or_else(|| storage("No se pudo copiar la base de datos."))?;
+    let (bytes, database_id, seq) = copied.map_err(|error| {
+        log::error!("[notia:host] the database snapshot failed: {}", error.message);
+        storage("No se pudo copiar la base de datos.")
+    })?;
     Ok(Some(DatabaseSnapshot {
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         modified_ms: stamp_of(&metadata).modified_ms,
+        database_id,
+        seq,
     }))
+}
+
+/// The rows that changed on the host after `since` (`row_sync`).
+pub(crate) fn host_sync_database_changes(app: &AppHandle, payload: DatabaseChangesPayload) -> Result<DatabaseChanges, BackendError> {
+    let root = library_root(app, &payload.library_id)?;
+    let connection = host_database(&root)?;
+    let database_id = crate::row_sync::database_id(&connection).map_err(database_error)?;
+    let last = crate::row_sync::last_seq(&connection).map_err(database_error)?;
+    if payload.database_id.is_none() || payload.database_id != database_id || payload.since > last {
+        return Ok(DatabaseChanges { reset: true, ..DatabaseChanges::default() });
+    }
+    let batch = crate::row_sync::changes_since(&connection, payload.since, MAX_ROW_CHANGES).map_err(database_error)?;
+    Ok(DatabaseChanges { batch, reset: false })
+}
+
+/// The rows a copy changed while it had no connection: the newest change
+/// of each row wins (`row_sync`).
+pub(crate) fn host_sync_database_push(app: &AppHandle, payload: DatabasePushPayload) -> Result<crate::row_sync::ApplyReport, BackendError> {
+    if payload.changes.len() > MAX_ROW_CHANGES {
+        return Err(BackendError::invalid_input("Demasiados cambios de la base en un solo pedido."));
+    }
+    let root = library_root(app, &payload.library_id)?;
+    let connection = host_database(&root)?;
+    crate::row_sync::apply_changes(&connection, &payload.changes).map_err(database_error)
 }
 
 pub(crate) fn host_sync_write(app: &AppHandle, payload: SyncWritePayload) -> Result<SyncFile, BackendError> {

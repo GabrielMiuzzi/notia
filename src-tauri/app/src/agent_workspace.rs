@@ -1,8 +1,9 @@
 //! The library's `.agent` workspace exposed to the interface: folder
 //! structure, the visual copy of the default prompt, custom prompts and the
 //! selected one, rules added by the agent, persistent memories, the agent's
-//! own thoughts, the person's biography and their way of talking. The
-//! content rules live in `backend_core::agent_workspace`.
+//! own thoughts, the person's biography, their way of talking and the
+//! people they mention. The content rules live in
+//! `backend_core::agent_workspace`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use crate::host::{AppHandle, Manager};
 
+use crate::backend::agent_knowledge::{AgentFiles, Organization};
 use crate::backend::agent_workspace as workspace;
 use crate::backend::{
     BackendError, BackendErrorCode,
@@ -258,48 +260,6 @@ pub(crate) async fn backend_select_agent_prompt(
     .await
 }
 
-/// Memories saved in `memory.md`.
-pub(crate) fn memories(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
-    ensure_workspace(app, library_id)?;
-    with_documents(app, library_id, |documents| {
-        Ok(documents
-            .read(workspace::MEMORY_PATH)?
-            .map(|content| workspace::parse_memory_items(workspace::document_body(&content)))
-            .unwrap_or_default())
-    })
-}
-
-/// Replaces the memories with `next` only when `memory.md` still holds
-/// `expected`, so a memory saved meanwhile is never overwritten. Returns
-/// whether it wrote.
-pub(crate) fn replace_memories_if_unchanged(
-    app: &AppHandle,
-    library_id: &str,
-    expected: &[String],
-    next: Vec<String>,
-) -> Result<bool, BackendError> {
-    validate_items(&next)?;
-    let next = workspace::merge_memories(next);
-    with_workspace_lock(app, || {
-        with_documents(app, library_id, |documents| {
-            let current = documents.read(workspace::MEMORY_PATH)?;
-            let saved = current
-                .as_deref()
-                .map(|content| workspace::parse_memory_items(workspace::document_body(content)))
-                .unwrap_or_default();
-            if saved != expected || saved == next {
-                return Ok(false);
-            }
-            documents.write(
-                workspace::MEMORY_PATH,
-                current.as_deref(),
-                &workspace::with_confidential_context(&workspace::render_memories(&next)),
-            )?;
-            Ok(true)
-        })
-    })
-}
-
 /// Replaces the memories (deduplicated and capped).
 pub(crate) fn save_memories(app: &AppHandle, library_id: &str, items: Vec<String>) -> Result<Vec<String>, BackendError> {
     validate_items(&items)?;
@@ -322,7 +282,7 @@ pub(crate) async fn backend_save_agent_memories(app: AppHandle, payload: AgentIt
     blocking(move || {
         let saved = save_memories(&app, &payload.library_id, payload.items)?;
         if !saved.is_empty() {
-            crate::agent_knowledge::schedule_memory_organization(&app, &payload.library_id);
+            crate::agent_knowledge::schedule_organization(&app, &payload.library_id);
         }
         Ok(saved)
     })
@@ -338,128 +298,37 @@ fn read_items(documents: &Documents<'_>, path: &str) -> Result<(Option<String>, 
     Ok((current, items))
 }
 
-/// Writes the empty thoughts, biography and talk files that are missing.
-/// Returns whether it wrote any.
-fn write_missing_lists(documents: &Documents<'_>) -> Result<bool, BackendError> {
+/// Writes the empty thoughts, biography, talk and people files that are
+/// missing. Returns the paths it wrote.
+fn write_missing_lists(documents: &Documents<'_>) -> Result<Vec<&'static str>, BackendError> {
     let empty = [
         (workspace::THOUGHTS_PATH, workspace::render_thoughts(&[])),
         (workspace::BIOGRAPHY_PATH, workspace::Biography::default().render()),
         (workspace::TALK.path, workspace::TALK.render(&[])),
+        (workspace::PEOPLE.path, workspace::PEOPLE.render(&[])),
     ];
-    let mut wrote = false;
+    let mut written = Vec::new();
     for (path, body) in empty {
         if documents.read(path)?.is_none() {
             documents.write(path, None, &workspace::with_confidential_context(&body))?;
-            wrote = true;
+            written.push(path);
         }
     }
-    Ok(wrote)
+    Ok(written)
 }
 
-/// Creates `thoughts.md`, `biography.md` and `talk.md` again when they are
-/// missing (deleted or never made). Unlike the session preparation, it
-/// looks at the files every time. Returns whether it wrote.
-pub(crate) fn ensure_agent_list_files(app: &AppHandle, library_id: &str) -> Result<bool, BackendError> {
-    with_workspace_lock(app, || with_documents(app, library_id, write_missing_lists))
-}
-
-/// The agent's thoughts saved in `thoughts.md`.
-pub(crate) fn thoughts(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
-    with_documents(app, library_id, |documents| read_items(documents, workspace::THOUGHTS_PATH).map(|(_, items)| items))
-}
-
-/// Replaces the thoughts with `next` only when `thoughts.md` still holds
-/// `expected`, so a thought saved meanwhile is never lost. Returns whether
-/// it wrote.
-pub(crate) fn replace_thoughts_if_unchanged(
-    app: &AppHandle,
-    library_id: &str,
-    expected: &[String],
-    next: &[String],
-) -> Result<bool, BackendError> {
-    if !workspace::THOUGHTS_LIMIT.fits(next) {
-        return Err(BackendError::invalid_input("Los pensamientos del agente superan el límite."));
-    }
-    with_workspace_lock(app, || {
-        with_documents(app, library_id, |documents| {
-            let (current, saved) = read_items(documents, workspace::THOUGHTS_PATH)?;
-            if saved != expected || saved == next {
-                return Ok(false);
-            }
-            documents.write(
-                workspace::THOUGHTS_PATH,
-                current.as_deref(),
-                &workspace::with_confidential_context(&workspace::render_thoughts(next)),
-            )?;
-            Ok(true)
-        })
-    })
-}
-
-/// Items of a list file of the agent (`talk.md`).
-pub(crate) fn list_items(app: &AppHandle, library_id: &str, file: workspace::AgentListFile) -> Result<Vec<String>, BackendError> {
-    with_documents(app, library_id, |documents| read_items(documents, file.path).map(|(_, items)| items))
-}
-
-/// Replaces the items of `file` with `next` only when it still holds
-/// `expected`, so an item saved meanwhile is never lost. Returns whether it
+/// Creates `thoughts.md`, `biography.md`, `talk.md` and `people.md` again
+/// when they are missing (deleted or never made). Unlike the session
+/// preparation, it looks at the files every time. Returns the paths it
 /// wrote.
-pub(crate) fn replace_list_if_unchanged(
-    app: &AppHandle,
-    library_id: &str,
-    file: workspace::AgentListFile,
-    expected: &[String],
-    next: &[String],
-) -> Result<bool, BackendError> {
-    if !file.limit.fits(next) || next.iter().any(|item| item.chars().count() > file.max_item_chars) {
-        return Err(BackendError::invalid_input("La lista del agente supera el límite."));
-    }
-    with_workspace_lock(app, || {
-        with_documents(app, library_id, |documents| {
-            let (current, saved) = read_items(documents, file.path)?;
-            if saved != expected || saved == next {
-                return Ok(false);
-            }
-            documents.write(file.path, current.as_deref(), &workspace::with_confidential_context(&file.render(next)))?;
-            Ok(true)
-        })
-    })
+pub(crate) fn ensure_agent_list_files(app: &AppHandle, library_id: &str) -> Result<Vec<&'static str>, BackendError> {
+    with_workspace_lock(app, || with_documents(app, library_id, write_missing_lists))
 }
 
 fn read_biography(documents: &Documents<'_>) -> Result<(Option<String>, workspace::Biography), BackendError> {
     let current = documents.read(workspace::BIOGRAPHY_PATH)?;
     let biography = workspace::Biography::parse(current.as_deref().map(workspace::document_body).unwrap_or(""));
     Ok((current, biography))
-}
-
-/// The person's biography: its story and the facts still to tell.
-pub(crate) fn biography(app: &AppHandle, library_id: &str) -> Result<workspace::Biography, BackendError> {
-    with_documents(app, library_id, |documents| read_biography(documents).map(|(_, biography)| biography))
-}
-
-/// Writes `story` as the biography, with every fact told, only when the
-/// file still holds `expected`, so a fact added meanwhile is never lost.
-/// Returns whether it wrote.
-pub(crate) fn replace_biography_if_unchanged(
-    app: &AppHandle,
-    library_id: &str,
-    expected: &workspace::Biography,
-    story: String,
-) -> Result<bool, BackendError> {
-    if story.chars().count() > workspace::BIOGRAPHY_STORY_LIMIT {
-        return Err(BackendError::invalid_input("La biografía supera el límite."));
-    }
-    let next = workspace::Biography { story, notes: Vec::new() };
-    with_workspace_lock(app, || {
-        with_documents(app, library_id, |documents| {
-            let (current, saved) = read_biography(documents)?;
-            if saved != *expected || saved == next {
-                return Ok(false);
-            }
-            documents.write(workspace::BIOGRAPHY_PATH, current.as_deref(), &workspace::with_confidential_context(&next.render()))?;
-            Ok(true)
-        })
-    })
 }
 
 fn append_biography_locked(app: &AppHandle, library_id: &str, fact: &str) -> Result<Appended, BackendError> {
@@ -475,44 +344,104 @@ fn append_biography_locked(app: &AppHandle, library_id: &str, fact: &str) -> Res
     })
 }
 
-/// Rules the agent added, without the managed default block.
-pub(crate) fn rules(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
-    with_documents(app, library_id, |documents| {
-        Ok(workspace::ia_rules(documents.read(workspace::RULES_PATH)?.as_deref().map(workspace::document_body).unwrap_or("")))
-    })
+/// The text of every agent file of `.agent/memory`, as read, so a write
+/// can tell whether it changes it.
+struct AgentFileTexts {
+    rules: Option<String>,
+    memory: Option<String>,
+    thoughts: Option<String>,
+    talk: Option<String>,
+    people: Option<String>,
+    biography: Option<String>,
 }
 
-/// Replaces the rules the agent added with `next` only when `rules.md`
-/// still holds `expected`. Returns whether it wrote.
-pub(crate) fn replace_rules_if_unchanged(
+fn read_agent_files(documents: &Documents<'_>) -> Result<(AgentFileTexts, AgentFiles), BackendError> {
+    let texts = AgentFileTexts {
+        rules: documents.read(workspace::RULES_PATH)?,
+        memory: documents.read(workspace::MEMORY_PATH)?,
+        thoughts: documents.read(workspace::THOUGHTS_PATH)?,
+        talk: documents.read(workspace::TALK.path)?,
+        people: documents.read(workspace::PEOPLE.path)?,
+        biography: documents.read(workspace::BIOGRAPHY_PATH)?,
+    };
+    let body = |text: &Option<String>| text.as_deref().map(workspace::document_body).unwrap_or("").to_string();
+    let files = AgentFiles {
+        rules: workspace::ia_rules(&body(&texts.rules)),
+        memories: workspace::parse_memory_items(&body(&texts.memory)),
+        thoughts: workspace::parse_memory_items(&body(&texts.thoughts)),
+        talk: workspace::parse_memory_items(&body(&texts.talk)),
+        people: workspace::parse_memory_items(&body(&texts.people)),
+        biography: workspace::Biography::parse(&body(&texts.biography)),
+    };
+    Ok((texts, files))
+}
+
+/// Every agent file of `.agent/memory`: the list files item by item (the
+/// rules without the managed default block) and the biography.
+pub(crate) fn agent_files(app: &AppHandle, library_id: &str) -> Result<AgentFiles, BackendError> {
+    ensure_workspace(app, library_id)?;
+    with_documents(app, library_id, |documents| read_agent_files(documents).map(|(_, files)| files))
+}
+
+/// Writes what an organization changed, each file in its own form, only
+/// when no agent file changed since `expected` was read, so an item saved
+/// meanwhile is never lost (the next organization reads it). A file the
+/// organization left as it was is not written. Returns whether it wrote.
+pub(crate) fn replace_agent_files_if_unchanged(
     app: &AppHandle,
     library_id: &str,
-    expected: &[String],
-    next: &[String],
+    expected: &AgentFiles,
+    organization: &Organization,
 ) -> Result<bool, BackendError> {
-    if !workspace::RULES_LIMIT.fits(next) || next.iter().any(|rule| rule.chars().count() > workspace::MAX_RULE_CHARS) {
-        return Err(BackendError::invalid_input("Las reglas del agente superan el límite."));
-    }
     with_workspace_lock(app, || {
         with_documents(app, library_id, |documents| {
-            let current = documents.read(workspace::RULES_PATH)?;
-            let body = current.as_deref().map(workspace::document_body).unwrap_or("");
-            let saved = workspace::ia_rules(body);
-            if saved != expected || saved == next {
+            let (texts, saved) = read_agent_files(documents)?;
+            if saved != *expected {
                 return Ok(false);
             }
-            let next_body = workspace::replace_ia_rules(body, next);
-            documents.write(workspace::RULES_PATH, current.as_deref(), &workspace::with_confidential_context(&next_body))?;
-            Ok(true)
+            let mut wrote = false;
+            let mut write = |path: &str, current: &Option<String>, body: String| -> Result<(), BackendError> {
+                let next = workspace::with_confidential_context(&body);
+                if current.as_deref() != Some(next.as_str()) {
+                    documents.write(path, current.as_deref(), &next)?;
+                    wrote = true;
+                }
+                Ok(())
+            };
+            if let Some(lists) = &organization.lists {
+                if lists.rules != saved.rules {
+                    let body = texts.rules.as_deref().map(workspace::document_body).unwrap_or("");
+                    write(workspace::RULES_PATH, &texts.rules, workspace::replace_ia_rules(body, &lists.rules))?;
+                }
+                if lists.memories != saved.memories {
+                    write(workspace::MEMORY_PATH, &texts.memory, workspace::render_memories(&lists.memories))?;
+                }
+                if lists.thoughts != saved.thoughts {
+                    write(workspace::THOUGHTS_PATH, &texts.thoughts, workspace::render_thoughts(&lists.thoughts))?;
+                }
+                if lists.talk != saved.talk {
+                    write(workspace::TALK.path, &texts.talk, workspace::TALK.render(&lists.talk))?;
+                }
+                if lists.people != saved.people {
+                    write(workspace::PEOPLE.path, &texts.people, workspace::PEOPLE.render(&lists.people))?;
+                }
+            }
+            if let Some(story) = &organization.biography {
+                let told = workspace::Biography { story: story.clone(), notes: Vec::new() };
+                write(workspace::BIOGRAPHY_PATH, &texts.biography, told.render())?;
+            }
+            Ok(wrote)
         })
     })
 }
 
 /// Rewrites each agent file whose text is not in its canonical form (a
 /// hand edit, an old version, stray markers), keeping every item: the rules
-/// with the current default block, and the memory, thoughts, biography and
-/// talk as clean deduplicated lists, and the biography's story and facts to
-/// tell, each with its version marker and the confidential context. Returns how many files it rewrote.
+/// with the current default block, the memory, thoughts, talk and people
+/// as clean deduplicated lists, and the biography's story and facts to
+/// tell, each with its version marker and the confidential context. A line
+/// of `people.md` takes its `Nombre — quién es` form when it has one.
+/// Returns how many files it rewrote.
 pub(crate) fn normalize_agent_files(app: &AppHandle, library_id: &str) -> Result<usize, BackendError> {
     ensure_workspace(app, library_id)?;
     let canonical = |path: &str, body: &str| match path {
@@ -520,6 +449,12 @@ pub(crate) fn normalize_agent_files(app: &AppHandle, library_id: &str) -> Result
         workspace::MEMORY_PATH => workspace::render_memories(&workspace::merge_memories(workspace::parse_memory_items(body))),
         workspace::THOUGHTS_PATH => workspace::render_thoughts(&workspace::parse_memory_items(body)),
         workspace::BIOGRAPHY_PATH => workspace::Biography::parse(body).render(),
+        workspace::PEOPLE_PATH => workspace::PEOPLE.render(
+            &workspace::parse_memory_items(body)
+                .into_iter()
+                .map(|line| workspace::parse_person_entry(&line).unwrap_or(line))
+                .collect::<Vec<_>>(),
+        ),
         _ => workspace::TALK.render(&workspace::parse_memory_items(body)),
     };
     let comparable = |text: &str| text.replace("\r\n", "\n").trim().to_string();
@@ -532,6 +467,7 @@ pub(crate) fn normalize_agent_files(app: &AppHandle, library_id: &str) -> Result
                 workspace::THOUGHTS_PATH,
                 workspace::BIOGRAPHY_PATH,
                 workspace::TALK.path,
+                workspace::PEOPLE.path,
             ] {
                 let Some(current) = documents.read(path)? else { continue };
                 let next = workspace::with_confidential_context(&canonical(path, workspace::document_body(&current)));
@@ -642,10 +578,12 @@ fn append_rule_locked(app: &AppHandle, library_id: &str, rule: &str) -> Result<A
     })
 }
 
-/// Persists a rule, memory, thought, part of the biography or trait of the
-/// person's way of talking requested by the agent tool, with the same
+/// Persists a rule, memory, thought, part of the biography, trait of the
+/// person's way of talking or person requested by the agent tool (a person
+/// arrives as its `Nombre — quién es` line), with the same
 /// format the interface reads. A thought is dated here. A full file is
-/// rewritten by the model before adding. Returns whether the file changed.
+/// organized by the model, together with the other agent files, before
+/// adding. Returns whether the file changed.
 pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentItem, value: &str) -> Result<bool, BackendError> {
     let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if value.is_empty() || value.chars().count() > workspace::MAX_RULE_CHARS {
@@ -656,13 +594,13 @@ pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentIt
         AgentItem::Rule => append_bounded(
             app,
             || append_rule_locked(app, library_id, &value),
-            || crate::agent_knowledge::compact_rules(app, library_id),
+            || crate::agent_knowledge::organize_now(app, library_id),
             "Las reglas del agente están llenas y no se pudieron reorganizar. Probá de nuevo más tarde.",
         ),
         AgentItem::Memory => append_bounded(
             app,
             || append_memory_locked(app, library_id, &value),
-            || crate::agent_knowledge::compact_memories(app, library_id),
+            || crate::agent_knowledge::organize_now(app, library_id),
             "La memoria del agente está llena y no se pudo reorganizar. Probá de nuevo más tarde.",
         ),
         AgentItem::Thought => {
@@ -675,7 +613,7 @@ pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentIt
             append_bounded(
                 app,
                 || append_thought_locked(app, library_id, &stamped),
-                || crate::agent_knowledge::compact_thoughts(app, library_id),
+                || crate::agent_knowledge::organize_now(app, library_id),
                 "Tus pensamientos están llenos y no se pudieron reorganizar. Probá de nuevo más tarde.",
             )
         }
@@ -689,7 +627,7 @@ pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentIt
             append_bounded(
                 app,
                 || append_biography_locked(app, library_id, &value),
-                || crate::agent_knowledge::write_biography_now(app, library_id),
+                || crate::agent_knowledge::organize_now(app, library_id),
                 "La biografía tiene demasiados datos sin contar y no se pudo escribir. Probá de nuevo más tarde.",
             )
         }
@@ -703,8 +641,23 @@ pub(crate) fn append_agent_item(app: &AppHandle, library_id: &str, kind: AgentIt
             append_bounded(
                 app,
                 || append_list_locked(app, library_id, workspace::TALK, &value),
-                || crate::agent_knowledge::compact_talk(app, library_id),
+                || crate::agent_knowledge::organize_now(app, library_id),
                 "El archivo del agente está lleno y no se pudo reorganizar. Probá de nuevo más tarde.",
+            )
+        }
+        AgentItem::Person => {
+            let entry = workspace::parse_person_entry(&value).ok_or_else(|| {
+                BackendError::invalid_input(format!(
+                    "Cada persona necesita su nombre (hasta {} caracteres) y quién es, en hasta {} caracteres.",
+                    workspace::MAX_PERSON_NAME_CHARS,
+                    workspace::PEOPLE.max_item_chars
+                ))
+            })?;
+            append_bounded(
+                app,
+                || append_list_locked(app, library_id, workspace::PEOPLE, &entry),
+                || crate::agent_knowledge::organize_now(app, library_id),
+                "El archivo de personas está lleno y no se pudo reorganizar. Probá de nuevo más tarde.",
             )
         }
     }
@@ -717,4 +670,6 @@ pub(crate) enum AgentItem {
     Thought,
     Biography,
     Talk,
+    /// A `Nombre — quién es` line of `people.md`.
+    Person,
 }

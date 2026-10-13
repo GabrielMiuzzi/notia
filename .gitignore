@@ -58,6 +58,7 @@ src-tauri/resources/qwen3-tts/runtime/windows-x86_64/*.dll
 src-tauri/resources/qwen3-tts/runtime/android-arm64-v8a/*.so
 src-tauri/resources/whisper/runtime/windows-x86_64/
 src-tauri/resources/whisper/runtime/android-arm64-v8a/
+src-tauri/resources/stable-diffusion/runtime/windows-x86_64/
 # Legacy local weights are no longer built or packaged.
 src-tauri/resources/supertonic/
 

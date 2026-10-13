@@ -23,7 +23,7 @@ const view = (overrides: Partial<ConnectionView> = {}): ConnectionView => ({
   hostAddress: '',
   canHost: true,
   server: { listening: true, port: 52480, error: null },
-  link: { state: 'unknown', library: null, platform: null, signedIn: false, message: null },
+  link: { state: 'unknown', library: null, platform: null, signedIn: false, message: null, moveTo: null },
   hostOnlyCommands: [],
   canKeepCopy: true,
   copyNeedsFolder: false,
@@ -32,6 +32,7 @@ const view = (overrides: Partial<ConnectionView> = {}): ConnectionView => ({
   copy: null,
   collaboration: true,
   deviceName: 'NOTEBOOK',
+  statusInNotification: false,
   ...overrides,
 })
 

@@ -24,6 +24,11 @@ export interface HostLink {
   platform: string | null
   signedIn: boolean
   message: string | null
+  /**
+   * Where the backend says the window should go now: to the copy when the
+   * host stopped answering a while ago, back to the host when it answers.
+   */
+  moveTo: 'copy' | 'host' | null
 }
 
 /** Last sync of the copy a «Con copia» client keeps. */
@@ -31,6 +36,9 @@ export interface CopyStatus {
   downloaded: number
   uploaded: number
   deleted: number
+  /** Rows of the database this device sent to the host, and taken from it. */
+  rowsUploaded: number
+  rowsDownloaded: number
   /** Files that did not travel (too large, or the host did not give them). */
   skipped: string[]
   atMs: number
@@ -60,6 +68,8 @@ export interface ConnectionView {
   collaboration: boolean
   /** Name of this device, shown to the others in a shared note. */
   deviceName: string
+  /** The state of the link goes in a system notification (Android): the window shows no notice. */
+  statusInNotification: boolean
 }
 
 export interface OfflineCopy {
@@ -137,7 +147,7 @@ export function leaveOfflineCopy(): Promise<void> {
   return callBackend<void>('leave_offline_copy')
 }
 
-/** Syncs the copy now (the last modified file wins on both sides). */
+/** Syncs the copy now (the last change of each file and each row wins). */
 export function syncCopyNow(): Promise<CopyStatus> {
   return callBackend<CopyStatus>('sync_copy_now')
 }

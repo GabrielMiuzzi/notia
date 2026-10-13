@@ -203,6 +203,10 @@ fn route(command: &str) -> Option<Route> {
         "weather_get_location" => weather_get_location,
         "weather_search_locations" => weather_search_locations,
         "weather_set_location" => weather_set_location,
+        "backend_image_models_status" => backend_image_models_status,
+        "backend_download_image_models" => backend_download_image_models,
+        "backend_cancel_image_models_download" => backend_cancel_image_models_download,
+        "backend_delete_image_models" => backend_delete_image_models,
         "meeting_media_begin" => meeting_media_begin,
         "meeting_media_chunk" => meeting_media_chunk,
         "meeting_media_finish" => meeting_media_finish,
@@ -310,6 +314,8 @@ fn route(command: &str) -> Option<Route> {
         "pick_copy_folder" => pick_copy_folder,
         "host_sync_manifest" => host_sync_manifest,
         "host_sync_database" => host_sync_database,
+        "host_sync_database_changes" => host_sync_database_changes,
+        "host_sync_database_push" => host_sync_database_push,
         "host_sync_write" => host_sync_write,
         "host_sync_delete" => host_sync_delete,
         "collab_join" => collab_join,
@@ -488,6 +494,10 @@ pub const COMMAND_NAMES: &[&str] = &[
     "weather_get_location",
     "weather_search_locations",
     "weather_set_location",
+    "backend_image_models_status",
+    "backend_download_image_models",
+    "backend_cancel_image_models_download",
+    "backend_delete_image_models",
     "meeting_media_begin",
     "meeting_media_chunk",
     "meeting_media_finish",
@@ -574,6 +584,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "pick_copy_folder",
     "host_sync_manifest",
     "host_sync_database",
+    "host_sync_database_changes",
+    "host_sync_database_push",
     "host_sync_write",
     "host_sync_delete",
     "collab_join",
@@ -586,6 +598,11 @@ pub const COMMAND_NAMES: &[&str] = &[
 /// Bluetooth, native pickers). Only the interface running on that computer
 /// may call them; remote clients of the headless server cannot.
 pub const LOCAL_ONLY_COMMANDS: &[&str] = &[
+    // The image models of this device: a client never downloads ~11 GB on its host.
+    "backend_image_models_status",
+    "backend_download_image_models",
+    "backend_cancel_image_models_download",
+    "backend_delete_image_models",
     "probe_speech_audio_input",
     "speech_audio_devices",
     // The recognizer of this device (a client records on its own device).
@@ -1489,6 +1506,34 @@ fn stop_audio_monitor(app: &AppHandle, _window_label: &str, command: &str, args:
     Ok(Dispatch::Ready(reply_result(crate::commands::speech::stop_audio_monitor(arg(command, args, "payload")?, app.state()))))
 }
 
+fn backend_image_models_status(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(crate::host::async_runtime::spawn_blocking(move || crate::image_generation::backend_image_models_status(app)).await.unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudo consultar los modelos de imágenes.", true))))
+    })))
+}
+
+fn backend_download_image_models(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(crate::host::async_runtime::spawn_blocking(move || crate::image_generation::backend_download_image_models(app)).await.unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudo consultar los modelos de imágenes.", true))))
+    })))
+}
+
+fn backend_cancel_image_models_download(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(crate::host::async_runtime::spawn_blocking(move || crate::image_generation::backend_cancel_image_models_download(app)).await.unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudo consultar los modelos de imágenes.", true))))
+    })))
+}
+
+fn backend_delete_image_models(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(crate::host::async_runtime::spawn_blocking(move || crate::image_generation::backend_delete_image_models(app)).await.unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudo consultar los modelos de imágenes.", true))))
+    })))
+}
+
 fn home_dashboard(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
@@ -2104,6 +2149,14 @@ fn host_sync_manifest(app: &AppHandle, _window_label: &str, command: &str, args:
 
 fn host_sync_database(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_database(app, arg(command, args, "payload")?))))
+}
+
+fn host_sync_database_changes(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_database_changes(app, arg(command, args, "payload")?))))
+}
+
+fn host_sync_database_push(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::host_sync::host_sync_database_push(app, arg(command, args, "payload")?))))
 }
 
 fn host_sync_write(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

@@ -1,6 +1,7 @@
 //! The autonomous agent's clock. Every minute, for the selected library,
-//! `thoughts.md`, `biography.md` and `talk.md` are created again when they
-//! are missing, and once a day the agent files are reviewed (format
+//! `thoughts.md`, `biography.md`, `talk.md` and `people.md` are created
+//! again when they are missing (a new `people.md` is filled with the people
+//! the memory and the biography name), and once a day the agent files are reviewed (format
 //! repaired, duplicates merged, sizes kept; see
 //! `agent_knowledge::review_agent_files`). When the library's Telegram bot
 //! runs on this device with the autonomous agent on, the Gmail accounts
@@ -99,7 +100,14 @@ fn tick(app: &AppHandle, clock: &mut Clock) {
         return;
     }
     match crate::agent_workspace::ensure_agent_list_files(app, &library.id) {
-        Ok(_) => clock.files_failing = false,
+        Ok(written) => {
+            clock.files_failing = false;
+            // A new `people.md` starts with the people the memory and the
+            // biography already name.
+            if written.contains(&crate::backend::agent_workspace::PEOPLE_PATH) {
+                crate::agent_knowledge::schedule_organization(app, &library.id);
+            }
+        }
         Err(error) => {
             if !clock.files_failing {
                 log::error!("[notia:autonomy] no se pudieron recrear los archivos del agente: {:?}", error.code);

@@ -362,6 +362,36 @@ pub async fn edit_message(
     decode::<serde_json::Value>(response).await.map(|_| ())
 }
 
+/// Sends a PNG image the agent made. As a photo first; when Telegram
+/// rejects it (a photo is limited to 10 MB and 10000 px of width plus
+/// height), as a file, which keeps it whole.
+pub async fn send_photo(token: &str, chat_id: i64, file_name: &str, png: Vec<u8>) -> Result<i64, String> {
+    if chat_id == 0 || png.is_empty() {
+        return Err("La imagen para Telegram no es valida.".to_string());
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut last_error = "No se pudo enviar la imagen a Telegram.".to_string();
+    for (method, field) in [("sendPhoto", "photo"), ("sendDocument", "document")] {
+        let part = reqwest::multipart::Part::bytes(png.clone())
+            .file_name(file_name.to_string())
+            .mime_str("image/png")
+            .map_err(|error| error.to_string())?;
+        let form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string()).part(field, part);
+        let response = match client.post(endpoint(token, method)?).multipart(form).send().await {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        match decode::<TelegramSentMessage>(response).await {
+            Ok(message) => return Ok(message.message_id),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
 /// Deletes a message the bot sent (Telegram allows it for 48 hours).
 pub async fn delete_message(token: &str, chat_id: i64, message_id: i64) -> Result<(), String> {
     if chat_id == 0 || message_id <= 0 {

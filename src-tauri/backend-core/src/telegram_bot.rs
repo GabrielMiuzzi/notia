@@ -128,6 +128,41 @@ pub const CONFIRMATION_BUTTONS: [(&str, ConfirmationReply); 4] = [
 const CONFIRMATION_CHOICES: &str =
     "Elegí Confirmar, Confirmar todos (no te vuelvo a preguntar en este pedido), Proponer otra cosa o Cancelar.";
 
+/// What the person chose on a confirmation or a plan (`None`: nobody
+/// answered in time), as the line that replaces its choices.
+pub fn confirmation_outcome(reply: Option<ConfirmationReply>) -> &'static str {
+    match reply {
+        Some(ConfirmationReply::Confirm) => "Elegiste: Confirmar.",
+        Some(ConfirmationReply::ConfirmAll) => "Elegiste: Confirmar todos. No te vuelvo a preguntar en este pedido.",
+        Some(ConfirmationReply::Propose) => "Elegiste: Proponer otra cosa.",
+        Some(ConfirmationReply::Cancel) => "Elegiste: Cancelar. No se aplicaron cambios.",
+        None => "Venció sin respuesta. No se aplicaron cambios.",
+    }
+}
+
+/// Longest answer an answered question repeats.
+const MAX_ANSWER_ECHO_CHARS: usize = 200;
+
+/// The answer to a question of the agent (`None`: nobody answered in
+/// time), as the line under it.
+pub fn question_outcome(answer: Option<&str>) -> String {
+    match answer.map(str::trim) {
+        Some(answer) if answer.chars().count() > MAX_ANSWER_ECHO_CHARS => {
+            format!("Respuesta: {}…", answer.chars().take(MAX_ANSWER_ECHO_CHARS).collect::<String>())
+        }
+        Some(answer) => format!("Respuesta: {answer}"),
+        None => "La pregunta venció sin respuesta.".to_string(),
+    }
+}
+
+/// The last message of an answered confirmation, plan or question (HTML):
+/// its choices line gives way to `outcome`. It is sent without buttons.
+pub fn answered_prompt(html: &str, outcome: &str) -> String {
+    let body = html.trim_end();
+    let body = body.strip_suffix(CONFIRMATION_CHOICES).unwrap_or(body).trim_end();
+    format!("{body}\n\n<b>{}</b>", escape_telegram_html(outcome))
+}
+
 /// A typed 1-based number selects the same option shown as a button.
 pub fn resolve_choice_reply(value: &str, choices: &[String]) -> (String, Option<usize>) {
     let trimmed = value.trim();
@@ -300,6 +335,9 @@ pub fn tool_label(tool: &str) -> &'static str {
         "add_agent_thought" => "anotando un pensamiento",
         "add_agent_biography" => "sumando a tu biografía",
         "add_agent_talk" => "anotando cómo hablás",
+        "add_agent_person" => "anotando quién es quién",
+        "generate_image" => "generando la imagen",
+        "edit_image" => "editando la imagen",
         "list_gmail_messages" | "read_gmail_message" | "list_gmail_labels" => "revisando tu correo",
         "send_gmail_message" => "preparando el correo",
         "trash_gmail_messages" | "move_gmail_messages" | "mark_gmail_spam" | "mark_gmail_read" => "preparando el cambio en tu correo",
@@ -595,6 +633,32 @@ mod tests {
         assert_eq!(earlier.first(), Some(&"h2.jpg"));
         assert!(messages[0].attachments.is_empty() && messages[1].attachments.is_empty());
         assert_eq!(messages.last().expect("request").attachments, vec![photo("nueva.jpg")]);
+    }
+
+    #[test]
+    fn an_answered_prompt_shows_the_choice_instead_of_the_choices() {
+        let parts = plan_parts(&ExecutionPlan {
+            plan_id: "p".into(),
+            generation: 1,
+            title: "Plan".into(),
+            status: crate::interaction::PlanStatus::AwaitingApproval,
+            steps: vec![crate::interaction::PlanStep {
+                id: "a".into(),
+                label: "Mover <bancos>".into(),
+                operation_id: None,
+                status: crate::interaction::PlanStepStatus::Pending,
+            }],
+        });
+        let last = parts.last().expect("plan");
+        assert!(last.ends_with(CONFIRMATION_CHOICES));
+        let answered = answered_prompt(last, confirmation_outcome(Some(ConfirmationReply::ConfirmAll)));
+        assert!(answered.contains("1. Mover &lt;bancos&gt;") && !answered.contains("Elegí Confirmar"));
+        assert!(answered.ends_with("<b>Elegiste: Confirmar todos. No te vuelvo a preguntar en este pedido.</b>"));
+        assert!(answered_prompt(last, confirmation_outcome(None)).ends_with("<b>Venció sin respuesta. No se aplicaron cambios.</b>"));
+        // A question keeps its text and repeats the answer, escaped and short.
+        let question = answered_prompt("¿Qué carpeta?", &question_outcome(Some("Ideas & <b>")));
+        assert_eq!(question, "¿Qué carpeta?\n\n<b>Respuesta: Ideas &amp; &lt;b&gt;</b>");
+        assert_eq!(question_outcome(Some(&"x".repeat(300))).chars().count(), "Respuesta: ".len() + 201);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::host::{AppHandle, Emitter, Manager};
 
 use crate::backend::ai_settings::AiSettingsInput;
-use crate::backend::chat_history::{ChatRole, StoredChatAttachment, StoredChatDocument, StoredChatMessage};
+use crate::backend::chat_history::{ChatAttachmentKind, ChatRole, StoredChatAttachment, StoredChatDocument, StoredChatMessage};
 use crate::backend::chat_context::{self, ContextFile};
 use crate::backend::chat_history::ChatContextMode;
 use crate::backend::chat_agents::{self as agent_rules, ChatAgent};
@@ -774,6 +774,7 @@ impl TurnSetup {
             autonomous: false,
             scheduled_action: None,
             tool_areas: None,
+            thinking: None,
         })
     }
 }
@@ -874,14 +875,15 @@ fn run_agent_rounds(
             };
             outcome.changed |= response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
             let content = strip_speaker_name(response.response.markdown.trim(), &agent.name);
-            if content.is_empty() {
+            let images = generated_attachments(&identity.context.request_id);
+            if content.is_empty() && images.is_empty() {
                 emit(AgentPhase::Silent { run_request_id: run_id });
                 continue;
             }
             let message = StoredChatMessage {
                 role: ChatRole::Assistant,
                 content,
-                attachments: Vec::new(),
+                attachments: images,
                 agent: Some(agent.file_name.clone()),
             };
             conversation.push(message.clone());
@@ -909,6 +911,59 @@ fn strip_speaker_name(content: &str, name: &str) -> String {
 
 fn notia_reply(content: String) -> StoredChatMessage {
     StoredChatMessage { role: ChatRole::Assistant, content, attachments: Vec::new(), agent: None }
+}
+
+/// The reply to a `/image` message: the image (an edit of the first image
+/// the person attached, or a new one) with a short text, or why it could
+/// not be made. Cancelling the turn stops it.
+fn image_command_reply(
+    app: &AppHandle,
+    library_id: &str,
+    request_id: &str,
+    command: Result<notia_backend_core::image_generation::ImageCommand, BackendError>,
+    attachments: &[StoredChatAttachment],
+) -> StoredChatMessage {
+    let command = match command {
+        Ok(command) => command,
+        Err(error) => return notia_reply(error.message),
+    };
+    let reference = attachments
+        .iter()
+        .find(|attachment| attachment.kind == ChatAttachmentKind::Image && !attachment.base64.is_empty())
+        .map(|attachment| (attachment.name.clone(), attachment.base64.clone()));
+    let control = notia_backend_core::RequestControl::new(None);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (watched_app, turn_id) = (app.clone(), request_id.to_string());
+    crate::image_generation::cancel_when(&control, std::sync::Arc::clone(&done), move || {
+        is_cancelled(&watched_app.state::<AiChatState>(), &turn_id)
+    });
+    let result = crate::image_generation::run_command(app, library_id, &control, request_id, &command, reference);
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut reply = notia_reply(match result {
+        Ok(text) => text,
+        Err(error) => error.message,
+    });
+    reply.attachments = generated_attachments(request_id);
+    reply
+}
+
+/// The images the agent made in `request_id`, as attachments of its reply:
+/// saved with it in the chat file, so the chat shows them and a later turn
+/// can edit them by their reference.
+fn generated_attachments(request_id: &str) -> Vec<StoredChatAttachment> {
+    crate::image_generation::take_generated(request_id)
+        .into_iter()
+        .map(|image| StoredChatAttachment {
+            name: image.name,
+            mime_type: "image/png".to_string(),
+            base64: image.base64,
+            additional_base64: Vec::new(),
+            kind: ChatAttachmentKind::Image,
+            extracted_text: None,
+            text_content: None,
+            page_count: None,
+        })
+        .collect()
 }
 
 /// The prompt file that answered a turn alone signs its reply, so the chat
@@ -1009,10 +1064,16 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
         attachments: payload.attachments.clone(),
         agent: None,
     };
-    let result: Result<TurnReplies, BackendError> = match payload.undo_operation_id.as_deref() {
-        Some(operation_id) => undo(app, &state, &runtime, operation_id)
+    // `/image` goes to the image model as written, without the agents.
+    let image_command = match payload.mode {
+        TurnMode::Chat => notia_backend_core::image_generation::parse_image_command(&message),
+        TurnMode::Published | TurnMode::Meeting => None,
+    };
+    let result: Result<TurnReplies, BackendError> = match (payload.undo_operation_id.as_deref(), image_command) {
+        (Some(operation_id), _) => undo(app, &state, &runtime, operation_id)
             .map(|path| (vec![notia_reply(chat_turn::undo_answer(path.as_deref()))], true, None)),
-        None => {
+        (None, Some(command)) => Ok((vec![image_command_reply(app, &library_id, &payload.request_id, command, &payload.attachments)], false, None)),
+        (None, None) => {
             let library_context = library_context(app, &library_id, payload.mode, &payload.scope, &payload.selection);
             let setup = TurnSetup {
                 library_id: library_id.clone(),
@@ -1031,6 +1092,7 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
                     let changed = response.changed || response.tool_results.iter().any(|result| result.ok && result.changed);
                     let mut reply = notia_reply(response.response.markdown);
                     reply.agent = prompt_agent(payload.prompt_name.as_deref());
+                    reply.attachments = generated_attachments(&payload.request_id);
                     (reply, changed)
                 });
                 single_agent_replies(take_exchanges(&state, &payload.request_id), response, worked, chat.is_some())

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 use crate::host::plugin::PluginHandle;
@@ -13,6 +13,9 @@ use crate::host::{
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
 pub const CURRENT_SCHEMA_VERSION: i64 = 31;
+/// A client's copy that never got its host's database.
+pub(crate) const COPY_WITHOUT_DATABASE: &str =
+    "La copia de este equipo no tiene la base de datos de la biblioteca: conectate al host para completarla.";
 
 const DEFAULT_EXPENSE_CATEGORIES: [(&str, &str, &str); 10] = [
     (
@@ -110,6 +113,28 @@ pub fn open_mobile_library_connection(
     app: &crate::host::AppHandle,
     directory_uri: &str,
 ) -> Result<Connection, String> {
+    let path = prepare_mobile_database(app, directory_uri)?;
+    // Offline, a client works on its copy of the host's database.
+    if crate::host_mirror::database_uri_is_offline_copy(directory_uri) {
+        return open_copy_database_file(Path::new(&path));
+    }
+    let connection = Connection::open(path)
+        .map_err(|error| format!("No se pudo abrir la copia SQLite Android: {error}"))?;
+    migrate(&connection).map_err(|error| format!("No se pudo migrar SQLite Android: {error}"))?;
+    Ok(connection)
+}
+
+/// Opens the database of a client's copy kept in the SAF folder `tree_uri`.
+#[cfg(target_os = "android")]
+pub(crate) fn open_mobile_copy_database(app: &crate::host::AppHandle, tree_uri: &str) -> Result<Connection, String> {
+    let path = prepare_mobile_database(app, tree_uri)?;
+    open_copy_database_file(Path::new(&path))
+}
+
+/// Copies the SAF database of `directory_uri` into the app cache (once) and
+/// returns where the copy is.
+#[cfg(target_os = "android")]
+fn prepare_mobile_database(app: &crate::host::AppHandle, directory_uri: &str) -> Result<String, String> {
     let state = app
         .try_state::<LibraryDatabaseState>()
         .ok_or_else(|| "El adaptador SQLite Android no está disponible.".to_string())?;
@@ -131,20 +156,10 @@ pub fn open_mobile_library_connection(
             "No se pudo acceder a SQLite. Revisá el permiso de la carpeta de la biblioteca.".into()
         }));
     }
-    let path = result
+    result
         .database_path
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "El adaptador Android no devolvió la copia SQLite temporal.".to_string())?;
-    // Offline, a client's copy only reads the snapshot of its host.
-    if crate::host_mirror::database_uri_is_read_only(directory_uri) {
-        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("No se pudo abrir la copia SQLite Android: {error}"))?;
-        return check_copy_snapshot(connection);
-    }
-    let connection = Connection::open(path)
-        .map_err(|error| format!("No se pudo abrir la copia SQLite Android: {error}"))?;
-    migrate(&connection).map_err(|error| format!("No se pudo migrar SQLite Android: {error}"))?;
-    Ok(connection)
+        .ok_or_else(|| "El adaptador Android no devolvió la copia SQLite temporal.".to_string())
 }
 
 /// Drops the temporary SQLite copies, so the next use copies the library's
@@ -169,10 +184,6 @@ pub fn sync_mobile_library_connection(
     app: &crate::host::AppHandle,
     directory_uri: &str,
 ) -> Result<(), String> {
-    // The snapshot of an offline copy is never written back.
-    if crate::host_mirror::database_uri_is_read_only(directory_uri) {
-        return Ok(());
-    }
     let state = app
         .try_state::<LibraryDatabaseState>()
         .ok_or_else(|| "El adaptador SQLite Android no está disponible.".to_string())?;
@@ -198,9 +209,25 @@ pub fn sync_mobile_library_connection(
     }
 }
 
-/// The snapshot of an offline copy must hold the library's tables: a
-/// missing one (the copy never got it) is created empty by the platform.
-#[cfg_attr(any(target_os = "ios"), allow(dead_code))]
+/// Opens the database of a client's copy at `path`, writable: offline the
+/// window works on it, and its changes reach the host row by row
+/// (`row_sync`) when the connection comes back.
+pub(crate) fn open_copy_database_file(path: &Path) -> Result<Connection, String> {
+    if !path.is_file() {
+        return Err(COPY_WITHOUT_DATABASE.to_string());
+    }
+    let connection = Connection::open(path).map_err(|error| format!("No se pudo abrir la copia de la base de datos: {error}"))?;
+    let connection = check_copy_snapshot(connection)?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| format!("No se pudo abrir la copia de la base de datos: {error}"))?;
+    migrate(&connection).map_err(|error| format!("No se pudo migrar la copia de la base de datos: {error}"))?;
+    Ok(connection)
+}
+
+/// The database of a copy must hold the library's tables before it is
+/// migrated: a missing one (the copy never got it) is created empty by the
+/// platform, and migrating it would look like a new library.
 fn check_copy_snapshot(connection: Connection) -> Result<Connection, String> {
     let has_users = connection
         .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_users'", [], |_| Ok(()))
@@ -210,7 +237,7 @@ fn check_copy_snapshot(connection: Connection) -> Result<Connection, String> {
     if has_users {
         Ok(connection)
     } else {
-        Err("La copia de este equipo no tiene la base de datos de la biblioteca: conectate al host para completarla.".to_string())
+        Err(COPY_WITHOUT_DATABASE.to_string())
     }
 }
 
@@ -1252,17 +1279,17 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
         return Ok(current_version.max(target));
     }
     ensure_finance_service_link_columns(connection)?;
+    // Which rows changed and when, for the copies of a host (`row_sync`).
+    crate::row_sync::ensure_tracking(connection)?;
     Ok(current_version.max(CURRENT_SCHEMA_VERSION))
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn open_library_connection(library_path: &str) -> Result<Connection, String> {
     let path = database_path(library_path)?;
-    // Offline, a client's copy only reads the snapshot of its host.
-    if crate::host_mirror::database_is_read_only(library_path) {
-        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("No se pudo abrir SQLite: {error}"))?;
-        return check_copy_snapshot(connection);
+    // Offline, a client works on its copy of the host's database.
+    if crate::host_mirror::database_is_offline_copy(library_path) {
+        return open_copy_database_file(&path);
     }
     let connection =
         Connection::open(path).map_err(|error| format!("No se pudo abrir SQLite: {error}"))?;
@@ -1276,7 +1303,7 @@ pub(crate) fn open_existing_library_connection(library_root: &Path) -> Result<Co
     if !path.is_file() {
         return Err("La base de datos de la biblioteca no existe.".to_string());
     }
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("No se pudo abrir SQLite: {error}"))
 }
 
@@ -1287,10 +1314,6 @@ pub(crate) fn open_existing_library_connection_rw(
     let path = library_root.join(NOTIA_DIRECTORY).join(DATABASE_FILE_NAME);
     if !path.is_file() {
         return Err("La base de datos de la biblioteca no existe.".to_string());
-    }
-    if crate::host_mirror::database_is_read_only(&library_root.to_string_lossy()) {
-        return Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("No se pudo abrir SQLite: {error}"));
     }
     Connection::open(path).map_err(|error| format!("No se pudo abrir SQLite: {error}"))
 }
@@ -1407,13 +1430,16 @@ pub fn initialize_library_database(
         if let Err(error) = fs::create_dir_all(parent) {
             return failure(format!("No se pudo crear .notia: {error}"));
         }
-        // The offline copy of a client keeps its host's snapshot as is.
-        if crate::host_mirror::database_is_read_only(&payload.library_path) && path.is_file() {
-            return InitializeLibraryDatabaseResult {
-                ok: true,
-                database_path: Some(path.to_string_lossy().into_owned()),
-                schema_version: None,
-                error: None,
+        // The offline copy of a client opens only with its host's tables.
+        if crate::host_mirror::database_is_offline_copy(&payload.library_path) {
+            return match open_copy_database_file(&path) {
+                Ok(_) => InitializeLibraryDatabaseResult {
+                    ok: true,
+                    database_path: Some(path.to_string_lossy().into_owned()),
+                    schema_version: Some(CURRENT_SCHEMA_VERSION),
+                    error: None,
+                },
+                Err(error) => failure(error),
             };
         }
         let connection = match Connection::open(&path) {
@@ -1967,5 +1993,22 @@ mod tests {
         let copy = Connection::open_in_memory().expect("in-memory SQLite");
         copy.execute_batch("CREATE TABLE library_users (id TEXT)").expect("table");
         assert!(super::check_copy_snapshot(copy).is_ok());
+
+        // A copy opens writable, and an empty file is never migrated into
+        // a new library.
+        let folder = std::env::temp_dir().join(format!("notia-copy-db-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).expect("folder");
+        let path = folder.join("notia.db");
+        assert!(super::open_copy_database_file(&path).is_err(), "no file");
+        std::fs::write(&path, b"").expect("empty file");
+        assert!(super::open_copy_database_file(&path).is_err(), "an empty file");
+        std::fs::remove_file(&path).expect("remove");
+        migrate(&Connection::open(&path).expect("host database")).expect("host schema");
+        let copy = super::open_copy_database_file(&path).expect("copy");
+        copy.execute("INSERT INTO agenda_notes (id, owner_user_id, text, created_at, updated_at) VALUES ('n', 'user-owner', 'sin conexión', 'x', 'x')", [])
+            .expect("offline write");
+        assert!(crate::row_sync::has_pending(&copy).expect("pending"));
+        drop(copy);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

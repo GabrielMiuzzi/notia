@@ -6,12 +6,16 @@
 //!   (`sync_in_background`), with the rules of `mirror_sync` and the
 //!   commands of `host_sync`. The window never waits for it.
 //! - **Offline**, the window works on the copy as a library of this device
-//!   (`enter_offline_copy`): notes and files can change, the database is a
-//!   read-only snapshot, and the AI and speech recognition are local. A
-//!   ready copy opens at once when the host does not answer (`copy_ready`).
+//!   (`enter_offline_copy`): notes, files and the database can change, and
+//!   the AI and speech recognition are local. A ready copy opens at once
+//!   when the host does not answer (`copy_ready`).
 //! - **Back online**, the next sync reconciles both sides: the last
-//!   modified file wins, whatever device changed it. What changed on this
+//!   modified file wins, and in the database the last change of each row
+//!   wins (`row_sync`), whatever device made it. What changed on this
 //!   device travels first, so the host shows it as soon as possible.
+//!
+//! The database is copied whole once (a snapshot of the host); after that
+//! only the rows that changed travel, both ways, on every sync.
 //!
 //! Where the copy lives (`CopyStore`): on Windows and Linux in the app data
 //! folder (`mirror/<library>/<name>`); on Android in a folder the person
@@ -40,9 +44,10 @@ use crate::backend::mirror_sync::{plan, FileStamp, SyncAction, SyncBase, COPY_MA
 use crate::backend::{BackendError, BackendErrorCode};
 use crate::host::{AppHandle, Emitter, Manager};
 use crate::host_sync::{
-    delete_synced, synced_files, synced_target, write_synced, DatabaseSnapshot, SyncFile, SyncManifest,
-    MAX_SYNC_UPLOAD_BYTES,
+    delete_synced, synced_files, synced_target, write_synced, DatabaseChanges, DatabaseSnapshot, SyncFile, SyncManifest,
+    MAX_ROW_CHANGES, MAX_SYNC_UPLOAD_BYTES,
 };
+use crate::row_sync::ApplyReport;
 
 /// Event of the interface after each sync of the copy.
 pub(crate) const COPY_EVENT: &str = "notia:copy-sync";
@@ -56,11 +61,6 @@ const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 /// A sync with at least this many files keeps an Android process running
 /// with the window hidden; shorter ones end in a few seconds.
 const LONG_SYNC_FILES: usize = 20;
-/// How often a changed database of the host is copied again. The copy only
-/// serves offline, and the host's database changes every minute (its
-/// scheduled actions renew a lease): copying it on every change moved the
-/// whole file over the network and, on Android, through SAF.
-const DATABASE_REFRESH: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[derive(Default)]
 pub(crate) struct MirrorState {
@@ -69,8 +69,6 @@ pub(crate) struct MirrorState {
     background: AtomicBool,
     /// The running sync moves files or the database (not only compares).
     transferring: AtomicBool,
-    /// When this run last copied the host's database.
-    database_copied_at: Mutex<Option<std::time::Instant>>,
     /// Files done and to do of the running sync.
     progress: Mutex<Option<(usize, usize)>>,
     offline: AtomicBool,
@@ -81,32 +79,32 @@ pub(crate) struct MirrorState {
     last: Mutex<Option<CopyStatus>>,
 }
 
-/// The copy the window works on offline: its database opens read-only
-/// (`database`).
-enum ReadOnlyCopy {
+/// The copy the window works on offline: its database opens only when it
+/// holds the host's tables (`database::open_copy_database_file`).
+enum CopyLocation {
     #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     Folder(PathBuf),
     #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
     Saf(String),
 }
 
-static READ_ONLY_COPY: Mutex<Option<ReadOnlyCopy>> = Mutex::new(None);
+static OFFLINE_COPY: Mutex<Option<CopyLocation>> = Mutex::new(None);
 
-/// Whether the database of the library at `library_path` is the snapshot
-/// of an offline copy (Windows and Linux).
+/// Whether the library at `library_path` is the copy the window works on
+/// offline (Windows and Linux).
 #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
-pub(crate) fn database_is_read_only(library_path: &str) -> bool {
-    match READ_ONLY_COPY.lock().ok().as_deref() {
-        Some(Some(ReadOnlyCopy::Folder(root))) => std::fs::canonicalize(library_path).is_ok_and(|path| &path == root),
+pub(crate) fn database_is_offline_copy(library_path: &str) -> bool {
+    match OFFLINE_COPY.lock().ok().as_deref() {
+        Some(Some(CopyLocation::Folder(root))) => std::fs::canonicalize(library_path).is_ok_and(|path| &path == root),
         _ => false,
     }
 }
 
-/// Whether the database of the SAF library `tree_uri` is the snapshot of an
-/// offline copy (Android).
+/// Whether the SAF library `tree_uri` is the copy the window works on
+/// offline (Android).
 #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
-pub(crate) fn database_uri_is_read_only(tree_uri: &str) -> bool {
-    matches!(READ_ONLY_COPY.lock().ok().as_deref(), Some(Some(ReadOnlyCopy::Saf(uri))) if uri == tree_uri)
+pub(crate) fn database_uri_is_offline_copy(tree_uri: &str) -> bool {
+    matches!(OFFLINE_COPY.lock().ok().as_deref(), Some(Some(CopyLocation::Saf(uri))) if uri == tree_uri)
 }
 
 /// Record of the copy of one library of the host.
@@ -123,6 +121,12 @@ struct CopyRecord {
     files: BTreeMap<String, SyncBase>,
     #[serde(default)]
     database_ms: Option<i64>,
+    /// The host database the copy follows, and the last of its row changes
+    /// the copy took (`row_sync`).
+    #[serde(default)]
+    database_id: Option<String>,
+    #[serde(default)]
+    database_seq: i64,
     /// The library of this device the copy opens as offline.
     #[serde(default)]
     local_library_id: Option<String>,
@@ -152,6 +156,10 @@ pub(crate) struct CopyStatus {
     downloaded: usize,
     uploaded: usize,
     deleted: usize,
+    /// Rows of the database this device changed that the host took, and
+    /// rows the host changed that the copy took.
+    rows_uploaded: usize,
+    rows_downloaded: usize,
     /// Files that did not travel (too large, or the host did not give them).
     skipped: Vec<String>,
     at_ms: i64,
@@ -363,6 +371,23 @@ impl CopyStore {
         }
     }
 
+    /// The copy's database, writable, when it holds the host's tables.
+    fn open_database(&self, app: &AppHandle) -> Result<rusqlite::Connection, String> {
+        match self {
+            Self::Folder(root) => crate::database::open_copy_database_file(&root.join(".notia").join("notia.db")),
+            Self::Saf { tree_uri, .. } => saf::open_database(app, tree_uri),
+        }
+    }
+
+    /// Keeps what was written in the copy's database (Android writes its
+    /// working copy back to the folder).
+    fn save_database(&self, app: &AppHandle) -> Result<(), BackendError> {
+        match self {
+            Self::Folder(_) => Ok(()),
+            Self::Saf { tree_uri, .. } => saf::save_database(app, tree_uri),
+        }
+    }
+
     /// The host library the copy belongs to, when marked.
     fn mark(&self, app: &AppHandle) -> Option<String> {
         let bytes = match self {
@@ -504,16 +529,12 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
         .filter(|(_, action)| *action != SyncAction::Keep)
         .collect();
     plans.sort_by_key(|(_, action)| !is_outgoing(*action));
-    let database_due = record.database_ms.is_none()
-        || state
-            .database_copied_at
-            .lock()
-            .ok()
-            .and_then(|copied| *copied)
-            .is_none_or(|copied| copied.elapsed() >= DATABASE_REFRESH);
-    let database_changed = database_due && manifest.database.map(|database| database.modified_ms) != record.database_ms;
-    let first_database = record.database_ms.is_none() && database_changed;
-    if !plans.is_empty() || database_changed {
+    let host_database = manifest.database.is_some();
+    // A copy without the database, or from before the rows travelled,
+    // takes a whole snapshot.
+    let snapshot_due = host_database && (record.database_ms.is_none() || record.database_id.is_none());
+    let first_database = snapshot_due && record.database_ms.is_none();
+    if !plans.is_empty() || snapshot_due {
         state.transferring.store(true, Ordering::SeqCst);
         if let Ok(mut progress) = state.progress.lock() {
             *progress = Some((0, plans.len()));
@@ -541,18 +562,17 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
         saved_at: std::time::Instant::now(),
     };
     pass.run(outgoing).await;
-    if pass.failure.is_none() && database_changed {
-        match copy_database(app, &store, &payload).await {
-            Ok(modified_ms) => {
-                pass.record.database_ms = modified_ms;
-                if let Ok(mut copied) = state.database_copied_at.lock() {
-                    *copied = Some(std::time::Instant::now());
-                }
-                // With the database recorded, the copy opens offline even if
-                // the rest of this sync is cut short.
-                pass.save();
+    if pass.failure.is_none() && host_database {
+        match sync_database(app, &store, library_id, pass.record, &mut pass.status).await {
+            // With the database recorded, the copy opens offline even if
+            // the rest of this sync is cut short.
+            Ok(()) => pass.save(),
+            Err(error) if connection_lost(&error) => pass.failure = Some(error),
+            // The files still travel; the database is tried again next time.
+            Err(error) => {
+                log::error!("[notia:copy] the database of the copy did not sync: {}", error.message);
+                pass.status.error = Some(error.message);
             }
-            Err(error) => pass.failure = Some(error),
         }
     }
     pass.run(incoming).await;
@@ -773,16 +793,122 @@ async fn apply(
     }
 }
 
-async fn copy_database(app: &AppHandle, store: &CopyStore, payload: &serde_json::Value) -> Result<Option<i64>, BackendError> {
-    let snapshot: Option<DatabaseSnapshot> = crate::host_client::call_host(app, "host_sync_database", payload.clone()).await?;
+// ---------- The database ----------
+
+fn copy_database_error() -> BackendError {
+    storage("No se pudo leer o escribir la base de datos de la copia.")
+}
+
+/// Brings the copy's database in line with the host's (`row_sync`): what
+/// this device changed goes first, then what the host changed after the
+/// last change the copy took. A copy without the database, or following
+/// another one, takes a whole snapshot after sending its own changes.
+async fn sync_database(
+    app: &AppHandle,
+    store: &CopyStore,
+    library_id: &str,
+    record: &mut CopyRecord,
+    status: &mut CopyStatus,
+) -> Result<(), BackendError> {
+    if record.database_ms.is_some() && record.database_id.is_some() {
+        match store.open_database(app) {
+            Ok(connection) => {
+                let connection = Mutex::new(connection);
+                let mut changed = false;
+                let exchanged = exchange_rows(app, &connection, library_id, record, status, &mut changed).await;
+                drop(connection);
+                // Android keeps the database in the copy's folder.
+                let saved = if changed { store.save_database(app) } else { Ok(()) };
+                let next = exchanged?;
+                saved?;
+                // The cursor moves once the rows are saved.
+                if let Some(seq) = next {
+                    record.database_seq = seq;
+                    return Ok(());
+                }
+            }
+            // A database that never arrived is copied whole; any other
+            // failure keeps the copy as it is.
+            Err(message) if message == crate::database::COPY_WITHOUT_DATABASE => {}
+            Err(message) => {
+                log::error!("[notia:copy] the database of the copy did not open: {message}");
+                return Err(copy_database_error());
+            }
+        }
+    }
+    copy_database(app, store, library_id, record).await
+}
+
+/// Sends the rows this device changed, then takes the host's. Returns the
+/// last change of the host the copy now has, or `None` when the copy must
+/// take a snapshot (the host's database is another one). `changed` says
+/// whether the copy's database was written.
+async fn exchange_rows(
+    app: &AppHandle,
+    connection: &Mutex<rusqlite::Connection>,
+    library_id: &str,
+    record: &CopyRecord,
+    status: &mut CopyStatus,
+    changed: &mut bool,
+) -> Result<Option<i64>, BackendError> {
+    // The lock is never held while waiting for the host.
+    let rows = |work: &mut dyn FnMut(&rusqlite::Connection) -> rusqlite::Result<()>| -> Result<(), BackendError> {
+        let connection = connection.lock().map_err(|_| copy_database_error())?;
+        work(&connection).map_err(|_| copy_database_error())
+    };
+    loop {
+        let mut pending = Vec::new();
+        rows(&mut |connection| {
+            pending = crate::row_sync::pending_changes(connection, MAX_ROW_CHANGES)?;
+            Ok(())
+        })?;
+        if pending.is_empty() {
+            break;
+        }
+        let payload = json!({ "payload": { "libraryId": library_id, "changes": &pending } });
+        let report: ApplyReport = crate::host_client::call_host(app, "host_sync_database_push", payload).await?;
+        rows(&mut |connection| crate::row_sync::mark_sent(connection, &pending))?;
+        *changed = true;
+        status.rows_uploaded += report.applied;
+    }
+    let mut since = record.database_seq;
+    loop {
+        let payload = json!({ "payload": { "libraryId": library_id, "since": since, "databaseId": record.database_id } });
+        let reply: DatabaseChanges = crate::host_client::call_host(app, "host_sync_database_changes", payload).await?;
+        if reply.reset {
+            return Ok(None);
+        }
+        if !reply.batch.changes.is_empty() {
+            let mut report = ApplyReport::default();
+            rows(&mut |connection| {
+                report = crate::row_sync::apply_changes(connection, &reply.batch.changes)?;
+                Ok(())
+            })?;
+            *changed |= report.applied > 0;
+            status.rows_downloaded += report.applied;
+        }
+        since = reply.batch.last_seq;
+        if !reply.batch.more {
+            return Ok(Some(since));
+        }
+    }
+}
+
+/// Replaces the copy's database with a snapshot of the host's.
+async fn copy_database(app: &AppHandle, store: &CopyStore, library_id: &str, record: &mut CopyRecord) -> Result<(), BackendError> {
+    let payload = json!({ "payload": { "libraryId": library_id } });
+    let snapshot: Option<DatabaseSnapshot> = crate::host_client::call_host(app, "host_sync_database", payload).await?;
     let Some(snapshot) = snapshot else {
-        return Ok(None);
+        return Ok(());
     };
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(snapshot.content_base64.as_bytes())
         .map_err(|_| storage("La copia de la base de datos no es válida."))?;
     store.write_database(app, &bytes)?;
-    Ok(Some(snapshot.modified_ms))
+    record.database_ms = Some(snapshot.modified_ms);
+    record.database_id = snapshot.database_id;
+    record.database_seq = snapshot.seq;
+    Ok(())
 }
 
 // ---------- The SAF folder of the copy (Android) ----------
@@ -893,6 +1019,14 @@ mod saf {
         crate::database::discard_mobile_database_copies(app);
     }
 
+    pub(super) fn open_database(app: &AppHandle, tree_uri: &str) -> Result<rusqlite::Connection, String> {
+        crate::database::open_mobile_copy_database(app, tree_uri)
+    }
+
+    pub(super) fn save_database(app: &AppHandle, tree_uri: &str) -> Result<(), BackendError> {
+        crate::database::sync_mobile_library_connection(app, tree_uri).map_err(failed)
+    }
+
     pub(super) fn changed(app: &AppHandle, tree_uri: &str) {
         picker::invalidate_tree_cache(picker_state(app), tree_uri);
         picker::mark_tree_mutated(picker_state(app), tree_uri);
@@ -958,6 +1092,14 @@ mod saf {
 
     pub(super) fn database_replaced(_app: &AppHandle) {}
 
+    pub(super) fn open_database(_app: &AppHandle, _tree_uri: &str) -> Result<rusqlite::Connection, String> {
+        Err(unavailable().message)
+    }
+
+    pub(super) fn save_database(_app: &AppHandle, _tree_uri: &str) -> Result<(), BackendError> {
+        Err(unavailable())
+    }
+
     pub(super) fn changed(_app: &AppHandle, _tree_uri: &str) {}
 }
 
@@ -1021,20 +1163,21 @@ pub(crate) fn enter_offline_copy(app: &AppHandle) -> Result<OfflineCopy, Backend
             true,
         ));
     }
-    let (library, read_only) = open_copy_library(app, &record).ok_or_else(never_synced)??;
+    let (library, location) = open_copy_library(app, &record).ok_or_else(never_synced)??;
     let previous = crate::library_catalog::select_library(app, Some(&library.id))?;
     if previous.as_deref() != Some(library.id.as_str()) {
         record.previous_selection = previous;
     }
     record.local_library_id = Some(library.id.clone());
     write_json(&record_file, &record)?;
-    if let Ok(mut copy) = READ_ONLY_COPY.lock() {
-        *copy = Some(read_only);
+    if let Ok(mut copy) = OFFLINE_COPY.lock() {
+        *copy = Some(location);
     }
     if let Some(state) = state(app) {
         state.offline.store(true, Ordering::SeqCst);
     }
     crate::client_status::refresh(app);
+    crate::host_client::announce_move(app);
     Ok(OfflineCopy { library_id: library.id, library_name: current.library_name })
 }
 
@@ -1044,10 +1187,10 @@ pub(crate) fn enter_offline_copy(app: &AppHandle) -> Result<OfflineCopy, Backend
 fn open_copy_library(
     app: &AppHandle,
     record: &CopyRecord,
-) -> Option<Result<(crate::library_catalog::CatalogLibrary, ReadOnlyCopy), BackendError>> {
+) -> Option<Result<(crate::library_catalog::CatalogLibrary, CopyLocation), BackendError>> {
     let folder = record.folder.clone().filter(|folder| folder.is_dir())?;
     Some(crate::library_catalog::add_desktop_library(app, &folder).map(|library| {
-        (library, ReadOnlyCopy::Folder(std::fs::canonicalize(&folder).unwrap_or(folder)))
+        (library, CopyLocation::Folder(std::fs::canonicalize(&folder).unwrap_or(folder)))
     }))
 }
 
@@ -1055,12 +1198,12 @@ fn open_copy_library(
 fn open_copy_library(
     app: &AppHandle,
     record: &CopyRecord,
-) -> Option<Result<(crate::library_catalog::CatalogLibrary, ReadOnlyCopy), BackendError>> {
+) -> Option<Result<(crate::library_catalog::CatalogLibrary, CopyLocation), BackendError>> {
     let folder = crate::connection::settings(app).copy_folder?;
     if record.folder_uri.as_deref() != Some(folder.uri.as_str()) || record.database_ms.is_none() && record.files.is_empty() {
         return None;
     }
-    Some(crate::library_catalog::add_android_library(app, &folder.uri).map(|library| (library, ReadOnlyCopy::Saf(folder.uri))))
+    Some(crate::library_catalog::add_android_library(app, &folder.uri).map(|library| (library, CopyLocation::Saf(folder.uri))))
 }
 
 /// The host answers again: the window goes back to it and the next sync
@@ -1074,10 +1217,11 @@ pub(crate) fn leave_offline_copy(app: &AppHandle) -> Result<(), BackendError> {
     }
     // What changed offline is found by listing the copy again.
     state.scanned.store(false, Ordering::SeqCst);
-    if let Ok(mut copy) = READ_ONLY_COPY.lock() {
+    if let Ok(mut copy) = OFFLINE_COPY.lock() {
         *copy = None;
     }
     crate::client_status::refresh(app);
+    crate::host_client::announce_move(app);
     let current: CurrentCopy = read_json(&directory(app)?.join(CURRENT_FILE));
     if current.library_id.is_empty() {
         return Ok(());
@@ -1193,6 +1337,42 @@ mod tests {
         crate::host::async_runtime::block_on(async { sync(&client).await.expect("conflict") });
         assert_eq!(std::fs::read_to_string(library.join("Notas/a.md")).expect("host a"), "copia más nueva");
 
+        // The database: rows travel both ways. Offline each side adds a
+        // note and both change the shared one; the newest change wins.
+        let host_db = crate::database::open_library_connection(&library.to_string_lossy()).expect("host database");
+        let copy_db = crate::database::open_copy_database_file(&copy.join(".notia/notia.db")).expect("copy database");
+        let note = "INSERT INTO agenda_notes (id, owner_user_id, text, created_at, updated_at) VALUES (?1, 'user-owner', ?2, 'x', 'x')";
+        let text = |db: &rusqlite::Connection, id: &str| -> Option<String> {
+            db.query_row("SELECT text FROM agenda_notes WHERE id = ?1", [id], |row| row.get(0)).ok()
+        };
+        host_db.execute(note, ["compartida", "original"]).expect("shared note");
+        crate::host::async_runtime::block_on(async {
+            let status = sync(&client).await.expect("rows down");
+            assert!(status.rows_downloaded >= 1, "{status:?}");
+        });
+        assert_eq!(text(&copy_db, "compartida").as_deref(), Some("original"));
+        copy_db.execute(note, ["de-la-copia", "sin conexión"]).expect("copy note");
+        host_db.execute(note, ["del-host", "en el host"]).expect("host note");
+        copy_db.execute("UPDATE agenda_notes SET text = 'copia más nueva' WHERE id = 'compartida'", []).expect("copy edit");
+        host_db.execute("UPDATE agenda_notes SET text = 'host anterior' WHERE id = 'compartida'", []).expect("host edit");
+        let at = |db: &rusqlite::Connection, ms: i64| {
+            db.execute("UPDATE notia_row_changes SET changed_ms = ?1 WHERE table_name = 'agenda_notes' AND row_key = json_array('compartida')", [ms])
+                .expect("time");
+        };
+        at(&copy_db, base_ms + 2_000);
+        at(&host_db, base_ms + 1_000);
+        crate::host::async_runtime::block_on(async {
+            let status = sync(&client).await.expect("rows both ways");
+            assert!(status.rows_uploaded == 2 && status.rows_downloaded >= 1, "{status:?}");
+        });
+        for db in [&host_db, &copy_db] {
+            assert_eq!(text(db, "compartida").as_deref(), Some("copia más nueva"));
+            assert_eq!(text(db, "de-la-copia").as_deref(), Some("sin conexión"));
+            assert_eq!(text(db, "del-host").as_deref(), Some("en el host"));
+        }
+        assert!(!crate::row_sync::has_pending(&copy_db).expect("pending"));
+        drop((host_db, copy_db));
+
         // The copy is marked with its library; another library's copy is refused.
         let mark = copy.join(".notia").join("notia-copy.json");
         assert!(std::fs::read_to_string(&mark).expect("mark").contains(&library_id));
@@ -1246,6 +1426,16 @@ mod tests {
         let signed_in = serde_json::to_value(crate::app_auth::app_auth_login(&client, login).expect("local sign-in")).expect("json");
         assert_eq!(signed_in["state"], "unlocked");
         assert!(crate::library_config::read_library_config(&client, &offline.library_id).is_ok());
+
+        // The copy's database takes changes offline; they wait for the host.
+        let record: CopyRecord = read_json(&record_path(&client, &library_id).expect("record"));
+        let folder = record.folder.expect("copy folder");
+        let database = crate::database::open_library_connection(&folder.to_string_lossy()).expect("copy database");
+        database
+            .execute("INSERT INTO agenda_notes (id, owner_user_id, text, created_at, updated_at) VALUES ('n', 'user-owner', 'sin host', 'x', 'x')", [])
+            .expect("offline write");
+        assert!(crate::row_sync::has_pending(&database).expect("pending"));
+        drop(database);
 
         leave_offline_copy(&client).expect("back");
         let _ = std::fs::remove_dir_all(&root);

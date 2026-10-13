@@ -1961,6 +1961,7 @@ mod tests {
             autonomous: false,
             scheduled_action: None,
             tool_areas: None,
+            thinking: None,
         }
     }
 

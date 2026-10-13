@@ -1,7 +1,7 @@
 //! Content rules of the library's `.agent` workspace: the managed default
 //! rules block, rules added by the agent, persistent memories, the agent's
-//! own thoughts, the person's biography and way of talking, the
-//! confidential context of every agent file and prompt names. The adapter
+//! own thoughts, the person's biography and way of talking, the people
+//! they mention, the confidential context of every agent file and prompt names. The adapter
 //! only reads and writes the files.
 
 use crate::prompt::{strip_frontmatter, DEFAULT_AGENT_RULES};
@@ -24,6 +24,8 @@ pub const THOUGHTS_PATH: &str = ".agent/memory/thoughts.md";
 pub const BIOGRAPHY_PATH: &str = ".agent/memory/biography.md";
 /// How the person talks, so the agent talks alike.
 pub const TALK_PATH: &str = ".agent/memory/talk.md";
+/// Who is who among the people the person mentions.
+pub const PEOPLE_PATH: &str = ".agent/memory/people.md";
 pub const DEFAULT_PROMPT_FILE: &str = "default.md";
 pub const DEFAULT_PROMPT_PATH: &str = ".agent/promps/default.md";
 pub const MAX_MEMORIES: usize = 1_000;
@@ -183,6 +185,45 @@ pub const TALK: AgentListFile = AgentListFile {
     target: ItemBudget { items: 40, chars: 6_000 },
     max_item_chars: 400,
 };
+
+/// The people the person mentions: one line per person, `Nombre — quién es`.
+pub const PEOPLE: AgentListFile = AgentListFile {
+    path: PEOPLE_PATH,
+    marker: "<!-- NOTIA_AGENT_PEOPLE_VERSION:1 -->",
+    limit: ItemBudget { items: 500, chars: 60_000 },
+    target: ItemBudget { items: 400, chars: 48_000 },
+    max_item_chars: 600,
+};
+/// Longest name of a person.
+pub const MAX_PERSON_NAME_CHARS: usize = 80;
+const PERSON_SEPARATOR: &str = " — ";
+
+/// The `Nombre — quién es` line of a person, with whitespace collapsed.
+/// `None` when a part is missing or it does not fit in `PEOPLE`.
+pub fn person_entry(name: &str, about: &str) -> Option<String> {
+    let collapse = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = collapse(name.trim().trim_end_matches([':', '-', '—']));
+    let about = collapse(about);
+    let entry = format!("{name}{PERSON_SEPARATOR}{about}");
+    let valid = !name.is_empty()
+        && !about.is_empty()
+        && name.chars().count() <= MAX_PERSON_NAME_CHARS
+        && entry.chars().count() <= PEOPLE.max_item_chars;
+    valid.then_some(entry)
+}
+
+/// A line of `people.md` in its canonical form: `Nombre — quién es`, also
+/// from `Nombre: quién es` or `Nombre - quién es`, with Markdown bold
+/// removed from the name. `None` when it does not name someone.
+pub fn parse_person_entry(line: &str) -> Option<String> {
+    let line = line.replace("**", "");
+    let line = list_item(&line);
+    let (index, separator) = [PERSON_SEPARATOR, " - ", ": "]
+        .into_iter()
+        .filter_map(|separator| line.find(separator).map(|index| (index, separator)))
+        .min_by_key(|(index, _)| *index)?;
+    person_entry(&line[..index], &line[index + separator.len()..])
+}
 
 const RULES_START: &str = "<!-- NOTIA_DEFAULT_RULES_START -->";
 const RULES_END: &str = "<!-- NOTIA_DEFAULT_RULES_END -->";
@@ -390,7 +431,7 @@ pub fn parse_memory_items(body: &str) -> Vec<String> {
 }
 
 /// Case-insensitive union keeping the latest spelling, in first-seen order.
-fn dedupe_items(items: impl IntoIterator<Item = String>) -> Vec<String> {
+pub fn dedupe_items(items: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut merged = Vec::<String>::new();
     for item in items.into_iter().map(|item| item.split_whitespace().collect::<Vec<_>>().join(" ")) {
         if item.is_empty() {
@@ -571,6 +612,26 @@ mod tests {
         assert!(TALK.max_item_chars <= MAX_RULE_CHARS);
         assert!(RULES_TARGET.items < RULES_LIMIT.items && RULES_TARGET.chars < RULES_LIMIT.chars);
         assert!(BIOGRAPHY_STORY_TARGET < BIOGRAPHY_STORY_LIMIT);
+    }
+
+    #[test]
+    fn people_are_one_line_per_person() {
+        assert_eq!(person_entry("  Ana  ", " su   hermana, vive en Salta. ").as_deref(), Some("Ana — su hermana, vive en Salta."));
+        assert_eq!(person_entry("Ana", " "), None);
+        assert_eq!(person_entry(" ", "su hermana"), None);
+        assert_eq!(person_entry(&"x".repeat(MAX_PERSON_NAME_CHARS + 1), "alguien"), None);
+        assert_eq!(person_entry("Ana", &"x".repeat(PEOPLE.max_item_chars)), None);
+
+        assert_eq!(parse_person_entry("- **Ana**: su hermana - vive en Salta").as_deref(), Some("Ana — su hermana - vive en Salta"));
+        assert_eq!(parse_person_entry("* Juan Pérez - jefe en Acme: le reporta").as_deref(), Some("Juan Pérez — jefe en Acme: le reporta"));
+        assert_eq!(parse_person_entry("- Ana — su hermana").as_deref(), Some("Ana — su hermana"));
+        assert_eq!(parse_person_entry("Ana"), None);
+
+        let rendered = PEOPLE.render(&["Ana — su hermana".into(), "ana — su hermana".into()]);
+        assert!(rendered.starts_with("<!-- NOTIA_AGENT_PEOPLE_VERSION:1 -->"));
+        assert_eq!(parse_memory_items(&rendered), vec!["ana — su hermana".to_string()]);
+        assert!(PEOPLE.target.items < PEOPLE.limit.items && PEOPLE.target.chars < PEOPLE.limit.chars);
+        assert!(PEOPLE.max_item_chars <= MAX_RULE_CHARS);
     }
 
     #[test]

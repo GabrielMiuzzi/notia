@@ -40,6 +40,7 @@ mod connection;
 mod host_client;
 mod host_mirror;
 mod host_sync;
+mod row_sync;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod host_server;
 mod config_vault;
@@ -83,6 +84,7 @@ mod mermaid_editor;
 mod meeting_media;
 mod home;
 mod weather;
+mod image_generation;
 mod recent_documents;
 mod user_auth;
 

@@ -61,6 +61,21 @@ function ClientScreen({ library, children }: { library?: string | null; children
   )
 }
 
+/**
+ * How the link is, on Windows and Linux: a small notice in a corner, with
+ * the theme tokens of the app (it is drawn outside the app). Android shows
+ * it in its fixed notification instead (`statusInNotification`).
+ */
+function ClientNotice({ tone, role, children }: { tone?: 'online'; role: 'status' | 'alert'; children: ReactNode }) {
+  return (
+    <div className={`notia-app-shell notia-client-notice ${prefersLightTheme() ? 'notia-theme-light' : 'notia-theme-dark'}`}>
+      <div className="notia-remote-banner notia-client-banner" data-tone={tone} role={role}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 /** The host does not answer: retry, point to another host or use this device. */
 function OfflineScreen({ connection, message, onRetry }: { connection: ConnectionView; message: string; onRetry: () => void }) {
   const [address, setAddress] = useState(connection.hostAddress)
@@ -168,7 +183,7 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
     })
   }, [check])
 
-  // While the app is open: a banner when the host stops answering, and the
+  // While the app is open: where the backend says the window goes, and the
   // sign-in window again when the host ends the session.
   useEffect(() => {
     let unsubscribe: (() => void) | null = null
@@ -188,8 +203,15 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
     }
   }, [])
 
+  // On the host: when it has not answered for a while, the window reopens
+  // and `openClient` opens the copy (the backend decides when).
+  const toCopy = stage.kind === 'ready' && link.moveTo === 'copy'
+  useEffect(() => {
+    if (toCopy) window.location.reload()
+  }, [toCopy])
+
   // Working on the copy: once the host answers again, back to it.
-  const hostBack = stage.kind === 'copy' && link.state === 'online'
+  const hostBack = stage.kind === 'copy' && link.moveTo === 'host'
   useEffect(() => {
     if (!hostBack) {
       setReturnIn(null)
@@ -210,19 +232,23 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
     if (returnIn === 0) returnToHost()
   }, [returnIn, returnToHost])
 
+  const notices = !connection.statusInNotification
+
   if (stage.kind === 'copy') {
     return (
       <>
-        <div className="notia-remote-banner notia-client-banner" data-tone={hostBack ? 'online' : undefined} role="status">
-          {hostBack ? (
-            <>
-              <span>El host volvió a responder. Volviendo en {returnIn ?? RETURN_DELAY_SECONDS} s; la copia se sincroniza en segundo plano.</span>
-              <button type="button" className="notia-client-banner-action" onClick={returnToHost}>Volver ahora</button>
-            </>
-          ) : (
-            <span>Sin conexión con el host: trabajás con la copia local. La base de datos es de solo lectura.</span>
-          )}
-        </div>
+        {notices ? (
+          <ClientNotice tone={hostBack ? 'online' : undefined} role="status">
+            {hostBack ? (
+              <>
+                <span>El host volvió a responder. Volviendo en {returnIn ?? RETURN_DELAY_SECONDS} s; los cambios se concilian en segundo plano.</span>
+                <button type="button" className="notia-client-banner-action" onClick={returnToHost}>Volver ahora</button>
+              </>
+            ) : (
+              <span>Sin conexión con el host: trabajás con la copia local. Los cambios se concilian cuando vuelva.</span>
+            )}
+          </ClientNotice>
+        ) : null}
         <Suspense fallback={<ClientScreen><p className="notia-login-text" role="status">Cargando Notia…</p></ClientScreen>}>
           <App />
         </Suspense>
@@ -233,13 +259,13 @@ export function ClientApp({ initial }: { initial: ConnectionView }) {
   if (stage.kind === 'ready') {
     return (
       <>
-        {link.state === 'offline' ? (
-          <div className="notia-remote-banner notia-client-banner" role="alert">
+        {notices && link.state === 'offline' ? (
+          <ClientNotice role="alert">
             <span>{link.message ?? 'Sin conexión con el host. Reintentando…'}</span>
             {connection.clientKind === 'copy' && connection.canKeepCopy ? (
               <button type="button" className="notia-client-banner-action" onClick={() => window.location.reload()}>Usar la copia local</button>
             ) : null}
-          </div>
+          </ClientNotice>
         ) : null}
         <Suspense fallback={<ClientScreen><p className="notia-login-text" role="status">Cargando Notia…</p></ClientScreen>}>
           <App />

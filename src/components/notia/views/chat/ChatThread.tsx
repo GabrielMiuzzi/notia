@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Bot, Check, Circle, Copy, Files, LoaderCircle, OctagonX, Sparkles, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
-import type { StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
+import type { StoredChatAttachment, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import { agentToolLabel } from '../../../../services/ai/agentToolLabels'
 import type { MutationPreview } from '../../../../types/ai/agentContracts'
@@ -69,6 +69,13 @@ const COPY_FEEDBACK_MS = 1_600
 const NO_AGENT_LOOKS: Record<string, ChatAgentLook> = {}
 
 /** The agent that wrote a message, or `null` for Notia and the person. */
+const SHOWN_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+/** Images the message shows inline: the person's photos and the ones the agent made. */
+function isShownImage(attachment: StoredChatAttachment): boolean {
+  return attachment.kind === 'image' && Boolean(attachment.base64) && SHOWN_IMAGE_TYPES.has(attachment.mimeType)
+}
+
 function agentLookOf(fileName: string | undefined, looks: Record<string, ChatAgentLook>): ChatAgentLook | null {
   if (!fileName) return null
   return looks[fileName] ?? { name: fileName.replace(/\.md$/i, ''), initials: fileName.slice(0, 2).toUpperCase(), colorIndex: 0 }
@@ -266,10 +273,22 @@ function ChatThreadComponent({
                 <span className="notia-chat-message-role">
                   {message.role === 'assistant' ? agent?.name ?? 'Notia' : 'Vos'}
                 </span>
-                {message.attachments?.length ? (
+                {message.attachments?.some((attachment) => !isShownImage(attachment)) ? (
                   <div className="notia-chat-message-attachments" role="status" aria-label="Archivos adjuntos conservados en este mensaje">
                     <Files size={14} />
-                    <span>{message.attachments.map((attachment) => attachment.name).join(', ')}</span>
+                    <span>{message.attachments.filter((attachment) => !isShownImage(attachment)).map((attachment) => attachment.name).join(', ')}</span>
+                  </div>
+                ) : null}
+                {message.attachments?.some(isShownImage) ? (
+                  <div className="notia-chat-message-images">
+                    {message.attachments.filter(isShownImage).map((attachment, imageIndex) => (
+                      <figure key={`${attachment.name}-${imageIndex}`} className="notia-chat-message-image">
+                        <a href={`data:${attachment.mimeType};base64,${attachment.base64}`} download={attachment.name} title={`Guardar ${attachment.name}`}>
+                          <img src={`data:${attachment.mimeType};base64,${attachment.base64}`} alt={attachment.name} loading="lazy" />
+                        </a>
+                        <figcaption>{attachment.name}</figcaption>
+                      </figure>
+                    ))}
                   </div>
                 ) : null}
                 <ChatMarkdownMessage source={message.content} />

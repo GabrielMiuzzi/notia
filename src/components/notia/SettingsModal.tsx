@@ -24,6 +24,7 @@ import type { TelegramPreferences } from '../../services/preferences/telegramSet
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 import { MailAccountsSection } from './settings/MailAccountsSection'
 import { WeatherSection } from './settings/WeatherSection'
+import { ImageModelsSection } from './settings/ImageModelsSection'
 import { RunModeSection } from './settings/RunModeSection'
 import { fetchConnection } from '../../services/connection/connectionRuntime'
 import { selectQwen3TtsSettings, selectSpeechRecognitionSettings, selectTheme } from '../../features/preferences/preferencesSelectors'
@@ -1525,6 +1526,8 @@ export function SettingsModal({
                 </>
               ) : activeSection === 'Cuentas asociadas' ? (
                 <MailAccountsSection libraryId={activeLibrary?.id ?? null} />
+              ) : activeSection === 'Imágenes' ? (
+                <ImageModelsSection />
               ) : activeSection === 'Clima' ? (
                 <WeatherSection libraryId={activeLibrary?.id ?? null} />
               ) : activeSection === 'Finanzas' ? (

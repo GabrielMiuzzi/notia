@@ -3,6 +3,7 @@ package com.gabriel.notia
 import android.app.Activity
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -119,7 +120,9 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(success(temporary))
         } catch (_: SecurityException) {
             invoke.resolve(failure("El permiso de la carpeta fue revocado. Volvé a seleccionar la biblioteca."))
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            // Only the kind of failure: its message may carry the URI.
+            Log.e(TAG, "prepare failed: ${error.javaClass.simpleName}")
             invoke.resolve(failure("No se pudo preparar la base SQLite Android."))
         }
     }
@@ -194,7 +197,7 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun databaseUri(libraryUriValue: String): Uri {
-        val libraryUri = Uri.parse(libraryUriValue)
+        val libraryUri = rootDocumentUri(Uri.parse(libraryUriValue))
         val resolver = activity.contentResolver
         val notiaDirectory = findChild(libraryUri, NOTIA_DIRECTORY)
             ?: DocumentsContract.createDocument(resolver, libraryUri, DocumentsContract.Document.MIME_TYPE_DIR, NOTIA_DIRECTORY)
@@ -217,6 +220,17 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
             ?: error("No se pudo crear notia.db")
     }
 
+    /**
+     * The document of the library's root. A library is kept as its tree URI
+     * (`/tree/<id>`), which has no document id of its own: listing its
+     * children or creating `.notia` in it needs the root document
+     * (`/tree/<id>/document/<id>`). A document URI passes unchanged.
+     */
+    private fun rootDocumentUri(libraryUri: Uri): Uri {
+        if (DocumentsContract.isDocumentUri(activity, libraryUri)) return libraryUri
+        return DocumentsContract.buildDocumentUriUsingTree(libraryUri, DocumentsContract.getTreeDocumentId(libraryUri))
+    }
+
     private fun findChild(parentUri: Uri, name: String): Uri? {
         val resolver = activity.contentResolver
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(parentUri, DocumentsContract.getDocumentId(parentUri))
@@ -234,6 +248,7 @@ class LibraryDatabasePlugin(private val activity: Activity) : Plugin(activity) {
     private fun failure(message: String) = JSObject().put("ok", false).put("error", message)
 
     private companion object {
+        const val TAG = "NotiaDatabase"
         const val NOTIA_DIRECTORY = ".notia"
         const val DATABASE_FILE = "notia.db"
         const val DATABASE_BACKUP_FILE = "notia.db.backup"

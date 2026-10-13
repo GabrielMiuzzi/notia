@@ -372,9 +372,21 @@ struct ActiveRun {
     cancelled: Arc<AtomicBool>,
 }
 
+/// An answer to a confirmation, plan or question; the flag says it came
+/// from a button of the question's message, not from a typed message.
 enum Reply {
-    Decision(bot::ConfirmationReply),
-    Text(String, Option<usize>),
+    Decision(bot::ConfirmationReply, bool),
+    Text(String, Option<usize>, bool),
+}
+
+/// What the person answered, for the run to go on.
+struct Answer {
+    decision: ResumeDecision,
+    /// What the progress says first after the answer.
+    acknowledgement: Option<String>,
+    /// The question's message, answered with a button, and its text
+    /// (HTML): the progress goes on in it, below the answer.
+    message: Option<(i64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -508,6 +520,33 @@ impl Worker {
         }
     }
 
+    /// Sends the images the agent made in `request_id` as photos of the
+    /// chat, and returns the ones that arrived as attachments for the chat's
+    /// history. Nothing is saved in the library: Telegram is ephemeral.
+    fn send_generated_images(&self, chat_id: i64, request_id: &str) -> Vec<MessageAttachment> {
+        use crate::backend::chat_attachments::MessageAttachmentKind;
+        let mut sent = Vec::new();
+        for image in crate::image_generation::take_generated(request_id) {
+            let Ok(png) = base64::engine::general_purpose::STANDARD.decode(&image.base64) else { continue };
+            match block_on(telegram::send_photo(&self.token, chat_id, &image.name, png)) {
+                Ok(_) => sent.push(MessageAttachment {
+                    name: image.name,
+                    media_type: "image/png".to_string(),
+                    kind: MessageAttachmentKind::Image,
+                    pages: vec![image.base64],
+                    text_content: None,
+                    extracted_text: None,
+                    page_count: None,
+                }),
+                Err(_) => {
+                    log::error!("[notia:telegram] no se pudo enviar una imagen generada");
+                    self.send(chat_id, "No pude enviar la imagen que generé; pedímela de nuevo.");
+                }
+            }
+        }
+        sent
+    }
+
     /// Sends a Markdown text as one or more messages, split between
     /// paragraphs so a long answer is neither cut nor loses its format.
     fn send_markdown(&self, chat_id: i64, markdown: &str) {
@@ -537,11 +576,28 @@ impl Worker {
         bot::telegram_html_parts(markdown).into_iter().all(|part| self.send_html(chat_id, &part, Vec::new()).is_some())
     }
 
-    /// Sends the HTML parts of one text in order; the buttons go with the last.
-    fn send_parts(&self, chat_id: i64, parts: Vec<String>, buttons: Vec<(String, String)>) {
+    /// Sends the HTML parts of one text in order; the buttons go with the
+    /// last, whose id and text it returns.
+    fn send_parts(&self, chat_id: i64, parts: Vec<String>, buttons: Vec<(String, String)>) -> Option<(i64, String)> {
         let last = parts.len().saturating_sub(1);
+        let mut sent = None;
         for (index, part) in parts.into_iter().enumerate() {
-            self.send_html(chat_id, &part, if index == last { buttons.clone() } else { Vec::new() });
+            let id = self.send_html(chat_id, &part, if index == last { buttons.clone() } else { Vec::new() });
+            if index == last {
+                sent = id.map(|id| (id, part));
+            }
+        }
+        sent
+    }
+
+    /// Rewrites a sent message (HTML), which loses its buttons; as plain
+    /// text when Telegram cannot parse the HTML. An unchanged text is left
+    /// as it is.
+    fn edit_html(&self, chat_id: i64, message_id: i64, html: &str) {
+        if let Err(error) = block_on(telegram::edit_message(&self.token, chat_id, message_id, html, Vec::new(), Some("HTML"))) {
+            if error.contains("parse") {
+                let _ = block_on(telegram::edit_message(&self.token, chat_id, message_id, &strip_html(html), Vec::new(), None));
+            }
         }
     }
 
@@ -1019,7 +1075,7 @@ impl Worker {
                 let mut parts = data.split(':');
                 if parts.next() == Some("confirm") && parts.next() == Some(id.as_str()) {
                     if let Some(reply) = parts.next().and_then(bot::ConfirmationReply::from_id) {
-                        let _ = sender.send(Reply::Decision(reply));
+                        let _ = sender.send(Reply::Decision(reply, true));
                     }
                 }
             }
@@ -1027,7 +1083,7 @@ impl Worker {
             Prompt::Clarification { choices } => {
                 if let Some(index) = data.strip_prefix("choice:").and_then(|value| value.parse::<usize>().ok()) {
                     if let Some(choice) = choices.get(index) {
-                        let _ = sender.send(Reply::Text(choice.clone(), Some(index)));
+                        let _ = sender.send(Reply::Text(choice.clone(), Some(index), true));
                     }
                 }
             }
@@ -1047,14 +1103,14 @@ impl Worker {
         }
         match kind {
             Prompt::Confirmation { .. } => match bot::parse_confirmation_decision(text) {
-                Some(decision) => sender.send(Reply::Decision(decision)).is_ok(),
+                Some(decision) => sender.send(Reply::Decision(decision, false)).is_ok(),
                 None => false,
             },
             Prompt::Clarification { choices } => {
                 let (answer, index) = bot::resolve_choice_reply(text, choices);
-                sender.send(Reply::Text(answer, index)).is_ok()
+                sender.send(Reply::Text(answer, index, false)).is_ok()
             }
-            Prompt::Proposal => sender.send(Reply::Text(text.trim().to_string(), None)).is_ok(),
+            Prompt::Proposal => sender.send(Reply::Text(text.trim().to_string(), None, false)).is_ok(),
         }
     }
 
@@ -1441,6 +1497,10 @@ impl Worker {
 
     fn run_job(&self, job: &Job) -> Result<(), String> {
         let chat_id = job.stored.chat_id;
+        if let Some(command) = crate::backend::image_generation::parse_image_command(&job.text) {
+            self.run_image_command(job, command);
+            return Ok(());
+        }
         let config = self.library_config();
         let ia = config.get("ia").cloned().unwrap_or(Value::Null);
         let progress_enabled = ia.get("progressMode").and_then(Value::as_str) != Some("off");
@@ -1457,11 +1517,18 @@ impl Worker {
             // the question: it goes whole before it.
             self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
             match self.ask(chat_id, interaction, operation) {
-                Some((decision, acknowledgement)) => {
-                    if let Some(text) = acknowledgement {
-                        progress.restart(self, &text);
+                Some(answer) => {
+                    match answer.message {
+                        // Answered with a button: the progress goes on in
+                        // the question's message.
+                        Some((id, text)) => progress.adopt(self, id, text, answer.acknowledgement.as_deref()),
+                        None => {
+                            if let Some(text) = answer.acknowledgement {
+                                progress.restart(self, &text);
+                            }
+                        }
                     }
-                    Ok(decision)
+                    Ok(answer.decision)
                 }
                 None if run.cancelled.load(Ordering::SeqCst) => {
                     self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
@@ -1471,11 +1538,14 @@ impl Worker {
             }
         });
         let stopped = run.cancelled.load(Ordering::SeqCst);
-        progress.finish(match (&outcome, stopped) {
-            (Ok(_), _) => "<b>Respuesta enviada</b>",
-            (Err(_), true) => "<b>Solicitud cancelada</b>",
-            (Err(_), false) => "<b>No pude completar la operación</b>",
-        });
+        // The answer replaces the progress message (a question's message
+        // keeps its text and answer); a cancel or a failure stays written
+        // on it.
+        match (&outcome, stopped) {
+            (Ok(_), _) => progress.dismiss(self),
+            (Err(_), true) => progress.finish(self, "<b>Solicitud cancelada</b>"),
+            (Err(_), false) => progress.finish(self, "<b>No pude completar la operación</b>"),
+        }
         if stopped && outcome.is_err() {
             // The next request of the chat knows what was cancelled.
             self.remember_with_files(chat_id, text, files, bot::CANCELLED_MESSAGE.to_string());
@@ -1490,14 +1560,75 @@ impl Worker {
         if stopped {
             self.send(chat_id, bot::TOO_LATE_TO_CANCEL_MESSAGE);
         }
-        // What the progress showed clipped arrives whole before the answer.
+        // What the progress showed clipped arrives whole before the answer,
+        // and the images the agent made go right before its text.
         self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
+        let drawn = self.send_generated_images(chat_id, &run.context.request_id);
         self.send_markdown(chat_id, &response.response.markdown);
-        self.remember_with_files(chat_id, text, files, response.response.markdown.clone());
+        self.remember_turn(chat_id, text, files, response.response.markdown.clone(), drawn);
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
         }
         Ok(())
+    }
+
+    /// Runs a `/image` message of the Owner: the text goes to the image
+    /// model as written, without the agent, and the image comes back as a
+    /// photo (an edit of the first image attached, or a new one). It runs as
+    /// the chat's current request, so /cancelar stops it; nothing is saved
+    /// in the library.
+    fn run_image_command(&self, job: &Job, command: Result<crate::backend::image_generation::ImageCommand, crate::backend::BackendError>) {
+        use crate::backend::chat_attachments::MessageAttachmentKind;
+        let chat_id = job.stored.chat_id;
+        let command = match command {
+            Ok(command) => command,
+            Err(error) => {
+                self.send(chat_id, &error.message);
+                return;
+            }
+        };
+        if job.stored.library_user_id != OWNER {
+            self.send(chat_id, "Las imágenes las genera solo el Owner de la biblioteca.");
+            return;
+        }
+        let mut files = Vec::new();
+        for (index, file) in job.stored.attachments.iter().enumerate() {
+            match self.read_attachment(index + 1, file) {
+                Ok((_, attachment)) => files.push(attachment),
+                Err(reason) => {
+                    self.send(chat_id, &reason);
+                }
+            }
+        }
+        let reference = files
+            .iter()
+            .find(|file| file.kind == MessageAttachmentKind::Image)
+            .and_then(|file| file.pages.first().map(|page| (file.name.clone(), page.clone())));
+        let notice = self.send(chat_id, if reference.is_some() { "Editando la imagen…" } else { "Generando la imagen…" });
+        let (run, _) = self.begin_run(job, &job.text, Vec::new());
+        let control = crate::backend::RequestControl::new(None);
+        let done = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::clone(&run.cancelled);
+        crate::image_generation::cancel_when(&control, Arc::clone(&done), move || cancelled.load(Ordering::SeqCst));
+        let result = crate::image_generation::run_command(&self.app, &self.library.id, &control, &run.context.request_id, &command, reference);
+        done.store(true, Ordering::SeqCst);
+        if let Some(id) = notice {
+            let _ = block_on(telegram::delete_message(&self.token, chat_id, id));
+        }
+        let (answer, drawn) = match result {
+            Ok(text) => {
+                let drawn = self.send_generated_images(chat_id, &run.context.request_id);
+                if !drawn.is_empty() {
+                    self.send(chat_id, &text);
+                }
+                (text, drawn)
+            }
+            Err(error) => {
+                self.send(chat_id, &error.message);
+                (error.message, Vec::new())
+            }
+        };
+        self.remember_turn(chat_id, job.text.clone(), files, answer, drawn);
     }
 
     /// Runs a request Notia queued by itself. Nothing reaches the chat but
@@ -1567,7 +1698,7 @@ impl Worker {
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
             self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
             match self.ask(chat_id, interaction, operation) {
-                Some((decision, _)) => Ok(decision),
+                Some(answer) => Ok(answer.decision),
                 None if run.cancelled.load(Ordering::SeqCst) => {
                     self.cancel_operation(&run.context, &run.idempotency_key, operation.clone());
                     Err(bot::CANCELLED_MESSAGE.to_string())
@@ -1594,10 +1725,11 @@ impl Worker {
             return Ok(prompts::SILENT_SUMMARY.to_string());
         }
         self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
+        let drawn = self.send_generated_images(chat_id, &run.context.request_id);
         if !self.send_markdown_checked(chat_id, &prompts::outgoing_message(&answer, action.prompt.test)) {
             return Err("No se pudo enviar por Telegram.".to_string());
         }
-        self.remember(chat_id, job.text.clone(), answer.clone());
+        self.remember_turn(chat_id, job.text.clone(), Vec::new(), answer.clone(), drawn);
         if let Err(error) = crate::agent_knowledge::keep_thought(&self.app, &self.library.id, &prompts::sent_thought(&action.prompt.name, &answer)) {
             log::error!("[notia:ai-actions] no se pudo anotar el mensaje enviado: {:?}", error.code);
         }
@@ -1662,6 +1794,7 @@ impl Worker {
             autonomous: job.autonomous.is_some(),
             scheduled_action: job.action.as_ref().map(|action| action.prompt.clone()),
             tool_areas: None,
+            thinking: None,
         });
         (ActiveRun { context, idempotency_key, cancelled }, request)
     }
@@ -1743,10 +1876,17 @@ impl Worker {
     /// the chat's recent history; later requests show the files on this
     /// request, not as new ones.
     fn remember_with_files(&self, chat_id: i64, request: String, files: Vec<MessageAttachment>, answer: String) {
+        self.remember_turn(chat_id, request, files, answer, Vec::new());
+    }
+
+    /// Like `remember_with_files`, with the images the agent sent with its
+    /// answer, so a later request can edit them by their reference. Telegram
+    /// is ephemeral: they live only in this history.
+    fn remember_turn(&self, chat_id: i64, request: String, files: Vec<MessageAttachment>, answer: String, drawn: Vec<MessageAttachment>) {
         if let Ok(mut history) = self.history.lock() {
             let entries = history.entry(chat_id).or_default();
             entries.push_back(BackendMessage { role: MessageRole::User, content: request, images: Vec::new(), attachments: files });
-            entries.push_back(BackendMessage { role: MessageRole::Assistant, content: answer, images: Vec::new(), attachments: Vec::new() });
+            entries.push_back(BackendMessage { role: MessageRole::Assistant, content: answer, images: Vec::new(), attachments: drawn });
             while entries.len() > bot::MAX_HISTORY_MESSAGES {
                 entries.pop_front();
             }
@@ -1767,14 +1907,15 @@ impl Worker {
 
     /// Shows the pending interaction and waits for the person's answer: the
     /// decision the run resumes with and, when the work goes on, the text
-    /// that opens the next progress message. A decision that ends the work
-    /// is announced here.
+    /// that opens the next progress message. Once answered (or expired), the
+    /// question's message loses its buttons and shows the answer; answered
+    /// with a button, the progress goes on in that same message.
     fn ask(
         &self,
         chat_id: i64,
         interaction: crate::backend::PendingInteraction,
         operation: &crate::backend::OperationToken,
-    ) -> Option<(ResumeDecision, Option<String>)> {
+    ) -> Option<Answer> {
         use crate::backend::PendingInteraction as Interaction;
         use bot::ConfirmationReply as Choice;
         if self.cancel_requested(chat_id) {
@@ -1787,16 +1928,16 @@ impl Worker {
                 .map(|(label, reply)| (label.to_string(), format!("confirm:{id}:{}", reply.id())))
                 .collect::<Vec<_>>()
         };
-        let (prompt, timeout) = match &interaction {
+        let (prompt, timeout, sent) = match &interaction {
             Interaction::Confirmation(request) => {
                 let id = short_id()[..8].to_string();
-                self.send_parts(chat_id, bot::confirmation_parts(&request.preview), choice_buttons(&id));
-                (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
+                let sent = self.send_parts(chat_id, bot::confirmation_parts(&request.preview), choice_buttons(&id));
+                (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT, sent)
             }
             Interaction::Plan(plan) => {
                 let id = short_id()[..8].to_string();
-                self.send_parts(chat_id, bot::plan_parts(plan), choice_buttons(&id));
-                (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT)
+                let sent = self.send_parts(chat_id, bot::plan_parts(plan), choice_buttons(&id));
+                (Prompt::Confirmation { id }, CONFIRMATION_TIMEOUT, sent)
             }
             Interaction::Clarification(request) => {
                 let choices = request.options.iter().map(|option| option.label.clone()).collect::<Vec<_>>();
@@ -1805,37 +1946,62 @@ impl Worker {
                     .enumerate()
                     .map(|(index, label)| (label.chars().take(bot::MAX_BUTTON_CHARS).collect(), format!("choice:{index}")))
                     .collect();
-                self.send_parts(chat_id, bot::question_parts(&request.question, &choices), buttons);
-                (Prompt::Clarification { choices }, CLARIFICATION_TIMEOUT)
+                let sent = self.send_parts(chat_id, bot::question_parts(&request.question, &choices), buttons);
+                (Prompt::Clarification { choices }, CLARIFICATION_TIMEOUT, sent)
             }
         };
+        // The question's message without its buttons, with `outcome` in
+        // place of its choices; its id and new text.
+        let answered = |outcome: &str| {
+            sent.as_ref().map(|(id, html)| {
+                let text = bot::answered_prompt(html, outcome);
+                self.edit_html(chat_id, *id, &text);
+                (*id, text)
+            })
+        };
         // A cancel dropped the question: the run stops without an answer.
-        let reply = self.wait_reply(chat_id, prompt, &sender, &receiver, timeout)?;
+        let Some(reply) = self.wait_reply(chat_id, prompt, &sender, &receiver, timeout) else {
+            answered("Solicitud cancelada.");
+            return None;
+        };
         // «Proponer otra cosa»: the proposal is the next message.
-        let (reply, proposal) = match reply {
-            Some(Reply::Decision(Choice::Propose)) => {
+        let (reply, proposal, message) = match reply {
+            Some(Reply::Decision(Choice::Propose, _)) => {
+                answered(bot::confirmation_outcome(Some(Choice::Propose)));
                 self.send(chat_id, "Escribí qué querés que haga en su lugar.");
                 match self.wait_reply(chat_id, Prompt::Proposal, &sender, &receiver, CLARIFICATION_TIMEOUT)? {
-                    Some(Reply::Text(text, _)) if !text.trim().is_empty() => (Some(Choice::Propose), Some(text.trim().to_string())),
-                    _ => (None, None),
+                    Some(Reply::Text(text, _, _)) if !text.trim().is_empty() => (Some(Choice::Propose), Some(text.trim().to_string()), None),
+                    _ => (None, None, None),
                 }
             }
-            Some(Reply::Decision(choice)) => (Some(choice), None),
-            Some(Reply::Text(answer, index)) => {
-                return match interaction {
-                    Interaction::Clarification(request) => Some((
-                        ResumeDecision::Clarification(crate::backend::ClarificationAnswer {
-                            clarification_id: request.clarification_id.clone(),
-                            operation: operation.clone(),
-                            answer,
-                            option_id: index.and_then(|index| request.options.get(index)).map(|option| option.id.clone()),
-                        }),
-                        Some("Respuesta recibida. Sigo con tu pedido…".to_string()),
-                    )),
-                    _ => None,
-                };
+            Some(Reply::Decision(choice, tapped)) => {
+                let message = answered(bot::confirmation_outcome(Some(choice)));
+                (Some(choice), None, message.filter(|_| tapped))
             }
-            None => (None, None),
+            Some(Reply::Text(answer, index, tapped)) => {
+                let Interaction::Clarification(request) = interaction else {
+                    return None;
+                };
+                let message = answered(&bot::question_outcome(Some(&answer)));
+                return Some(Answer {
+                    decision: ResumeDecision::Clarification(crate::backend::ClarificationAnswer {
+                        clarification_id: request.clarification_id.clone(),
+                        operation: operation.clone(),
+                        answer,
+                        option_id: index.and_then(|index| request.options.get(index)).map(|option| option.id.clone()),
+                    }),
+                    acknowledgement: Some("Respuesta recibida. Sigo con tu pedido…".to_string()),
+                    message: message.filter(|_| tapped),
+                });
+            }
+            None => {
+                let expired = match interaction {
+                    Interaction::Clarification(_) => bot::question_outcome(None),
+                    _ => bot::confirmation_outcome(None).to_string(),
+                };
+                answered(&expired);
+                (None, None, None)
+            }
         };
         let approve_all = reply == Some(Choice::ConfirmAll);
         let accepted = matches!(reply, Some(Choice::Confirm | Choice::ConfirmAll));
@@ -1845,37 +2011,31 @@ impl Worker {
                     Some(Choice::Confirm) => Some("Confirmación recibida. Aplicando el cambio…"),
                     Some(Choice::ConfirmAll) => Some("Confirmado todo lo que queda de este pedido. Sigo sin volver a preguntarte…"),
                     Some(Choice::Propose) => Some("Propuesta recibida. Sigo con lo que me pediste…"),
-                    // The agent's answer says the change was rejected.
-                    Some(Choice::Cancel) => None,
-                    None => {
-                        self.send(chat_id, "La confirmación venció sin respuesta. No se aplicaron cambios.");
-                        None
-                    }
+                    // The agent's answer says the change was rejected; an
+                    // expired confirmation says so on its message.
+                    Some(Choice::Cancel) | None => None,
                 };
-                Some((
-                    ResumeDecision::Confirmation(crate::backend::ConfirmationDecision {
+                Some(Answer {
+                    decision: ResumeDecision::Confirmation(crate::backend::ConfirmationDecision {
                         operation_id: operation.operation_id.clone(),
                         accepted,
                         hunk_ids: Vec::new(),
                         approve_all,
                         suggestion: proposal,
                     }),
-                    acknowledgement.map(str::to_string),
-                ))
+                    acknowledgement: acknowledgement.map(str::to_string),
+                    message,
+                })
             }
             Interaction::Plan(plan) => {
                 let acknowledgement = match reply {
                     Some(Choice::Confirm) => Some("Plan aprobado. Empiezo…"),
                     Some(Choice::ConfirmAll) => Some("Plan aprobado junto con todo lo que siga en este pedido. Empiezo sin volver a preguntarte…"),
                     Some(Choice::Propose) => Some("Propuesta recibida. Rehago el plan…"),
-                    Some(Choice::Cancel) => None,
-                    None => {
-                        self.send(chat_id, "El plan venció sin respuesta. No se aplicaron cambios.");
-                        None
-                    }
+                    Some(Choice::Cancel) | None => None,
                 };
-                Some((
-                    ResumeDecision::Plan(crate::backend::PlanDecision {
+                Some(Answer {
+                    decision: ResumeDecision::Plan(crate::backend::PlanDecision {
                         plan_id: plan.plan_id.clone(),
                         generation: plan.generation,
                         accepted,
@@ -1883,8 +2043,9 @@ impl Worker {
                         suggestion: proposal,
                         approve_all,
                     }),
-                    acknowledgement.map(str::to_string),
-                ))
+                    acknowledgement: acknowledgement.map(str::to_string),
+                    message,
+                })
             }
             // Buttons answer confirmations and plans; a question needs text.
             Interaction::Clarification(_) => None,
@@ -1913,14 +2074,21 @@ impl Worker {
     }
 }
 
+/// Longest question text (HTML) the progress goes on below; a longer one
+/// leaves no room for the progress in a Telegram message.
+const MAX_ADOPTED_TEXT_CHARS: usize = 3_400;
+
 /// Progress message of a running request, edited while events arrive
-/// (or sent anew when the user turned editing off).
+/// (or sent anew when the user turned editing off). After a question
+/// answered with a button, the progress message is the question's: its
+/// text stays above the progress (`header`) and remains once the work ends.
 struct Progress {
     token: String,
     chat_id: i64,
     enabled: bool,
     edit: bool,
     message_id: Arc<Mutex<Option<i64>>>,
+    header: Arc<Mutex<Option<String>>>,
     last_sequence: Arc<Mutex<u64>>,
     events: Arc<Mutex<Vec<crate::backend::BackendEvent>>>,
 }
@@ -1934,6 +2102,7 @@ impl Progress {
             enabled,
             edit,
             message_id: Arc::new(Mutex::new(message_id)),
+            header: Arc::new(Mutex::new(None)),
             last_sequence: Arc::new(Mutex::new(0)),
             events: Arc::new(Mutex::new(Vec::new())),
         }
@@ -1952,6 +2121,7 @@ impl Progress {
         let runtime = runtime.clone();
         let context = context.clone();
         let message_id = Arc::clone(&self.message_id);
+        let header = Arc::clone(&self.header);
         let last_sequence = Arc::clone(&self.last_sequence);
         let events = Arc::clone(&self.events);
         let (token, chat_id, edit) = (self.token.clone(), self.chat_id, self.edit);
@@ -1992,7 +2162,11 @@ impl Progress {
                     let current = message_id.lock().ok().and_then(|value| *value);
                     match current.filter(|_| edit) {
                         Some(id) => {
-                            let _ = block_on(telegram::edit_message(&token, chat_id, id, &message, Vec::new(), Some("HTML")));
+                            let text = match header.lock().ok().and_then(|value| value.clone()) {
+                                Some(header) => format!("{header}\n\n{message}"),
+                                None => message,
+                            };
+                            let _ = block_on(telegram::edit_message(&token, chat_id, id, &text, Vec::new(), Some("HTML")));
                         }
                         None => {
                             let sent = block_on(telegram::send_message(&token, chat_id, &message, Vec::new(), Some("HTML"))).ok();
@@ -2014,9 +2188,7 @@ impl Progress {
             worker.send(self.chat_id, text);
             return;
         }
-        if let Some(previous) = self.message_id.lock().ok().and_then(|mut id| id.take()) {
-            let _ = block_on(telegram::delete_message(&self.token, self.chat_id, previous));
-        }
+        self.release(worker);
         let sent = worker.send_html(self.chat_id, &format!("<b>{}</b>", crate::backend::escape_telegram_html(text)), Vec::new());
         if let Ok(mut id) = self.message_id.lock() {
             *id = sent;
@@ -2027,12 +2199,69 @@ impl Progress {
         }
     }
 
-    /// Leaves the progress message with the outcome `text` (HTML).
-    fn finish(&self, text: &str) {
+    /// Goes on in the message of a question answered with a button: its
+    /// `text` (HTML, already without buttons) stays above the progress,
+    /// which starts with `acknowledgement`. The progress message above is
+    /// let go. Without room below the text, or without an edited progress
+    /// message, the progress restarts below instead.
+    fn adopt(&self, worker: &Worker, message_id: i64, text: String, acknowledgement: Option<&str>) {
+        if !self.enabled || !self.edit || text.chars().count() > MAX_ADOPTED_TEXT_CHARS {
+            if let Some(acknowledgement) = acknowledgement {
+                self.restart(worker, acknowledgement);
+            }
+            return;
+        }
+        if self.message_id.lock().ok().and_then(|value| *value) != Some(message_id) {
+            self.release(worker);
+        }
+        if let Some(acknowledgement) = acknowledgement {
+            worker.edit_html(self.chat_id, message_id, &format!("{text}\n\n<b>{}</b>", crate::backend::escape_telegram_html(acknowledgement)));
+        }
+        if let Ok(mut id) = self.message_id.lock() {
+            *id = Some(message_id);
+        }
+        if let Ok(mut header) = self.header.lock() {
+            *header = Some(text);
+        }
+        if let Ok(mut events) = self.events.lock() {
+            events.clear();
+        }
+    }
+
+    /// Lets the current progress message go: a question's message keeps
+    /// only its text and answer; a plain progress message is deleted.
+    fn release(&self, worker: &Worker) {
+        let header = self.header.lock().ok().and_then(|mut value| value.take());
+        let Some(id) = self.message_id.lock().ok().and_then(|mut value| value.take()) else {
+            return;
+        };
+        match header {
+            Some(header) => worker.edit_html(self.chat_id, id, &header),
+            None => {
+                let _ = block_on(telegram::delete_message(&self.token, self.chat_id, id));
+            }
+        }
+    }
+
+    /// Clears the progress, as the answer comes next.
+    fn dismiss(&self, worker: &Worker) {
+        if self.enabled && self.edit {
+            self.release(worker);
+        }
+    }
+
+    /// Leaves the progress message with the outcome `text` (HTML), below the
+    /// question it went on in, if any.
+    fn finish(&self, worker: &Worker, text: &str) {
         let Some(id) = self.message_id.lock().ok().and_then(|value| *value).filter(|_| self.enabled && self.edit) else {
             return;
         };
-        let _ = block_on(telegram::edit_message(&self.token, self.chat_id, id, text, Vec::new(), Some("HTML")));
+        match self.header.lock().ok().and_then(|value| value.clone()) {
+            Some(header) => worker.edit_html(self.chat_id, id, &format!("{header}\n\n{text}")),
+            None => {
+                let _ = block_on(telegram::edit_message(&self.token, self.chat_id, id, text, Vec::new(), Some("HTML")));
+            }
+        }
     }
 }
 

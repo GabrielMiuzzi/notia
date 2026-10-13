@@ -258,7 +258,10 @@ pub(crate) async fn backend_library_graph(
     payload: LibraryGraphPayload,
 ) -> Result<GraphModelDto, BackendError> {
     crate::host::async_runtime::spawn_blocking(move || {
-        let mut model = cached_graph(&app, &payload.library_id, payload.revision)?.model.clone();
+        // Without the Gimnasio catalog and the recipes, which are module data.
+        let mut model = notia_backend_core::library_graph::graph_view_model(
+            &cached_graph(&app, &payload.library_id, payload.revision)?.model,
+        );
         let root = crate::library_session::visible_path(&app, &payload.library_id, "");
         let visible = |logical: &str| notia_backend_core::library_tree::library_visible_path(&root, logical);
         for node in &mut model.nodes {
@@ -353,8 +356,10 @@ pub(crate) async fn backend_library_graph_search(
     crate::host::async_runtime::spawn_blocking(move || {
         let graph = cached_graph(&app, &payload.library_id, payload.revision)?;
         let root = crate::library_session::visible_path(&app, &payload.library_id, "");
+        // Searches what Graph View draws, so the Gimnasio catalog and the
+        // recipes are not found here either.
         let mut results = search_library_graph(
-            &graph.model,
+            &notia_backend_core::library_graph::graph_view_model(&graph.model),
             &graph.sources,
             &payload.query,
             payload.max_results.unwrap_or(8),

@@ -298,6 +298,10 @@
 .notia-settings-note code { padding: 2px 6px; border-radius: 4px; background: var(--settings-card-bg); }
 .notia-settings-empty { padding: 14px 20px; font-size: 13px; color: var(--settings-muted); }
 .notia-settings-weather-search { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.notia-settings-image-models { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; min-width: 0; width: 100%; }
+.notia-settings-image-progress { box-sizing: border-box; width: 100%; height: 8px; border-radius: 999px; background: var(--settings-field-bg); border: 1px solid var(--settings-line); overflow: hidden; }
+.notia-settings-image-progress > span { display: block; height: 100%; background: var(--settings-accent); transition: width 0.4s ease; }
+.notia-settings-image-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .notia-settings-weather-results { margin: 0; padding: 4px 12px 12px; list-style: none; display: flex; flex-direction: column; gap: 2px; }
 .notia-settings-weather-result { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--settings-text); font: inherit; font-size: 13.5px; text-align: left; display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .notia-settings-weather-result svg { flex-shrink: 0; color: var(--settings-muted); }

@@ -435,6 +435,45 @@ pub fn build_library_graph(
     finish_model(nodes, edges)
 }
 
+/// Top folders whose notes are data of a module (the Gimnasio catalog and
+/// Recetas): Graph View neither draws nor finds them.
+const GRAPH_VIEW_HIDDEN_FOLDERS: [&str; 2] = [crate::gym::GYM_FOLDER, crate::recipes::RECIPES_FOLDER];
+
+/// Whether Graph View leaves out the file at `path` (case-insensitive, like
+/// the folders on Windows and Android).
+pub fn is_hidden_from_graph_view(path: &str) -> bool {
+    let folder = top_folder(path);
+    GRAPH_VIEW_HIDDEN_FOLDERS.iter().any(|hidden| folder.eq_ignore_ascii_case(hidden))
+}
+
+/// What Graph View shows of the library graph: without the notes of the
+/// module folders nor their links, with degrees, neighbors and the summary
+/// counted again. The explorer search and the link cache keep every note.
+pub fn graph_view_model(model: &GraphModelDto) -> GraphModelDto {
+    let edges = model
+        .edges
+        .iter()
+        .filter(|edge| !is_hidden_from_graph_view(&edge.source_path) && !is_hidden_from_graph_view(&edge.target_path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut degree = HashMap::<&str, usize>::new();
+    for edge in &edges {
+        *degree.entry(edge.source_path.as_str()).or_default() += 1;
+        *degree.entry(edge.target_path.as_str()).or_default() += 1;
+    }
+    let nodes = model
+        .nodes
+        .iter()
+        .filter(|node| !is_hidden_from_graph_view(&node.path))
+        .map(|node| GraphNodeDto {
+            degree: degree.get(node.path.as_str()).copied().unwrap_or(0),
+            neighbors: Vec::new(),
+            ..node.clone()
+        })
+        .collect::<Vec<_>>();
+    finish_model(nodes, edges)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphSearchResultDto {
@@ -651,6 +690,29 @@ mod tests {
         assert_eq!(ticket.context_tag.as_deref(), Some("#Laboral"));
         let note = model.nodes.iter().find(|node| node.path == "p.md").expect("p");
         assert_eq!(note.context_color.as_deref(), Some("#2563EB"));
+    }
+
+    #[test]
+    fn graph_view_leaves_out_the_gym_and_recipes_notes() {
+        let files = ["notas/a.md", "notas/b.md", "Gym/exercises/press.md", "gym/rutina.md", "recipes/torta.md", "recetas-viejas/x.md"];
+        let sources = [
+            ("notas/a.md", "[[b]] [[press]] [[torta]] [[x]]"),
+            ("recipes/torta.md", "Torta de chocolate [[a]]"),
+        ];
+        let model = build(&files, &sources);
+        assert_eq!(model.summary.notes, 6);
+        let view = graph_view_model(&model);
+        let paths = view.nodes.iter().map(|node| node.path.as_str()).collect::<Vec<_>>();
+        assert_eq!(paths, vec!["notas/a.md", "notas/b.md", "recetas-viejas/x.md"]);
+        assert!(view.edges.iter().all(|edge| !edge.source_path.contains("torta") && !edge.target_path.contains("press")));
+        let a = view.nodes.iter().find(|node| node.path == "notas/a.md").expect("a");
+        assert_eq!((a.degree, a.neighbors.len()), (2, 2));
+        assert_eq!((view.summary.notes, view.summary.links, view.summary.orphans), (3, 2, 0));
+
+        let sources = sources.iter().map(|(path, content)| (path.to_string(), content.to_string())).collect::<BTreeMap<_, _>>();
+        assert!(search_library_graph(&view, &sources, "chocolate", 8).is_empty());
+        assert!(search_library_graph(&view, &sources, "rutina", 8).is_empty());
+        assert_eq!(search_library_files(&model, &sources, "chocolate", 8), vec!["recipes/torta.md".to_string()], "the explorer still finds it");
     }
 
     #[test]

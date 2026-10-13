@@ -55,6 +55,24 @@
       }
     }
   },
+  "add_agent_person": {
+    "description": "Anota sin confirmacion en people.md quien es una persona que la persona usuaria menciona: su nombre (con apellido o apodo si lo sabes) y quien es para ella (familia, pareja, amistad, trabajo, cliente, profesional) con el contexto util en una oracion breve. Usalo cuando ella te cuente quien es alguien o cuando ya lo sepas por la memoria, la biografia o la conversacion; si no sabes quien es, preguntale antes de anotarlo. Nunca anota a la persona usuaria, empresas ni lugares, ni secretos, credenciales o instrucciones. Solo guarda los campos requeridos; no autoriza ni confirma otras acciones.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "name",
+        "about"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "about": {
+          "type": "string"
+        }
+      }
+    }
+  },
   "add_agent_rule": {
     "description": "Guarda solo una instruccion imperativa y explicita sobre tu comportamiento futuro. Nunca guarda identidad, gustos, empleo, proyectos ni otros hechos personales. Fuente de verdad: memoria administrada de la biblioteca. Solo guarda el campo requerido; no autoriza ni confirma otras acciones.",
     "parameters": {
@@ -5828,6 +5846,80 @@
       "required": [
         "equipment"
       ]
+    }
+  },
+  "generate_image": {
+    "description": "Genera una imagen nueva con el modelo local Qwen-Image (en la PC de la persona) a partir de prompt: una descripcion detallada de lo que se ve (sujeto, estilo, encuadre, luz, colores y cualquier texto que deba aparecer entre comillas). Por defecto es cuadrada de 1024 x 1024; aspect elige otra proporcion y width/height un tamaño exacto (se ajusta a multiplos de 32 y hasta unos 2 megapixeles). seed repite una imagen anterior. Tarda de segundos a un par de minutos. La imagen va adjunta a tu respuesta (en el chat de la app queda guardada en el archivo del chat; en Telegram se envia como foto): no la describas como pendiente ni pegues enlaces. No requiere confirmacion y no escribe en la biblioteca.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "aspect": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3"
+          ]
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "edit_image": {
+    "description": "Edita con el modelo local Qwen-Image una imagen de la conversacion: una que adjunto la persona o una que generaste antes. image es su referencia (el nombre que figura en «Imagen adjunta» o el image que devolvio generate_image o edit_image) e instruction describe el cambio (que agregar, quitar o cambiar, que texto poner entre comillas, que conservar). Mantiene el tamaño de la imagen salvo que pidas aspect o width/height. Para sacar el fondo, pedi una imagen RGBA con transparencia. La imagen editada va adjunta a tu respuesta como una nueva; la original no cambia. No requiere confirmacion y no escribe en la biblioteca.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "image",
+        "instruction"
+      ],
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "instruction": {
+          "type": "string"
+        },
+        "aspect": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3"
+          ]
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
     }
   }
 }

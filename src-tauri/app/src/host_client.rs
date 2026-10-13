@@ -52,6 +52,9 @@ const SHORT_TIMEOUT: Duration = Duration::from_secs(15);
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MONITOR_ONLINE_INTERVAL: Duration = Duration::from_secs(10);
 const MONITOR_OFFLINE_INTERVAL: Duration = Duration::from_secs(4);
+/// How long the host stays without answering before a window on it moves
+/// to the copy: a short drop (a weak signal) does not reload the window.
+const MOVE_TO_COPY_AFTER: Duration = Duration::from_secs(10);
 const EVENTS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const EVENTS_RETRY: Duration = Duration::from_secs(2);
 const MAX_EVENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -80,6 +83,31 @@ struct Link {
     /// The Owner's user name and password of this run, to open a new
     /// session when the host restarts. Only in memory.
     credentials: Option<(String, String)>,
+    /// Since when the host does not answer.
+    offline_since: Option<Instant>,
+    /// Where the window was last told to move.
+    announced_move: Option<WindowMove>,
+}
+
+/// Where a client's window should go now (`LinkView::move_to`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum WindowMove {
+    /// The host stopped answering a while ago and the copy is ready.
+    Copy,
+    /// The window works on the copy and the host answers again.
+    Host,
+}
+
+/// Where the window should go, from the link and the copy.
+fn window_move(state: LinkState, offline_for: Option<Duration>, on_copy: bool, copy_ready: impl FnOnce() -> bool) -> Option<WindowMove> {
+    match state {
+        LinkState::Online if on_copy => Some(WindowMove::Host),
+        LinkState::Offline if !on_copy && offline_for.is_some_and(|elapsed| elapsed >= MOVE_TO_COPY_AFTER) && copy_ready() => {
+            Some(WindowMove::Copy)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -162,22 +190,46 @@ pub(crate) struct LinkView {
     platform: Option<String>,
     pub(crate) signed_in: bool,
     pub(crate) message: Option<String>,
+    /// Where the window should go now: to the copy when the host stopped
+    /// answering, back to the host when it answers again.
+    pub(crate) move_to: Option<WindowMove>,
 }
 
 pub(crate) fn link_view(app: &AppHandle) -> LinkView {
-    with_link(app, |link| LinkView {
-        state: link.state,
-        library: link.library.clone(),
-        platform: link.platform.clone(),
-        signed_in: link.session.is_some(),
-        message: link.message.clone(),
-    })
-    .unwrap_or(LinkView { state: LinkState::Unknown, library: None, platform: None, signed_in: false, message: None })
+    let view = with_link(app, |link| {
+        let view = LinkView {
+            state: link.state,
+            library: link.library.clone(),
+            platform: link.platform.clone(),
+            signed_in: link.session.is_some(),
+            message: link.message.clone(),
+            move_to: None,
+        };
+        (view, link.offline_since.map(|since| since.elapsed()))
+    });
+    let Some((mut view, offline_for)) = view else {
+        return LinkView { state: LinkState::Unknown, library: None, platform: None, signed_in: false, message: None, move_to: None };
+    };
+    let on_copy = crate::host_mirror::is_offline(app);
+    view.move_to = window_move(view.state, offline_for, on_copy, || crate::host_mirror::copy_ready(app));
+    view
 }
 
 fn emit_link(app: &AppHandle) {
-    let _ = app.emit(LINK_EVENT, link_view(app));
+    let view = link_view(app);
+    with_link(app, |link| link.announced_move = view.move_to);
+    let _ = app.emit(LINK_EVENT, view);
     crate::client_status::refresh(app);
+}
+
+/// Tells the window when where it should go changed without the link
+/// changing (the host has been away long enough, or the window entered or
+/// left the copy).
+pub(crate) fn announce_move(app: &AppHandle) {
+    let next = link_view(app).move_to;
+    if with_link(app, |link| link.announced_move != next).unwrap_or(false) {
+        emit_link(app);
+    }
 }
 
 /// Whether the commands of this device run on its host: a client does,
@@ -205,6 +257,11 @@ fn remember_library(app: &AppHandle, body: &Value, id_key: &str, name_key: &str)
 fn set_state(app: &AppHandle, next: LinkState, library: Option<Option<String>>, message: Option<String>) {
     let changed = with_link(app, |link| {
         let changed = link.state != next || link.message != message;
+        if next != LinkState::Offline {
+            link.offline_since = None;
+        } else if link.offline_since.is_none() {
+            link.offline_since = Some(Instant::now());
+        }
         link.state = next;
         link.message = message;
         if let Some(library) = library {
@@ -753,6 +810,7 @@ pub(crate) async fn probe_within(app: &AppHandle, address: &HostAddress, pin: Op
 fn monitor(app: AppHandle, generation: u64) {
     while current_generation(&app) == generation {
         let online = crate::host::async_runtime::block_on(check_health(&app));
+        announce_move(&app);
         if online && with_link(&app, |link| link.session.is_some()).unwrap_or(false) {
             start_events(&app);
             // The copy follows the host while there is connection, on its
@@ -932,6 +990,19 @@ mod tests {
         let refused = crate::host::async_runtime::block_on(crate::services::telegram_service::check_bot("1:abc"));
         crate::services::telegram_service::set_client_device(false);
         assert!(refused.is_err_and(|message| message.contains("modo cliente")));
+    }
+
+    #[test]
+    fn the_window_moves_to_the_copy_after_a_while_and_back_when_the_host_answers() {
+        let ready = || true;
+        let away = Some(MOVE_TO_COPY_AFTER);
+        assert_eq!(window_move(LinkState::Offline, Some(Duration::from_secs(3)), false, ready), None, "a short drop");
+        assert_eq!(window_move(LinkState::Offline, away, false, ready), Some(WindowMove::Copy));
+        assert_eq!(window_move(LinkState::Offline, away, false, || false), None, "no copy to open");
+        assert_eq!(window_move(LinkState::Offline, away, true, ready), None, "already on the copy");
+        assert_eq!(window_move(LinkState::Online, None, true, ready), Some(WindowMove::Host));
+        assert_eq!(window_move(LinkState::Online, None, false, ready), None);
+        assert_eq!(window_move(LinkState::Unknown, None, false, ready), None);
     }
 
     #[test]

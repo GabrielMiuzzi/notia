@@ -11,6 +11,7 @@ pub const MEMORY_FILE: &str = "memory.md";
 pub const THOUGHTS_FILE: &str = "thoughts.md";
 pub const BIOGRAPHY_FILE: &str = "biography.md";
 pub const TALK_FILE: &str = "talk.md";
+pub const PEOPLE_FILE: &str = "people.md";
 
 const MAX_LOGICAL_PATH_CHARS: usize = 4096;
 const MAX_PATH_SEGMENT_CHARS: usize = 255;
@@ -39,6 +40,8 @@ pub enum AgentPathKind {
     Biography,
     /// How the person talks, so the agent talks alike: as private as the memory.
     Talk,
+    /// Who is who among the people the person mentions: as private as the memory.
+    People,
     Skill,
 }
 
@@ -141,6 +144,7 @@ pub fn validate_agent_path(path: &str) -> Result<AgentPath, BackendError> {
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, THOUGHTS_FILE] => (AgentPathKind::Thoughts, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, BIOGRAPHY_FILE] => (AgentPathKind::Biography, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, TALK_FILE] => (AgentPathKind::Talk, true),
+        [AGENT_DIRECTORY, MEMORY_DIRECTORY, PEOPLE_FILE] => (AgentPathKind::People, true),
         [AGENT_DIRECTORY, SKILLS_DIRECTORY, skill, rest @ ..]
             if !skill.is_empty()
                 && (rest.is_empty() || !rest.iter().any(|value| value.is_empty())) =>
@@ -212,7 +216,11 @@ pub fn authorize_agent_path_for(
     let path = validate_agent_path(path)?;
     if matches!(
         path.kind,
-        AgentPathKind::Memory | AgentPathKind::Thoughts | AgentPathKind::Biography | AgentPathKind::Talk
+        AgentPathKind::Memory
+            | AgentPathKind::Thoughts
+            | AgentPathKind::Biography
+            | AgentPathKind::Talk
+            | AgentPathKind::People
     )
         && (!context.persistence_policy.allows_memory()
             || !context.actor.is_library_owner())
@@ -353,6 +361,7 @@ mod tests {
         for (path, kind) in [
             (".agent/memory/biography.md", AgentPathKind::Biography),
             (".agent/memory/talk.md", AgentPathKind::Talk),
+            (".agent/memory/people.md", AgentPathKind::People),
         ] {
             assert_eq!(validate_agent_path(path).ok().map(|path| path.kind()), Some(kind));
             assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-owner"), path).is_ok());

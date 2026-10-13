@@ -4,6 +4,7 @@ import {
   CloudSun,
   CreditCard,
   Globe,
+  ImageIcon,
   Info,
   Mic,
   PanelRight,
@@ -16,15 +17,15 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-export type SettingsSection = 'General' | 'Contextos' | 'Clima' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Voz' | 'Telegram' | 'Cuentas asociadas' | 'Finanzas' | 'Backups' | 'Publicar'
+export type SettingsSection = 'General' | 'Contextos' | 'Clima' | 'Roles' | 'Usuarios' | 'Panel desplegable' | 'InkMath' | 'IA' | 'Imágenes' | 'Voz' | 'Telegram' | 'Cuentas asociadas' | 'Finanzas' | 'Backups' | 'Publicar'
 
-export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Clima', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Voz', 'Telegram', 'Cuentas asociadas', 'Finanzas', 'Backups', 'Publicar']
+export const SETTINGS_SECTIONS: SettingsSection[] = ['General', 'Contextos', 'Clima', 'Roles', 'Usuarios', 'Panel desplegable', 'InkMath', 'IA', 'Imágenes', 'Voz', 'Telegram', 'Cuentas asociadas', 'Finanzas', 'Backups', 'Publicar']
 
 export const SETTINGS_GROUPS: Array<{ label: string; sections: SettingsSection[] }> = [
   { label: 'Biblioteca', sections: ['General', 'Contextos', 'Clima'] },
   { label: 'Acceso', sections: ['Usuarios', 'Roles'] },
   { label: 'Editor', sections: ['Panel desplegable', 'InkMath'] },
-  { label: 'Integraciones', sections: ['IA', 'Voz', 'Telegram', 'Cuentas asociadas'] },
+  { label: 'Integraciones', sections: ['IA', 'Imágenes', 'Voz', 'Telegram', 'Cuentas asociadas'] },
   { label: 'Datos', sections: ['Backups', 'Publicar', 'Finanzas'] },
 ]
 
@@ -44,6 +45,7 @@ export const SETTINGS_SECTION_META: Record<SettingsSection, SettingsSectionMeta>
   'Panel desplegable': { description: 'Cada cuánto el panel busca cambios en la biblioteca.', icon: PanelRight, keywords: 'explorador chequeo cooldown refresco' },
   InkMath: { description: 'Reconocimiento de fórmulas manuscritas con Ollama.', icon: PenLine, keywords: 'ocr debounce formula' },
   IA: { description: 'Conexión con Ollama, modelo y cómo informa su progreso el agente.', icon: Sparkles, keywords: 'ollama api key modelo thinking host' },
+  'Imágenes': { description: 'Modelo local con el que el asistente genera y edita imágenes.', icon: ImageIcon, keywords: 'imagen foto dibujo qwen image generar editar gpu modelo descargar' },
   Voz: { description: 'Reconocimiento y síntesis de voz locales.', icon: Mic, keywords: 'dictado whisper qwen tts idioma' },
   Telegram: { description: 'Bot de esta biblioteca y usuarios vinculados.', icon: Send, keywords: 'bot token' },
   'Cuentas asociadas': { description: 'Credenciales de Google Cloud y cuenta de Gmail de la biblioteca activa.', icon: AtSign, keywords: 'gmail correo mail email google cloud gcp client id secret oauth' },

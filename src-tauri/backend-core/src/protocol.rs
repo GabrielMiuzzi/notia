@@ -283,6 +283,12 @@ pub struct AgentRequest {
     /// Without them, `tools` is offered as is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_areas: Option<Vec<String>>,
+    /// Whether the run thinks, as the routing call decided for the request
+    /// (see `tool_routing`): `Some(false)` turns the configured thinking off
+    /// for a conversational turn; it never turns on what the settings left
+    /// off. `None` keeps the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<bool>,
 }
 
 fn library_search_default() -> bool {
@@ -813,6 +819,7 @@ mod tests {
             autonomous: false,
             scheduled_action: None,
             tool_areas: None,
+            thinking: None,
         }
     }
 

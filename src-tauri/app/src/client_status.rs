@@ -82,20 +82,23 @@ pub(crate) fn describe(input: &StatusInput) -> Option<ClientStatus> {
     let host = input.host_address.as_str();
     if input.on_copy {
         return if input.link == LinkState::Online {
-            status(StatusKind::Connecting, "El host volvió a responder", "Notia vuelve al host y sincroniza la copia en segundo plano.".into())
+            status(StatusKind::Connecting, "El host volvió a responder", "Notia vuelve al host y concilia los cambios en segundo plano.".into())
         } else {
             status(
                 StatusKind::Offline,
                 "Sin conexión con el host",
-                format!("Trabajás con la copia local. Se sincroniza con {host} cuando vuelva a responder."),
+                format!("Trabajás con la copia local. Los cambios se concilian con {host} cuando vuelva a responder."),
             )
         };
     }
     match input.link {
         LinkState::Unknown => status(StatusKind::Connecting, "Conectando con el host", format!("{host}…")),
         LinkState::Offline => {
-            let text = input.link_message.clone().unwrap_or_else(|| format!("{host} no responde. Reintentando…"));
-            status(StatusKind::Offline, "No se pudo conectar con el host", text)
+            let text = input.link_message.clone().unwrap_or_else(|| match kind {
+                ClientKind::Copy => format!("{host} no responde. Reintentando; si no vuelve, seguís con la copia local."),
+                ClientKind::Remote => format!("{host} no responde. Reintentando…"),
+            });
+            status(StatusKind::Offline, "Sin conexión con el host", text)
         }
         LinkState::Online if !input.signed_in => {
             status(StatusKind::Connecting, "Host disponible", format!("Iniciá sesión en Notia para usar {library}."))
@@ -235,7 +238,12 @@ mod tests {
         assert_eq!(kind(&StatusInput { signed_in: false, ..copy_client(LinkState::Online) }), StatusKind::Connecting);
 
         let offline = describe(&copy_client(LinkState::Offline)).expect("offline");
-        assert_eq!((offline.kind, offline.text.as_str()), (StatusKind::Offline, "casa:52480 no responde. Reintentando…"));
+        assert_eq!(
+            (offline.kind, offline.text.as_str()),
+            (StatusKind::Offline, "casa:52480 no responde. Reintentando; si no vuelve, seguís con la copia local.")
+        );
+        let remote = describe(&StatusInput { client_kind: Some(ClientKind::Remote), ..copy_client(LinkState::Offline) }).expect("remote");
+        assert_eq!(remote.text, "casa:52480 no responde. Reintentando…");
         let on_copy = describe(&StatusInput { on_copy: true, ..copy_client(LinkState::Offline) }).expect("copy");
         assert_eq!(on_copy.title, "Sin conexión con el host");
         assert_eq!(kind(&StatusInput { on_copy: true, ..copy_client(LinkState::Online) }), StatusKind::Connecting);

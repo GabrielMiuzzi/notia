@@ -5284,6 +5284,48 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   font-size: 11px;
 }
 
+.notia-chat-message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+
+.notia-chat-message-image {
+  margin: 0;
+  max-width: min(100%, 512px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notia-chat-message-image a {
+  display: block;
+  border-radius: 8px;
+}
+
+.notia-chat-message-image a:focus-visible {
+  outline: 2px solid var(--color-active-border);
+  outline-offset: 2px;
+}
+
+.notia-chat-message-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-app-bg);
+}
+
+.notia-chat-message-image figcaption {
+  overflow: hidden;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notia-chat-message-attachments span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6503,6 +6545,30 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   color: var(--color-body-text);
   box-shadow: 0 8px 24px var(--color-menu-shadow);
   box-sizing: border-box;
+}
+
+/* The notice of a client window (Windows and Linux; Android uses its
+   notification): drawn outside the app, it takes the shell's theme tokens
+   without its layout and sits in a corner instead of over the top bar. */
+.notia-app-shell.notia-client-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: block;
+  height: auto;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+}
+
+.notia-client-notice .notia-remote-banner {
+  position: static;
+  transform: none;
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* A client window while its host does not answer. */

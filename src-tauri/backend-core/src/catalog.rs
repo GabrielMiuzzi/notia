@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use super::context::{BackendRequestContext, BackendScope};
+use super::context::{BackendChannel, BackendRequestContext, BackendScope};
 use super::error::{BackendError, BackendErrorCode};
 use super::protocol::{ToolAccess, ToolDefinition};
 
@@ -39,6 +39,9 @@ pub enum ToolPolicy {
     /// Gmail and Google Calendar of the library's connected accounts;
     /// confidential, like finance.
     Mail,
+    /// Images generated or edited with the local model: the Owner's, in
+    /// the app chats and Telegram.
+    Images,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         ),
         memory_tool("add_agent_biography", "Suma un hecho de la vida del usuario a su biografía narrada."),
         memory_tool("add_agent_talk", "Anota un rasgo de cómo habla el usuario."),
+        memory_tool("add_agent_person", "Anota quién es una persona que menciona el usuario."),
     ]);
     catalog.extend(alias_tools(
         [
@@ -238,6 +242,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     ]));
     catalog.extend(plan_tools());
     catalog.extend(super::mail_tools::mail_tool_contracts());
+    catalog.extend(image_tools());
     catalog.into_iter().map(with_canonical_schema).collect()
 }
 
@@ -262,6 +267,24 @@ fn with_canonical_schema(mut tool: ToolDefinition) -> ToolDefinition {
         }
     }
     tool
+}
+
+/// Image tools write nothing to the library: the image goes with the reply
+/// (the chat file, or a Telegram photo), so they ask for no confirmation.
+/// They are not read-only either, so read-only chats and Notia's own runs
+/// do not get them.
+fn image_tools() -> Vec<ToolDefinition> {
+    super::image_generation::IMAGE_TOOLS
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Genera o edita una imagen con el modelo local.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Library, BackendScope::Document, BackendScope::TaskManager],
+            read_only: false,
+            requires_confirmation: false,
+        })
+        .collect()
 }
 
 /// Plan tools open an approval interaction; they never mutate by themselves.
@@ -510,7 +533,12 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "request_user_clarification"
         | "request_user_confirmation"
         | "get_workspace_context" => ToolPolicy::Public,
-        "add_agent_rule" | "add_agent_memory" | "add_agent_thought" | "add_agent_biography" | "add_agent_talk" => {
+        "add_agent_rule"
+        | "add_agent_memory"
+        | "add_agent_thought"
+        | "add_agent_biography"
+        | "add_agent_talk"
+        | "add_agent_person" => {
             ToolPolicy::Memory
         }
         "search_library_documents"
@@ -555,6 +583,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::gym::tools::is_gym_write_tool(name) => ToolPolicy::GymWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
+        name if super::image_generation::is_image_tool(name) => ToolPolicy::Images,
         "list_agenda" => ToolPolicy::AgendaRead,
         "create_agenda_event"
         | "delete_agenda_event"
@@ -706,6 +735,19 @@ pub fn authorize_tool_call(
         ToolPolicy::RecipeRead | ToolPolicy::RecipeWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta de Recetas no está autorizada para este scope.",
+            false,
+        )),
+        // The images run on the Owner's GPU and go with a reply they read:
+        // the app chats and Telegram, never a published board nor Meeting.
+        ToolPolicy::Images
+            if context.actor.is_library_owner()
+                && matches!(context.channel, BackendChannel::App | BackendChannel::Telegram) =>
+        {
+            Ok(())
+        }
+        ToolPolicy::Images => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "Las imágenes las genera solo el Owner, en los chats de la app o en Telegram.",
             false,
         )),
         // The actions answer only the Owner, by Telegram.
@@ -1076,7 +1118,7 @@ mod tests {
         assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &thought, ToolCatalogProjection::Full).is_ok());
         assert!(authorize_tool_call(&without_memory, &principal(), &thought, ToolCatalogProjection::Full).is_err());
         assert_eq!(restrict_tool_access(vec![thought], ToolAccess::ReadOnly, false).len(), 1);
-        for name in ["add_agent_biography", "add_agent_talk"] {
+        for name in ["add_agent_biography", "add_agent_talk", "add_agent_person"] {
             let tool = canonical_tool_catalog().into_iter().find(|tool| tool.name == name).expect("tool");
             assert!(!tool.requires_confirmation && tool_policy(name) == ToolPolicy::Memory);
             assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &tool, ToolCatalogProjection::Full).is_ok());

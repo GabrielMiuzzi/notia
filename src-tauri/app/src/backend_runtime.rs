@@ -803,8 +803,11 @@ const CANCELLED_TURN_ENDING: &str = "La persona canceló el pedido antes de que 
 
 /// Maximum number of skill files loaded into one system prompt.
 const MAX_AGENT_SKILLS: usize = 16;
+/// Characters of every skill together: the agent files already take most
+/// of `MAX_SYSTEM_PROMPT_CHARS`, so the skills past this are left out.
+const MAX_AGENT_SKILLS_CHARS: usize = 100_000;
 /// Maximum characters read from one agent file (prompt, rules, memory,
-/// thoughts, biography, talk, skill). The configured models have long
+/// thoughts, biography, talk, people, skill). The configured models have long
 /// contexts, so the memory, the thoughts and the biography may grow large
 /// (their own limits sit below this one).
 const MAX_AGENT_FILE_CHARS: usize = 250_000;
@@ -818,7 +821,9 @@ struct TauriAgentStateRepository {
 }
 
 impl TauriAgentStateRepository {
-    fn read_optional(&self, library_id: &str, logical_path: &str) -> Result<Option<String>, BackendError> {
+    /// The whole text of an agent file, frontmatter included, within
+    /// `MAX_AGENT_FILE_CHARS`; `None` when it does not exist.
+    fn read_raw(&self, library_id: &str, logical_path: &str) -> Result<Option<String>, BackendError> {
         let registry = self.app.state::<LibraryBindingRegistry>();
         let picker = self.app.state::<AndroidDirectoryPickerState>();
         let reader = crate::library_document_adapter::TauriLibraryDocumentReadAdapter::for_library(
@@ -830,17 +835,25 @@ impl TauriAgentStateRepository {
         let locator = DocumentLocatorDto::new(library_id, logical_path, None, None)?;
         match reader.read_document(&locator) {
             Ok(document) => {
-                let body = notia_backend_core::strip_frontmatter(&document.content).trim();
-                if body.chars().count() > MAX_AGENT_FILE_CHARS {
+                if notia_backend_core::strip_frontmatter(&document.content).trim().chars().count() > MAX_AGENT_FILE_CHARS {
                     return Err(BackendError::invalid_input(
                         "Un archivo del agente supera el límite permitido.",
                     ));
                 }
-                Ok((!body.is_empty()).then(|| body.to_string()))
+                Ok(Some(document.content))
             }
             Err(error) if error.code == BackendErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    /// The body of an agent file without its frontmatter; `None` when it
+    /// does not exist or is empty.
+    fn read_optional(&self, library_id: &str, logical_path: &str) -> Result<Option<String>, BackendError> {
+        Ok(self.read_raw(library_id, logical_path)?.and_then(|content| {
+            let body = notia_backend_core::strip_frontmatter(&content).trim();
+            (!body.is_empty()).then(|| body.to_string())
+        }))
     }
 }
 
@@ -883,6 +896,18 @@ impl notia_backend_core::AgentStateRepository for TauriAgentStateRepository {
         self.read_optional(library_id, notia_backend_core::agent_workspace::TALK_PATH)
     }
 
+    fn load_people(&self, library_id: &str) -> Result<Option<String>, BackendError> {
+        // Same owner and persistence checks as memory; written with the
+        // `add_agent_person` tool, the reflection after each turn and its
+        // organization, which also takes people from the memory.
+        self.read_optional(library_id, notia_backend_core::agent_workspace::PEOPLE_PATH)
+    }
+
+    /// Every Markdown file under `.agent/skills` (also in subfolders), in
+    /// path order, with its frontmatter so the prompt shows its `name` and
+    /// `description`. A skill that cannot be read or does not fit in
+    /// `MAX_AGENT_SKILLS_CHARS` is left out instead of failing the turn.
+
     fn load_skills(&self, library_id: &str) -> Result<Vec<notia_backend_core::AgentSkill>, BackendError> {
         let registry = self.app.state::<LibraryBindingRegistry>();
         let picker = self.app.state::<AndroidDirectoryPickerState>();
@@ -903,14 +928,30 @@ impl notia_backend_core::AgentStateRepository for TauriAgentStateRepository {
             Err(error) => return Err(error),
         };
         let mut skills = Vec::new();
+        let mut total_chars = 0;
         for item in page.items {
             let path = item.locator.logical_path.as_str().to_string();
             if !path.to_ascii_lowercase().ends_with(".md") {
                 continue;
             }
-            if let Some(content) = self.read_optional(library_id, &path)? {
-                skills.push(notia_backend_core::AgentSkill { path, content });
+            let content = match self.read_raw(library_id, &path) {
+                Ok(Some(content)) => content,
+                Ok(None) => continue,
+                Err(error) => {
+                    log::warn!("[notia:agent] una habilidad no se pudo leer y quedó afuera: {:?}", error.code);
+                    continue;
+                }
+            };
+            let chars = notia_backend_core::strip_frontmatter(&content).trim().chars().count();
+            if chars == 0 {
+                continue;
             }
+            if total_chars + chars > MAX_AGENT_SKILLS_CHARS {
+                log::warn!("[notia:agent] una habilidad de {chars} caracteres no entra en el prompt y quedó afuera");
+                continue;
+            }
+            total_chars += chars;
+            skills.push(notia_backend_core::AgentSkill { path, content });
         }
         Ok(skills)
     }
@@ -1104,8 +1145,9 @@ struct TauriBackendToolExecutor {
     /// Images of the person's last message, for the tools that keep one
     /// (a recipe's photo).
     request_images: Vec<crate::recipes::MessageImage>,
-    /// Image attachments of that message by the reference a note inserts
-    /// them with (`![…](reference)`), as base64.
+    /// Image attachments of the conversation (the person's and the images
+    /// the agent made) by the reference a note inserts them with
+    /// (`![…](reference)`) and an edit names, as base64.
     attachment_images: Vec<(String, String)>,
 }
 
@@ -1129,6 +1171,9 @@ impl TauriBackendToolExecutor {
             "add_agent_thought",
             "add_agent_biography",
             "add_agent_talk",
+            "add_agent_person",
+            "generate_image",
+            "edit_image",
             "read_library_documents",
             "search_library_documents",
             "search_library_context",
@@ -2455,20 +2500,37 @@ impl TauriBackendToolExecutor {
         }
         let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
         // A parallel call without tools and without memory context
-        // organizes the file that changed; the turn does not wait for it.
+        // organizes every agent file together; the turn does not wait for it.
         if changed {
-            let library_id = &context.library_id;
-            match kind {
-                crate::agent_workspace::AgentItem::Rule => crate::agent_knowledge::schedule_rules_organization(&self.app, library_id),
-                crate::agent_workspace::AgentItem::Memory => crate::agent_knowledge::schedule_memory_organization(&self.app, library_id),
-                crate::agent_workspace::AgentItem::Thought => crate::agent_knowledge::schedule_thoughts_organization(&self.app, library_id),
-                crate::agent_workspace::AgentItem::Biography => {
-                    crate::agent_knowledge::schedule_biography_organization(&self.app, library_id)
-                }
-                crate::agent_workspace::AgentItem::Talk => crate::agent_knowledge::schedule_talk_organization(&self.app, library_id),
-            }
+            crate::agent_knowledge::schedule_organization(&self.app, &context.library_id);
         }
         Ok(json!({ "changed": changed }))
+    }
+
+    /// `generate_image` / `edit_image`: draws with the local model and keeps
+    /// the image for the reply of the request (see `image_generation`). An
+    /// edit starts from an image of the conversation or one this request
+    /// made.
+    fn image_tool(&self, context: &BackendRequestContext, call: &ToolCall) -> Result<Value, BackendError> {
+        use notia_backend_core::image_generation as images;
+        let seed = crate::image_generation::random_seed();
+        let (job, reference) = if call.name == images::EDIT_IMAGE_TOOL {
+            let job = images::edit_job(&call.arguments, seed)?;
+            let name = job.reference.clone().unwrap_or_default();
+            let base64 = crate::image_generation::find_reference(&context.request_id, &name, &self.attachment_images).ok_or_else(|| {
+                BackendError::invalid_input(format!(
+                    "No hay una imagen «{name}» en la conversación: usá la referencia que figura en «Imagen adjunta» o la que devolvió generate_image."
+                ))
+            })?;
+            (job, Some(base64))
+        } else {
+            (images::generate_job(&call.arguments, seed)?, None)
+        };
+        // A local chat model shares the GPU: Ollama reloads it for the next reply.
+        if let Some(url) = local_ollama_url(&self.app, &context.library_id) {
+            crate::image_generation::release_ollama_gpu(&url);
+        }
+        crate::image_generation::generate(&self.app, &self.control, &context.request_id, job, reference)
     }
 
     fn document_mutation_preview(
@@ -3407,6 +3469,14 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 crate::agent_workspace::AgentItem::Talk,
                 &Self::first_text(&call.arguments, "observation", "content"),
             )?,
+            "add_agent_person" => {
+                let entry = notia_backend_core::agent_workspace::person_entry(
+                    &Self::text(&call.arguments, "name"),
+                    &Self::first_text(&call.arguments, "about", "content"),
+                )
+                .ok_or_else(|| BackendError::invalid_input("Indicá el nombre de la persona y quién es, en una oración breve."))?;
+                self.append_agent_file(context, crate::agent_workspace::AgentItem::Person, &entry)?
+            }
             "get_finance_record" => {
                 let entity = Self::text(&call.arguments, "entity");
                 if !entity.is_empty() && entity != "movements" {
@@ -4207,6 +4277,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 crate::gym::execute_tool(&self.app, &Self::gym_context(context), name, &call.arguments, &self.request_images)
                     .map_err(crate::gym::tool_error)?
             }
+            name if notia_backend_core::image_generation::is_image_tool(name) => self.image_tool(context, call)?,
             name if crate::recipes::is_recipe_tool(name) => {
                 crate::recipes::execute_tool(&self.app, &context.library_id, &call.id, name, &call.arguments, &self.request_images)
                     .map_err(crate::recipes::tool_error)?
@@ -4262,6 +4333,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "add_agent_thought"
                     | "add_agent_biography"
                     | "add_agent_talk"
+                    | "add_agent_person"
                     | "save_finance_account"
                     | "save_finance_category"
                     | "save_finance_transaction"
@@ -4429,12 +4501,15 @@ pub(crate) fn execute_backend_request(
         .iter()
         .map(|tool| tool.name.clone())
         .collect::<Vec<_>>();
-    // The mail tools are offered only when the library has a connected account.
+    // The mail tools are offered only when the library has a connected
+    // account, and the image tools when this device has the image model.
     let mail_connected = crate::mail_tools::has_connected_account(app, &request.context.library_id);
+    let images_available = crate::image_generation::is_available(app);
     let available_tool_names = TauriBackendToolExecutor::supported_tool_names()
         .iter()
         .copied()
         .filter(|name| mail_connected || !notia_backend_core::mail_tools::is_mail_tool(name))
+        .filter(|name| images_available || !notia_backend_core::image_generation::is_image_tool(name))
         .collect::<Vec<_>>();
     let requested_tool_names = if requested_tool_names.is_empty() {
         available_tool_names
@@ -4478,18 +4553,26 @@ pub(crate) fn execute_backend_request(
     if request.autonomous {
         request.tools = notia_backend_core::agent_autonomy::autonomous_tools(std::mem::take(&mut request.tools));
     }
-    // `thoughts.md`, `biography.md` and `talk.md` are always present for
-    // the runs that read them, even when deleted during the session.
+    // `thoughts.md`, `biography.md`, `talk.md` and `people.md` are always
+    // present for the runs that read them, even when deleted during the
+    // session; a new `people.md` starts with the people the memory names.
     if request.context.persistence_policy.allows_memory() && request.context.actor.is_library_owner() {
-        if let Err(error) = crate::agent_workspace::ensure_agent_list_files(app, &request.context.library_id) {
-            log::error!("[notia:memory] no se pudieron recrear los archivos del agente: {:?}", error.code);
+        match crate::agent_workspace::ensure_agent_list_files(app, &request.context.library_id) {
+            Ok(written) if written.contains(&notia_backend_core::agent_workspace::PEOPLE_PATH) => {
+                crate::agent_knowledge::schedule_organization(app, &request.context.library_id)
+            }
+            Ok(_) => {}
+            Err(error) => log::error!("[notia:memory] no se pudieron recrear los archivos del agente: {:?}", error.code),
         }
     }
     // Every chat with more than one area is routed: the turn keeps every
     // tool the actor may use and offers those of its areas, which the agent
-    // may change mid-run (see `backend_core::tool_routing`).
+    // may change mid-run, and the same call decides whether the turn thinks
+    // (see `backend_core::tool_routing`). A resumed run keeps both.
     if fresh_run {
-        request.tool_areas = route_turn_areas(app, state, &request);
+        let (areas, thinking) = route_turn_areas(app, state, &request).unzip();
+        request.tool_areas = areas;
+        request.thinking = thinking.flatten();
     }
     state.journal.store_request(&request)?;
     let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
@@ -4503,7 +4586,8 @@ pub(crate) fn execute_backend_request(
                 api_key: provider_settings.api_key,
             },
             provider_settings.model,
-            provider_settings.think,
+            // A conversational turn answers without thinking.
+            if request.thinking == Some(false) { Value::Bool(false) } else { provider_settings.think },
         )?,
         platform_ollama_transport(app),
     );
@@ -4533,7 +4617,7 @@ pub(crate) fn execute_backend_request(
         journal: Arc::clone(&state.journal),
         idempotency_key: request.idempotency_key.clone(),
         request_images: last_user_images(&request),
-        attachment_images: user_attachment_images(&request),
+        attachment_images: conversation_images(&request),
     };
     let revisions = TauriRevisionPort { app: app.clone() };
     let interactions = state.interactions(Some(&revisions));
@@ -4622,6 +4706,15 @@ fn provider_settings_from_config(config: &Value) -> Result<BackendProviderSettin
 /// Provider of one library: its saved AI settings (URL, model, credential and
 /// thinking), so a run never uses the credential of another library. The
 /// runtime-wide settings are only a fallback for a library without them.
+/// The library's Ollama endpoint when it runs on this computer (and so on
+/// its GPU); `None` for ollama.com and other hosts.
+pub(crate) fn local_ollama_url(app: &AppHandle, library_id: &str) -> Option<String> {
+    let state = app.state::<BackendRuntimeState>();
+    let url = provider_settings_for_library(app, state.inner(), library_id).ok()?.ollama_url;
+    let host = url.split("://").nth(1)?.split(['/', ':']).next()?.to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1").then_some(url)
+}
+
 fn provider_settings_for_library(
     app: &AppHandle,
     state: &BackendRuntimeState,
@@ -4653,9 +4746,10 @@ const ROUTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 /// the areas it needs among those the actor may use (the tools come already
 /// projected for the actor's contexts); a module's chat suggests its own
 /// area, which also decides with words when the model does not answer.
-/// `None` when the tools span a single area. See
+/// The same answer says whether the turn needs thinking (`None` when the
+/// model does not say). `None` when the tools span a single area. See
 /// `backend_core::tool_routing`.
-fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &AgentRequest) -> Option<Vec<String>> {
+fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &AgentRequest) -> Option<(Vec<String>, Option<bool>)> {
     use notia_backend_core::tool_routing::{
         area_ids, fallback_areas, home_area, needs_routing, offered_areas, parse_router_answer, router_prompt, RouterMessage,
         MAX_ROUTER_IMAGES,
@@ -4689,19 +4783,20 @@ fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &Agen
         })
         .collect::<Vec<_>>();
     let (system, user) = router_prompt(&offered, &conversation, home);
-    let picked = provider_settings_for_library(app, state, &request.context.library_id)
+    let decision = provider_settings_for_library(app, state, &request.context.library_id)
         .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, last_images, ROUTING_TIMEOUT))
-        .ok()
-        .and_then(|answer| parse_router_answer(&answer, &offered));
-    let (areas, source) = match picked {
+        .map(|answer| parse_router_answer(&answer, &offered))
+        .unwrap_or_default();
+    let (areas, source) = match decision.areas {
         Some(areas) => (areas, "modelo"),
         None => (fallback_areas(&last_text, &offered, with_attachments, home), "palabras"),
     };
     log::info!(
-        "[notia:router] áreas {:?} elegidas por {source}",
-        areas.iter().map(|area| area.id()).collect::<Vec<_>>()
+        "[notia:router] áreas {:?} elegidas por {source}; thinking {:?}",
+        areas.iter().map(|area| area.id()).collect::<Vec<_>>(),
+        decision.thinking
     );
-    Some(area_ids(&areas))
+    Some((area_ids(&areas), decision.thinking))
 }
 
 /// One completion without tools for a background task of the library
@@ -4999,13 +5094,15 @@ fn last_user_images(request: &AgentRequest) -> Vec<crate::recipes::MessageImage>
     message.images.iter().chain(attached).map(|base64| crate::recipes::MessageImage { base64: base64.clone() }).collect()
 }
 
-/// Image attachments of the person's messages, by the reference the model
-/// was told to insert them with. Earlier messages count too: a photo sent
-/// before can still go into a note when asked later, and it is inserted only
-/// where the model writes its reference. A later reference wins a repeated one.
-fn user_attachment_images(request: &AgentRequest) -> Vec<(String, String)> {
+/// Image attachments of the conversation, by the reference the model was
+/// told to insert them with: the person's photos and the images the agent
+/// made in earlier replies. Earlier messages count too: a photo sent before
+/// can still go into a note or be edited when asked later, and it is
+/// inserted only where the model writes its reference. A later reference
+/// wins a repeated one.
+fn conversation_images(request: &AgentRequest) -> Vec<(String, String)> {
     let mut images = Vec::<(String, String)>::new();
-    for message in request.messages.iter().filter(|message| message.role == notia_backend_core::MessageRole::User) {
+    for message in request.messages.iter().filter(|message| message.role != notia_backend_core::MessageRole::System) {
         let references = notia_backend_core::chat_attachments::image_references(&message.attachments);
         for (reference, attachment) in references.into_iter().zip(&message.attachments) {
             let (Some(reference), Some(page)) = (reference, attachment.pages.first()) else {
@@ -5155,9 +5252,12 @@ mod tests {
             page_count: None,
         };
         let said = |role, content: &str, attachments| BackendMessage { role, content: content.into(), images: Vec::new(), attachments };
+        let drawn = MessageAttachment { name: "imagen-2026-10-13-01-30-00.png".into(), media_type: "image/png".into(), pages: vec!["UE5H".into()], ..photo.clone() };
         let history = vec![
             said(MessageRole::User, "Cargame este almuerzo", vec![photo]),
             said(MessageRole::Assistant, "Quedó registrado.", Vec::new()),
+            said(MessageRole::User, "Dibujame el plato", Vec::new()),
+            said(MessageRole::Assistant, "Acá está.", vec![drawn]),
         ];
         let request = |text: &str| AgentRequest {
             context: BackendRequestContext {
@@ -5179,10 +5279,15 @@ mod tests {
             autonomous: false,
             scheduled_action: None,
             tool_areas: None,
+            thinking: None,
         };
         let later = request("¿Me pasás la rutina de hoy?");
         assert!(super::last_user_images(&later).is_empty());
-        assert_eq!(super::user_attachment_images(&later), vec![("almuerzo.jpg".to_string(), "QUJD".to_string())]);
+        // The images the agent drew can be edited or put in a note too.
+        assert_eq!(
+            super::conversation_images(&later),
+            vec![("almuerzo.jpg".to_string(), "QUJD".to_string()), ("imagen-2026-10-13-01-30-00.png".to_string(), "UE5H".to_string())]
+        );
     }
 
     /// «Haceme una nota que es de una idea…» from Telegram (2026-09-29): the
