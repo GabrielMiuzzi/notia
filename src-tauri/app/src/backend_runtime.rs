@@ -758,6 +758,19 @@ impl OperationReviewPort for TauriOperationReviewPort {
 /// of the turn.
 pub(crate) const DOCUMENTS_CHANGED_EVENT: &str = "notia://library-documents-changed";
 
+/// The agent moved a file or folder of a library (`{ libraryId, from, to }`,
+/// as the explorer and the tabs show them): the open tabs follow it.
+pub(crate) const ENTRY_MOVED_EVENT: &str = "notia://library-entry-moved";
+
+fn announce_entry_moved(app: &AppHandle, library_id: &str, data: Option<&Value>) {
+    use crate::host::Emitter;
+    let path = |field: &str| data.and_then(|data| data.get(field)).and_then(Value::as_str).map(str::to_string);
+    let (Some(from), Some(to)) = (path("from"), path("path")) else { return };
+    let catalog = app.try_state::<crate::library_catalog::LibraryCatalogState>().is_some();
+    let visible = |path: String| if catalog { crate::library_session::visible_path(app, library_id, &path) } else { path };
+    let _ = app.emit(ENTRY_MOVED_EVENT, json!({ "libraryId": library_id, "from": visible(from), "to": visible(to) }));
+}
+
 fn is_document_write_tool(name: &str) -> bool {
     matches!(
         name,
@@ -1185,6 +1198,7 @@ impl TauriBackendToolExecutor {
             "create_library_note",
             "replace_library_document",
             "delete_library_document",
+            "move_library_entry",
             "preview_markdown_edit",
             "apply_markdown_edit",
             "preview_multi_document_markdown_edit",
@@ -1476,6 +1490,47 @@ impl TauriBackendToolExecutor {
             .ok_or_else(|| {
                 BackendError::new(BackendErrorCode::NotFound, "El documento no existe.", false)
             })
+    }
+
+    /// The move a `move_library_entry` call asks for: the source by path
+    /// (a file or folder) or by the `documentId` of a search.
+    fn entry_move(
+        &self,
+        context: &BackendRequestContext,
+        arguments: &Value,
+    ) -> Result<notia_backend_core::library_tools::EntryMove, BackendError> {
+        let source = match Self::explicit_path(arguments) {
+            Some(path) => path,
+            None => self.existing_document_locator(context, arguments)?.logical_path.as_str().to_string(),
+        };
+        notia_backend_core::library_tools::plan_entry_move(&source, &Self::text(arguments, "targetFolder"))
+    }
+
+    /// What the confirmation of a move shows. A missing source or a taken
+    /// destination goes back to the model before asking the person.
+    fn entry_move_summary(&self, context: &BackendRequestContext, call: &ToolCall) -> Result<String, BackendError> {
+        let entry_move = self.entry_move(context, &call.arguments)?;
+        let registry = self.app.state::<LibraryBindingRegistry>();
+        let picker = self.app.state::<AndroidDirectoryPickerState>();
+        let exists = |path: &str| {
+            crate::filesystem::commands::library_entry_exists(registry.inner(), picker.inner(), &context.library_id, path)
+        };
+        if !exists(entry_move.source.as_str())? {
+            return Err(BackendError::new(
+                BackendErrorCode::NotFound,
+                format!("No existe «{}» en la biblioteca.", entry_move.source.as_str()),
+                false,
+            ));
+        }
+        if exists(entry_move.destination.as_str())? {
+            return Err(BackendError::new(
+                BackendErrorCode::Conflict,
+                format!("Ya existe «{}»: elegí otra carpeta o renombrá el archivo primero.", entry_move.destination.as_str()),
+                false,
+            ));
+        }
+        let folder = entry_move.target_folder.as_ref().map_or("la raíz de la biblioteca", |folder| folder.as_str());
+        Ok(format!("Mover «{}» a «{}».", entry_move.source.as_str(), folder))
     }
 
     /// Refuses an agent write to a Task Manager index: the store rebuilds it
@@ -3010,6 +3065,27 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if call.name == "move_library_entry" {
+            let summary = self.entry_move_summary(context, call)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.clone(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("library:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         let Some((locator, old_content, new_content, revision)) =
             self.document_mutation_preview(context, call)?
         else {
@@ -4237,6 +4313,11 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 adapter.delete_locator(&locator)?;
                 json!({ "path": locator.logical_path.as_str(), "deleted": true })
             }
+            "move_library_entry" => {
+                let entry_move = self.entry_move(context, &call.arguments)?;
+                crate::library_session::move_entry(&self.app, &context.library_id, &entry_move)?;
+                json!({ "from": entry_move.source.as_str(), "path": entry_move.destination.as_str(), "moved": true })
+            }
             "search_task_tickets"
             | "read_task_tickets"
             | "read_all_task_tickets"
@@ -4325,6 +4406,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 "create_library_note"
                     | "replace_library_document"
                     | "delete_library_document"
+                    | "move_library_entry"
                     | "export_document"
                     | "apply_markdown_edit"
                     | "apply_multi_document_markdown_edit"
@@ -4378,6 +4460,9 @@ impl ToolExecutor for TauriBackendToolExecutor {
         .inspect(|result| {
             if result.changed && is_document_write_tool(&call.name) {
                 announce_documents_changed(&self.app, &context.library_id, result.data.as_ref());
+            }
+            if result.changed && call.name == "move_library_entry" {
+                announce_entry_moved(&self.app, &context.library_id, result.data.as_ref());
             }
         })
     }

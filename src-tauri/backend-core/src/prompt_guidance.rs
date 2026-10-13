@@ -258,6 +258,7 @@ fn library(guidance: &mut Guidance, context: &BackendRequestContext, today: &str
     guidance.push_if(&["search_library_context"], "Para consultas sobre personas, tareas o temas usá search_library_context y leé con read_library_documents solo los documentos encontrados cuando los fragmentos no alcancen.");
     guidance.push("Reutilizá los resultados obtenidos: no repitas una búsqueda ni una lectura con los mismos argumentos. Cuando tengas evidencia suficiente, respondé.");
     guidance.push_if(&["replace_library_document"], "Podés crear, reemplazar o eliminar documentos, pero cada escritura requiere una confirmación individual. Identificá el documento de forma unívoca (documentId de una búsqueda) antes de modificarlo o eliminarlo.");
+    guidance.push_if(&["move_library_entry"], "Para ordenar la biblioteca usá move_library_entry: mueve un archivo o una carpeta entera a otra carpeta o subcarpeta (la crea si no existe) sin reescribir su contenido. No muevas un archivo copiándolo con create_library_note y borrándolo después.");
     guidance.push_if(&["search_task_tickets"], "Para tickets, grupos y tableros de Task Manager usá sus herramientas, no la búsqueda ni la lectura de documentos.");
     task_tools(guidance);
     routine_tools(guidance);

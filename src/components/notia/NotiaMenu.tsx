@@ -27,7 +27,7 @@ import { useRightPanelMount } from './hooks/useRightPanelMount'
 import { useHeavyViewMount } from './hooks/useHeavyViewMount'
 import { useGlobalEventListeners } from './hooks/useGlobalEventListeners'
 import { useTelegramLibraryChanges } from './hooks/useTelegramLibraryChanges'
-import { useAgentDocumentChanges } from './hooks/useAgentDocumentChanges'
+import { useAgentDocumentChanges, useAgentEntryMoves } from './hooks/useAgentDocumentChanges'
 import { store } from '../../store/index'
 import { isTextFileDocument } from '../../types/views/fileDocument'
 import { readLibraryDocument } from '../../services/libraries/libraryDocumentRuntime'
@@ -429,6 +429,14 @@ function NotiaMenuComponent() {
     }
   }, [activeLibraryId, handleActiveMarkdownDocumentChanged, handleExternalTextDocumentChange])
   useAgentDocumentChanges(activeLibraryId, getOpenTextPaths, reloadAgentChangedDocuments)
+  // A note or folder the agent moves keeps its open tabs, at the new path.
+  const getOpenTabPaths = useCallback(() => store.getState().documents.openTabs.map((tab) => tab.document.path), [])
+  const { renameOpenTabPath } = tabManager
+  const followAgentMovedEntries = useCallback((moves: Array<{ from: string; to: string }>) => {
+    for (const move of moves) renameOpenTabPath(move.from, move.to, move.to.split('/').pop() ?? move.to)
+    notifyLibraryTreeChanged(activeLibraryPath ?? undefined)
+  }, [activeLibraryPath, notifyLibraryTreeChanged, renameOpenTabPath])
+  useAgentEntryMoves(activeLibraryId, getOpenTabPaths, followAgentMovedEntries)
 
   // --- Derived values ---
 

@@ -329,6 +329,7 @@ pub fn tool_label(tool: &str) -> &'static str {
         "search_library_documents" | "search_library_files" => "buscando en la biblioteca",
         "search_library_context" => "consultando el contexto de la biblioteca",
         "read_library_document" | "read_library_documents" => "leyendo documentos autorizados",
+        "move_library_entry" => "ordenando la biblioteca",
         "read_all_task_tickets" | "search_task_tickets" | "get_task_board_summary" => "consultando las tareas",
         "search_web" => "consultando fuentes públicas",
         "get_weather" => "consultando el clima",

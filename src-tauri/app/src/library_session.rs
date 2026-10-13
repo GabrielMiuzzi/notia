@@ -600,18 +600,8 @@ pub(crate) fn library_mutate_entry(
             }
         }
     };
-    let library_id = library.id.clone();
-    // The handwriting of the notes follows them (`.notia/ink`).
-    let ink_change = crate::note_ink::plan_entry_change(
+    apply_entry_operation(
         &app,
-        &library_id,
-        &payload.action,
-        &logical_path,
-        payload.name.as_deref(),
-        source_logical_path.as_deref(),
-        payload.mode.as_deref(),
-    );
-    let result = crate::filesystem::commands::backend_library_entry_operation(
         crate::filesystem::commands::BackendLibraryEntryPayload {
             library_id: library.id,
             action: payload.action,
@@ -621,14 +611,66 @@ pub(crate) fn library_mutate_entry(
             source_logical_path,
             mode: payload.mode,
         },
-        app.state(),
-        app.state(),
+    )
+}
+
+/// Moves a file or folder of a library into another folder for the agent,
+/// creating the missing destination folders, as the explorer moves an entry.
+pub(crate) fn move_entry(
+    app: &AppHandle,
+    library_id: &str,
+    entry_move: &notia_backend_core::library_tools::EntryMove,
+) -> Result<(), BackendError> {
+    let folder = entry_move.target_folder.as_ref().map(|folder| folder.as_str().to_string()).unwrap_or_default();
+    crate::filesystem::commands::ensure_library_folders(
+        app.state::<crate::library_registry::LibraryBindingRegistry>().inner(),
+        app.state::<crate::mobile_directory_picker::AndroidDirectoryPickerState>().inner(),
+        library_id,
+        &folder,
+    )?;
+    let result = apply_entry_operation(
+        app,
+        crate::filesystem::commands::BackendLibraryEntryPayload {
+            library_id: library_id.to_string(),
+            action: "paste".to_string(),
+            logical_path: folder,
+            name: None,
+            kind: None,
+            source_logical_path: Some(entry_move.source.as_str().to_string()),
+            mode: Some("move".to_string()),
+        },
     );
     if result.ok {
+        Ok(())
+    } else {
+        Err(crate::filesystem::adapter::map_filesystem_error(
+            result.error.as_deref().unwrap_or("Could not paste entry."),
+        ))
+    }
+}
+
+/// Runs an entry operation on logical paths; the handwriting of the notes
+/// follows them (`.notia/ink`) and the library is indexed again.
+fn apply_entry_operation(
+    app: &AppHandle,
+    payload: crate::filesystem::commands::BackendLibraryEntryPayload,
+) -> crate::filesystem::types::OperationResult {
+    let library_id = payload.library_id.clone();
+    let ink_change = crate::note_ink::plan_entry_change(
+        app,
+        &library_id,
+        &payload.action,
+        &payload.logical_path,
+        payload.name.as_deref(),
+        payload.source_logical_path.as_deref(),
+        payload.mode.as_deref(),
+    );
+    let result = crate::filesystem::commands::backend_library_entry_operation(payload, app.state(), app.state());
+    if result.ok {
         if let Some(change) = &ink_change {
-            crate::note_ink::apply_entry_change(&app, &library_id, change);
+            crate::note_ink::apply_entry_change(app, &library_id, change);
         }
-        reindex_in_background(&app, &library_id);
+        reindex_in_background(app, &library_id);
     }
     result
 }

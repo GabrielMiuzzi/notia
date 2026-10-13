@@ -69,6 +69,7 @@
 - Textos largos de Telegram que llegan partidos en varios mensajes se leen como un solo pedido.
 - Elección de herramientas por el modelo en el chat principal y en Telegram: áreas (notas, tareas, finanzas, rutina, correo y calendario) según el pedido y la conversación, limitadas a las que el usuario tiene autorizadas, con respaldo por palabras; la misma llamada decide si el turno usa thinking.
 - Herramientas del asistente para Gmail (buscar, leer, papelera, mover de carpeta, spam, leídos, enviar y responder) y Google Calendar (listar y crear eventos), confidenciales (Owner o acceso a #Confidencial), que distinguen de qué cuenta y tipo es cada correo o evento, con confirmación antes de cada cambio o envío.
+- Asistente que ordena la biblioteca: mueve archivos y carpetas entre carpetas y subcarpetas, con confirmación, y crea la carpeta de destino si no existe.
 - Integración de Telegram con acceso transversal a biblioteca, Task Manager y Finanzas, chat, progreso editable que se borra al llegar la respuesta, confirmaciones, notas de voz e imágenes, funcionando sin la ventana abierta en Windows y Android.
 - ColdPass para credenciales cifradas con la contraseña del Owner: lista con buscador y filtros por contraseñas débiles o antiguas, detalle con historial fechado y copiado que se borra del portapapeles a los 30 segundos.
 - Desbloqueo de ColdPass con huella en Android, opcional por dispositivo.

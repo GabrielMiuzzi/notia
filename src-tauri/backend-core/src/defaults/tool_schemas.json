@@ -1777,6 +1777,29 @@
       "properties": {}
     }
   },
+  "move_library_entry": {
+    "description": "Mueve un archivo o una carpeta completa de la biblioteca a otra carpeta o subcarpeta, solo tras confirmacion individual. Conserva el nombre; las carpetas de destino que no existen se crean. Identificá el origen con path (ruta lógica de un archivo o carpeta) o con documentId de una búsqueda. targetFolder es la ruta lógica de la carpeta de destino; vacío mueve a la raíz de la biblioteca. Para varios archivos llamala una vez por archivo, o mové la carpeta que los contiene. No mueve carpetas internas (.notia, .agent) ni archivos de tareas, recetas, gimnasio o historial de chats. Fuente de verdad: la biblioteca autorizada. Campos obligatorios: targetFolder y path o documentId. Presenta preview o resumen del cambio antes de escribir, exige confirmación individual y autorización vigente; no autoriza por esta descripción. Afirma éxito únicamente tras un resultado verificado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "targetFolder"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta lógica del archivo o la carpeta a mover, por ejemplo Inbox/idea.md o Proyectos/Viejos."
+        },
+        "documentId": {
+          "type": "string",
+          "description": "documentId devuelto por una búsqueda, en lugar de path."
+        },
+        "targetFolder": {
+          "type": "string",
+          "description": "Ruta lógica de la carpeta de destino, por ejemplo Proyectos/2026; vacío es la raíz de la biblioteca."
+        }
+      }
+    }
+  },
   "move_task_group": {
     "description": "Mueve un ticket a otro grupo del mismo tablero. Requiere confirmación visible.",
     "parameters": {

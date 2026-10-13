@@ -64,3 +64,55 @@ export function useAgentDocumentChanges(
     }
   }, [libraryId])
 }
+
+const ENTRY_MOVED_EVENT = 'notia://library-entry-moved'
+
+/** A file or folder the agent moved (`backend_runtime::announce_entry_moved`), as the explorer shows it. */
+export interface AgentEntryMoved {
+  libraryId: string
+  from: string
+  to: string
+}
+
+/** Where each open tab inside the moved entry is now. */
+export function movedOpenPaths(openPaths: string[], event: AgentEntryMoved): Array<{ from: string; to: string }> {
+  const from = comparable(event.from)
+  const to = comparable(event.to)
+  return openPaths.flatMap((openPath) => {
+    const path = comparable(openPath)
+    if (path !== from && !path.startsWith(`${from}/`)) return []
+    return [{ from: openPath, to: `${to}${path.slice(from.length)}` }]
+  })
+}
+
+/**
+ * Calls `onMoved` with the open tabs whose note the agent of a chat moved to
+ * another folder, so they keep editing the note where it is now.
+ */
+export function useAgentEntryMoves(
+  libraryId: string | null | undefined,
+  getOpenPaths: () => string[],
+  onMoved: (moves: Array<{ from: string; to: string }>) => void,
+): void {
+  const callbacks = useRef({ getOpenPaths, onMoved })
+  useEffect(() => {
+    callbacks.current = { getOpenPaths, onMoved }
+  }, [getOpenPaths, onMoved])
+  useEffect(() => {
+    if (!libraryId) return
+    let active = true
+    let unlisten: (() => void) | null = null
+    void subscribeBackend<unknown>(ENTRY_MOVED_EVENT, (payload) => {
+      const { libraryId: movedIn, from, to } = (payload ?? {}) as Record<string, unknown>
+      if (movedIn !== libraryId || typeof from !== 'string' || typeof to !== 'string') return
+      callbacks.current.onMoved(movedOpenPaths(callbacks.current.getOpenPaths(), { libraryId, from, to }))
+    }).then((stop) => {
+      if (active) unlisten = stop
+      else stop()
+    }).catch(() => undefined)
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [libraryId])
+}

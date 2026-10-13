@@ -15,6 +15,7 @@ const TOOL_LABELS: Record<string, string> = {
   search_library_documents: 'buscando en la biblioteca',
   search_library_context: 'consultando el contexto de la biblioteca',
   read_library_documents: 'leyendo documentos autorizados',
+  move_library_entry: 'ordenando la biblioteca',
   read_all_task_tickets: 'leyendo las tareas',
   get_task_board_summary: 'resumiendo el tablero autorizado',
   duplicate_task: 'duplicando el ticket autorizado',

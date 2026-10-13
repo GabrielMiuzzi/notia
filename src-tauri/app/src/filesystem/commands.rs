@@ -459,6 +459,41 @@ pub(crate) fn ensure_library_folder(
     }
 }
 
+/// Creates every missing folder of the logical `folder`, from the root down.
+pub(crate) fn ensure_library_folders(
+    registry: &LibraryBindingRegistry,
+    picker: &mobile_directory_picker::AndroidDirectoryPickerState,
+    library_id: &str,
+    folder: &str,
+) -> Result<(), crate::backend::BackendError> {
+    let mut parent = String::new();
+    for name in folder.split('/').filter(|name| !name.is_empty()) {
+        ensure_library_folder(registry, picker, library_id, &parent, name)?;
+        parent = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
+    }
+    Ok(())
+}
+
+/// Whether a file or folder exists at the logical path of a bound library.
+pub(crate) fn library_entry_exists(
+    registry: &LibraryBindingRegistry,
+    picker: &mobile_directory_picker::AndroidDirectoryPickerState,
+    library_id: &str,
+    logical_path: &str,
+) -> Result<bool, crate::backend::BackendError> {
+    let binding = registry.lookup(library_id)?;
+    let path = resolve_library_entry_path(&binding, logical_path, false)?;
+    #[cfg(target_os = "android")]
+    {
+        Ok(android_saf::path_exists(picker, &path, android_directory_uri(&binding).as_deref()).exists)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = picker;
+        Ok(std::path::Path::new(&path).exists())
+    }
+}
+
 /// Creates, deletes, renames, copies or moves a library entry addressed by
 /// `libraryId` + logical paths. The registered binding decides the physical
 /// location, so the WebView cannot address anything outside the library.
@@ -593,6 +628,40 @@ mod tests {
             ..binding
         };
         assert!(resolve_library_entry_path(&revoked, "notas", false).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What `move_library_entry` does on desktop: the missing destination
+    /// folders are created and the entry moves with the explorer's operation.
+    #[test]
+    fn an_entry_moves_into_folders_created_on_the_way() {
+        use super::{ensure_library_folders, library_entry_exists, run_library_entry_operation};
+        let root = std::env::temp_dir().join(format!("notia-move-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Inbox")).expect("fixture");
+        std::fs::write(root.join("Inbox/idea.md"), "# Idea").expect("fixture");
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("lib", &root).expect("bind");
+        let picker = crate::mobile_directory_picker::AndroidDirectoryPickerState::empty();
+        let binding = registry.lookup("lib").expect("binding");
+
+        ensure_library_folders(&registry, &picker, "lib", "Proyectos/2026").expect("folders");
+        ensure_library_folders(&registry, &picker, "lib", "Proyectos/2026").expect("existing folders are fine");
+        assert!(library_entry_exists(&registry, &picker, "lib", "Proyectos/2026").expect("exists"));
+        let moved = run_library_entry_operation(
+            &super::LibraryEntryOperationPayload {
+                action: "paste".to_string(),
+                target_path: None,
+                new_name: None,
+                source_path: Some(resolve_library_entry_path(&binding, "Inbox", false).expect("source")),
+                target_directory_path: Some(resolve_library_entry_path(&binding, "Proyectos/2026", true).expect("target")),
+                mode: Some("move".to_string()),
+                directory_uri: None,
+            },
+            &picker,
+        );
+        assert!(moved.ok, "{:?}", moved.error);
+        assert!(library_entry_exists(&registry, &picker, "lib", "Proyectos/2026/Inbox/idea.md").expect("moved"));
+        assert!(!library_entry_exists(&registry, &picker, "lib", "Inbox").expect("gone"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -11795,3 +11795,45 @@ El modelo de chat decide si llama a `generate_image` y escribe su descripción, 
 - Pruebas manuales con `sd-cli` en esa placa: 1024 × 1024 tardó 60 s (38 s de muestreo) y la edición de esa imagen, 109 s. Los hashes de los cuatro archivos coinciden.
 - `tsc`, ESLint de lo tocado y Vitest de Configuraciones, chat y servicios de IA: 68 pruebas, más 5 nuevas de `ImageModelsSection` (descarga y progreso, reanudar con error, instalado y borrar, Android, sin `sd-cli`). `cargo check --target aarch64-linux-android`: sin errores, 59 warnings, ninguno de los archivos de esta iteración.
 - Pendiente: un turno real del chat y de Telegram con el modelo de chat configurado, la descarga desde la app (los modelos de esta PC se bajaron con el mismo destino), ver la sección y las imágenes del chat en pantallas angostas y en Android como cliente, e imágenes de 2 MP en esta placa.
+
+## Agente: mover archivos y carpetas de la biblioteca (2026-10-13)
+
+- **Pedido.** La IA tiene que poder mover archivos entre carpetas y subcarpetas de la biblioteca. Hasta ahora solo podía crear, reemplazar o borrar documentos: para «mover» tenía que copiar el contenido y borrar el original.
+- **Tool nueva `move_library_entry`.** Está en el catálogo como mutación documental (`catalog::document_mutation_alias_tools`): scopes Library, Document y Graph, área de routing Biblioteca y confirmación individual. Schema en `defaults/tool_schemas.json`.
+  - Entrada: `path` (ruta lógica de un archivo o de una carpeta) o `documentId` de una búsqueda, y `targetFolder` (ruta lógica de la carpeta de destino; vacío es la raíz).
+  - Salida: `{ from, path, moved: true }`, con `path` en la ubicación nueva. El nombre no cambia.
+  - Una sola llamada mueve una carpeta entera con todo lo que contiene.
+- **Reglas (`library_tools::plan_entry_move`, backend-core, sin I/O).**
+  - Las rutas pasan por `LogicalPathDto`, que rechaza `..`, rutas absolutas, `\` y URI.
+  - La carpeta de destino pasa antes por `portable_document_path`, así que una carpeta nueva queda con nombres que Windows y Android aceptan.
+  - Rechaza con `forbidden` todo segmento que empiece con `.` (`.notia`, `.agent`…) y las carpetas de módulos, como origen, como destino o como carpeta que las contiene: `task-manager`, `task-mannager`, `recipes`, `Gym` y `chat/chats`. Esos archivos se ordenan con las herramientas de su módulo.
+  - Rechaza con `invalid_input` mover algo a la carpeta en la que ya está y mover una carpeta dentro de sí misma (comparación sin distinguir mayúsculas ASCII, como Windows).
+- **Confirmación.** `TauriBackendToolExecutor::preview` arma el resumen «Mover «origen» a «carpeta».». Antes de preguntar comprueba con `filesystem::commands::library_entry_exists` que el origen exista (`not_found`) y que el destino esté libre (`conflict`); el error vuelve al modelo sin molestar a la persona.
+- **Ejecución (`library_session::move_entry`).**
+  - `filesystem::commands::ensure_library_folders` crea, desde la raíz, las carpetas de destino que faltan (una existente no es error).
+  - Después corre la misma operación que el explorador al arrastrar una entrada: `paste` con `mode: "move"` por `backend_library_entry_operation`, que resuelve las rutas dentro de la biblioteca registrada. En escritorio es `fs::rename`; en Android, `moveDocument` de SAF desde el grant del árbol, con invalidación de la caché de rutas del origen y del destino.
+  - `library_mutate_entry` y la tool comparten `apply_entry_operation`: los trazos de la nota (`.notia/ink`) la siguen y la biblioteca se reindexa en segundo plano.
+  - No se puede deshacer con `undo_ai_operation` (el journal guarda contenido, no ubicaciones): para revertir, se pide moverlo de vuelta.
+- **Evento `notia://library-entry-moved`** `{ libraryId, from, to }`, con las rutas como las muestran el explorador y las pestañas (`backend_runtime::announce_entry_moved`). En la interfaz, `useAgentEntryMoves` (en `NotiaMenu`) usa `movedOpenPaths` para pasar las pestañas abiertas dentro de lo movido a su ruta nueva con `renameOpenTabPath`, así que se siguen guardando en el lugar correcto, y refresca el árbol. Es estado visual: la ruta física la sigue resolviendo Rust.
+- **Prompt y etiquetas.** `prompt_guidance` pide usar la tool para ordenar la biblioteca y no copiar y borrar. Telegram y el plan muestran «ordenando la biblioteca».
+- **Validación.**
+  - backend-core: `moves_files_and_folders_between_folders` y `refuses_moves_that_go_nowhere_or_break_modules`.
+  - notia-app: `filesystem::commands::tests::an_entry_moves_into_folders_created_on_the_way` (escritorio, carpetas creadas en el camino y carpeta movida con su contenido) y los tests de `backend_runtime` que cruzan catálogo y adaptadores.
+  - vitest: `useAgentDocumentChanges.test.ts` (pestañas dentro de lo movido, con `\` y sin confundir `Inbox` con `Inbox 2`). `tsc` sin errores.
+  - Falta probarlo con un modelo real en la app de Windows y en la tablet Android (SAF `moveDocument` de una carpeta y creación de carpetas de destino).
+
+## Task Manager: «Recuperar» devuelve la tarea a su tablero (2026-10-13)
+
+- **Síntoma.** Al tocar «Recuperar» sobre una tarea de Completadas o Canceladas, la tarea desaparecía: no volvía a su tablero ni seguía en el panel.
+- **Causa (`task_manager_store::choose_ticket_path`).** «Recuperar» manda `change-state` a `Pendiente` y la mutación de backend-core conserva tablero y grupo, pero el store solo movía el archivo al archivar. Al reabrirse, el archivo seguía en `finished/<tablero>/` o `cancelled/<tablero>/` con `estado: Pendiente`:
+  - los paneles Completadas/Canceladas listan por estado (`panel_paths` de `project_board_view`), así que ya no la mostraban;
+  - el tablero (`TaskBoardView.tsx`) descarta las rutas con `/finished/` o `/cancelled/`, así que tampoco aparecía ahí.
+- **Arreglo.**
+  - Una tarea que no está Finalizada ni Cancelada y cuyo archivo está en `finished/` o `cancelled/` vuelve a `<raíz activa>/<tablero>/` (o a `subTasks/` si es subtarea), con `nombre (n).md` si el nombre está tomado. Pasa en cualquier commit de Task Manager, cambie o no el estado, así que las tareas que ya habían quedado en el limbo se reparan con la próxima acción. Sigue igual la regla anterior: una tarea archivada guardada en otro lugar (una subtarea junto a su padre) solo se mueve cuando cambia su estado.
+  - `board_from_path` mira primero las carpetas de archivo, porque en el layout `task-mannager/` están dentro de la raíz activa: una tarea sin `tablero` en `finished/` ya no queda en un tablero llamado «finished». Toma solo carpetas, así que un archivo suelto en una raíz es del tablero `default`.
+- **Validación.**
+  - `a_restored_ticket_leaves_the_archive_folders_for_its_board`, `tickets_without_board_take_the_folder_not_the_archive_name` y `recovering_a_finished_or_cancelled_ticket_returns_it_to_its_board`. Esta última, de punta a punta con `PersistentTaskManager` sobre una biblioteca temporal, finaliza y cancela una tarea, las recupera y comprueba el archivo y `project_board_view` después de recargar. Sin el arreglo, las dos regresiones fallan.
+  - `notia-app` 507 y 11 ignoradas; chequeo de Android sin errores (58 advertencias).
+  - Falta probarlo en la app de Windows y en la tablet (en SAF, el movimiento escribe el archivo nuevo y borra el viejo).
+- **Tablero por estado (mismo día, 11:45).** Tres tareas recuperadas antes del arreglo seguían en `finished/default/` con `estado: Pendiente`. El agente las veía en Anotadores porque lee el snapshot de Rust, pero el tablero no las mostraba. `TaskBoardView.tsx` ya no filtra por los fragmentos de ruta `/finished/` y `/cancelled/`: el tablero decide por el estado que da Rust (las Finalizadas y Canceladas no entran en ningún grupo), igual que `panel_paths`. Así, una tarea abierta se ve aunque su archivo todavía no se haya movido, y una subtarea finalizada en `finished/subTasks/` vuelve al checklist de su padre, como las que se guardan junto a él. Regresión: `shows an open task stored in an archive folder and hides finished ones` en `TaskBoardView.test.tsx` (vitest de `src/modules/task-manager`: 59 pruebas; `tsc -p tsconfig.app.json` sin errores). Falta probarlo en la app.
+- **Pendiente.** Una tarea cuyo grupo se borró mientras estaba archivada vuelve con un grupo que ya no existe.

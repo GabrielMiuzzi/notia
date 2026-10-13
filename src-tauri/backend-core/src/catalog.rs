@@ -239,6 +239,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         "create_library_note",
         "replace_library_document",
         "delete_library_document",
+        "move_library_entry",
     ]));
     catalog.extend(plan_tools());
     catalog.extend(super::mail_tools::mail_tool_contracts());

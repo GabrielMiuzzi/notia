@@ -136,6 +136,66 @@ impl TryFrom<String> for LogicalPathDto {
     }
 }
 
+/// Folders whose files belong to a module (its own tools change them) or to
+/// the chat history: the agent moves nothing out of them or into them.
+const MODULE_FOLDERS: [&str; 5] = [
+    "task-manager",
+    "task-mannager",
+    crate::recipes::RECIPES_FOLDER,
+    crate::gym::GYM_FOLDER,
+    "chat/chats",
+];
+
+/// A file or folder of a library the agent moves into another folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryMove {
+    pub source: LogicalPathDto,
+    /// Destination folder; `None` is the library root.
+    pub target_folder: Option<LogicalPathDto>,
+    /// Where the entry ends up: the folder followed by the entry's name.
+    pub destination: LogicalPathDto,
+}
+
+/// Checks a move of `source` (a file or folder) into `target_folder` (empty
+/// for the library root, maybe not created yet). The destination folder gets
+/// names every platform accepts, as new notes do; internal folders (`.notia`,
+/// `.agent`…) and module folders are refused.
+pub fn plan_entry_move(source: &str, target_folder: &str) -> Result<EntryMove, BackendError> {
+    let source = LogicalPathDto::new(source.trim().trim_matches('/'))?;
+    let folder = portable_document_path(target_folder.trim().trim_matches('/'));
+    let target_folder = (!folder.is_empty()).then(|| LogicalPathDto::new(&folder)).transpose()?;
+    let folder = target_folder.as_ref().map(LogicalPathDto::as_str).unwrap_or_default();
+    let source_path = source.as_str();
+    for path in [source_path, folder] {
+        if path.split('/').any(|segment| segment.starts_with('.')) {
+            return Err(scope_error("Las carpetas internas de Notia no se mueven."));
+        }
+        if MODULE_FOLDERS.iter().any(|module| is_same_or_inside(path, module) || is_same_or_inside(module, path)) {
+            return Err(scope_error(
+                "Las tareas, recetas, el gimnasio y el historial de chats se ordenan con sus propias herramientas, no moviendo archivos.",
+            ));
+        }
+    }
+    let (parent, name) = source_path.rsplit_once('/').unwrap_or(("", source_path));
+    if parent == folder {
+        return Err(BackendError::invalid_input(format!("«{source_path}» ya está en esa carpeta.")));
+    }
+    if is_same_or_inside(folder, source_path) {
+        return Err(BackendError::invalid_input("Una carpeta no se puede mover dentro de sí misma."));
+    }
+    let destination = LogicalPathDto::new(&if folder.is_empty() { name.to_string() } else { format!("{folder}/{name}") })?;
+    Ok(EntryMove { source, target_folder, destination })
+}
+
+/// `path` is `folder` or lies under it (ASCII case ignored, as Windows does).
+fn is_same_or_inside(path: &str, folder: &str) -> bool {
+    !folder.is_empty()
+        && path.len() >= folder.len()
+        && path.is_char_boundary(folder.len())
+        && path[..folder.len()].eq_ignore_ascii_case(folder)
+        && (path.len() == folder.len() || path.as_bytes()[folder.len()] == b'/')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AndroidTreeUriDto(String);
@@ -2132,6 +2192,37 @@ mod tests {
         assert_eq!((last[0].offset, last[0].content.chars().count(), last[0].next_offset), (400_000, 50_000, None));
         let photo = document("n.md", "Antes ![x](data:image/png;base64,AAAA) después".into());
         assert_eq!(document_parts(vec![photo], 0, None)[0].content, "Antes ![x](foto embebida) después");
+    }
+
+    #[test]
+    fn moves_files_and_folders_between_folders() {
+        let planned = plan_entry_move("Inbox/idea.md", "Proyectos/2026").unwrap();
+        assert_eq!(planned.destination.as_str(), "Proyectos/2026/idea.md");
+        assert_eq!(planned.target_folder.unwrap().as_str(), "Proyectos/2026");
+        let to_root = plan_entry_move("/Proyectos/Viejos/", "").unwrap();
+        assert_eq!(to_root.destination.as_str(), "Viejos");
+        assert!(to_root.target_folder.is_none());
+        // A new folder gets a name Windows and Android accept.
+        assert_eq!(plan_entry_move("a.md", "Ideas: 2026").unwrap().destination.as_str(), "Ideas - 2026/a.md");
+        // A folder named like the start of another is not inside it.
+        assert!(plan_entry_move("Proyectos", "Proyectos 2026").is_ok());
+    }
+
+    #[test]
+    fn refuses_moves_that_go_nowhere_or_break_modules() {
+        let error = |source: &str, folder: &str| plan_entry_move(source, folder).unwrap_err().code;
+        assert_eq!(error("Inbox/idea.md", "Inbox"), BackendErrorCode::InvalidInput);
+        assert_eq!(error("idea.md", ""), BackendErrorCode::InvalidInput);
+        assert_eq!(error("Proyectos", "Proyectos/2026"), BackendErrorCode::InvalidInput);
+        assert_eq!(error("Proyectos", "proyectos"), BackendErrorCode::InvalidInput);
+        assert_eq!(error("../fuera.md", "Inbox"), BackendErrorCode::InvalidInput);
+        assert_eq!(error("a.md", "Inbox/../.."), BackendErrorCode::InvalidInput);
+        assert_eq!(error(".agent/memory.md", "Inbox"), BackendErrorCode::Forbidden);
+        assert_eq!(error("a.md", ".notia"), BackendErrorCode::Forbidden);
+        assert_eq!(error("recipes/torta.md", "Inbox"), BackendErrorCode::Forbidden);
+        assert_eq!(error("a.md", "Task-Manager/Sprint"), BackendErrorCode::Forbidden);
+        assert_eq!(error("chat", "Archivo"), BackendErrorCode::Forbidden);
+        assert_eq!(error("Gym", "Archivo"), BackendErrorCode::Forbidden);
     }
 
     #[test]

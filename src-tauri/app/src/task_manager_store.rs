@@ -1177,17 +1177,25 @@ fn is_ticket_document(path: &Path, workspace: &Workspace) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("md"))
 }
 
+fn is_in_archive_folder(workspace: &Workspace, path: &Path) -> bool {
+    path.starts_with(&workspace.finished) || path.starts_with(&workspace.cancelled)
+}
+
+/// The board folder of a ticket without `tablero`. The archive folders are
+/// checked first because the legacy layout keeps them inside the active root,
+/// and a file directly in a base folder belongs to the default board.
 fn board_from_path(path: &Path, workspace: &Workspace) -> String {
-    let base = if path.starts_with(&workspace.active) {
-        &workspace.active
-    } else if path.starts_with(&workspace.finished) {
+    let base = if path.starts_with(&workspace.finished) {
         &workspace.finished
-    } else {
+    } else if path.starts_with(&workspace.cancelled) {
         &workspace.cancelled
+    } else {
+        &workspace.active
     };
     path.strip_prefix(base)
         .ok()
-        .and_then(|relative| relative.components().next())
+        .and_then(|relative| relative.parent())
+        .and_then(|folder| folder.components().next())
         .and_then(|component| component.as_os_str().to_str())
         .filter(|name| !name.eq_ignore_ascii_case(SUBTASKS))
         .map(normalize_name)
@@ -1597,11 +1605,17 @@ fn choose_ticket_path(
     };
     if let Some(route) = route {
         let routed = resolve_route_path(workspace, route)?;
-        // Archiving moves the file only when the state changes in this
-        // commit; an archived ticket stored elsewhere (for example a finished
-        // subtask next to its parent) stays where the user keeps it.
-        let archived_elsewhere = archived_folder.is_some_and(|folder| !routed.starts_with(folder));
-        if !archived_elsewhere || !state_changed {
+        let keep_route = match archived_folder {
+            // Archiving moves the file only when the state changes in this
+            // commit; an archived ticket stored elsewhere (for example a
+            // finished subtask next to its parent) stays where the user keeps it.
+            Some(folder) => routed.starts_with(folder) || !state_changed,
+            // A ticket that is no longer finished or cancelled leaves the
+            // archive folders and returns to its board: neither the board nor
+            // the archive panels show an open ticket stored there.
+            None => !is_in_archive_folder(workspace, &routed),
+        };
+        if keep_route {
             return Ok(routed);
         }
     }
@@ -3012,7 +3026,55 @@ mod tests {
     fn archived_tickets_stored_elsewhere_move_only_when_their_state_changes() {
         let workspace = resolve_workspace_for_test();
         let route = "task-mannager/default/subTasks/Hecha.md";
-        let ticket = TaskTicketDto {
+        let ticket = archived_ticket_for_test(route);
+        let old_path = workspace.library_root.join(route);
+
+        let kept = choose_ticket_path(&workspace, &ticket, Some(&old_path), Some(route), false)
+            .expect("path");
+        assert_eq!(kept, old_path);
+
+        let archived = choose_ticket_path(&workspace, &ticket, Some(&old_path), Some(route), true)
+            .expect("path");
+        assert_eq!(archived, workspace.finished.join(SUBTASKS).join("Hecha.md"));
+    }
+
+    #[test]
+    fn a_restored_ticket_leaves_the_archive_folders_for_its_board() {
+        // The legacy layout keeps the archive folders inside the active root.
+        let workspace = resolve_workspace_for_test();
+        for folder in [FINISHED, CANCELLED] {
+            let route = format!("task-mannager/{folder}/work/Hecha.md");
+            let mut ticket = archived_ticket_for_test(&route);
+            ticket.summary.board_id = "work".into();
+            ticket.summary.parent_ticket_id = None;
+            ticket.summary.state = TaskState::Pending;
+            let old_path = workspace.library_root.join(&route);
+            for state_changed in [true, false] {
+                let restored = choose_ticket_path(
+                    &workspace,
+                    &ticket,
+                    Some(&old_path),
+                    Some(&route),
+                    state_changed,
+                )
+                .expect("path");
+                assert_eq!(restored, workspace.active.join("work").join("Hecha.md"), "{folder}");
+            }
+        }
+    }
+
+    #[test]
+    fn tickets_without_board_take_the_folder_not_the_archive_name() {
+        let workspace = resolve_workspace_for_test();
+        let path = |logical: &str| workspace.library_root.join(logical);
+        assert_eq!(board_from_path(&path("task-mannager/finished/work/A.md"), &workspace), "work");
+        assert_eq!(board_from_path(&path("task-mannager/cancelled/A.md"), &workspace), "default");
+        assert_eq!(board_from_path(&path("task-mannager/work/A.md"), &workspace), "work");
+        assert_eq!(board_from_path(&path("task-mannager/A.md"), &workspace), "default");
+    }
+
+    fn archived_ticket_for_test(route: &str) -> TaskTicketDto {
+        TaskTicketDto {
             summary: TaskTicketSummaryDto {
                 library_id: "library".into(),
                 ticket_id: "ticket-done".into(),
@@ -3040,16 +3102,7 @@ mod tests {
             context: None,
             related_documents: vec![],
             related_tasks: vec![],
-        };
-        let old_path = workspace.library_root.join(route);
-
-        let kept = choose_ticket_path(&workspace, &ticket, Some(&old_path), Some(route), false)
-            .expect("path");
-        assert_eq!(kept, old_path);
-
-        let archived = choose_ticket_path(&workspace, &ticket, Some(&old_path), Some(route), true)
-            .expect("path");
-        assert_eq!(archived, workspace.finished.join(SUBTASKS).join("Hecha.md"));
+        }
     }
 
     fn resolve_workspace_for_test() -> Workspace {
@@ -3302,6 +3355,89 @@ parent: \"[[borrada]]\"
         assert!(written.contains("Estado según ServiceNow del 28/9"), "{written}");
         assert!(!written.contains("Bloqueada por BPC") && !written.contains("12/09/2026"), "{written}");
         assert!(written.contains("Detalle"), "{written}");
+        let _ = std::fs::remove_dir_all(library_root);
+    }
+
+    #[test]
+    fn recovering_a_finished_or_cancelled_ticket_returns_it_to_its_board() {
+        use notia_backend_core::{
+            project_board_view, TaskManagerContextDto, TaskManagerMutationPort,
+            TaskMutationApplyRequestDto, TaskMutationDto, TaskMutationRequestDto,
+        };
+        let library_root = std::env::temp_dir().join(format!("notia-task-restore-{}", uuid::Uuid::new_v4()));
+        let root = library_root.join(PRIMARY_ROOT);
+        std::fs::create_dir_all(root.join("work")).expect("board");
+        std::fs::write(
+            root.join(SHARED_METADATA_FILE),
+            r##"{"version":1,"boards":[{"name":"work","color":"#2e6db0"}],"groups":[{"name":"Sprint","color":"#4FD1C5","board":"work"}]}"##,
+        )
+        .expect("metadata");
+        for title in ["Hecha", "Descartada"] {
+            std::fs::write(
+                root.join("work").join(format!("{title}.md")),
+                // The comment makes the Owner a user of the snapshot.
+                format!("---\ntarea: {title}\ntablero: work\nequipo: Sprint\nestado: Pendiente\n---\nDetalle\n\n## Comentario - 12/09/2026 13:11\nNota\n"),
+            )
+            .expect("ticket");
+        }
+        let registry = LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-restore", &library_root).expect("binding");
+        let store = Arc::new(MarkdownTaskManagerStore::new("library-restore".to_string(), registry, Arc::new(Mutex::new(()))));
+        let manager = notia_backend_core::PersistentTaskManager::open("library-restore", store.clone()).expect("manager");
+        let context = TaskManagerContextDto::new("library-restore", OWNER_USER_ID).expect("context");
+        let initial = manager.read_snapshot(&context).expect("snapshot");
+        let ticket_id = |title: &str| {
+            initial
+                .tickets
+                .iter()
+                .find(|ticket| ticket.summary.title == title)
+                .expect(title)
+                .summary
+                .ticket_id
+                .clone()
+        };
+        let change_state = |key: &str, ticket_id: String, state: TaskState| {
+            let mutation = TaskMutationDto::ChangeState { ticket_id, state };
+            manager
+                .preview_mutation(&TaskMutationRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    mutation,
+                })
+                .expect("preview");
+            manager
+                .apply_mutation(&TaskMutationApplyRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    confirmed: true,
+                })
+                .expect("apply");
+        };
+        change_state("finish", ticket_id("Hecha"), TaskState::Completed);
+        change_state("cancel", ticket_id("Descartada"), TaskState::Cancelled);
+        assert!(root.join(FINISHED).join("work").join("Hecha.md").is_file());
+        assert!(root.join(CANCELLED).join("work").join("Descartada.md").is_file());
+
+        change_state("recover-finished", ticket_id("Hecha"), TaskState::Pending);
+        change_state("recover-cancelled", ticket_id("Descartada"), TaskState::Pending);
+
+        for title in ["Hecha", "Descartada"] {
+            assert!(root.join("work").join(format!("{title}.md")).is_file(), "{title}");
+            assert!(!root.join(FINISHED).join("work").join(format!("{title}.md")).exists(), "{title}");
+            assert!(!root.join(CANCELLED).join("work").join(format!("{title}.md")).exists(), "{title}");
+        }
+        let snapshot = store.load("library-restore").expect("workspace loads").expect("snapshot");
+        let view = project_board_view(&snapshot, vec![]);
+        for title in ["Hecha", "Descartada"] {
+            let task = view.tasks.iter().find(|task| task.title == title).expect(title);
+            assert_eq!(task.state, TaskState::Pending);
+            assert_eq!(task.board, "work");
+            assert_eq!(task.group, "Sprint");
+            assert_eq!(task.file_path, format!("{PRIMARY_ROOT}/work/{title}.md"));
+            assert!(view.panel_paths["work"].contains(&task.file_path), "{title}");
+        }
         let _ = std::fs::remove_dir_all(library_root);
     }
 }

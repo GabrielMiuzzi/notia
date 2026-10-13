@@ -213,6 +213,24 @@ describe('TaskBoardView task moves', () => {
     })
   })
 
+  it('shows an open task stored in an archive folder and hides finished ones', () => {
+    const archived = (name: string, folder: string, state: TaskItem['state']) => task(name, 1, {
+      filePath: `task-mannager/${folder}/Trabajo/${name}.md`,
+      path: `task-mannager/${folder}/Trabajo/${name}.md`,
+      state,
+    })
+    const { group } = renderBoard([
+      archived('Recuperada', 'finished', 'Pendiente'),
+      archived('Rescatada', 'cancelled', 'Pendiente'),
+      archived('Hecha', 'finished', 'Finalizada'),
+    ])
+
+    const shown = Array
+      .from(group('Backlog').querySelectorAll<HTMLElement>('.tareas-card-list > .tareas-task-drag-wrap'))
+      .map((node) => node.dataset.taskPath)
+    expect(shown).toEqual(['task-mannager/finished/Trabajo/Recuperada.md', 'task-mannager/cancelled/Trabajo/Rescatada.md'])
+  })
+
   it('shows the moved task in place until the backend answers', async () => {
     stackCards()
     let finish = () => {}

@@ -215,9 +215,9 @@ export function TaskBoardView({
   }, [groups])
 
   const baseDerivations = useMemo<BoardTaskDerivations>(() => {
-    const nextBoardTasks = tasks
-      .filter((task) => task.board === boardName)
-      .filter((task) => !task.filePath.includes('/finished/') && !task.filePath.includes('/cancelled/'))
+    // The state decides what the board shows, never the folder: an open
+    // ticket whose file is still in finished/ or cancelled/ stays visible.
+    const nextBoardTasks = tasks.filter((task) => task.board === boardName)
 
     const nextTopLevelTasks: TaskItem[] = []
     const topLevelByNormalizedParentName = new Map<string, TaskItem>()
