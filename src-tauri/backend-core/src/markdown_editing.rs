@@ -85,6 +85,11 @@ pub enum MarkdownOperation {
         language: String,
         content: String,
     },
+    /// Changes a piece of the note's text: `find` must appear exactly once.
+    ReplaceText {
+        find: String,
+        replace: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,7 +707,42 @@ fn plan_operation(
                 replacement: block_text(&language, content),
             })
         }
+        MarkdownOperation::ReplaceText { find, replace } => edit_text(source, find, replace),
     }
+}
+
+/// Replaces the only occurrence of `find`. The model writes `\n`; a note
+/// with `\r\n` line ends keeps them.
+fn edit_text(source: &str, find: &str, replace: &str) -> Result<EditPlan, BackendError> {
+    valid_value(find)?;
+    valid_value(replace)?;
+    if find.trim().is_empty() {
+        return Err(BackendError::invalid_input(
+            "replaceText necesita en find el texto exacto que se cambia.",
+        ));
+    }
+    let newline = newline_for(source);
+    let find = find.replace('\n', newline);
+    let mut matches = source.match_indices(&find);
+    let Some((start, _)) = matches.next() else {
+        return Err(BackendError::invalid_input(
+            "El texto de find no está en el documento: copialo tal cual de la última lectura, con sus mayúsculas, acentos y signos.",
+        ));
+    };
+    let count = 1 + matches.count();
+    if count > 1 {
+        return Err(BackendError::invalid_input(format!(
+            "El texto de find aparece {count} veces en el documento: agregá las palabras de alrededor para que aparezca una sola vez."
+        )));
+    }
+    Ok(EditPlan {
+        kind: MarkdownAnchorKind::Document,
+        label: "texto".to_string(),
+        ordinal: line_number_at(source, start),
+        start,
+        end: start + find.len(),
+        replacement: replace.replace('\n', newline),
+    })
 }
 
 fn edit_tag(source: &str, tag: &str, add: bool) -> Result<EditPlan, BackendError> {
@@ -1589,6 +1629,46 @@ mod tests {
             })
             .expect("document");
         library
+    }
+
+    #[test]
+    fn replace_text_changes_the_only_occurrence() {
+        let source = "# Meet\n\n- La extensión del horario de remesas de 0 a 3.\n- Otro punto.\n";
+        let preview = preview_markdown_edit(
+            source,
+            &request(
+                "notes/a.md",
+                MarkdownOperation::ReplaceText {
+                    find: "La extensión del horario de remesas de 0 a 3.".into(),
+                    replace: "Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.".into(),
+                },
+            ),
+        )
+        .expect("preview");
+        assert_eq!(
+            preview.new_content,
+            "# Meet\n\n- Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.\n- Otro punto.\n"
+        );
+        assert_eq!(preview.hunks.len(), 1);
+
+        let replace = |find: &str| MarkdownOperation::ReplaceText { find: find.into(), replace: "x".into() };
+        assert!(preview_markdown_edit(source, &request("notes/a.md", replace("no está"))).is_err());
+        assert!(preview_markdown_edit(source, &request("notes/a.md", replace("- "))).is_err());
+        assert!(preview_markdown_edit(source, &request("notes/a.md", replace("  "))).is_err());
+    }
+
+    #[test]
+    fn replace_text_keeps_windows_line_ends() {
+        let source = "uno\r\ndos\r\ntres\r\n";
+        let preview = preview_markdown_edit(
+            source,
+            &request(
+                "notes/a.md",
+                MarkdownOperation::ReplaceText { find: "uno\ndos".into(), replace: "uno\nDOS".into() },
+            ),
+        )
+        .expect("preview");
+        assert_eq!(preview.new_content, "uno\r\nDOS\r\ntres\r\n");
     }
 
     #[test]

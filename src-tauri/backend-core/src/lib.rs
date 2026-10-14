@@ -55,6 +55,7 @@ pub mod meeting_review;
 pub mod mermaid;
 pub mod note_diagram;
 pub mod note_ink;
+pub mod note_ink_conversion;
 pub mod note_preview;
 pub mod page_links;
 pub mod page_setup;

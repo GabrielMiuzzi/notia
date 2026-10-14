@@ -37,6 +37,10 @@ pub(crate) struct SyncManifest {
     pub(crate) files: Vec<SyncFile>,
     /// The database, when the library has one.
     pub(crate) database: Option<FileStamp>,
+    /// Id of the host's database (`row_sync`): the identity of the library
+    /// whatever id the catalog gives it.
+    #[serde(default)]
+    pub(crate) database_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,8 +244,18 @@ pub(crate) fn delete_synced(root: &Path, target: &Path) -> Result<(), BackendErr
 
 pub(crate) fn host_sync_manifest(app: &AppHandle, payload: SyncLibraryPayload) -> Result<SyncManifest, BackendError> {
     let root = library_root(app, &payload.library_id)?;
-    let database = std::fs::metadata(root.join(".notia").join("notia.db")).ok().map(|metadata| stamp_of(&metadata));
-    Ok(SyncManifest { root: plain_root(&root), files: synced_files(&root)?, database })
+    let database_file = root.join(".notia").join("notia.db");
+    let database = std::fs::metadata(&database_file).ok().map(|metadata| stamp_of(&metadata));
+    let database_id = database.is_some().then(|| stored_database_id(&database_file)).flatten();
+    Ok(SyncManifest { root: plain_root(&root), files: synced_files(&root)?, database, database_id })
+}
+
+/// The id the database already carries, read as it is (no migration): a
+/// database from before the row log has none.
+fn stored_database_id(database_file: &Path) -> Option<String> {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = rusqlite::Connection::open_with_flags(database_file, flags).ok()?;
+    crate::row_sync::database_id(&connection).ok().flatten()
 }
 
 /// The root as clients join paths to it: a Windows canonical path loses

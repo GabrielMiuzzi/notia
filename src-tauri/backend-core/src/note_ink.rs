@@ -192,7 +192,7 @@ fn smooth(points: &[[f64; 3]], smoothing: f64) -> Vec<[f64; 3]> {
     smoothed
 }
 
-fn distance_to_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+pub(crate) fn distance_to_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
     let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
     let length = dx * dx + dy * dy;
     let t = if length == 0.0 {

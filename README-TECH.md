@@ -9406,7 +9406,7 @@ Archivos: `backend-core/src/mirror_sync.rs`, `app/src/host_sync.rs`, `app/src/ho
 
   | Comando | Entrada | Salida |
   |---|---|---|
-  | `host_sync_manifest` | `payload { libraryId }` | `{ root, files: [{ path, size, modifiedMs }], database: { size, modifiedMs } \| null }`. `root` sin el prefijo `\\?\` de Windows, que no acepta `/` |
+  | `host_sync_manifest` | `payload { libraryId }` | `{ root, files: [{ path, size, modifiedMs }], database: { size, modifiedMs } \| null, databaseId: string \| null }`. `root` sin el prefijo `\\?\` de Windows, que no acepta `/`; `databaseId` identifica la biblioteca aunque cambie su id de catálogo |
   | `host_sync_database` | `payload { libraryId }` | `{ contentBase64, modifiedMs, databaseId, seq } \| null`: una copia consistente con `VACUUM INTO` aunque el host esté escribiendo, con el registro de cambios sin pendientes |
 | `host_sync_database_changes` | `payload { libraryId, since, databaseId }` | `{ changes: RowChange[], lastSeq, more, reset }`: hasta 500 filas cambiadas después de `since`. `reset: true` si la copia sigue otra base o un `seq` mayor que el del host |
 | `host_sync_database_push` | `payload { libraryId, changes: RowChange[] }` (hasta 500) | `{ applied, kept, failed }`: aplica las filas de la copia; gana el cambio más nuevo |
@@ -9443,6 +9443,11 @@ Archivos: `backend-core/src/mirror_sync.rs`, `app/src/host_sync.rs`, `app/src/ho
   - Al abrir la base de la copia, `check_copy_snapshot` exige la tabla `library_users` antes de migrarla: un archivo vacío no se convierte en una biblioteca nueva.
   - La ventana de inicio de sesión muestra el motivo real del backend con «Reintentar», y `backend_app_auth_status` lo registra en el log.
 - **Marca:** la copia guarda `.notia/notia-copy.json` con la biblioteca del host (`{ "hostLibraryId" }`). Una carpeta con la marca de otra biblioteca no se sincroniza: «La carpeta de la copia tiene la copia de otra biblioteca…».
+- **La biblioteca cambia de id en el host (2026-10-13):** el id de una biblioteca es un UUID del catálogo del host (`library-catalog.json`); si el catálogo se vuelve a crear, la misma carpeta recibe otro id (el host de esta casa tiene seis ids registrados para `gaia`). Hasta hoy, el cliente veía el id nuevo como otra biblioteca: en Android la carpeta de la copia tenía la marca del id viejo y cada sincronización se rechazaba con el mensaje de arriba (en la notificación, «No se pudo sincronizar la copia»); en Windows y Linux empezaba una copia nueva en `mirror/<id nuevo>/` y lo editado sin conexión en la copia vieja quedaba huérfano. Ahora:
+  - `host_sync_manifest` devuelve también `databaseId`, el id de la base del host (`notia_sync_meta`, leído sin migrar; `null` si la base es de antes del registro por fila). Ese id vive en `.notia/notia.db` de la biblioteca, así que sobrevive a los cambios de catálogo: la misma base es la misma biblioteca.
+  - `host_mirror::adopt_previous_record`: cuando el registro del id nuevo está vacío, lee `current.json` (la última biblioteca copiada en este equipo) y el registro de ese id. Si su `databaseId` es el del host, o si el registro es de antes del registro por fila y coinciden el host y el nombre de la biblioteca, el registro pasa al id nuevo (con sus bases por archivo, `databaseId` y `databaseSeq`, y en escritorio la carpeta de siempre), el viejo se borra, `current.json` queda con el id nuevo y la marca de la carpeta se reescribe. La sincronización sigue como una más: lo editado sin conexión sube, lo del host baja, y la base sigue por filas sin bajar entera. La dirección del host no cuenta cuando el `databaseId` coincide, así que también cubre un host que cambió de IP.
+  - Si la marca no es ni el id nuevo ni el adoptado, la carpeta sí tiene otra biblioteca y se sigue rechazando.
+  - Regresión en `the_copy_follows_the_host_and_keeps_the_last_modified_file`: el catálogo del host cambia el id (y el registro de rutas lo vincula), el Owner inicia sesión con el id nuevo sin crear contraseña (el hash vive en la base de la biblioteca), y la sincronización sube el cambio de la copia, baja el del host, deja la marca y `current.json` con el id nuevo y borra el registro viejo. `cargo test -p notia-app --features bluetooth`: 507 + 11 ignoradas; `cargo check` Android sin errores. Pendiente: probarlo en la tablet (la copia que hoy rechaza la sincronización debería seguir sola al volver a conectarse) y aclarar el aviso de error al guardar que aparece en la tablet, que no se reprodujo acá.
 - **Android** (`CopyStore::Saf`):
   - `pick_copy_folder` (local, en `CLIENT_LOCAL_COMMANDS` y `LOCAL_ONLY_COMMANDS`) abre el selector SAF, que conserva el permiso de lectura y escritura. Solo acepta una carpeta vacía o con la marca de una copia; si no, «Elegí una carpeta vacía para la copia…», porque lo que tuviera subiría al host como archivos nuevos.
   - La carpeta se guarda en `connection.json`. Otra carpeta empieza el registro de cero.
@@ -11837,3 +11842,82 @@ El modelo de chat decide si llama a `generate_image` y escribe su descripción, 
   - Falta probarlo en la app de Windows y en la tablet (en SAF, el movimiento escribe el archivo nuevo y borra el viejo).
 - **Tablero por estado (mismo día, 11:45).** Tres tareas recuperadas antes del arreglo seguían en `finished/default/` con `estado: Pendiente`. El agente las veía en Anotadores porque lee el snapshot de Rust, pero el tablero no las mostraba. `TaskBoardView.tsx` ya no filtra por los fragmentos de ruta `/finished/` y `/cancelled/`: el tablero decide por el estado que da Rust (las Finalizadas y Canceladas no entran en ningún grupo), igual que `panel_paths`. Así, una tarea abierta se ve aunque su archivo todavía no se haya movido, y una subtarea finalizada en `finished/subTasks/` vuelve al checklist de su padre, como las que se guardan junto a él. Regresión: `shows an open task stored in an archive folder and hides finished ones` en `TaskBoardView.test.tsx` (vitest de `src/modules/task-manager`: 59 pruebas; `tsc -p tsconfig.app.json` sin errores). Falta probarlo en la app.
 - **Pendiente.** Una tarea cuyo grupo se borró mientras estaba archivada vuelve con un grupo que ya no existe.
+
+## Editor Markdown: convertir trazos con IA desde el lazo (2026-10-14)
+
+En el recuadro de una selección del lazo, al lado de «Borrar», hay un botón de IA (ícono de destellos, «Convertir con IA»). Lo escrito a mano se vuelve un bloque de la nota: texto, LaTeX en línea o en bloque, Mermaid, xGraph, tabla o código, según lo que la IA lea.
+
+**Flujo.**
+1. `InkLayer` llama a `onConvert(ids, top)`. `top()` mide dónde empiezan los trazos en la pantalla recién cuando llega la respuesta, porque la nota pudo desplazarse mientras tanto.
+2. `MarkdownView.handleInkConvert` → `useNoteInk.convert`. Espera los trazos que todavía viajan a Rust, pero la llamada a la IA corre fuera de la cola, así que los trazos nuevos se siguen guardando mientras se espera la respuesta.
+3. `markdown_ink_convert { libraryId, path, ids, settings }` → `{ kind, markdown, ids }`. `kind` es uno de `text`, `latexInline`, `latexBlock`, `mermaid`, `xgraph`, `table` o `code`, e `ids` son los trazos que se usaron. El comando no modifica los trazos.
+4. El editor parsea `markdown` con su `parserCtx` (el mismo parser de la nota, GitBook incluido) y lo inserta con una transacción, así que deshacer en el editor lo quita. Después, `ink.remove(ids)` quita los trazos convertidos y «Deshacer trazo» los vuelve a poner.
+
+**Rust (`backend-core/src/note_ink_conversion.rs`, comando en `app/src/note_ink.rs`).**
+- `convertible_strokes` toma solo los trazos de lápiz del flujo. El resaltador y los trazos que todavía están en una hoja quedan afuera. Si no queda ninguno: «Seleccioná trazos de lápiz para convertirlos; el resaltador no se convierte.».
+- `raster` dibuja los trazos en escala de grises, tinta negra sobre blanco:
+  - 24 px de margen;
+  - el lado mayor llega como mucho a 1600 px;
+  - la letra chica se amplía hasta ×2;
+  - el grosor mínimo es 1,2 px.
+
+  La imagen viaja como PNG en base64, codificado con el crate `image`.
+- `ai_tasks::complete` usa el modelo configurado (con visión), sin herramientas ni thinking, con un límite de 180 s. En Android pasa por el bridge Kotlin. En modo cliente el comando corre en el host, porque no está en `LOCAL_ONLY_COMMANDS`.
+- El prompt (`INK_CONVERSION_SYSTEM_PROMPT` / `INK_CONVERSION_USER_PROMPT`) pide `tipo: <tipo>` en la primera línea (`tipo: code <lenguaje>` para código) y el contenido desde la segunda. No se pide JSON porque las barras de LaTeX (`\frac`) se romperían como escapes.
+- `parse_answer` arma el Markdown. El modelo nunca escribe la sintaxis del bloque:
+  - `text`: el contenido tal cual.
+  - `latex_inline`: `$…$` en una línea.
+  - `latex_block`: `$$` + salto de línea + LaTeX + salto de línea + `$$`, limpiado con `clean_latex_answer`.
+  - `mermaid` y `xgraph`: bloque cercado.
+  - `code`: bloque cercado con el lenguaje saneado (`[a-z0-9+#_-]`, hasta 32).
+  - `table`: tabla GFM con encabezado, separador y la misma cantidad de celdas en cada fila.
+
+  Más reglas:
+  - La cerca siempre es más larga que cualquier serie de backticks del contenido.
+  - Se aceptan `**Tipo:**` y una cerca que el modelo haya puesto igual.
+  - Si el tipo no existe o el bloque quedó vacío, se usa texto.
+  - Si la respuesta está vacía, el error es `ProviderUnavailable` con «La IA no reconoció nada escrito en los trazos.».
+  - Más de 100.000 caracteres es un error de entrada.
+
+**Frontend.**
+- `inkInsertion.ts` solo decide en qué lugar de la pantalla va el bloque:
+  - un renglón vacío bajo los trazos se reemplaza;
+  - si los trazos empiezan sobre un bloque, va después de ese bloque;
+  - si están en un hueco, va antes del bloque siguiente;
+  - si están debajo de todo, va al final.
+- Mientras convierte:
+  - el botón muestra «Convirtiendo…», con `aria-busy` y el ícono pulsando (sin animación con `prefers-reduced-motion`);
+  - «Borrar», Delete y Retroceso no actúan.
+- Si falla, el mensaje del backend aparece en la barra del lápiz (`ink.error`) y la selección queda para reintentar.
+- Con puntero grueso, el botón mide 44 px, igual que «Borrar». Se usa con el dedo o con el lápiz, sin hover ni teclado.
+
+**Validación.**
+- `note_ink_conversion::tests` (5): trazos que se leen, imagen, cada tipo, tablas, respuestas sin tipo o vacías.
+- `inkInsertion.test.ts` (4, con un editor real).
+- `tsc -p tsconfig.app.json` y ESLint sin errores; vitest de `views/markdown/ink`.
+- `cargo test -p notia-backend-core`: 577 de 578, con 6 ignoradas y 5 pruebas nuevas. Falla `image_generation::tests::only_sexual_content_with_minors_is_refused`, que no tiene relación con este cambio porque no se tocó `image_generation.rs`. `cargo test -p notia-app --features bluetooth`: 507 y 11 ignoradas. `cargo check` de Android sin errores.
+
+**Pendiente.**
+- Probarlo con el modelo real: qué tan bien elige el tipo y transcribe cada uno, sobre todo xGraph, que depende de que el modelo escriba JSXGraph válido.
+- Probarlo en Windows y en la tablet Android con lápiz y con el dedo.
+
+## Agente: corregir una frase de una nota desde Telegram (2026-10-14)
+
+**Qué pasó.** Por Telegram se pidió cambiar una frase de la nota de una meet. Las dos corridas terminaron con «El modelo no redactó la respuesta final» y 15 y 5 herramientas fallidas, por tres causas que se encadenaban:
+- **Revisión redondeada.** `compute_document_revision` devolvía un hash FNV-1a de 64 bits. Ollama lee los argumentos de las herramientas como `float64`, así que la revisión que el modelo devolvía llegaba redondeada (11022484621010939017 → 11022484621010940000). Por eso todo `expectedRevision` de `replace_library_document` o `preview_markdown_edit`, y toda revisión o `fingerprint` dentro del preview que se pasa a `apply_markdown_edit`, daban «La revisión cambió». En JavaScript pasaba lo mismo.
+- **No había forma de cambiar una frase.** Las operaciones de `preview_markdown_edit` solo tocaban frontmatter, tags, wikilinks, hechos, plantillas y bloques. El modelo inventaba operaciones y recibía «La operación Markdown no es válida.», sin el motivo, así que repetía el error. La otra salida era reescribir toda la nota con `replace_library_document`, que también caía por la revisión.
+- **`get_workspace_context` fallaba sin vista.** En Telegram y en las acciones programadas no hay snapshot de la vista, y la herramienta respondía con el error `NotFound` «El snapshot de workspace no está disponible.», que se contaba como una falla.
+
+**Cambios.**
+- `compute_document_revision` pliega los bits altos y devuelve como máximo `MAX_DOCUMENT_REVISION` = 2^53 − 1. Así la revisión y los `fingerprint` de los anchors, que usan la misma función, pasan sin cambios por `float64` y por JavaScript. Las revisiones se calculan siempre a partir del contenido y no se guardan. Lo único guardado con el valor anterior es la revisión de las entradas de deshacer del agente y de las confirmaciones pendientes: esas entradas dan conflicto una sola vez.
+- Nueva operación `replaceText { find, replace }` en `MarkdownOperation`. `find` tiene que aparecer exactamente una vez. Si no aparece, el error pide copiarlo tal cual de la lectura; si aparece varias veces, pide sumar contexto. Los `\n` del modelo se escriben como `\r\n` en una nota con finales de línea de Windows. El hunk es de tipo `document`. La operación está en el esquema de `preview_markdown_edit` y de `preview_multi_document_markdown_edit`, y en la guía del agente, que además le pide no reescribir la nota entera para cambiar una parte.
+- Cuando una operación no es válida, el error incluye el motivo de serde (tipo desconocido, campo faltante) y recuerda `replaceText`. `expectedRevision` también se acepta como texto.
+- Sin vista abierta, `get_workspace_context` responde bien con `{ available: false, reason }`.
+
+**Validación.**
+- `library_tools::tests::revisions_survive_a_float_round_trip`, `markdown_editing::tests::replace_text_changes_the_only_occurrence` y `replace_text_keeps_windows_line_ends`.
+- `backend_runtime::tests::the_agent_fixes_a_sentence_of_a_note_from_telegram`: canal Telegram y sin snapshot, todos los números de los argumentos pasan por `float64` como en Ollama. Comprueba el contexto sin vista, el error con el motivo y `replaceText` con `expectedRevision`, y aplica el preview devuelto: la nota queda con la frase corregida.
+- `cargo test -p notia-backend-core`: 580 de 581, con 6 ignoradas. Sigue fallando `image_generation::tests::only_sexual_content_with_minors_is_refused`, que no tiene relación con este cambio.
+- `cargo test -p notia-app --features bluetooth`: 508 y 11 ignoradas. `cargo check` de Android sin errores.
+
+**Pendiente.** Repetir el pedido real por Telegram con el modelo configurado.

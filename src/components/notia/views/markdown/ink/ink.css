@@ -436,7 +436,7 @@
   cursor: move;
 }
 
-/* The count and «Borrar» above the selection's right corner. */
+/* The count, the AI button and «Borrar» above the selection's right corner. */
 .notia-ink-selection-tools {
   position: absolute;
   z-index: 4;
@@ -463,6 +463,34 @@
   color: var(--color-coral);
   font: inherit;
   cursor: pointer;
+}
+
+.notia-ink-selection-tools .notia-ink-convert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+}
+
+.notia-ink-selection-tools .notia-ink-convert[aria-busy='true'] svg {
+  animation: notia-ink-convert-pulse 1.2s ease-in-out infinite;
+}
+
+.notia-ink-selection-tools button:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+@keyframes notia-ink-convert-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notia-ink-selection-tools .notia-ink-convert[aria-busy='true'] svg {
+    animation: none;
+  }
 }
 
 .notia-ink-selection-tools button:focus-visible {

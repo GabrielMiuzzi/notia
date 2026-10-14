@@ -1518,6 +1518,11 @@ impl RecoverableAtomicWritePort for InMemoryLibrary {
     }
 }
 
+/// Largest revision: revisions travel as JSON numbers through the model's
+/// provider (Ollama reads tool arguments as `float64`) and JavaScript, which
+/// round larger integers, and a rounded revision never matches again.
+pub const MAX_DOCUMENT_REVISION: u64 = (1 << 53) - 1;
+
 pub fn compute_document_revision(content: &str) -> u64 {
     // FNV-1a is stable across processes and platforms and does not require a
     // crypto dependency in the Tauri-independent core.
@@ -1526,7 +1531,8 @@ pub fn compute_document_revision(content: &str) -> u64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    hash
+    // The high bits are folded in, so they still count.
+    (hash ^ (hash >> 53)) & MAX_DOCUMENT_REVISION
 }
 
 pub fn validate_document_locator(
@@ -1930,6 +1936,17 @@ fn revision_conflict(operation_id: &str, expected: u64, current: u64) -> Backend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revisions_survive_a_float_round_trip() {
+        let long = "Notas de la meet.\n".repeat(2_000);
+        for content in ["", "a", "# Meet\n\n- Corte de ingresos (BEF).", long.as_str()] {
+            let revision = compute_document_revision(content);
+            assert!(revision <= MAX_DOCUMENT_REVISION);
+            assert_eq!(revision as f64 as u64, revision);
+        }
+        assert_ne!(compute_document_revision("a"), compute_document_revision("b"));
+    }
 
     #[test]
     fn new_documents_get_names_every_platform_accepts() {

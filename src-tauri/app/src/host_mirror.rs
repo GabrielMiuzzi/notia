@@ -499,10 +499,21 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
     let manifest: SyncManifest = crate::host_client::call_host(app, "host_sync_manifest", payload.clone()).await?;
     let record_file = record_path(app, library_id)?;
     let mut record: CopyRecord = read_json(&record_file);
+    // A library the host gave a new id goes on from its copy (see
+    // `adopt_previous_record`).
+    let adopted = if record.database_ms.is_none() && record.files.is_empty() {
+        adopt_previous_record(app, library_id, library_name, manifest.database_id.as_deref(), &mut record, &record_file)?
+    } else {
+        None
+    };
     let store = copy_store(app, &mut record, library_id, library_name)?;
-    let mark = store.mark(app);
+    let mut mark = store.mark(app);
     if mark.as_deref().is_some_and(|mark| mark != library_id) {
-        return Err(unavailable("La carpeta de la copia tiene la copia de otra biblioteca: elegí otra en Configuraciones → General."));
+        if mark != adopted {
+            return Err(unavailable("La carpeta de la copia tiene la copia de otra biblioteca: elegí otra en Configuraciones → General."));
+        }
+        store.write_mark(app, library_id)?;
+        mark = Some(library_id.to_string());
     }
 
     // The copy is listed when this device may have changed it (desktop
@@ -611,6 +622,49 @@ async fn sync_library(app: &AppHandle, state: &MirrorState, library_id: &str, li
     state.scanned.store(true, Ordering::SeqCst);
     status.at_ms = now_ms();
     Ok(status)
+}
+
+/// When the host gives its library a new id (its catalog was made again:
+/// the library keeps its folder and its database), the copy made under the
+/// old id goes on under the new one, with what it had synced and what it
+/// changed offline, instead of being refused as another library's copy or
+/// copied again from scratch. `current.json` says which library this
+/// device copied last, and the record of that copy says which host
+/// database it follows: the same database is the same library. A copy from
+/// before the row log has no database id; it is the same library when the
+/// host and the library's name are the same. Returns the old id.
+fn adopt_previous_record(
+    app: &AppHandle,
+    library_id: &str,
+    library_name: &str,
+    host_database_id: Option<&str>,
+    record: &mut CopyRecord,
+    record_file: &Path,
+) -> Result<Option<String>, BackendError> {
+    let directory = directory(app)?;
+    let current: CurrentCopy = read_json(&directory.join(CURRENT_FILE));
+    if current.library_id.is_empty() || current.library_id == library_id {
+        return Ok(None);
+    }
+    let previous_file = record_path(app, &current.library_id)?;
+    let previous: CopyRecord = read_json(&previous_file);
+    let host_address = crate::connection::settings(app).host_address;
+    let same_library = match (&previous.database_id, host_database_id) {
+        (Some(copied), Some(host)) => copied == host,
+        (None, _) => previous.database_ms.is_some() && current.host_address == host_address && current.library_name == library_name,
+        (Some(_), None) => false,
+    };
+    if !same_library {
+        return Ok(None);
+    }
+    *record = previous;
+    write_json(record_file, record)?;
+    let _ = std::fs::remove_file(&previous_file);
+    // Offline, the copy opens under the new id from now on.
+    let next = CurrentCopy { host_address, library_id: library_id.to_string(), library_name: current.library_name };
+    write_json(&directory.join(CURRENT_FILE), &next)?;
+    log::warn!("[notia:copy] the copy goes on under the new id the host gave the library");
+    Ok(Some(current.library_id))
 }
 
 /// Whether `error` means the host stopped answering (the sync stops) rather
@@ -1379,6 +1433,33 @@ mod tests {
         std::fs::write(&mark, r#"{"hostLibraryId":"otra"}"#).expect("other mark");
         let refused = crate::host::async_runtime::block_on(sync(&client));
         assert!(refused.is_err_and(|error| error.message.contains("otra biblioteca")));
+        std::fs::write(&mark, format!(r#"{{"hostLibraryId":"{library_id}"}}"#)).expect("mark back");
+
+        // The host gives the library a new id (its catalog made again): the
+        // copy goes on under it, with what each side changed meanwhile.
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let catalog_file = root.join("host").join("library-catalog.json");
+        let catalog = std::fs::read_to_string(&catalog_file).expect("catalog").replace(&library_id, &new_id);
+        std::fs::write(&catalog_file, catalog).expect("catalog with the new id");
+        host.state::<crate::library_registry::LibraryBindingRegistry>()
+            .register_desktop_root(&new_id, &library)
+            .expect("binding of the new id");
+        write(&copy.join("Notas/a.md"), "copia con el id nuevo", base_ms + 70_000);
+        write(&library.join("c.md"), "host con el id nuevo", base_ms + 70_000);
+        crate::host::async_runtime::block_on(async {
+            // The sign-in starts a sync in the background; this one waits for it.
+            crate::host_client::auth_login(&client, &new_id, "owner", "contraseña-1", false, false).await.expect("login again");
+            sync(&client).await.expect("sync under the new id");
+        });
+        assert_eq!(std::fs::read_to_string(library.join("Notas/a.md")).expect("host a"), "copia con el id nuevo");
+        assert_eq!(std::fs::read_to_string(copy.join("c.md")).expect("copy c"), "host con el id nuevo");
+        assert!(std::fs::read_to_string(&mark).expect("mark").contains(&new_id));
+        assert!(!record_path(&client, &library_id).expect("old record").exists());
+        let record: CopyRecord = read_json(&record_path(&client, &new_id).expect("record"));
+        assert!(record.database_id.is_some() && record.folder.as_deref() == Some(copy.as_path()), "{record:?}");
+        let current: CurrentCopy = read_json(&directory(&client).expect("directory").join(CURRENT_FILE));
+        assert_eq!(current.library_id, new_id);
+        assert!(copy_ready(&client));
 
         stop.store(true, Ordering::SeqCst);
         drop(host);

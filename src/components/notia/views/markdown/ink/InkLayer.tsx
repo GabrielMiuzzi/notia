@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { Sparkles } from 'lucide-react'
 import type { PenPreferences } from '../../../../../services/preferences/editorPreferences'
 import type { InkPoint, InkStroke, InkStrokeDraft, InkTool } from '../../../../../services/markdown/noteInkRuntime'
 import type { FlowBreak } from '../paginationPlugin'
@@ -13,8 +14,9 @@ import { INK_COLOR_TOKENS, inkShape, widthAt } from './inkPaths'
  * the note's flow: in page mode they are drawn below the page breaks, and
  * what is drawn on a page goes back into the flow (`inkFlow`), so both modes
  * show the same strokes on the same text. The lasso (or the pen's side
- * button set to «Selección») circles strokes; Rust says which it took, and
- * dragging them moves them.
+ * button set to «Selección») circles strokes; Rust says which it took,
+ * dragging them moves them and the AI button turns them into a block of the
+ * note (Rust reads them and builds the Markdown).
  */
 
 export type PenBarTool = 'selector' | 'lasso' | 'pen' | 'highlighter' | 'eraser'
@@ -47,6 +49,12 @@ interface InkLayerProps {
   /** Moves strokes by a distance in the note's flow. */
   onMove: (ids: string[], dx: number, dy: number) => void
   onRemove: (ids: string[]) => void
+  /**
+   * Turns strokes into a block of the note with the AI. `top` says where
+   * they start on the screen when the answer arrives; resolves `true` once
+   * the block is in the note.
+   */
+  onConvert: (ids: string[], top: () => number | null) => Promise<boolean>
 }
 
 const HIGHLIGHTER_OPACITY = 0.35
@@ -139,12 +147,13 @@ const StoredStrokes = memo(function StoredStrokes({ strokes, stride }: { strokes
   )
 })
 
-function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, onCommit, onErase, onLassoSelect, onMove, onRemove }: InkLayerProps) {
+function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, onCommit, onErase, onLassoSelect, onMove, onRemove, onConvert }: InkLayerProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const draftRef = useRef<SVGGElement | null>(null)
   const selectionRef = useRef<SVGGElement | null>(null)
   const selectionToolsRef = useRef<HTMLDivElement | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [converting, setConverting] = useState(false)
   const gestureRef = useRef<Gesture | null>(null)
   const gestureCounterRef = useRef(0)
   const lastPenAtRef = useRef(0)
@@ -186,7 +195,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
 
   // Delete or Backspace takes out the selected strokes.
   useEffect(() => {
-    if (selected.length === 0) return
+    if (selected.length === 0 || converting) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Delete' && event.key !== 'Backspace') return
       const target = event.target as HTMLElement | null
@@ -197,7 +206,24 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onRemove, selected])
+  }, [converting, onRemove, selected])
+
+  const convertSelection = () => {
+    if (!selectionBox || converting) return
+    const boxTop = selectionBox.top
+    // Measured when the answer arrives: the note may have scrolled meanwhile.
+    const top = () => {
+      const rect = svgRef.current?.getBoundingClientRect()
+      const scale = rect ? rect.width / sheet.width : 0
+      return rect && scale ? rect.top + boxTop * scale : null
+    }
+    setConverting(true)
+    void onConvert(selected.map((stroke) => stroke.id), top)
+      .then((done) => {
+        if (done) setSelectedIds([])
+      })
+      .finally(() => setConverting(false))
+  }
 
   /** A height of the sheet (pages included), in the note's flow. */
   const sheetToFlow = (y: number): number => (sheet.paged ? pageToFlow(y, breaks) : y)
@@ -488,6 +514,19 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
           <span>{selected.length === 1 ? '1 trazo' : `${selected.length} trazos`}</span>
           <button
             type="button"
+            className="notia-ink-convert"
+            disabled={converting}
+            aria-busy={converting}
+            aria-label={converting ? 'Convirtiendo los trazos con IA' : 'Convertir con IA'}
+            title="Convertir con IA en texto, LaTeX, Mermaid, xGraph, tabla o código"
+            onClick={convertSelection}
+          >
+            <Sparkles size={15} strokeWidth={1.75} aria-hidden="true" />
+            {converting ? <span>Convirtiendo…</span> : null}
+          </button>
+          <button
+            type="button"
+            disabled={converting}
             onClick={() => {
               onRemove(selected.map((stroke) => stroke.id))
               setSelectedIds([])

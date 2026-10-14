@@ -1566,15 +1566,14 @@ impl TauriBackendToolExecutor {
             .or_else(|| call.arguments.get("edit"))
             .cloned()
             .ok_or_else(|| BackendError::invalid_input("La edición Markdown necesita una operación."))?;
-        let operation = serde_json::from_value(operation_value)
-            .map_err(|_| BackendError::invalid_input("La operación Markdown no es válida."))?;
+        let operation = serde_json::from_value(operation_value).map_err(invalid_markdown_operation)?;
         Ok(MarkdownEditRequest {
             operation_id: call.id.clone(),
             locator,
-            expected_revision: call
-                .arguments
-                .get("expectedRevision")
-                .and_then(Value::as_u64),
+            // Some models quote the revision; both forms are the same number.
+            expected_revision: call.arguments.get("expectedRevision").and_then(|value| {
+                value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse::<u64>().ok()))
+            }),
             operation,
         })
     }
@@ -1612,9 +1611,7 @@ impl TauriBackendToolExecutor {
                     .ok_or_else(|| BackendError::invalid_input("Cada edición necesita una operación."))?;
                 Ok(notia_backend_core::MarkdownDocumentEdit {
                     locator: Self::locator(context, edit)?,
-                    operation: serde_json::from_value(operation).map_err(|_| {
-                        BackendError::invalid_input("La operación Markdown no es válida.")
-                    })?,
+                    operation: serde_json::from_value(operation).map_err(invalid_markdown_operation)?,
                 })
             })
             .collect::<Result<Vec<_>, BackendError>>()?;
@@ -3204,12 +3201,15 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     "results": results,
                 })
             }
-            "get_workspace_context" => serde_json::to_value(
-                self.snapshot
-                    .as_ref()
-                    .ok_or_else(|| BackendError::new(BackendErrorCode::NotFound, "El snapshot de workspace no está disponible.", false))?,
-            )
-            .map_err(|_| invalid_result())?,
+            // Telegram and scheduled runs have no open view: that is the
+            // answer, not a failure.
+            "get_workspace_context" => match self.snapshot.as_ref() {
+                Some(snapshot) => serde_json::to_value(snapshot).map_err(|_| invalid_result())?,
+                None => json!({
+                    "available": false,
+                    "reason": "Este pedido no llega desde una vista abierta de Notia (por ejemplo, Telegram o una acción programada): no hay documento activo, selección ni pestañas. Buscá y leé los documentos con las herramientas de la biblioteca.",
+                }),
+            },
             "read_library_documents" => {
                 let ids = Self::ids(&call.arguments);
                 let documents = if ids.is_empty() {
@@ -5221,6 +5221,14 @@ fn invalid_result() -> BackendError {
     )
 }
 
+/// The reason serde gives (an unknown type, a missing field) tells the model
+/// what to fix, instead of a bare refusal it can only repeat.
+fn invalid_markdown_operation(error: serde_json::Error) -> BackendError {
+    BackendError::invalid_input(format!(
+        "La operación Markdown no es válida ({error}). Usá {{type, payload}} con un tipo de la lista; para cambiar una frase del cuerpo, replaceText {{find, replace}} con find copiado tal cual del documento."
+    ))
+}
+
 fn unsupported(message: &str) -> BackendError {
     BackendError::new(BackendErrorCode::Unsupported, message, false)
 }
@@ -5466,6 +5474,98 @@ mod tests {
         let note = std::fs::read_to_string(root.join("Salud/Progreso.md")).expect("note");
         assert!(note.contains("![Frente](data:image/jpeg;base64,"), "{note}");
         assert!(!note.contains("telegram-AgAC_1.jpg"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// The Telegram request of 2026-10-14: fix one sentence of a meeting note.
+    /// Ollama reads tool arguments as `float64`, so every number the model
+    /// sends back goes through one.
+    #[test]
+    fn the_agent_fixes_a_sentence_of_a_note_from_telegram() {
+        use crate::host::{AppContext, AppPaths, HostPorts, Manager};
+        use notia_backend_core::{
+            BackendActor, BackendChannel, BackendRequestContext, BackendScope, PersistencePolicy, RequestControl,
+            ToolCall, ToolExecutor,
+        };
+        use serde_json::{json, Value};
+        use std::sync::{Arc, Mutex};
+
+        fn through_float(value: &Value) -> Value {
+            match value {
+                Value::Number(number) => serde_json::from_str(&format!("{}", number.as_f64().expect("number"))).expect("number"),
+                Value::Array(items) => Value::Array(items.iter().map(through_float).collect()),
+                Value::Object(fields) => Value::Object(fields.iter().map(|(key, item)| (key.clone(), through_float(item))).collect()),
+                other => other.clone(),
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("notia-agent-sentence-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let source = "# Meet\n\n- La extensión del horario de remesas de 0 a 3.\n- Otro punto.\n";
+        std::fs::write(root.join("Meet.md"), source).expect("note");
+        let app = AppContext::new(AppPaths::default(), HostPorts::default());
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-1", &root).expect("binding");
+        app.manage(registry);
+        app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+        app.manage(crate::agent_history::AgentHistoryState::default());
+        let executor = TauriBackendToolExecutor {
+            app: app.clone(),
+            snapshot: None,
+            web_search_tracker: Mutex::new(Default::default()),
+            control: RequestControl::new(None),
+            journal: Arc::new(Default::default()),
+            idempotency_key: "key-1".into(),
+            request_images: Vec::new(),
+            attachment_images: Vec::new(),
+        };
+        let context = BackendRequestContext {
+            request_id: "request-1".into(),
+            library_id: "library-1".into(),
+            actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+            channel: BackendChannel::Telegram,
+            scope: BackendScope::Library,
+            persistence_policy: PersistencePolicy::Persistent,
+        };
+        let call = |name: &str, arguments: Value| ToolCall { id: format!("call-{name}"), name: name.into(), arguments, round: 1 };
+
+        // Telegram has no open view: the context says so, it does not fail.
+        let workspace = executor.execute(&context, &call("get_workspace_context", json!({}))).expect("context");
+        assert!(workspace.ok);
+        assert_eq!(workspace.data.as_ref().expect("data")["available"], false);
+
+        // An operation the backend does not know says why.
+        let unknown = executor
+            .execute(&context, &call("preview_markdown_edit", json!({ "path": "Meet.md", "operation": { "type": "replaceParagraph", "payload": {} } })))
+            .expect_err("unknown operation");
+        assert!(unknown.message.contains("replaceParagraph") && unknown.message.contains("replaceText"), "{}", unknown.message);
+
+        let revision = crate::backend::compute_document_revision(source);
+        let preview = executor
+            .execute(
+                &context,
+                &call(
+                    "preview_markdown_edit",
+                    through_float(&json!({
+                        "path": "Meet.md",
+                        "expectedRevision": revision,
+                        "operation": { "type": "replaceText", "payload": {
+                            "find": "La extensión del horario de remesas de 0 a 3.",
+                            "replace": "Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.",
+                        } },
+                    })),
+                ),
+            )
+            .expect("preview");
+        let preview = preview.data.expect("preview data");
+        let applied = executor
+            .execute(&context, &call("apply_markdown_edit", through_float(&json!({ "preview": preview }))))
+            .expect("applied");
+        assert!(applied.ok, "{:?}", applied.error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("Meet.md")).expect("note"),
+            "# Meet\n\n- Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.\n- Otro punto.\n"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

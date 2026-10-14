@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AiPreferences } from '../../../../../services/preferences/aiSettingsStorage'
 import {
   addInkStroke,
+  convertInkStrokes,
   eraseInk,
   loadInk,
   moveInkStrokes,
@@ -8,6 +10,7 @@ import {
   replaceInkStrokes,
   restoreInkStrokes,
   selectInkInLasso,
+  type InkConversion,
   type InkStroke,
   type InkStrokeDraft,
 } from '../../../../../services/markdown/noteInkRuntime'
@@ -16,6 +19,7 @@ import {
  * The strokes shown over a note and the pen bar's undo history. Rust owns
  * the strokes: each action is sent to it and the view shows its answer. A
  * new stroke shows at once as drawn and is replaced by the one Rust keeps.
+ * Rust also reads the selected handwriting with the AI (`convert`).
  */
 
 type HistoryEntry =
@@ -25,6 +29,16 @@ type HistoryEntry =
 
 const LOAD_ERROR = 'No se pudieron leer los trazos de esta nota.'
 const SAVE_ERROR = 'No se pudo guardar el trazo.'
+const CONVERT_ERROR = 'No se pudieron convertir los trazos.'
+
+/** The backend's message of a failed call, which says why the AI could not answer. */
+function messageOf(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string' && error.message) {
+    return error.message
+  }
+  return fallback
+}
 
 export interface NoteInk {
   strokes: InkStroke[]
@@ -44,6 +58,8 @@ export interface NoteInk {
   move: (ids: string[], dx: number, dy: number) => void
   /** Takes out the selected strokes; one undo step. */
   remove: (ids: string[]) => void
+  /** Reads the selected handwriting with the AI; `null` when it failed (the error is shown). */
+  convert: (ids: string[], preferences: AiPreferences) => Promise<InkConversion | null>
 }
 
 /** The strokes of a note, the same in both modes. */
@@ -206,6 +222,23 @@ export function useNoteInk(libraryId: string | null | undefined, path: string): 
     enqueue(() => replaceInkStrokes(libraryId, path, changed), () => merge(changed), () => setError('No se pudieron acomodar los trazos a la nota.'))
   }, [enqueue, libraryId, merge, path])
 
+  const convert = useCallback(async (ids: string[], preferences: AiPreferences): Promise<InkConversion | null> => {
+    if (!libraryId || ids.length === 0) return null
+    const generation = generationRef.current
+    // After the strokes still on their way to Rust, without holding the next
+    // ones while the AI answers.
+    await queueRef.current.catch(() => undefined)
+    try {
+      const conversion = await convertInkStrokes(libraryId, path, ids, preferences)
+      if (generationRef.current !== generation) return null
+      setError(null)
+      return conversion
+    } catch (error) {
+      if (generationRef.current === generation) setError(messageOf(error, CONVERT_ERROR))
+      return null
+    }
+  }, [libraryId, path])
+
   const undo = useCallback(() => {
     const entry = history.undo[history.undo.length - 1]
     eraseGestureRef.current = null
@@ -231,5 +264,6 @@ export function useNoteInk(libraryId: string | null | undefined, path: string): 
     select,
     move,
     remove,
+    convert,
   }
 }

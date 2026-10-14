@@ -5,7 +5,7 @@ import { setRightChatPanelOpen } from '../../../features/ui/uiSlice'
 import { requestChatPanel } from '../../../services/chat/chatComposerRequests'
 import { selectAiSettings, selectInkMathPreferences, selectTheme } from '../../../features/preferences/preferencesSelectors'
 import { Crepe } from '@milkdown/crepe'
-import { editorViewCtx, serializerCtx } from '@milkdown/kit/core'
+import { editorViewCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
@@ -114,6 +114,7 @@ import './markdown/ink/ink.css'
 import { InkLayer, type PenBarTool } from './markdown/ink/InkLayer'
 import { MarkdownPenBar } from './markdown/ink/MarkdownPenBar'
 import { useNoteInk } from './markdown/ink/useNoteInk'
+import { insertInkBlock } from './markdown/ink/inkInsertion'
 import { inkBottom } from './markdown/ink/inkPaths'
 import { isPageStroke, strokeInFlow } from './markdown/ink/inkFlow'
 import { useEditorPreferences } from '../hooks/useEditorPreferences'
@@ -665,6 +666,25 @@ function MarkdownViewInner({
   useEffect(() => {
     aiPreferencesRef.current = aiPreferences
   }, [aiPreferences])
+
+  // The lasso's AI button: Rust reads the strokes and returns the block; it
+  // goes into the note at their height and then the strokes go (one undo
+  // step of the pen bar; the editor's undo takes the block out).
+  const { convert: convertInk, remove: removeInk } = ink
+  const handleInkConvert = useCallback(async (ids: string[], top: () => number | null) => {
+    const conversion = await convertInk(ids, aiPreferencesRef.current)
+    const crepe = crepeRef.current
+    if (!conversion || !crepe || !isReadyRef.current) return false
+    const inserted = crepe.editor.action((ctx) => {
+      try {
+        return insertInkBlock(ctx.get(editorViewCtx), ctx.get(parserCtx)(conversion.markdown), top() ?? Number.POSITIVE_INFINITY)
+      } catch {
+        return false
+      }
+    })
+    if (inserted) removeInk(conversion.ids)
+    return inserted
+  }, [convertInk, removeInk])
 
   useEffect(() => {
     onSourceChangeRef.current = onSourceChange
@@ -1631,6 +1651,7 @@ function MarkdownViewInner({
               onLassoSelect={ink.select}
               onMove={ink.move}
               onRemove={ink.remove}
+              onConvert={handleInkConvert}
             />
           ) : null}
         </div>

@@ -1,14 +1,18 @@
 //! Handwriting over a note, kept in `.notia/ink/<note>.json` of its library
-//! (the rules live in `backend::note_ink`), and the diagrams a note saves
+//! (the rules live in `backend::note_ink`), its conversion into Markdown with
+//! the AI (`backend::note_ink_conversion`), and the diagrams a note saves
 //! next to itself (`backend::note_diagram`). Reads and writes go through the
 //! library's document adapter, so they work on Windows and Android (SAF).
 
 use std::sync::Mutex;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+use crate::backend::ai_settings::AiSettingsInput;
 use crate::backend::note_diagram::{diagram_bytes, diagram_destination_path, DiagramFormat};
 use crate::backend::note_ink::{self, EntryChange, InkDocument, InkStroke, StrokeInput};
+use crate::backend::note_ink_conversion::{self, InkConversionKind, InkRaster};
 use crate::backend::{BackendError, BackendErrorCode, DocumentLocatorDto, MAX_EXPORT_NAME_ATTEMPTS};
 use crate::filesystem::adapter::TauriFilesystemDocumentAdapter;
 use crate::host::{AppHandle, Manager};
@@ -92,6 +96,26 @@ pub(crate) struct InkMovePayload {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InkStrokesResult {
     strokes: Vec<InkStroke>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InkConvertPayload {
+    library_id: String,
+    path: String,
+    /// The strokes the lasso took.
+    ids: Vec<String>,
+    settings: AiSettingsInput,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InkConvertResult {
+    kind: InkConversionKind,
+    /// The block for the note, in Markdown.
+    markdown: String,
+    /// The strokes it came from; the editor takes them out once the block is in the note.
+    ids: Vec<String>,
 }
 
 fn ink_path(app: &AppHandle, library_id: &str, note_path: &str) -> Result<String, BackendError> {
@@ -197,6 +221,38 @@ pub(crate) async fn markdown_ink_move(app: AppHandle, payload: InkMovePayload) -
     blocking(move || {
         update(&app, &payload.library_id, &payload.path, |document| {
             Ok(InkStrokesResult { strokes: note_ink::move_strokes(document, &payload.ids, payload.dx, payload.dy)? })
+        })
+    })
+    .await
+}
+
+fn png_base64(raster: InkRaster) -> Result<String, BackendError> {
+    let failed = || BackendError::new(BackendErrorCode::Internal, "No se pudo preparar la imagen de los trazos.", true);
+    let image = image::GrayImage::from_raw(raster.width, raster.height, raster.pixels).ok_or_else(failed)?;
+    let mut png = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|_| failed())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(png))
+}
+
+/// Turns the selected handwriting into a Markdown block with the AI. The
+/// strokes stay until the editor has put the block in the note.
+pub(crate) async fn markdown_ink_convert(app: AppHandle, payload: InkConvertPayload) -> Result<InkConvertResult, BackendError> {
+    blocking(move || {
+        let document = read(&app, &payload.library_id, &payload.path)?;
+        let strokes = note_ink_conversion::convertible_strokes(&document, &payload.ids)?;
+        let image = png_base64(note_ink_conversion::raster(&strokes))?;
+        let answer = crate::ai_tasks::complete(
+            &app,
+            &payload.settings.normalize(),
+            note_ink_conversion::INK_CONVERSION_SYSTEM_PROMPT,
+            note_ink_conversion::INK_CONVERSION_USER_PROMPT,
+            vec![image],
+        )?;
+        let conversion = note_ink_conversion::parse_answer(&answer)?;
+        Ok(InkConvertResult {
+            kind: conversion.kind,
+            markdown: conversion.markdown,
+            ids: strokes.into_iter().map(|stroke| stroke.id).collect(),
         })
     })
     .await

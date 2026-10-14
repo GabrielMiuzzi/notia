@@ -1830,7 +1830,7 @@
         },
         "operation": {
           "type": "object",
-          "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}.",
+          "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}, replaceText{find,replace} (cambia el único lugar donde aparece find, copiado tal cual del documento; para corregir una frase o un párrafo de la nota).",
           "required": [
             "type",
             "payload"
@@ -1850,7 +1850,8 @@
                 "insertTemplate",
                 "replaceTemplate",
                 "insertBlock",
-                "replaceBlock"
+                "replaceBlock",
+                "replaceText"
               ]
             },
             "payload": {
@@ -1889,7 +1890,7 @@
               },
               "operation": {
                 "type": "object",
-                "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}.",
+                "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}, replaceText{find,replace} (cambia el único lugar donde aparece find, copiado tal cual del documento; para corregir una frase o un párrafo de la nota).",
                 "required": [
                   "type",
                   "payload"
@@ -1909,7 +1910,8 @@
                       "insertTemplate",
                       "replaceTemplate",
                       "insertBlock",
-                      "replaceBlock"
+                      "replaceBlock",
+                      "replaceText"
                     ]
                   },
                   "payload": {

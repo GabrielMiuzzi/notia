@@ -1,5 +1,6 @@
 import { backendSupports, callBackend } from '../transport'
 import type { PenColor } from '../preferences/editorPreferences'
+import { resolveAiPreferencesForTransport, type AiPreferences } from '../preferences/aiSettingsStorage'
 
 /*
  * Handwriting over a note. Rust keeps the strokes in `.notia/ink/<note>.json`
@@ -85,4 +86,22 @@ export async function eraseInk(
 ): Promise<InkStroke[]> {
   const result = await callBackend<InkStrokesResult>('markdown_ink_erase', { payload: { libraryId, path, page, points, radius } })
   return result.strokes
+}
+
+/** What the AI read in the handwriting. */
+export type InkConversionKind = 'text' | 'latexInline' | 'latexBlock' | 'mermaid' | 'xgraph' | 'table' | 'code'
+
+export interface InkConversion {
+  kind: InkConversionKind
+  /** The block for the note, in Markdown. */
+  markdown: string
+  /** The strokes it came from: they go once the block is in the note. */
+  ids: string[]
+}
+
+/** Turns selected handwriting into a Markdown block; the strokes are not touched. */
+export function convertInkStrokes(libraryId: string, path: string, ids: string[], preferences: AiPreferences): Promise<InkConversion> {
+  return callBackend<InkConversion>('markdown_ink_convert', {
+    payload: { libraryId, path, ids, settings: resolveAiPreferencesForTransport(preferences) },
+  })
 }

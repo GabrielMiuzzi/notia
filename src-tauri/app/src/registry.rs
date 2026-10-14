@@ -95,6 +95,7 @@ fn route(command: &str) -> Option<Route> {
         "markdown_ink_select" => markdown_ink_select,
         "markdown_ink_move" => markdown_ink_move,
         "markdown_ink_erase" => markdown_ink_erase,
+        "markdown_ink_convert" => markdown_ink_convert,
         "markdown_export_diagram" => markdown_export_diagram,
         "markdown_note_preview" => markdown_note_preview,
         "backend_mail_accounts" => backend_mail_accounts,
@@ -386,6 +387,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "markdown_ink_select",
     "markdown_ink_move",
     "markdown_ink_erase",
+    "markdown_ink_convert",
     "markdown_export_diagram",
     "markdown_note_preview",
     "backend_mail_accounts",
@@ -1955,6 +1957,11 @@ fn markdown_ink_move(app: &AppHandle, _window_label: &str, command: &str, args: 
 fn markdown_ink_erase(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (app, payload) = (app.clone(), arg(command, args, "payload")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_erase(app, payload).await) })))
+}
+
+fn markdown_ink_convert(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::note_ink::markdown_ink_convert(app, payload).await) })))
 }
 
 fn markdown_export_diagram(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
