@@ -11921,3 +11921,47 @@ En el recuadro de una selección del lazo, al lado de «Borrar», hay un botón 
 - `cargo test -p notia-app --features bluetooth`: 508 y 11 ignoradas. `cargo check` de Android sin errores.
 
 **Pendiente.** Repetir el pedido real por Telegram con el modelo configurado.
+
+## Host/Cliente: un comando que falla pasa la ventana a la copia al instante (2026-10-14)
+
+**Qué pasó (celular Android, con captura).** En el gimnasio, con la señal yéndose, el módulo Gimnasio mostró «No se pudo contactar al host de Notia» y no se pudo usar, aunque el celular es un cliente con copia. La regla de la ventana era: pasar a la copia solo cuando el monitor veía al host sin responder durante 10 s seguidos (`MOVE_TO_COPY_AFTER`). Con poca señal eso no pasa nunca: `/api/health` (una respuesta chica, hasta 3 s) contesta de vez en cuando y vuelve a poner el enlace en línea, mientras cada comando de la ventana (una serie marcada en Gimnasio) falla al conectar. La persona ve fallar lo que hace y la ventana no se mueve. Además, si por fin se movía, `client_open` volvía a probar el host al recargar: si contestaba justo en ese momento, la ventana abría otra vez sobre el host y todo fallaba de nuevo; y de vuelta en la copia, con el primer `health` que pasara se anunciaba la vuelta al host.
+
+**Regla nueva (`host_client::window_move`, con `LinkTiming`).**
+- Sobre el host: la ventana va a la copia cuando un comando de la ventana no pudo contactar al host (`Link.command_failed`), o cuando el host lleva 10 s sin responder, siempre que la copia esté lista (`copy_ready`). El cambio se anuncia en el momento (`forward` llama a `announce_move` cuando la marca cambia), así `ClientApp` recarga enseguida y no espera la próxima vuelta del monitor.
+  - Solo cuentan los comandos de la ventana (`registry::client_dispatch` → `host_client::forward`), no la sincronización de la copia ni las llamadas internas (`call_host`), que corren de fondo y no deben recargar la ventana por un corte corto.
+  - Cuenta solo el error de red del cliente (`unreachable_error`): un error del backend del host, aunque sea `providerUnavailable` (por ejemplo, Ollama apagado en el host), no mueve la ventana.
+  - La marca se levanta cuando un comando vuelve a llegar al host o cuando la ventana deja la copia (`leave_offline_copy` → `forget_failed_command`).
+- `client_open`: con la marca puesta y la copia lista, abre la copia sin probar el host (`copy_preferred`), con el mensaje «El host … dejó de responder mientras lo usabas.». Sin la marca sigue como antes: prueba 3 s y abre donde puede.
+- Sobre la copia: la ventana vuelve al host solo cuando lleva 30 s respondiendo seguido (`Link.online_since`, `RETURN_TO_HOST_AFTER`); un `health` suelto ya no la hace volver. El texto de la notificación de Android cambió a «El host volvió a responder · Notia vuelve al host cuando la conexión se mantenga unos segundos y concilia los cambios en segundo plano.».
+
+Lo demás no cambia: la ventana se recarga sobre la copia (la vista abierta se pierde; en Gimnasio hay que volver a entrar a la rutina), la copia tiene la base de hasta 10 s antes (la sincronización por filas corre en cada vuelta del monitor), y al volver al host se concilian archivos y filas con el cambio más nuevo.
+
+**Validación.**
+- `host_client::tests::the_window_moves_to_the_copy_after_a_while_or_a_failed_command_and_back_once_the_host_is_stable`.
+- `host_mirror::tests::a_failed_command_moves_the_window_to_the_copy_at_once`: con un host real en 127.0.0.1, el cliente inicia sesión, sincroniza y corre un comando; el host se apaga, el siguiente comando falla con `provider-unavailable`, `move_to` pasa a `copy` sin esperar, `client_open` abre la copia en menos de 3 s con el mensaje nuevo, sobre la copia no se pide ningún movimiento y al dejarla la marca se olvida.
+- `cargo test -p notia-app --features bluetooth`: 509 y 11 ignoradas (2 pruebas nuevas). `cargo check` de Android sin errores, 58 advertencias como antes. Sin cambios en el frontend ni en Kotlin.
+
+**Límites y pendientes.**
+- Un comando que se queda colgado a mitad de camino (la conexión se corta después de conectar) espera hasta `INVOKE_TIMEOUT` (30 min): el servidor responde `/api/invoke` de una sola vez, sin señales de vida, así que no se puede poner un tiempo de lectura corto sin cortar los comandos largos (exportar, preparar un modelo de voz). Queda para otra iteración (respuesta en trozos con espacios cada pocos segundos y un tiempo de lectura en el cliente).
+- Sin copia configurada (cliente «Remoto», o «Con copia» sin carpeta elegida o sin la primera sincronización), sin conexión no hay nada que abrir: la app sigue mostrando el error.
+- Falta probarlo en el celular: el corte en Gimnasio, la vuelta con la señal a medias y la conciliación de lo hecho en los dos lados.
+
+## Editor: la edición confirmada del agente se ve con la nota compartida (2026-10-14)
+
+**Síntoma.** Con un `.md` abierto, el chat de IA proponía un cambio y, al tocar «Confirmar» o «Confirmar todos», el archivo cambiaba, pero el editor seguía con el texto viejo hasta cerrar y volver a abrir la nota.
+
+**Causa.** El aviso funcionaba: el backend emite `notia://library-documents-changed`, `NotiaMenu` relee la nota y `MarkdownView` recibe el texto nuevo. El problema estaba en cómo lo aplicaba el editor: `replaceAll(body, true)`. Con `flush`, Milkdown crea un `EditorState` nuevo (`view.updateState`). En el equipo Host, con el servidor escuchando, toda nota abierta se une a una sala de edición compartida (Yjs, `collaboration` en `connection.rs`), y el estado nuevo vuelve a atar la sala, que pinta otra vez su texto viejo. Esto se confirmó con un editor real atado a un `Y.Doc`: después de `replaceAll('Texto nuevo', true)` el editor y la sala seguían en «Texto viejo»; como transacción normal, los dos quedaban en «Texto nuevo». Sin sala (Notia sin modo Host) el editor ya mostraba el cambio.
+
+**Arreglo** (`views/markdown/collab/externalBody.ts`, usado por los dos efectos de `MarkdownView` que aplican texto de afuera):
+- `replaceEditorBody(editor, body, sharing)`:
+  - `alone` (sin sala): reemplaza el estado como antes, y el historial de deshacer empieza de nuevo;
+  - `saver` (la ventana que guarda la sala): aplica el cambio como edición, así llega a la sala y a las demás ventanas;
+  - `follower` (otra ventana de la sala): no lo aplica y lo recibe por la sala.
+- Si todas las ventanas de la sala reemplazaran el texto (la PC y la tablet reciben el mismo aviso), Yjs juntaría los reemplazos y el texto nuevo podría quedar repetido.
+- `sharingOf(collabSessionRef, isCollabFollowerRef)` decide el modo con el estado de la sala del editor.
+
+**Validación.**
+- `externalBody.test.ts` (3, con editores Milkdown reales y `@milkdown/plugin-collab`): un editor solo cambia el texto; uno atado a la sala lo conserva y la sala también; con dos ventanas conectadas, solo la que guarda lo aplica y la otra lo recibe una vez.
+- `tsc -p tsconfig.app.json` y ESLint sin errores; vitest de `views` y `hooks`: 290 pruebas en 51 archivos.
+
+**Pendiente.** Probarlo en la app con una edición confirmada real, con la nota abierta solo en la PC y abierta a la vez en la tablet.

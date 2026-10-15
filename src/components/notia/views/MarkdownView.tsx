@@ -9,7 +9,6 @@ import { editorViewCtx, parserCtx, serializerCtx } from '@milkdown/kit/core'
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
-import { replaceAll } from '@milkdown/kit/utils'
 import { gfm } from '@milkdown/preset-gfm'
 import { emoji } from '@milkdown/plugin-emoji'
 import { cursor } from '@milkdown/plugin-cursor'
@@ -49,6 +48,7 @@ import { sheetFitScale, useMarkdownZoom } from './markdown/useMarkdownZoom'
 import { leaveStylusToSystem, marqueeTakesPress } from './markdown/stylusWriting'
 import { createCollabBlocksPlugin } from './markdown/collab/collabBlocksPlugin'
 import { startMarkdownCollab, type MarkdownCollabSession } from './markdown/collab/markdownCollab'
+import { replaceEditorBody, type EditorSharing } from './markdown/collab/externalBody'
 import { collaborationSettings } from '../../../services/collab/collabRuntime'
 import { createXGraphPlaceholder, isXGraphLanguage } from '../../../engines/markdown/xgraphEngine'
 import { observeXGraphPreviews } from '../../../services/markdown/xgraphPreviewRuntime'
@@ -127,6 +127,12 @@ import { registerPendingEditorChanges } from '../../../services/markdown/pending
 const WIKI_LINK_MENU_WIDTH = 320
 const WIKI_LINK_MENU_MARGIN = 12
 const MATH_CODE_BLOCK_LANGUAGES = new Set(['latex', 'math', 'tex'])
+
+/** How the editor holds its note, for changes that come from outside it. */
+function sharingOf(session: MarkdownCollabSession | null, follower: boolean): EditorSharing {
+  if (!session) return 'alone'
+  return follower ? 'follower' : 'saver'
+}
 const LIST_BULLET_ICON = '<svg viewBox="0 0 6 6"><circle cx="3" cy="3" r="2.35"/><rect x="0.6" y="0.6" width="4.8" height="4.8"/></svg>'
 const TASK_CHECKED_ICON = '<svg viewBox="0 0 18 18"><rect class="notia-check-box" x="0" y="0" width="18" height="18" rx="5"/><path class="notia-check-mark" d="M4.9 9.6l2.9 2.7 5.3-6.1" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 const TASK_UNCHECKED_ICON = '<svg viewBox="0 0 18 18"><rect class="notia-check-box" x="0.75" y="0.75" width="16.5" height="16.5" rx="4.25" stroke-width="1.5"/></svg>'
@@ -1372,7 +1378,7 @@ function MarkdownViewInner({
 
     const nextDocument = parseFrontmatterDocument(externalSourceUpdate.source)
     isApplyingExternalUpdateRef.current = true
-    crepe.editor.action(replaceAll(nextDocument.body, true))
+    replaceEditorBody(crepe.editor, nextDocument.body, sharingOf(collabSessionRef.current, isCollabFollowerRef.current))
     isApplyingExternalUpdateRef.current = false
     latestComposedSourceRef.current = externalSourceUpdate.source
     latestBodyRef.current = nextDocument.body
@@ -1408,7 +1414,7 @@ function MarkdownViewInner({
     }
 
     isApplyingExternalUpdateRef.current = true
-    crepe.editor.action(replaceAll(parsedDocument.body, true))
+    replaceEditorBody(crepe.editor, parsedDocument.body, sharingOf(collabSessionRef.current, isCollabFollowerRef.current))
     isApplyingExternalUpdateRef.current = false
     latestBodyRef.current = parsedDocument.body
   }, [parsedDocument.body, source])

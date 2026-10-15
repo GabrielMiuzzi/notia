@@ -322,16 +322,23 @@ pub(crate) async fn client_open(app: AppHandle) -> Result<OpenedClient, BackendE
     let saved = settings(&app);
     let address = parse_host_address(&saved.host_address)?;
     let copy_ready = crate::host_mirror::copy_ready(&app);
-    let probe = if copy_ready {
-        crate::host_client::probe_within(&app, &address, saved.host_certificate.clone(), crate::host_client::HEALTH_TIMEOUT).await
+    // A command of the window just failed to reach the host: the window
+    // reopens on the copy without asking a host that answers now and then.
+    let failed_command = copy_ready && crate::host_client::copy_preferred(&app);
+    let probe = if failed_command {
+        None
+    } else if copy_ready {
+        Some(crate::host_client::probe_within(&app, &address, saved.host_certificate.clone(), crate::host_client::HEALTH_TIMEOUT).await)
     } else {
-        crate::host_client::probe(&app, &address, saved.host_certificate.clone()).await
+        Some(crate::host_client::probe(&app, &address, saved.host_certificate.clone()).await)
     };
-    let (opening, message) = if probe.ok {
+    let (opening, message) = if probe.as_ref().is_some_and(|probe| probe.ok) {
         crate::host_mirror::leave_offline_copy(&app)?;
         (ClientOpening::Host, None)
     } else {
-        let message = probe.message.unwrap_or_else(|| format!("El host {} no responde.", saved.host_address));
+        let message = probe
+            .and_then(|probe| probe.message)
+            .unwrap_or_else(|| format!("El host {} dejó de responder mientras lo usabas.", saved.host_address));
         if crate::host_mirror::keeps_copy(&app) {
             match crate::host_mirror::enter_offline_copy(&app) {
                 Ok(_) => (ClientOpening::Copy, Some(message)),

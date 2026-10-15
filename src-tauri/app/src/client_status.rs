@@ -82,7 +82,11 @@ pub(crate) fn describe(input: &StatusInput) -> Option<ClientStatus> {
     let host = input.host_address.as_str();
     if input.on_copy {
         return if input.link == LinkState::Online {
-            status(StatusKind::Connecting, "El host volvió a responder", "Notia vuelve al host y concilia los cambios en segundo plano.".into())
+            status(
+                StatusKind::Connecting,
+                "El host volvió a responder",
+                "Notia vuelve al host cuando la conexión se mantenga unos segundos y concilia los cambios en segundo plano.".into(),
+            )
         } else {
             status(
                 StatusKind::Offline,

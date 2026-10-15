@@ -1274,6 +1274,7 @@ pub(crate) fn leave_offline_copy(app: &AppHandle) -> Result<(), BackendError> {
     if let Ok(mut copy) = OFFLINE_COPY.lock() {
         *copy = None;
     }
+    crate::host_client::forget_failed_command(app);
     crate::client_status::refresh(app);
     crate::host_client::announce_move(app);
     let current: CurrentCopy = read_json(&directory(app)?.join(CURRENT_FILE));
@@ -1519,6 +1520,63 @@ mod tests {
         drop(database);
 
         leave_offline_copy(&client).expect("back");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The phone in the gym: the host stops answering while a command of
+    /// the window runs. The window goes to the copy at once, reopens on it
+    /// without asking the host again, and the failure is forgotten when it
+    /// leaves the copy.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn a_failed_command_moves_the_window_to_the_copy_at_once() {
+        use crate::backend::connection::{ConnectionSettings, RunMode};
+        use crate::host::{AppPaths, HostPorts};
+        use crate::registry::Dispatch;
+
+        let root = std::env::temp_dir().join(format!("notia-failed-command-{}", uuid::Uuid::new_v4()));
+        let (host, port, stop, library_id) = crate::host_client::test_host::start(&root);
+        let client = crate::create_app(AppPaths::new(Some(root.join("client")), None), HostPorts::default());
+        client.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+        let settings = ConnectionSettings { mode: RunMode::Client, host_address: format!("127.0.0.1:{port}"), ..ConnectionSettings::default() };
+        crate::connection::store(&client, &settings).expect("settings");
+        let forwarded = |command: &str| {
+            let body = json!({ "command": command, "args": { "payload": { "libraryId": library_id } } });
+            match crate::registry::dispatch_app_invoke(&client, "main", &body) {
+                Dispatch::Pending(task) => crate::host::async_runtime::block_on(task),
+                Dispatch::Ready(reply) => reply,
+            }
+        };
+        crate::host::async_runtime::block_on(async {
+            crate::host_client::auth_login(&client, &library_id, "owner", "contraseña-1", false, false).await.expect("login");
+            sync(&client).await.expect("sync");
+        });
+        assert!(forwarded("backend_library_catalog").is_ok());
+        assert!(!crate::host_client::copy_preferred(&client));
+        assert_eq!(crate::host_client::link_view(&client).move_to, None);
+
+        // The host goes away: the next command fails and the window may
+        // move now, not after the monitor's wait.
+        stop.store(true, Ordering::SeqCst);
+        drop(host);
+        let failed = forwarded("backend_library_catalog").expect_err("the host is gone");
+        assert_eq!(failed["code"], "provider-unavailable");
+        assert!(crate::host_client::copy_preferred(&client));
+        assert_eq!(crate::host_client::link_view(&client).move_to, Some(crate::host_client::WindowMove::Copy));
+
+        // The window reopens on the copy without probing the host.
+        let started = std::time::Instant::now();
+        let opened = crate::host::async_runtime::block_on(crate::connection::client_open(client.clone())).expect("open");
+        let opened = serde_json::to_value(&opened).expect("json");
+        assert_eq!(opened["opening"], "copy");
+        assert!(opened["message"].as_str().is_some_and(|message| message.contains("dejó de responder")), "{opened}");
+        assert!(started.elapsed() < crate::host_client::HEALTH_TIMEOUT);
+        assert!(is_offline(&client) && !crate::host_client::uses_host(&client));
+        // On the copy, the failure no longer asks for a move.
+        assert_eq!(crate::host_client::link_view(&client).move_to, None);
+
+        leave_offline_copy(&client).expect("back");
+        assert!(!crate::host_client::copy_preferred(&client));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

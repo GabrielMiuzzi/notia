@@ -55,6 +55,10 @@ const MONITOR_OFFLINE_INTERVAL: Duration = Duration::from_secs(4);
 /// How long the host stays without answering before a window on it moves
 /// to the copy: a short drop (a weak signal) does not reload the window.
 const MOVE_TO_COPY_AFTER: Duration = Duration::from_secs(10);
+/// How long the host must keep answering before a window on the copy goes
+/// back to it: with a weak signal the host answers now and then, and each
+/// return would fail again.
+const RETURN_TO_HOST_AFTER: Duration = Duration::from_secs(30);
 const EVENTS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const EVENTS_RETRY: Duration = Duration::from_secs(2);
 const MAX_EVENT_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -85,8 +89,22 @@ struct Link {
     credentials: Option<(String, String)>,
     /// Since when the host does not answer.
     offline_since: Option<Instant>,
+    /// Since when the host answers.
+    online_since: Option<Instant>,
+    /// A command of the window could not reach the host, and none has since
+    /// (`forward`). The person saw it fail: the window goes to the copy at
+    /// once, and a reload opens the copy without asking the host again.
+    command_failed: bool,
     /// Where the window was last told to move.
     announced_move: Option<WindowMove>,
+}
+
+/// How the link is, for deciding where the window goes.
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkTiming {
+    offline_for: Option<Duration>,
+    online_for: Option<Duration>,
+    command_failed: bool,
 }
 
 /// Where a client's window should go now (`LinkView::move_to`).
@@ -99,15 +117,17 @@ pub(crate) enum WindowMove {
     Host,
 }
 
-/// Where the window should go, from the link and the copy.
-fn window_move(state: LinkState, offline_for: Option<Duration>, on_copy: bool, copy_ready: impl FnOnce() -> bool) -> Option<WindowMove> {
-    match state {
-        LinkState::Online if on_copy => Some(WindowMove::Host),
-        LinkState::Offline if !on_copy && offline_for.is_some_and(|elapsed| elapsed >= MOVE_TO_COPY_AFTER) && copy_ready() => {
-            Some(WindowMove::Copy)
-        }
-        _ => None,
+/// Where the window should go, from the link and the copy. On the host, a
+/// command that failed moves it to the copy at once; without one, only a
+/// host away for a while does (a short drop does not reload the window).
+/// On the copy, the host must answer for a while before the window returns.
+fn window_move(state: LinkState, timing: LinkTiming, on_copy: bool, copy_ready: impl FnOnce() -> bool) -> Option<WindowMove> {
+    if on_copy {
+        let stable = timing.online_for.is_some_and(|elapsed| elapsed >= RETURN_TO_HOST_AFTER);
+        return (state == LinkState::Online && stable).then_some(WindowMove::Host);
     }
+    let away = state == LinkState::Offline && timing.offline_for.is_some_and(|elapsed| elapsed >= MOVE_TO_COPY_AFTER);
+    ((timing.command_failed || away) && copy_ready()).then_some(WindowMove::Copy)
 }
 
 #[derive(Clone)]
@@ -205,14 +225,30 @@ pub(crate) fn link_view(app: &AppHandle) -> LinkView {
             message: link.message.clone(),
             move_to: None,
         };
-        (view, link.offline_since.map(|since| since.elapsed()))
+        let timing = LinkTiming {
+            offline_for: link.offline_since.map(|since| since.elapsed()),
+            online_for: link.online_since.map(|since| since.elapsed()),
+            command_failed: link.command_failed,
+        };
+        (view, timing)
     });
-    let Some((mut view, offline_for)) = view else {
+    let Some((mut view, timing)) = view else {
         return LinkView { state: LinkState::Unknown, library: None, platform: None, signed_in: false, message: None, move_to: None };
     };
     let on_copy = crate::host_mirror::is_offline(app);
-    view.move_to = window_move(view.state, offline_for, on_copy, || crate::host_mirror::copy_ready(app));
+    view.move_to = window_move(view.state, timing, on_copy, || crate::host_mirror::copy_ready(app));
     view
+}
+
+/// Whether a command of the window failed to reach the host and none has
+/// reached it since: the window prefers its copy until it leaves it.
+pub(crate) fn copy_preferred(app: &AppHandle) -> bool {
+    with_link(app, |link| link.command_failed).unwrap_or(false)
+}
+
+/// The window left the copy: the next failure counts anew.
+pub(crate) fn forget_failed_command(app: &AppHandle) {
+    with_link(app, |link| link.command_failed = false);
 }
 
 fn emit_link(app: &AppHandle) {
@@ -261,6 +297,11 @@ fn set_state(app: &AppHandle, next: LinkState, library: Option<Option<String>>, 
             link.offline_since = None;
         } else if link.offline_since.is_none() {
             link.offline_since = Some(Instant::now());
+        }
+        if next != LinkState::Online {
+            link.online_since = None;
+        } else if link.online_since.is_none() {
+            link.online_since = Some(Instant::now());
         }
         link.state = next;
         link.message = message;
@@ -571,7 +612,17 @@ async fn open_session(app: &AppHandle, username: &str, password: &str) -> Result
 pub(crate) fn forward(app: &AppHandle, command: &str, args: Value) -> Dispatch {
     let app = app.clone();
     let command = command.to_string();
-    Dispatch::Pending(Box::pin(async move { invoke(&app, &command, args).await }))
+    Dispatch::Pending(Box::pin(async move {
+        let reply = invoke(&app, &command, args).await;
+        // The person saw this command fail for lack of connection: the
+        // window may go to the copy now, without waiting for the monitor.
+        let unreachable = matches!(&reply, Err(error) if *error == error_value(unreachable_error()));
+        let changed = with_link(&app, |link| std::mem::replace(&mut link.command_failed, unreachable) != unreachable);
+        if changed == Some(true) {
+            announce_move(&app);
+        }
+        reply
+    }))
 }
 
 /// Runs `command` on the host and reads its result.
@@ -993,16 +1044,27 @@ mod tests {
     }
 
     #[test]
-    fn the_window_moves_to_the_copy_after_a_while_and_back_when_the_host_answers() {
+    fn the_window_moves_to_the_copy_after_a_while_or_a_failed_command_and_back_once_the_host_is_stable() {
         let ready = || true;
-        let away = Some(MOVE_TO_COPY_AFTER);
-        assert_eq!(window_move(LinkState::Offline, Some(Duration::from_secs(3)), false, ready), None, "a short drop");
+        let offline = |seconds: u64| LinkTiming { offline_for: Some(Duration::from_secs(seconds)), ..LinkTiming::default() };
+        let online = |seconds: u64| LinkTiming { online_for: Some(Duration::from_secs(seconds)), ..LinkTiming::default() };
+        let away = offline(MOVE_TO_COPY_AFTER.as_secs());
+        assert_eq!(window_move(LinkState::Offline, offline(3), false, ready), None, "a short drop");
         assert_eq!(window_move(LinkState::Offline, away, false, ready), Some(WindowMove::Copy));
         assert_eq!(window_move(LinkState::Offline, away, false, || false), None, "no copy to open");
         assert_eq!(window_move(LinkState::Offline, away, true, ready), None, "already on the copy");
-        assert_eq!(window_move(LinkState::Online, None, true, ready), Some(WindowMove::Host));
-        assert_eq!(window_move(LinkState::Online, None, false, ready), None);
-        assert_eq!(window_move(LinkState::Unknown, None, false, ready), None);
+        // A command the person saw fail: to the copy now, even if the
+        // health checks still pass now and then.
+        let failed = LinkTiming { command_failed: true, ..online(60) };
+        assert_eq!(window_move(LinkState::Online, failed, false, ready), Some(WindowMove::Copy));
+        assert_eq!(window_move(LinkState::Offline, LinkTiming { command_failed: true, ..offline(1) }, false, ready), Some(WindowMove::Copy));
+        assert_eq!(window_move(LinkState::Online, failed, false, || false), None, "no copy to open");
+        // Back only after the host answers for a while.
+        assert_eq!(window_move(LinkState::Online, online(3), true, ready), None, "the host just came back");
+        assert_eq!(window_move(LinkState::Online, online(RETURN_TO_HOST_AFTER.as_secs()), true, ready), Some(WindowMove::Host));
+        assert_eq!(window_move(LinkState::Online, LinkTiming { command_failed: true, ..online(60) }, true, ready), Some(WindowMove::Host));
+        assert_eq!(window_move(LinkState::Online, online(60), false, ready), None);
+        assert_eq!(window_move(LinkState::Unknown, LinkTiming::default(), false, ready), None);
     }
 
     #[test]
