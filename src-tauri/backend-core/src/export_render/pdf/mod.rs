@@ -7,6 +7,9 @@ mod layout;
 mod math_layout;
 mod writer;
 
+use std::sync::Arc;
+
+use super::diagrams::Picture;
 use super::document::{Document, Rgb};
 use crate::error::{BackendError, BackendErrorCode};
 use crate::page_setup::PageGeometry;
@@ -37,12 +40,14 @@ enum Draw {
     Line { points: Vec<(f32, f32)>, width: f32, color: Rgb },
     /// A clickable area opening `url`.
     Link { x: f32, y: f32, width: f32, height: f32, url: String },
+    /// A picture from its bottom left corner.
+    Image { x: f32, y: f32, width: f32, height: f32, picture: Arc<Picture> },
 }
 
 impl Draw {
     pub fn translate(&mut self, dx: f32, dy: f32) {
         match self {
-            Draw::Glyphs { x, y, .. } | Draw::Rect { x, y, .. } | Draw::Link { x, y, .. } => {
+            Draw::Glyphs { x, y, .. } | Draw::Rect { x, y, .. } | Draw::Link { x, y, .. } | Draw::Image { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -66,7 +71,7 @@ impl Draw {
                     glyph.advance *= factor;
                 }
             }
-            Draw::Rect { x, y, width, height, .. } | Draw::Link { x, y, width, height, .. } => {
+            Draw::Rect { x, y, width, height, .. } | Draw::Link { x, y, width, height, .. } | Draw::Image { x, y, width, height, .. } => {
                 *x *= factor;
                 *y *= factor;
                 *width *= factor;
@@ -92,7 +97,7 @@ pub(super) fn render_pdf(document: &Document, page: &PageGeometry) -> Result<Vec
     let band = if page.page_numbers { NUMBER_BAND } else { 0.0 };
     let content_height = (height - 2.0 * margin - band).max(72.0);
 
-    let pages = paginate(layout_document(fonts, document, width - 2.0 * margin), content_height);
+    let pages = paginate(layout_document(fonts, document, width - 2.0 * margin, content_height), content_height);
     let count = pages.len();
     let contents = pages
         .into_iter()

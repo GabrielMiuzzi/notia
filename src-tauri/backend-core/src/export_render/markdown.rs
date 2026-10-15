@@ -3,15 +3,22 @@
 //! `<span data-color>`, `<mark data-color>` and `<div align>`) becomes style,
 //! and `$…$` / `$$…$$` become formulas.
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 
+use super::diagrams::{code_language, diagram_kind, DiagramRenders};
 use super::document::{Align, Block, Color, Document, Inline, List, ListItem, Table, TextStyle};
 
 /// Containers nested deeper than this are flattened into their parent, so
 /// hostile nesting cannot exhaust the stack of the writers.
 const MAX_DEPTH: usize = 24;
 
+#[cfg(test)]
 pub(crate) fn parse_markdown(body: &str) -> Document {
+    parse_markdown_with(body, &DiagramRenders::default())
+}
+
+/// The note as the export shows it; diagrams with a picture in `renders` carry it.
+pub(crate) fn parse_markdown_with<'a>(body: &'a str, renders: &'a DiagramRenders) -> Document {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -23,6 +30,7 @@ pub(crate) fn parse_markdown(body: &str) -> Document {
         layers: Vec::new(),
         align: Align::Left,
         task: None,
+        renders,
     };
     let mut blocks = reader.blocks(0);
     // Stray closing tags stop `blocks` early; read on so nothing is lost.
@@ -62,6 +70,7 @@ struct Reader<'a> {
     align: Align,
     /// Checkbox of the list item being read.
     task: Option<bool>,
+    renders: &'a DiagramRenders,
 }
 
 impl<'a> Reader<'a> {
@@ -120,15 +129,17 @@ impl<'a> Reader<'a> {
                     blocks.push(Block::Quote(inner));
                 }
                 Event::Start(Tag::CodeBlock(kind)) => {
-                    let language = match kind {
-                        CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or_default().to_ascii_lowercase(),
-                        CodeBlockKind::Indented => String::new(),
-                    };
+                    let language = code_language(kind);
                     self.advance();
                     let text = self.literal_text();
                     self.close();
                     let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
-                    blocks.push(if language == "math" { Block::Math(text.trim().to_string()) } else { Block::Code { text } });
+                    blocks.push(if language == "math" {
+                        Block::Math(text.trim().to_string())
+                    } else {
+                        let view = diagram_kind(&language, &text).and_then(|kind| self.renders.get(kind, &text));
+                        Block::Code { text, view }
+                    });
                 }
                 Event::Start(Tag::List(start)) => {
                     let start = *start;
@@ -536,7 +547,7 @@ mod tests {
         assert_eq!(table.columns, vec![Align::Center, Align::Right]);
         assert_eq!(table.header[0], vec![plain("a")]);
         assert_eq!(table.rows[0][1], vec![text("2", TextStyle { bold: true, ..TextStyle::default() })]);
-        assert_eq!(document.blocks[1], Block::Code { text: "fn main() {}".to_string() });
+        assert_eq!(document.blocks[1], Block::Code { text: "fn main() {}".to_string(), view: None });
         let Block::Paragraph { content, .. } = &document.blocks[2] else { panic!("paragraph") };
         assert_eq!(content[0], text("web", TextStyle { link: Some("https://x.org".to_string()), ..TextStyle::default() }));
         assert_eq!(content[1], plain(" nota alias "));

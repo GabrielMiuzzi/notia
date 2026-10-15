@@ -3327,6 +3327,8 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     &Self::text(&call.arguments, "path"),
                     format,
                     &crate::device_preferences::page_geometry(&self.app),
+                    // No editor draws the diagrams here: they stay code.
+                    &crate::backend::DiagramRenders::default(),
                 )?;
                 json!({
                     "destinationLogicalPath": receipt.destination_logical_path,

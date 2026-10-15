@@ -2,9 +2,12 @@
 //! decorations (code background, quote bars, list marker), so a page can
 //! break between any two lines.
 
+use std::sync::Arc;
+
 use super::fonts::{text_chain, FontId, Fonts};
 use super::math_layout::{MathBox, MathLayout, MATH_SCALE};
 use super::{Draw, Glyph};
+use crate::export_render::diagrams::Picture;
 use crate::export_render::document::{Align, Block, Document, Inline, List, Rgb, Table, TextStyle};
 use crate::export_render::math::parse_math;
 
@@ -30,6 +33,8 @@ const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
 /// Backgrounds that continue from line to line reach this far into the
 /// next one, so viewers leave no hairline seam between them.
 const SEAM_OVERLAP: f32 = 0.4;
+/// A CSS pixel is 1/96 in; a point, 1/72 in.
+const PT_PER_CSS_PX: f32 = 0.75;
 
 #[derive(Debug, Clone)]
 pub(super) struct Line {
@@ -128,8 +133,9 @@ enum LineItem {
     Space(RunStyle, f32),
 }
 
-pub(super) fn layout_document(fonts: &Fonts, document: &Document, width: f32) -> Vec<Flow> {
-    let mut layout = Layout { fonts, flow: Vec::new() };
+/// `height`: the content of a page, the tallest a picture may be.
+pub(super) fn layout_document(fonts: &Fonts, document: &Document, width: f32, height: f32) -> Vec<Flow> {
+    let mut layout = Layout { fonts, flow: Vec::new(), page_height: height };
     let frame = Frame { x: 0.0, width, bars: Vec::new(), paragraph_gap: PARAGRAPH_GAP };
     layout.blocks(&document.blocks, &frame, 0);
     layout.flow
@@ -185,6 +191,7 @@ fn kept_height(flow: &[Flow], start: usize) -> f32 {
 struct Layout<'a> {
     fonts: &'a Fonts,
     flow: Vec<Flow>,
+    page_height: f32,
 }
 
 impl Layout<'_> {
@@ -256,7 +263,8 @@ impl Layout<'_> {
                 }
                 self.push_gap(frame.paragraph_gap, frame);
             }
-            Block::Code { text } => self.code(text, frame),
+            Block::Code { view: Some(picture), .. } => self.picture(picture, frame),
+            Block::Code { text, view: None } => self.code(text, frame),
             Block::Math(latex) => self.display_math(latex, frame),
             Block::Table(table) => self.table(table, frame),
             Block::Rule => {
@@ -335,6 +343,18 @@ impl Layout<'_> {
             }
         }
         self.push_line(padding, frame);
+        self.push_gap(frame.paragraph_gap.max(PARAGRAPH_GAP), frame);
+    }
+
+    /// A diagram's picture at its size on the editor's sheet, centered, made
+    /// smaller to fit the width and the page.
+    fn picture(&mut self, picture: &Arc<Picture>, frame: &Frame) {
+        let natural = (picture.width * PT_PER_CSS_PX, picture.height * PT_PER_CSS_PX);
+        let scale = 1f32.min(frame.width / natural.0).min(self.page_height / natural.1);
+        let (width, height) = (natural.0 * scale, natural.1 * scale);
+        self.push_gap(frame.paragraph_gap.max(PARAGRAPH_GAP), frame);
+        let draw = Draw::Image { x: (frame.width - width) / 2.0, y: 0.0, width, height, picture: Arc::clone(picture) };
+        self.push_line(Line { ascent: height, descent: 0.0, draws: vec![draw], keep_with_next: false }, frame);
         self.push_gap(frame.paragraph_gap.max(PARAGRAPH_GAP), frame);
     }
 
@@ -653,7 +673,7 @@ impl Layout<'_> {
 
 /// Glyphs and width of `text`, for callers outside a paragraph.
 pub(super) fn label(fonts: &Fonts, text: &str, size: f32, color: Rgb) -> (Vec<Draw>, f32) {
-    Layout { fonts, flow: Vec::new() }.text_draws(text, FontId::Sans, size, color)
+    Layout { fonts, flow: Vec::new(), page_height: 0.0 }.text_draws(text, FontId::Sans, size, color)
 }
 
 fn glyph_draw(font: FontId, glyphs: Vec<Glyph>, x: f32, style: &RunStyle) -> Draw {
@@ -776,7 +796,7 @@ mod tests {
     use crate::export_render::markdown::parse_markdown;
 
     fn flow(markdown: &str, width: f32) -> Vec<Flow> {
-        layout_document(fonts().expect("fonts"), &parse_markdown(markdown), width)
+        layout_document(fonts().expect("fonts"), &parse_markdown(markdown), width, 1000.0)
     }
 
     fn lines(flow: &[Flow]) -> Vec<&Line> {

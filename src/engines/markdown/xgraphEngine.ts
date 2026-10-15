@@ -34,8 +34,12 @@ function safeTheme(theme: XGraphTheme | undefined): XGraphTheme | null {
   return Object.values(theme).every(isCssColor) ? theme : null
 }
 
-/** User JavaScript only runs in an opaque-origin sandbox, never in the app WebView. */
-export function createXGraphDocument(content: string, runtime: string, stylesheet: string, nonce: string, theme?: XGraphTheme): string {
+/**
+ * User JavaScript only runs in an opaque-origin sandbox, never in the app
+ * WebView. `textInSvg`: labels are drawn inside the SVG instead of as HTML
+ * over it, so a picture of the board keeps them.
+ */
+export function createXGraphDocument(content: string, runtime: string, stylesheet: string, nonce: string, theme?: XGraphTheme, textInSvg = false): string {
   const code = JSON.stringify(content).replace(/</g, '\\u003c')
   const colors = safeTheme(theme)
   const themeStyle = colors
@@ -99,7 +103,7 @@ const showError = (message) => { const error = document.getElementById('error');
 window.addEventListener('error', (event) => showError(event.message));
 window.addEventListener('unhandledrejection', () => showError('Falló una operación del gráfico.'));
 try {
-  ${themeScript}const board = JXG.JSXGraph.initBoard('box', {boundingbox:[-5,5,5,-5],axis:true,showCopyright:false,showNavigation:true,resize:{enabled:true},pan:{needTwoFingers:true}});
+  ${textInSvg ? "JXG.Options.text.display = 'internal';" : ''}${themeScript}const board = JXG.JSXGraph.initBoard('box', {boundingbox:[-5,5,5,-5],axis:true,showCopyright:false,showNavigation:true,resize:{enabled:true},pan:{needTwoFingers:true}});
   window.addEventListener('message', (event) => {
     if (!event.data || event.data.type !== 'notia-xgraph-export' || event.source !== window.parent) return;
     const root = board.renderer && board.renderer.svgRoot;

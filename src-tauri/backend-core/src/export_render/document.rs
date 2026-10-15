@@ -2,6 +2,10 @@
 //! without the Markdown syntax or the properties. Both writers (PDF and DOCX)
 //! render this model.
 
+use std::sync::Arc;
+
+use super::diagrams::Picture;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Document {
     pub blocks: Vec<Block>,
@@ -21,7 +25,9 @@ pub(crate) enum Block {
     Paragraph { align: Align, content: Vec<Inline> },
     List(List),
     Quote(Vec<Block>),
-    Code { text: String },
+    /// `view`: the picture of a diagram (Mermaid, XGraph) as the editor
+    /// draws it; the PDF shows it instead of the code, Word keeps the code.
+    Code { text: String, view: Option<Arc<Picture>> },
     /// A display formula, as LaTeX.
     Math(String),
     Table(Table),

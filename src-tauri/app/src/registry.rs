@@ -41,6 +41,7 @@ pub fn dispatch(app: &AppHandle, window_label: &str, command: &str, args: &Value
 fn route(command: &str) -> Option<Route> {
     let route: Route = match command {
         "backend_export_markdown_document" => backend_export_markdown_document,
+        "backend_export_diagram_sources" => backend_export_diagram_sources,
         "backend_read_library_config" => backend_read_library_config,
         "backend_write_library_config" => backend_write_library_config,
         "backend_ensure_library_config" => backend_ensure_library_config,
@@ -333,6 +334,7 @@ type Route = fn(&AppHandle, &str, &str, &Value) -> Result<Dispatch, Value>;
 /// Every command of the registry.
 pub const COMMAND_NAMES: &[&str] = &[
     "backend_export_markdown_document",
+    "backend_export_diagram_sources",
     "backend_read_library_config",
     "backend_write_library_config",
     "backend_ensure_library_config",
@@ -832,6 +834,10 @@ fn reply_result<T: Serialize, E: Serialize>(result: Result<T, E>) -> Reply {
 
 fn backend_export_markdown_document(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_value(crate::filesystem::commands::backend_export_markdown_document(app.clone(), arg(command, args, "payload")?, app.state(), app.state()))))
+}
+
+fn backend_export_diagram_sources(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::filesystem::commands::backend_export_diagram_sources(app.clone(), arg(command, args, "payload")?, app.state(), app.state()))))
 }
 
 fn backend_read_library_config(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

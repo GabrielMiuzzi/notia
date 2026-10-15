@@ -687,7 +687,7 @@ Todo `POST` exige que `Origin` coincida con `https://<host>`. Hay un máximo de 
 
 ### Reglas de acceso del registro
 
-- `registry::COMMAND_NAMES` enumera los 246 comandos.
+- `registry::COMMAND_NAMES` enumera los 263 comandos.
 - `LOCAL_ONLY_COMMANDS` marca los que actúan sobre dispositivos del equipo:
   - sesiones de voz y micrófono;
   - Bluetooth de ColdPass;
@@ -5484,7 +5484,7 @@ Todos los comandos de la aplicación están en el registro de `notia-app` (`src-
 | `commands::speech` | `get_speech_capabilities`, `prepare_speech_model`, `get_speech_model_status`, `probe_speech_audio_input` †, `probe_sherpa_runtime`, `start_speech_session` †, `pause_speech_session` †, `resume_speech_session` †, `consume_speech_turn` †, `stop_speech_session` †, `cancel_speech_session` †, `skip_speech_diarization` †, `start_audio_monitor` †, `stop_audio_monitor` † | `NotiaSidebar`, `speechService`, `MeetingView` |
 | `commands::telegram` | `check_telegram_bot` | `telegramRuntime` |
 | `device_preferences` | `backend_device_preferences`, `backend_save_device_preferences` | `devicePreferencesStorage` |
-| `filesystem::commands` | `backend_export_markdown_document` | `markdownExportEngine` |
+| `filesystem::commands` | `backend_export_markdown_document`, `backend_export_diagram_sources` | `markdownExportEngine` |
 | `filesystem::watch` | `stop_library_tree_watch` | `libraryTreeWatchRuntime` |
 | `finance` | `finance_dev_list_tables`, `finance_dev_query_table`, `finance_dev_query_sql`, `finance_dev_seed_demo_data`, `finance_clear_all_data` | `financeService` |
 | `finance_screen` | `finance_overview`, `finance_movements`, `finance_products`, `finance_salary_savings` | `financeService` |
@@ -7794,6 +7794,13 @@ Implementa las opciones que el lienzo «Notia · Editor rediseño» sumó al tab
   - Una fórmula más ancha que la hoja se reduce hasta entrar.
 - **Fuentes**: se incrustan recortadas a los glifos usados. El mapa ToUnicode se escribe en la forma del ejemplo de la especificación, porque `lopdf` no lee el de `pdf-writer`. Courier es una fuente estándar sin incrustar (WinAnsi). Un carácter que ninguna fuente tiene (un emoji) se dibuja y se copia como `?`.
 - **Imágenes**: quedan como «[Imagen: texto alternativo o nombre]», porque el renderer recibe solo el Markdown.
+- **Diagramas** (`export_render/diagrams.rs`): los bloques Mermaid y XGraph se ven como en la nota, como imagen.
+  - Rust decide qué bloque es un diagrama (`diagram_kind`): ` ```mermaid `, ` ```xgraph ` o ` ```jsxgraph `, y los bloques sin lenguaje o `text` cuya primera línea empieza con una palabra de Mermaid, como hace el editor.
+  - `backend_export_diagram_sources { libraryId, sourceLogicalPath }` lee la nota guardada, expande los bloques GitBook como la exportación y devuelve `{ diagrams: [{ kind, source }] }` (`diagram_sources`, hasta 64 y sin repetidos).
+  - `markdown-export/diagramPictures.ts` dibuja cada uno en el WebView con el tema claro, el del papel. Mermaid usa `renderMermaid` con el tema `light`; el tamaño sale del `viewBox`. Un diagrama con su propia configuración (`%%{init}%%` o front matter, leída con `declaredMermaidConfig`, que usa `mermaid.parse`) conserva sus colores. Se dibuja sobre el fondo que declara (`themeVariables.background`), o sobre `--color-app-bg` del tema oscuro si pide `theme: 'dark'` o `darkMode` sin fondo. Así, un diagrama pensado para fondo oscuro no pone texto claro sobre papel blanco. El SVG de Mermaid no trae fondo, y el resto va transparente sobre blanco. XGraph usa `drawXGraphForExport`: un iframe con el mismo sandbox, fuera de pantalla, de 960 × 480 px, con los colores de los tokens de `.notia-theme-light`. Los textos del tablero van dentro del SVG (`JXG.Options.text.display = 'internal'`); si no, la captura pierde los nombres de los puntos. `svgRaster.ts` pasa el SVG a PNG al doble de resolución (lado máximo 4096 px). Un diagrama que no se puede dibujar (código inválido, tablero que no responde en 6 s) se omite.
+  - `backend_export_markdown_document` recibe `diagrams: [{ kind, source, png, width, height }]`. Solo los usa para el PDF. `DiagramRenders::decode` valida: hasta 64, PNG de hasta 12 MB y 8192 px de lado, y tamaño mostrado de 1 a 4096 px CSS. Compone la transparencia sobre blanco. Un dato inválido hace fallar la exportación con «La imagen de un diagrama no es válida.».
+  - `Block::Code { text, view }` lleva la imagen del bloque. Se busca por tipo y código sin espacios en los extremos. El PDF la dibuja centrada, al tamaño que tiene en la hoja del editor (1 px CSS = 0,75 pt), y la reduce para que entre en el ancho y en la altura de una hoja. Cada imagen se escribe una vez como XObject RGB comprimido, aunque aparezca varias veces.
+  - Sin imagen el bloque sigue siendo código. Es el caso de la herramienta `export_document` del agente y de la exportación de Meeting, que no tienen una vista que dibuje: pasan `DiagramRenders::default()`. Word guarda el código siempre.
 
 **Word**
 

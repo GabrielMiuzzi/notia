@@ -2940,6 +2940,7 @@ dependencies = [
  "lopdf",
  "miniz_oxide",
  "pdf-writer",
+ "png 0.18.1",
  "pulldown-cmark",
  "quick-xml",
  "regex",

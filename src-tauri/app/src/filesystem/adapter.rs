@@ -1279,6 +1279,46 @@ mod tests {
     }
 }
 
+/// The note as saved and the Markdown its export shows: GitBook blocks
+/// become Markdown (reusable content inserted, conditions and expressions
+/// evaluated).
+fn read_export_markdown(
+    registry: &LibraryBindingRegistry,
+    picker: &AndroidDirectoryPickerState,
+    library_id: &str,
+    source_logical_path: &str,
+) -> Result<(DocumentLocatorDto, String, String), BackendError> {
+    use crate::backend::LibraryDocumentReadPort;
+
+    let source_locator = DocumentLocatorDto::new(library_id, source_logical_path, None, None)?;
+    let reader = crate::library_document_adapter::TauriLibraryDocumentReadAdapter::for_library(
+        registry, library_id, picker,
+    )?;
+    let source = reader.read_document(&source_locator)?;
+    let mut files = crate::gitbook_blocks::LibraryFiles::new(
+        library_id,
+        TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?,
+        None,
+    );
+    let markdown = crate::backend::gitbook_blocks::expand_for_export(
+        &source.content,
+        source_locator.logical_path.as_str(),
+        &mut files,
+    );
+    Ok((source_locator, source.content, markdown))
+}
+
+/// The diagrams the export of a note shows, for the editor to draw them.
+pub(crate) fn library_export_diagram_sources(
+    registry: &LibraryBindingRegistry,
+    picker: &AndroidDirectoryPickerState,
+    library_id: &str,
+    source_logical_path: &str,
+) -> Result<Vec<crate::backend::DiagramSource>, BackendError> {
+    let (_, _, markdown) = read_export_markdown(registry, picker, library_id, source_logical_path)?;
+    Ok(crate::backend::diagram_sources(&markdown))
+}
+
 /// Receipt of a library export written by the backend.
 pub(crate) struct LibraryExportReceipt {
     pub(crate) destination_logical_path: String,
@@ -1296,32 +1336,12 @@ pub(crate) fn export_library_document(
     source_logical_path: &str,
     format: crate::backend::ExportFormat,
     page: &crate::backend::PageGeometry,
+    diagrams: &crate::backend::DiagramRenders,
 ) -> Result<LibraryExportReceipt, BackendError> {
-    use crate::backend::LibraryDocumentReadPort;
-
-    let source_locator = DocumentLocatorDto::new(library_id, source_logical_path, None, None)?;
-    let reader = crate::library_document_adapter::TauriLibraryDocumentReadAdapter::for_library(
-        registry, library_id, picker,
-    )?;
-    let source = reader.read_document(&source_locator)?;
+    let (source_locator, saved, markdown) = read_export_markdown(registry, picker, library_id, source_logical_path)?;
     // A PDF needs the note in page mode (its `pageMode` property, as saved).
-    crate::backend::page_setup::ensure_export_allowed(
-        format,
-        crate::backend::note_page_mode(&source.content),
-    )?;
-    // GitBook blocks become Markdown the export shows: reusable content
-    // inserted, conditions and expressions evaluated.
-    let mut files = crate::gitbook_blocks::LibraryFiles::new(
-        library_id,
-        TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?,
-        None,
-    );
-    let markdown = crate::backend::gitbook_blocks::expand_for_export(
-        &source.content,
-        source_locator.logical_path.as_str(),
-        &mut files,
-    );
-    let bytes = crate::backend::render_markdown_export(&markdown, format, page)?;
+    crate::backend::page_setup::ensure_export_allowed(format, crate::backend::note_page_mode(&saved))?;
+    let bytes = crate::backend::render_markdown_export_with_diagrams(&markdown, format, page, diagrams)?;
     let writer = TauriFilesystemDocumentAdapter::for_library(registry, library_id, picker)?;
     for attempt in 1..=crate::backend::MAX_EXPORT_NAME_ATTEMPTS {
         let destination = crate::backend::export_destination_path(

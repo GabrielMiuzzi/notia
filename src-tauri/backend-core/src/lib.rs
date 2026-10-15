@@ -129,7 +129,10 @@ pub use export::{
     BoundedExportRequest, ExportFormat, ExportPreview, ExportReceipt, ExportRecovery,
     ExportRecoveryState, RecoverableExportResult, MAX_EXPORT_INPUT_BYTES, MAX_EXPORT_OUTPUT_BYTES,
 };
-pub use export_render::render_markdown_export;
+pub use export_render::{
+    diagram_sources, render_markdown_export, render_markdown_export_with_diagrams, DiagramKind, DiagramRenderInput, DiagramRenders,
+    DiagramSource,
+};
 pub use page_setup::PageGeometry;
 pub use formatting::{channel_response, escape_telegram_html, markdown_to_telegram_html};
 pub use interaction::{

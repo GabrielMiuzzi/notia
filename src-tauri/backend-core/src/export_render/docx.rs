@@ -107,7 +107,8 @@ impl Body {
                     self.block(block, inner);
                 }
             }
-            Block::Code { text } => {
+            // Word keeps the code of a diagram.
+            Block::Code { text, .. } => {
                 self.paragraph_start(Some("NotiaCode"), Align::Left, context);
                 for (index, line) in text.split('\n').enumerate() {
                     if index > 0 {

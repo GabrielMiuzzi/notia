@@ -5,6 +5,7 @@
 //! Rendering is deliberately kept separate from destination I/O. Callers can
 //! preview the returned bytes and hand them to a recoverable export port.
 
+mod diagrams;
 mod document;
 mod docx;
 mod markdown;
@@ -16,12 +17,25 @@ use crate::export::{validate_export_input_size, ExportFormat, MAX_EXPORT_OUTPUT_
 use crate::page_setup::PageGeometry;
 use crate::prompt::strip_frontmatter;
 
+pub use diagrams::{diagram_sources, DiagramKind, DiagramRenderInput, DiagramRenders, DiagramSource};
+
 /// Render bounded Markdown into a supported export format. The page size,
 /// margins and numbering come from `page`.
 pub fn render_markdown_export(
     markdown: &str,
     format: ExportFormat,
     page: &PageGeometry,
+) -> Result<Vec<u8>, BackendError> {
+    render_markdown_export_with_diagrams(markdown, format, page, &DiagramRenders::default())
+}
+
+/// `render_markdown_export` where the PDF shows the diagrams with a picture
+/// in `diagrams` as those pictures.
+pub fn render_markdown_export_with_diagrams(
+    markdown: &str,
+    format: ExportFormat,
+    page: &PageGeometry,
+    diagrams: &DiagramRenders,
 ) -> Result<Vec<u8>, BackendError> {
     validate_export_input_size(markdown.as_bytes())?;
     let body = strip_frontmatter(markdown);
@@ -32,8 +46,8 @@ pub fn render_markdown_export(
     }
 
     let bytes = match format {
-        ExportFormat::Pdf => pdf::render_pdf(&markdown::parse_markdown(body), page)?,
-        ExportFormat::Docx => docx::render_docx(&markdown::parse_markdown(body), page)?,
+        ExportFormat::Pdf => pdf::render_pdf(&markdown::parse_markdown_with(body, diagrams), page)?,
+        ExportFormat::Docx => docx::render_docx(&markdown::parse_markdown_with(body, &DiagramRenders::default()), page)?,
         ExportFormat::Binary => {
             return Err(BackendError::invalid_input(
                 "Binary requiere bytes ya generados por un adaptador autorizado.",
@@ -111,6 +125,79 @@ mod tests {
         for format in [ExportFormat::Pdf, ExportFormat::Docx] {
             assert!(render_markdown_export(&markdown, format, &PageGeometry::default()).is_ok());
         }
+    }
+
+    fn png_base64(width: u32, height: u32) -> String {
+        use base64::Engine as _;
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.write_header().expect("header").write_image_data(&vec![40; (width * height * 3) as usize]).expect("data");
+        }
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn images(bytes: &[u8]) -> usize {
+        let document = lopdf::Document::load_mem(bytes).expect("a valid PDF");
+        document
+            .objects
+            .values()
+            .filter(|object| {
+                object.as_stream().is_ok_and(|stream| {
+                    stream.dict.get(b"Subtype").and_then(|value| value.as_name()).is_ok_and(|name| name == b"Image")
+                })
+            })
+            .count()
+    }
+
+    fn pdf_text(bytes: &[u8]) -> String {
+        let document = lopdf::Document::load_mem(bytes).expect("a valid PDF");
+        let pages = document.get_pages().keys().copied().collect::<Vec<_>>();
+        document.extract_text(&pages).expect("text")
+    }
+
+    #[test]
+    fn the_pdf_shows_diagrams_as_the_editor_draws_them() {
+        let note = "Antes
+
+```mermaid
+graph TD
+A-->Bloque
+```
+
+```xgraph
+board.create('point', [1, 1]);
+```
+
+```mermaid
+graph TD
+A-->Bloque
+```
+
+Después";
+        let sources = diagram_sources(note);
+        assert_eq!(sources.len(), 2);
+        // Only the Mermaid diagram has a picture; the XGraph one stays code.
+        let renders = DiagramRenders::decode(vec![DiagramRenderInput {
+            kind: DiagramKind::Mermaid,
+            source: sources[0].source.clone(),
+            png: png_base64(40, 20),
+            width: 4000.0,
+            height: 2000.0,
+        }])
+        .expect("decoded");
+        let bytes = render_markdown_export_with_diagrams(note, ExportFormat::Pdf, &PageGeometry::default(), &renders).expect("pdf");
+        // One picture, written once though it is shown twice.
+        assert_eq!(images(&bytes), 1);
+        let text = pdf_text(&bytes);
+        assert!(text.contains("Antes") && text.contains("Después"), "{text}");
+        assert!(!text.contains("Bloque"), "{text}");
+        assert!(text.contains("board.create"), "{text}");
+
+        let plain = render_markdown_export(note, ExportFormat::Pdf, &PageGeometry::default()).expect("pdf");
+        assert_eq!(images(&plain), 0);
+        assert!(pdf_text(&plain).contains("Bloque"));
     }
 
     #[test]

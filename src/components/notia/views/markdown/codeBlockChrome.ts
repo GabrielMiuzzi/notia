@@ -12,6 +12,8 @@
  * `decorateCodeBlocks` again after every change.
  */
 
+import { svgToPng } from '../../../../services/markdown/svgRaster'
+
 export type CodeBlockKind = 'code' | 'latex' | 'mermaid' | 'xgraph'
 export type DiagramFormat = 'svg' | 'png'
 
@@ -128,29 +130,6 @@ function xgraphPng(block: HTMLElement): Promise<string | null> {
     }
     window.addEventListener('message', onMessage)
     target.postMessage({ type: 'notia-xgraph-export', id }, '*')
-  })
-}
-
-function svgToPng(svg: string, width: number, height: number, background: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const image = new Image()
-    image.onload = () => {
-      const scale = 2
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, Math.round(width * scale))
-      canvas.height = Math.max(1, Math.round(height * scale))
-      const context = canvas.getContext('2d')
-      if (!context) {
-        resolve(null)
-        return
-      }
-      context.fillStyle = background
-      context.fillRect(0, 0, canvas.width, canvas.height)
-      context.drawImage(image, 0, 0, canvas.width, canvas.height)
-      resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''))
-    }
-    image.onerror = () => resolve(null)
-    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
   })
 }
 

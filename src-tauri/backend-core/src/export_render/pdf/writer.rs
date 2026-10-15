@@ -3,6 +3,7 @@
 //! copied; streams are compressed.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use pdf_writer::types::{ActionType, AnnotationType, CidFontType, FontFlags, LineCapStyle, LineJoinStyle, SystemInfo};
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
@@ -10,6 +11,7 @@ use subsetter::GlyphRemapper;
 
 use super::fonts::{FontId, Fonts};
 use super::Draw;
+use crate::export_render::diagrams::Picture;
 use crate::error::{BackendError, BackendErrorCode};
 use crate::export_render::document::Rgb;
 
@@ -117,12 +119,35 @@ pub(super) fn write_pdf(fonts: &Fonts, pages: &[PageContent], width: f32, height
         resources.insert(*font, (name, Some(remapper), font_ref));
     }
 
+    // Pictures: each one is written once, however many pages show it.
+    let mut pictures: Vec<(*const Picture, String, Ref)> = Vec::new();
+    for page in pages {
+        for draw in &page.draws {
+            let Draw::Image { picture, .. } = draw else { continue };
+            if pictures.iter().any(|(pointer, ..)| *pointer == Arc::as_ptr(picture)) {
+                continue;
+            }
+            let image_ref = reference();
+            let compressed = compress(&picture.rgb);
+            let mut image = pdf.image_xobject(image_ref, &compressed);
+            image.filter(Filter::FlateDecode);
+            image.width(i32::try_from(picture.width_px).unwrap_or(i32::MAX));
+            image.height(i32::try_from(picture.height_px).unwrap_or(i32::MAX));
+            image.color_space().device_rgb();
+            image.bits_per_component(8);
+            image.finish();
+            pictures.push((Arc::as_ptr(picture), format!("Im{}", pictures.len()), image_ref));
+        }
+    }
+    let picture_name = |picture: &Arc<Picture>| pictures.iter().find(|(pointer, ..)| *pointer == Arc::as_ptr(picture)).map(|(_, name, image_ref)| (name.clone(), *image_ref));
+
     let page_refs = pages.iter().map(|_| (reference(), reference())).collect::<Vec<_>>();
     for (page, (page_ref, content_ref)) in pages.iter().zip(&page_refs) {
         let mut content = Content::new();
         content.set_line_cap(LineCapStyle::RoundCap);
         content.set_line_join(LineJoinStyle::RoundJoin);
         let mut links = Vec::new();
+        let mut shown: Vec<(String, Ref)> = Vec::new();
         for draw in &page.draws {
             match draw {
                 Draw::Rect { x, y, width, height, color } => {
@@ -158,6 +183,16 @@ pub(super) fn write_pdf(fonts: &Fonts, pages: &[PageContent], width: f32, height
                     content.end_text();
                 }
                 Draw::Link { x, y, width, height, url } => links.push((Rect::new(*x, *y, x + width, y + height), url.clone())),
+                Draw::Image { x, y, width, height, picture } => {
+                    let Some((name, image_ref)) = picture_name(picture) else { continue };
+                    content.save_state();
+                    content.transform([*width, 0.0, 0.0, *height, *x, *y]);
+                    content.x_object(Name(name.as_bytes()));
+                    content.restore_state();
+                    if !shown.iter().any(|(shown_name, _)| *shown_name == name) {
+                        shown.push((name, image_ref));
+                    }
+                }
             }
         }
         let annotation_refs = links.iter().map(|_| reference()).collect::<Vec<_>>();
@@ -178,6 +213,13 @@ pub(super) fn write_pdf(fonts: &Fonts, pages: &[PageContent], width: f32, height
             font_resources.pair(Name(name.as_bytes()), *font_ref);
         }
         font_resources.finish();
+        if !shown.is_empty() {
+            let mut images = page_resources.x_objects();
+            for (name, image_ref) in &shown {
+                images.pair(Name(name.as_bytes()), *image_ref);
+            }
+            images.finish();
+        }
         page_resources.finish();
         page_writer.finish();
         pdf.stream(*content_ref, &compress(&content.finish())).filter(Filter::FlateDecode);

@@ -426,6 +426,17 @@ export async function renderMermaid({
   return result
 }
 
+/**
+ * The configuration a diagram declares for itself (its `%%{init}%%`
+ * directive or front matter); empty when it declares none or is invalid.
+ */
+export async function declaredMermaidConfig(code: string): Promise<Record<string, unknown>> {
+  await initMermaid('light')
+  if (!mermaidInstance) return {}
+  const parsed = await mermaidInstance.parse(code.trim(), { suppressErrors: true })
+  return parsed ? (parsed.config as Record<string, unknown>) : {}
+}
+
 // ── Warmup (precalentar sin código) ───────────────────────
 export function warmupMermaid(theme: string, config?: string, signal?: AbortSignal): void {
   void initMermaid(theme, config, signal)

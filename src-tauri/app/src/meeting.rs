@@ -1353,6 +1353,8 @@ fn write_note_here(
                 &logical_path,
                 format,
                 &crate::device_preferences::page_geometry(app),
+                // No editor draws the diagrams here: they stay code.
+                &crate::backend::DiagramRenders::default(),
             )?;
             Some(crate::library_session::visible_path(app, library_id, &receipt.destination_logical_path))
         }

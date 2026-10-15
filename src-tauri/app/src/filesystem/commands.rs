@@ -44,6 +44,41 @@ pub(crate) struct BackendMarkdownExportPayload {
     pub(crate) library_id: String,
     pub(crate) source_logical_path: String,
     pub(crate) format: String,
+    /// The diagrams of the note as the editor drew them; the PDF shows them as pictures.
+    #[serde(default)]
+    pub(crate) diagrams: Vec<crate::backend::DiagramRenderInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BackendExportDiagramSourcesPayload {
+    pub(crate) library_id: String,
+    pub(crate) source_logical_path: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BackendExportDiagramSourcesResult {
+    pub(crate) diagrams: Vec<crate::backend::DiagramSource>,
+}
+
+/// The diagrams the PDF of a note shows, for the editor to draw them before
+/// it asks for the export.
+pub(crate) fn backend_export_diagram_sources(
+    app: crate::host::AppHandle,
+    payload: BackendExportDiagramSourcesPayload,
+    registry: State<'_, LibraryBindingRegistry>,
+    android_picker_state: State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
+) -> Result<BackendExportDiagramSourcesResult, crate::backend::BackendError> {
+    let source_logical_path =
+        crate::library_session::resolve_logical_path(&app, &payload.library_id, &payload.source_logical_path)?;
+    let diagrams = crate::filesystem::adapter::library_export_diagram_sources(
+        registry.inner(),
+        android_picker_state.inner(),
+        &payload.library_id,
+        &source_logical_path,
+    )?;
+    Ok(BackendExportDiagramSourcesResult { diagrams })
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -59,7 +94,7 @@ pub(crate) struct BackendMarkdownExportResult {
 
 pub(crate) fn backend_export_markdown_document(
     app: crate::host::AppHandle,
-    payload: BackendMarkdownExportPayload,
+    mut payload: BackendMarkdownExportPayload,
     registry: State<'_, LibraryBindingRegistry>,
     android_picker_state: State<'_, mobile_directory_picker::AndroidDirectoryPickerState>,
 ) -> BackendMarkdownExportResult {
@@ -73,6 +108,11 @@ pub(crate) fn backend_export_markdown_document(
                 ))
             }
         };
+        // Word keeps the code of the diagrams.
+        let diagrams = match format {
+            ExportFormat::Pdf => crate::backend::DiagramRenders::decode(std::mem::take(&mut payload.diagrams))?,
+            _ => crate::backend::DiagramRenders::default(),
+        };
         let source_logical_path = crate::library_session::resolve_logical_path(
             &app,
             &payload.library_id,
@@ -85,6 +125,7 @@ pub(crate) fn backend_export_markdown_document(
             &source_logical_path,
             format,
             &crate::device_preferences::page_geometry(&app),
+            &diagrams,
         )?;
         Ok((
             receipt.destination_logical_path,
