@@ -116,7 +116,7 @@ import { MarkdownPenBar } from './markdown/ink/MarkdownPenBar'
 import { useNoteInk } from './markdown/ink/useNoteInk'
 import { insertInkBlock } from './markdown/ink/inkInsertion'
 import { inkBottom } from './markdown/ink/inkPaths'
-import { isPageStroke, strokeInFlow } from './markdown/ink/inkFlow'
+import { flowToPage, isPageStroke, strokeInFlow } from './markdown/ink/inkFlow'
 import { useEditorPreferences } from '../hooks/useEditorPreferences'
 import { WikiLinkPreviewCard } from './markdown/WikiLinkPreviewCard'
 import { codeHighlight } from './markdown/codeHighlight'
@@ -194,6 +194,8 @@ const NARROW_EDITOR_PX = 600
 /** Room below the lowest stroke of the continuous sheet; more while drawing, to keep writing. */
 const INK_TAIL_PX = 120
 const INK_DRAWING_TAIL_PX = 480
+/** The sheet grows by a screen when less than this share of a screen is left below. */
+const ENDLESS_SHEET_TRIGGER = 0.5
 const NO_CONTEXTS: readonly LibraryContext[] = []
 /** Elements whose chrome the editor adds: code blocks and the inline LaTeX editor. */
 const CHROME_HOST_SELECTOR = `.milkdown-code-block, ${INLINE_LATEX_TOOLTIP_SELECTOR}`
@@ -618,6 +620,30 @@ function MarkdownViewInner({
   const gitbookResolverRef = useRef<GitbookResolver | null>(null)
 
   useMarkdownZoom(viewportRef, zoomContentRef, zoom, onZoomChange, !sheetPixels)
+
+  // The sheet has no end: scrolling near its bottom adds a screen of blank
+  // sheet (more pages in page mode). Only for this visit of the note; what
+  // is written or drawn there keeps its room.
+  const [scrolledSheetLength, setScrolledSheetLength] = useState(0)
+  useEffect(() => {
+    setScrolledSheetLength(0)
+  }, [documentPath])
+  const hasSheet = sheetPixels !== null
+  useEffect(() => {
+    const host = viewportRef.current
+    const pages = pagesRef.current
+    if (!hasSheet || !host || !pages) return
+    const grow = () => {
+      const left = host.scrollHeight - host.scrollTop - host.clientHeight
+      if (left > host.clientHeight * ENDLESS_SHEET_TRIGGER) return
+      // `offsetHeight` is the sheet before the zoom's transform.
+      const length = Math.ceil(pages.offsetHeight + host.clientHeight / sheetScale)
+      setScrolledSheetLength((current) => Math.max(current, length))
+    }
+    grow()
+    host.addEventListener('scroll', grow, { passive: true })
+    return () => host.removeEventListener('scroll', grow)
+  }, [documentPath, hasSheet, sheetScale])
 
   useEffect(() => {
     const host = viewportRef.current
@@ -1587,7 +1613,16 @@ function MarkdownViewInner({
     setWikiLinkMenuState(null)
   }
 
-  const sheetCount = pagePixels ? pageCount : 0
+  const pageStride = pagePixels ? pagePixels.height + PAGE_GAP_PX : 0
+  // Pages: the text's, the ones the strokes reach (drawn on a page past the
+  // text) and the ones scrolling added.
+  const sheetCount = pagePixels
+    ? Math.max(
+      pageCount,
+      lowestInk > 0 ? Math.floor(flowToPage(lowestInk, flowBreaks) / pageStride) + 1 : 1,
+      Math.ceil((scrolledSheetLength + PAGE_GAP_PX) / pageStride),
+    )
+    : 0
   const pagesStyle = sheetPixels
     ? {
       '--notia-page-width': `${sheetPixels.width}px`,
@@ -1601,6 +1636,7 @@ function MarkdownViewInner({
         : Math.max(
           Math.ceil(lowestInk) + (penTool === 'selector' ? INK_TAIL_PX : INK_DRAWING_TAIL_PX),
           Math.max(0, hostHeight - deskPadding) / sheetScale,
+          scrolledSheetLength,
         ),
       transform: sheetScale === 1 ? undefined : `scale(${sheetScale})`,
     } as CSSProperties
