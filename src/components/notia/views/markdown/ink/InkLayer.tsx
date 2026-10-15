@@ -59,6 +59,8 @@ interface InkLayerProps {
 
 const HIGHLIGHTER_OPACITY = 0.35
 const ERASER_RADIUS = 10
+/** The eraser's path keeps a point every so many pixels: closer ones add nothing. */
+const ERASER_STEP = ERASER_RADIUS / 4
 const ERASE_FLUSH_MS = 60
 /** A pen seen this recently makes a touch a resting palm. */
 const PALM_AFTER_PEN_MS = 1000
@@ -71,6 +73,8 @@ const SELECTION_PADDING = 8
 
 interface Gesture {
   pointerId: number
+  /** Made with the pen: a cancel keeps what it drew, and a new press of the pen ends it. */
+  pen: boolean
   kind: 'draw' | 'erase' | 'scroll' | 'lasso' | 'move'
   page: number | null
   tool: InkTool
@@ -158,6 +162,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
   const gestureCounterRef = useRef(0)
   const lastPenAtRef = useRef(0)
   const flushTimerRef = useRef<number | null>(null)
+  const draftFrameRef = useRef<number | null>(null)
   const drawing = tool !== 'selector'
   const stride = sheet.pageHeight + sheet.pageGap
   // Keeps each stroke's object while the breaks above it stay the same.
@@ -253,6 +258,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
 
   useEffect(() => () => {
     if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current)
+    if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current)
   }, [])
 
   /** The pointer in unscaled sheet pixels. */
@@ -307,13 +313,26 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
     }
   }
 
-  const clearDraft = () => draftRef.current?.replaceChildren()
+  /** The stroke being drawn is painted once a frame, however many samples the pen sends. */
+  const scheduleDraft = () => {
+    if (draftFrameRef.current !== null) return
+    draftFrameRef.current = window.requestAnimationFrame(() => {
+      draftFrameRef.current = null
+      const gesture = gestureRef.current
+      if (gesture?.kind === 'draw') renderDraft(gesture)
+    })
+  }
+
+  const clearDraft = () => {
+    if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current)
+    draftFrameRef.current = null
+    draftRef.current?.replaceChildren()
+  }
 
   const widthFor = (drawTool: InkTool) => (drawTool === 'highlighter' ? Math.min(48, Math.max(6, pen.thickness * 3)) : pen.thickness)
 
-  const flushErase = () => {
+  const flushErase = (gesture: Gesture | null = gestureRef.current) => {
     flushTimerRef.current = null
-    const gesture = gestureRef.current
     if (!gesture || gesture.kind !== 'erase' || gesture.pending.length === 0) return
     const points = gesture.lastSent ? [gesture.lastSent, ...gesture.pending] : [...gesture.pending]
     gesture.lastSent = gesture.pending[gesture.pending.length - 1] ?? gesture.lastSent
@@ -322,7 +341,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
   }
 
   const scheduleErase = () => {
-    if (flushTimerRef.current === null) flushTimerRef.current = window.setTimeout(flushErase, ERASE_FLUSH_MS)
+    if (flushTimerRef.current === null) flushTimerRef.current = window.setTimeout(() => flushErase(), ERASE_FLUSH_MS)
   }
 
   const toolIntent = (event: ReactPointerEvent): Gesture['kind'] => {
@@ -353,7 +372,12 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
 
 
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (!drawing || gestureRef.current) return
+    if (!drawing) return
+    const current = gestureRef.current
+    // There is one pen: its new press means its last stroke ended, even if
+    // that lift never arrived, and it wins over a finger or a palm.
+    if (current && event.pointerType !== 'pen') return
+    if (current) settle(current, current.lastClient, !current.pen)
     const kind = intentOf(event)
     if (!kind) return
     const point = toSheet(event.clientX, event.clientY)
@@ -366,6 +390,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
     gestureCounterRef.current += 1
     const gesture: Gesture = {
       pointerId: event.pointerId,
+      pen: event.pointerType === 'pen',
       kind,
       page: located?.page ?? null,
       tool: tool === 'highlighter' ? 'highlighter' : 'pen',
@@ -394,10 +419,11 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
     if (event.pointerType === 'pen') lastPenAtRef.current = Date.now()
     const gesture = gestureRef.current
     if (!gesture || gesture.pointerId !== event.pointerId) return
+    const previous = gesture.lastClient
+    gesture.lastClient = [event.clientX, event.clientY]
     if (gesture.kind === 'scroll') {
       const container = scrollContainerRef.current
-      container?.scrollBy(gesture.lastClient[0] - event.clientX, gesture.lastClient[1] - event.clientY)
-      gesture.lastClient = [event.clientX, event.clientY]
+      container?.scrollBy(previous[0] - event.clientX, previous[1] - event.clientY)
       return
     }
     if (gesture.kind === 'move') {
@@ -421,26 +447,32 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
       if (gesture.kind === 'draw') {
         if (gesture.points.length < 4000) gesture.points.push([x, y, pressureOf(sample)])
       } else {
-        gesture.pending.push([x, y])
+        const last = gesture.pending[gesture.pending.length - 1] ?? gesture.lastSent
+        if (!last || Math.hypot(x - last[0], y - last[1]) >= ERASER_STEP) gesture.pending.push([x, y])
       }
     }
-    if (gesture.kind === 'draw') renderDraft(gesture)
+    if (gesture.kind === 'draw') scheduleDraft()
     else scheduleErase()
   }
 
   const finish = (event: ReactPointerEvent<SVGSVGElement>, cancelled: boolean) => {
     const gesture = gestureRef.current
     if (!gesture || gesture.pointerId !== event.pointerId) return
+    // The system may cancel a quick pen stroke (a dot): what was drawn stays.
+    settle(gesture, [event.clientX, event.clientY], cancelled && !gesture.pen)
+  }
+
+  /** Ends a gesture where the pointer left the sheet (`client`). */
+  const settle = (gesture: Gesture, client: [number, number], cancelled: boolean) => {
+    if (gestureRef.current === gesture) gestureRef.current = null
     if (gesture.kind === 'erase') {
       // What is left of the path goes now.
       if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current)
-      flushErase()
-      gestureRef.current = null
+      flushErase(gesture)
       return
     }
-    gestureRef.current = null
     if (gesture.kind === 'move') {
-      const point = toSheet(event.clientX, event.clientY)
+      const point = toSheet(client[0], client[1])
       if (cancelled || !point) {
         shiftSelection(0, 0)
         return
@@ -488,6 +520,8 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
         onPointerMove={handlePointerMove}
         onPointerUp={(event) => finish(event, false)}
         onPointerCancel={(event) => finish(event, true)}
+        onLostPointerCapture={(event) => finish(event, false)}
+        onContextMenu={drawing ? (event) => event.preventDefault() : undefined}
       >
         <StoredStrokes strokes={unselected} stride={stride} />
         {selectionBox ? (

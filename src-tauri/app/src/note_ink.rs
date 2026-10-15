@@ -135,13 +135,25 @@ fn update<T>(
     note_path: &str,
     change: impl FnOnce(&mut InkDocument) -> Result<T, BackendError>,
 ) -> Result<T, BackendError> {
+    update_if(app, library_id, note_path, change, |_| true)
+}
+
+/// Like `update`, but writes the file back only when `changed` says the
+/// result changed it: an eraser passing over nothing leaves the file alone.
+fn update_if<T>(
+    app: &AppHandle,
+    library_id: &str,
+    note_path: &str,
+    change: impl FnOnce(&mut InkDocument) -> Result<T, BackendError>,
+    changed: impl FnOnce(&T) -> bool,
+) -> Result<T, BackendError> {
     let path = ink_path(app, library_id, note_path)?;
     let _guard = INK_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     with_documents(app, library_id, |documents| {
         let current = documents.read(&path)?;
         let mut document = note_ink::parse_document(current.as_deref())?;
         let result = change(&mut document)?;
-        if current.is_some() || !document.strokes.is_empty() {
+        if changed(&result) && (current.is_some() || !document.strokes.is_empty()) {
             documents.write(&path, current.as_deref(), &note_ink::serialize_document(&document)?)?;
         }
         Ok(result)
@@ -261,9 +273,13 @@ pub(crate) async fn markdown_ink_convert(app: AppHandle, payload: InkConvertPayl
 /// Takes out what the eraser touched and returns it, so undo can put it back.
 pub(crate) async fn markdown_ink_erase(app: AppHandle, payload: InkErasePayload) -> Result<InkStrokesResult, BackendError> {
     blocking(move || {
-        update(&app, &payload.library_id, &payload.path, |document| {
-            Ok(InkStrokesResult { strokes: note_ink::erase(document, payload.page, &payload.points, payload.radius)? })
-        })
+        update_if(
+            &app,
+            &payload.library_id,
+            &payload.path,
+            |document| Ok(InkStrokesResult { strokes: note_ink::erase(document, payload.page, &payload.points, payload.radius)? }),
+            |result| !result.strokes.is_empty(),
+        )
     })
     .await
 }

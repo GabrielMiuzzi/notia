@@ -27,6 +27,17 @@ type HistoryEntry =
   | { kind: 'erase'; strokes: InkStroke[] }
   | { kind: 'move'; ids: string[]; dx: number; dy: number }
 
+/** An eraser path Rust has not been sent yet; pieces of its gesture still join it. */
+interface PendingErase {
+  page: number | null
+  points: Array<[number, number]>
+  radius: number
+  gesture: number
+}
+
+/** Most points of an eraser path Rust takes in one call. */
+const MAX_ERASE_POINTS = 512
+
 const LOAD_ERROR = 'No se pudieron leer los trazos de esta nota.'
 const SAVE_ERROR = 'No se pudo guardar el trazo.'
 const CONVERT_ERROR = 'No se pudieron convertir los trazos.'
@@ -70,6 +81,7 @@ export function useNoteInk(libraryId: string | null | undefined, path: string): 
   // Answers for a note or mode that is no longer shown are dropped.
   const generationRef = useRef(0)
   const eraseGestureRef = useRef<number | null>(null)
+  const pendingEraseRef = useRef<PendingErase | null>(null)
   // Every request goes after the previous one, as the person made them.
   const queueRef = useRef<Promise<unknown>>(Promise.resolve())
   // An undo or redo waits for its answer before the next one.
@@ -79,6 +91,7 @@ export function useNoteInk(libraryId: string | null | undefined, path: string): 
     const generation = generationRef.current + 1
     generationRef.current = generation
     applyingRef.current = false
+    pendingEraseRef.current = null
     setStrokes([])
     setHistory({ undo: [], redo: [] })
     setError(null)
@@ -125,7 +138,20 @@ export function useNoteInk(libraryId: string | null | undefined, path: string): 
 
   const erase = useCallback((page: number | null, points: Array<[number, number]>, radius: number, gesture: number) => {
     if (!libraryId || points.length === 0) return
-    enqueue(() => eraseInk(libraryId, path, page, points, radius), (removed) => {
+    // While Rust erases, the next pieces of the same path wait together, so
+    // a long or fast stroke of the eraser is a few calls, not a queue of them.
+    const pending = pendingEraseRef.current
+    if (pending && pending.gesture === gesture && pending.page === page && pending.radius === radius
+      && pending.points.length + points.length <= MAX_ERASE_POINTS) {
+      pending.points.push(...points)
+      return
+    }
+    const batch: PendingErase = { page, points: [...points], radius, gesture }
+    pendingEraseRef.current = batch
+    enqueue(() => {
+      if (pendingEraseRef.current === batch) pendingEraseRef.current = null
+      return eraseInk(libraryId, path, page, batch.points, radius)
+    }, (removed) => {
       if (removed.length === 0) return
       const ids = new Set(removed.map((stroke) => stroke.id))
       setStrokes((current) => current.filter((stroke) => !ids.has(stroke.id)))

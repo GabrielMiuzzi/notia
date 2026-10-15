@@ -10609,9 +10609,9 @@ Estado vigente desde 2026-09-29. Implementa los tableros «Elementos · Texto»,
 | `markdown_ink_restore` | `libraryId`, `path`, `strokes` | `{ strokes }` repuestos |
 
 - `prepare_stroke` valida identificador (hasta 64 caracteres `[A-Za-z0-9_-]`), color, grosor (0,5 a 64), página (hasta 10 000), puntos (1 a 4 000, finitos, dentro de la hoja, presión 0–1); aplica el suavizado del lápiz (media móvil que conserva los extremos), simplifica con Ramer–Douglas–Peucker (0,35 px, conservando los cambios de presión) y redondea a décimas.
-- `erase` quita los trazos de la misma superficie que el recorrido del borrador toca (distancia entre segmentos ≤ radio + medio grosor) y los devuelve para deshacer. `restore_strokes` los repone una sola vez.
+- `erase` quita los trazos de la misma superficie que el recorrido del borrador toca (distancia entre segmentos ≤ radio + medio grosor) y los devuelve para deshacer. Antes del cálculo fino descarta los trazos cuya caja, ampliada por ese alcance, no toca la caja del recorrido. `restore_strokes` los repone una sola vez.
 - Límites: 5 000 trazos y 8 MB por nota. Un archivo dañado da error y no se sobrescribe.
-- Los cambios de un archivo de trazos pasan de a uno (`INK_LOCK`), leen, modifican y escriben con `with_documents` (escritorio y SAF).
+- Los cambios de un archivo de trazos pasan de a uno (`INK_LOCK`), leen, modifican y escriben con `with_documents` (escritorio y SAF). `markdown_ink_erase` usa `update_if`: si el borrador no tomó ningún trazo, el archivo no se vuelve a escribir.
 - `library_mutate_entry` mueve, copia o borra los trazos con su nota o carpeta (`entry_change` y `relocated_ink_path`). Antes de un pegado o un renombre revisa que el destino no exista, porque en ese caso la operación falla y no hay que tocar los trazos de otra nota. Si mover los trazos falla, la nota ya cambió: se registra un aviso sin rutas y los trazos quedan donde estaban.
 
 **Interfaz (`views/markdown/ink/`).**
@@ -10622,8 +10622,11 @@ Estado vigente desde 2026-09-29. Implementa los tableros «Elementos · Texto»,
   - rechazo de palma: se ignora un toque hasta un segundo después de ver el lápiz o con un contacto mayor que 40 px;
   - solo lápiz: el dedo desplaza la nota;
   - la goma del lápiz borra siempre; el botón lateral borra, no hace nada («Selección») o dibuja, según la opción;
-  - el borrador manda su recorrido cada 60 ms; un gesto es un paso de deshacer.
-- `useNoteInk`: carga los trazos al abrir la nota o cambiar de modo, muestra el trazo nuevo al instante y lo reemplaza por el que devuelve Rust, encola los pedidos en orden y lleva el historial de deshacer y rehacer de la sesión. Descarta las respuestas de otra nota o de otro modo.
+  - el borrador manda su recorrido cada 60 ms, con un punto cada 2,5 px como mínimo; un gesto es un paso de deshacer;
+  - el trazo en curso se pinta una vez por frame (`requestAnimationFrame`), aunque el lápiz mande más muestras;
+  - hay un solo lápiz: si llega un toque del lápiz con un gesto abierto (un levantamiento perdido o una palma que empezó antes), ese gesto se cierra —el del lápiz se guarda, el del dedo se descarta— y empieza el nuevo. Un `pointercancel` o la pérdida de la captura del puntero conservan lo que dibujó el lápiz (un punto rápido, como el de la «i», no se pierde). `contextmenu` se cancela mientras se dibuja, para que mantener apretado el lápiz no abra el menú;
+  - con una herramienta de dibujo el editor queda en solo lectura (`followPenTool` en `MarkdownView` con `crepe.setReadonly`) y pierde el foco: ningún toque que la capa no toma (palma, entre hojas, el escritorio alrededor de la hoja) ubica el cursor ni abre el teclado, y en Android el lápiz no activa la escritura a mano del sistema. Con Selector vuelve a ser editable.
+- `useNoteInk`: carga los trazos al abrir la nota o cambiar de modo, muestra el trazo nuevo al instante y lo reemplaza por el que devuelve Rust, encola los pedidos en orden y lleva el historial de deshacer y rehacer de la sesión. Descarta las respuestas de otra nota o de otro modo. Mientras Rust borra, los tramos siguientes del mismo gesto del borrador se juntan en un solo pedido (hasta 512 puntos, el límite de Rust), así un borrado largo o con muchos trazos no deja una cola de escrituras del archivo.
 
 ### Diferencias con el canvas
 

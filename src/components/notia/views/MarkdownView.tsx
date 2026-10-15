@@ -398,6 +398,18 @@ function renderMermaidPreview(
   })
 }
 
+/**
+ * The text is only edited with the selector: with a drawing tool no press
+ * puts the caret in the note (a palm, the desk around the sheet, the gap
+ * between pages) and the stylus is not taken for the system's handwriting.
+ */
+function followPenTool(crepe: Crepe, tool: PenBarTool) {
+  const drawing = tool !== 'selector'
+  crepe.setReadonly(drawing)
+  const dom = crepe.editor.action((ctx) => ctx.get(editorViewCtx)).dom
+  if (drawing && document.activeElement instanceof HTMLElement && dom.contains(document.activeElement)) document.activeElement.blur()
+}
+
 function createMarkdownInkMathApp(getDocumentPath: () => string) {
   const unavailable = async (): Promise<never> => {
     throw new Error('Esta operación no está disponible desde el editor Markdown.')
@@ -633,6 +645,11 @@ function MarkdownViewInner({
     if (!crepe || !isEditorReady) return
     requestPagination(crepe.editor.action((ctx) => ctx.get(editorViewCtx)))
   }, [isEditorReady, pagePixels, sheetScale])
+
+  useEffect(() => {
+    const crepe = crepeRef.current
+    if (crepe && isEditorReady) followPenTool(crepe, penTool)
+  }, [isEditorReady, penTool])
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -1257,6 +1274,7 @@ function MarkdownViewInner({
 
       isReadyRef.current = true
       setIsEditorReady(true)
+      followPenTool(crepe, penToolRef.current)
       void startCollaboration()
       addMathOcrButtons()
       addInlineLatexInkMathButtons()

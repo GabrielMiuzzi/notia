@@ -314,8 +314,20 @@ fn segments_distance(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> f64 
         .min(distance_to_segment(d, a, b))
 }
 
-fn touches(stroke: &InkStroke, eraser: &[[f64; 2]], radius: f64) -> bool {
+/// The box around some points: `[left, top, right, bottom]`.
+fn bounds(points: impl Iterator<Item = [f64; 2]>) -> [f64; 4] {
+    points.fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |[left, top, right, bottom], [x, y]| {
+        [left.min(x), top.min(y), right.max(x), bottom.max(y)]
+    })
+}
+
+fn touches(stroke: &InkStroke, eraser: &[[f64; 2]], eraser_box: [f64; 4], radius: f64) -> bool {
     let reach = radius + stroke.width / 2.0;
+    // Most strokes are far from the eraser: their box tells at once.
+    let [left, top, right, bottom] = bounds(stroke.points.iter().map(xy));
+    if left - reach > eraser_box[2] || right + reach < eraser_box[0] || top - reach > eraser_box[3] || bottom + reach < eraser_box[1] {
+        return false;
+    }
     let pairs = |points: Vec<[f64; 2]>| -> Vec<([f64; 2], [f64; 2])> {
         if points.len() == 1 {
             vec![(points[0], points[0])]
@@ -337,10 +349,11 @@ pub fn erase(document: &mut InkDocument, page: Option<u32>, path: &[[f64; 2]], r
     if path.is_empty() || path.len() > MAX_ERASER_POINTS || !valid_path || !radius.is_finite() || !(0.5..=64.0).contains(&radius) {
         return Err(invalid("El recorrido del borrador no es válido."));
     }
+    let eraser_box = bounds(path.iter().copied());
     let ids: Vec<String> = document
         .strokes
         .iter()
-        .filter(|stroke| stroke.page == page && touches(stroke, path, radius))
+        .filter(|stroke| stroke.page == page && touches(stroke, path, eraser_box, radius))
         .map(|stroke| stroke.id.clone())
         .collect();
     Ok(remove_strokes(document, &ids))
@@ -601,6 +614,18 @@ mod tests {
         restore_strokes(&mut document, removed).unwrap();
         assert_eq!(document.strokes.len(), 3);
         assert!(erase(&mut document, None, &[], 4.0).is_err());
+    }
+
+    #[test]
+    fn the_eraser_reaches_strokes_just_outside_its_path() {
+        let mut document = InkDocument::default();
+        // Ends 4 px before the eraser's line: within its radius and half the stroke's width.
+        add_stroke(&mut document, line("near", None, [0.0, 50.0], [46.0, 50.0])).unwrap();
+        add_stroke(&mut document, line("beyond", None, [0.0, 80.0], [30.0, 80.0])).unwrap();
+        // A single point of the eraser is a tap.
+        let removed = erase(&mut document, None, &[[50.0, 50.0]], 4.0).unwrap();
+        assert_eq!(removed.iter().map(|stroke| stroke.id.as_str()).collect::<Vec<_>>(), vec!["near"]);
+        assert!(erase(&mut document, None, &[[50.0, 0.0], [50.0, 100.0]], 4.0).unwrap().is_empty());
     }
 
     #[test]
