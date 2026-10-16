@@ -851,7 +851,9 @@ fn translate_tool_response(payload: Value, tool_names: &[&str]) -> Result<Provid
             .collect::<Vec<_>>();
         (tool_call_recovery::clean_answer_text(&content), recovered)
     } else {
-        (content, tool_calls)
+        // The text next to the calls is the agent's note: reasoning leaked
+        // into it (up to a stray `</think>`) is not part of it.
+        (tool_call_recovery::clean_answer_text(&content), tool_calls)
     };
 
     Ok(ProviderResponse {
@@ -1244,6 +1246,20 @@ mod tests {
         )
         .expect("response");
         assert!(untouched.message.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn the_note_next_to_tool_calls_drops_leaked_reasoning() {
+        let response = translate_tool_response(
+            json!({ "message": {
+                "content": "El usuario quiere cargar la cena. Llamo a log_meal.</think>",
+                "tool_calls": [{ "function": { "name": "log_meal", "arguments": { "name": "Puchero" } } }]
+            }}),
+            &["log_meal"],
+        )
+        .expect("response");
+        assert_eq!(response.message.content, "");
+        assert_eq!(response.message.tool_calls[0].name, "log_meal");
     }
 
     #[test]

@@ -553,21 +553,33 @@ impl Worker {
         self.send_parts(chat_id, bot::telegram_html_parts(markdown), Vec::new());
     }
 
-    /// Sends whole the agent's notes the person has not read since the last
-    /// delivery (see `bot::notes_to_deliver`).
+    /// Before a question, sends whole the agent's notes the person has not
+    /// read since the last delivery (see `bot::notes_to_deliver`): the
+    /// question's context. Returns the messages sent, which go once the
+    /// answer arrives (`delete_messages`).
     fn deliver_notes(
         &self,
         chat_id: i64,
         runtime: &crate::backend_runtime::BackendRuntimeState,
         context: &BackendRequestContext,
         seen_events: &mut u64,
-        asking: bool,
-    ) {
+    ) -> Vec<i64> {
         let events = runtime.request_events(context, *seen_events).unwrap_or_default();
         *seen_events = events.iter().map(|envelope| envelope.sequence).max().unwrap_or(*seen_events);
         let events = events.into_iter().map(|envelope| envelope.event).collect::<Vec<_>>();
-        for note in bot::notes_to_deliver(&events, asking) {
-            self.send_markdown(chat_id, &note);
+        let mut sent = Vec::new();
+        for note in bot::notes_to_deliver(&events, true) {
+            for part in bot::telegram_html_parts(&note) {
+                sent.extend(self.send_html(chat_id, &part, Vec::new()));
+            }
+        }
+        sent
+    }
+
+    /// Deletes messages of the chat: the agent's notes once its answer is there.
+    fn delete_messages(&self, chat_id: i64, ids: &[i64]) {
+        for id in ids {
+            let _ = block_on(telegram::delete_message(&self.token, chat_id, *id));
         }
     }
 
@@ -1512,10 +1524,11 @@ impl Worker {
         let (run, request) = self.begin_run(job, &text, attachments);
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
         let mut seen_events = 0;
+        let mut notes = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
             // What the agent wrote in the round it asks is the context of
             // the question: it goes whole before it.
-            self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
+            notes.extend(self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events));
             match self.ask(chat_id, interaction, operation) {
                 Some(answer) => {
                     match answer.message {
@@ -1560,11 +1573,12 @@ impl Worker {
         if stopped {
             self.send(chat_id, bot::TOO_LATE_TO_CANCEL_MESSAGE);
         }
-        // What the progress showed clipped arrives whole before the answer,
-        // and the images the agent made go right before its text.
-        self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
+        // The images the agent made go right before its text, and the
+        // answer replaces the notes it wrote on the way.
         let drawn = self.send_generated_images(chat_id, &run.context.request_id);
-        self.send_markdown(chat_id, &response.response.markdown);
+        if self.send_markdown_checked(chat_id, &response.response.markdown) {
+            self.delete_messages(chat_id, &notes);
+        }
         self.remember_turn(chat_id, text, files, response.response.markdown.clone(), drawn);
         if response.changed {
             let _ = self.app.emit(LIBRARY_CHANGED_EVENT, &self.library.id);
@@ -1695,8 +1709,9 @@ impl Worker {
         // the notes before a question and the questions reach the chat.
         let progress = Progress::start(self, chat_id, false, false);
         let mut seen_events = 0;
+        let mut notes = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
-            self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, true);
+            notes.extend(self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events));
             match self.ask(chat_id, interaction, operation) {
                 Some(answer) => Ok(answer.decision),
                 None if run.cancelled.load(Ordering::SeqCst) => {
@@ -1722,13 +1737,14 @@ impl Worker {
         }
         let answer = response.response.markdown;
         if prompts::is_silent(action.prompt.kind, &answer) {
+            self.delete_messages(chat_id, &notes);
             return Ok(prompts::SILENT_SUMMARY.to_string());
         }
-        self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events, false);
         let drawn = self.send_generated_images(chat_id, &run.context.request_id);
         if !self.send_markdown_checked(chat_id, &prompts::outgoing_message(&answer, action.prompt.test)) {
             return Err("No se pudo enviar por Telegram.".to_string());
         }
+        self.delete_messages(chat_id, &notes);
         self.remember_turn(chat_id, job.text.clone(), Vec::new(), answer.clone(), drawn);
         if let Err(error) = crate::agent_knowledge::keep_thought(&self.app, &self.library.id, &prompts::sent_thought(&action.prompt.name, &answer)) {
             log::error!("[notia:ai-actions] no se pudo anotar el mensaje enviado: {:?}", error.code);
