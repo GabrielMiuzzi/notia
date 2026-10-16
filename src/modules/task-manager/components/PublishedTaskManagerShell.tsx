@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Bot, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { TaskManagerChatContext, TaskManagerSettings } from '../types/taskManagerTypes'
 import { PublishedTaskManagerChat } from './PublishedTaskManagerChat'
 import { TaskManagerApp } from './TaskManagerApp'
+import { normalizeLibraryContexts } from '../../../services/contexts/libraryContexts'
 import {
   getTaskManagerPublicationStatus,
   subscribeTaskManagerPublicationStatus,
@@ -22,6 +23,8 @@ export interface PublishedTaskManagerBootstrap {
   settings: TaskManagerSettings
   /** Reads the publication allows (`PUBLISHED_COMMANDS` in Rust). */
   commands?: string[]
+  /** The library's contexts, as the app's board and ticket dialogs offer them. */
+  contexts?: unknown
 }
 
 export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: PublishedTaskManagerBootstrap }) {
@@ -29,6 +32,7 @@ export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: Pu
   const [chatContext, setChatContext] = useState<TaskManagerChatContext | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<TaskManagerPublicationStatus | 'uninitialized'>(() => getTaskManagerPublicationStatus())
   const RightPanelIcon = isChatOpen ? PanelRightClose : PanelRightOpen
+  const contexts = useMemo(() => normalizeLibraryContexts(bootstrapData.contexts), [bootstrapData.contexts])
   useEffect(() => subscribeTaskManagerPublicationStatus(setConnectionStatus), [])
 
   const statusLabel = resolvePublicationStatusLabel(connectionStatus)
@@ -45,7 +49,7 @@ export function PublishedTaskManagerShell({ bootstrapData }: { bootstrapData: Pu
       {isTerminal ? <div className="notia-publication-terminal" role="alert"><span>{statusLabel}. Volvé a iniciar sesión para solicitar acceso nuevamente.</span><button type="button" onClick={() => window.location.assign(window.location.pathname.replace(/\/app\/?$/, '') || '/')}>Volver a iniciar sesión</button></div> : null}
       <div className="notia-workspace notia-published-workspace">
         <div className="notia-published-task-content">
-          <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath, libraryId: bootstrapData.libraryId, libraryUserId: bootstrapData.libraryUserId }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} onPublishedChatContextChange={setChatContext} />
+          <TaskManagerApp embedded vault={{ path: bootstrapData.vaultPath, libraryId: bootstrapData.libraryId, libraryUserId: bootstrapData.libraryUserId }} publishedBoardNames={bootstrapData.settings.boards.map((board) => board.name)} canManageBoards={false} contexts={contexts} onPublishedChatContextChange={setChatContext} />
         </div>
         <aside className={`notia-right-panel ${isChatOpen ? 'notia-right-panel--open' : 'notia-right-panel--closed'}`} aria-hidden={!isChatOpen}>
           {isChatOpen ? <PublishedTaskManagerChat taskManagerScopeKey={chatContext?.scopeKey ?? null} scopePaths={chatContext?.filePaths ?? []} /> : null}

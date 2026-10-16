@@ -90,6 +90,12 @@ Acentos de columna de Task Manager (franja superior de 3px):
 | En revisión | `#A78BFA` (violeta) | `#7C3AED` |
 | Bloqueado | `#FF6B6B` | `#DC2626` |
 
+### Tablero publicado del Task Manager
+
+- El tablero publicado debe ser exactamente igual al Task Manager de la app, tanto en funciones como en vista.
+- Todo cambio de funciones o de vista en el Task Manager se aplica también al tablero publicado en el mismo desarrollo, y viceversa. No se permiten diferencias entre ambos salvo las que imponga la plataforma; esas deben quedar documentadas en `README-TECH.md`.
+- Excepción: el usuario invitado del tablero publicado trabaja solo sobre los tableros publicados y no puede crear, editar ni eliminar tableros. Esas acciones no se muestran en la publicación y Rust las rechaza.
+
 ## Documentación obligatoria
 
 Después de cada desarrollo, funcionalidad, bugfix, refactor o cambio de contrato:

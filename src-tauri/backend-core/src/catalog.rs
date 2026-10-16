@@ -618,6 +618,14 @@ fn is_task_scope(tool: &ToolDefinition) -> bool {
     tool.scopes.is_empty() || tool.scopes.contains(&BackendScope::TaskManager)
 }
 
+/// What a published Task Manager's guest may use: the Task Manager tools
+/// and the questions to the person. Tools without a scope (mail, agenda,
+/// the agent's memory, images) stay out.
+fn is_published_tool(tool: &ToolDefinition) -> bool {
+    matches!(tool.name.as_str(), "request_user_clarification" | "request_user_confirmation")
+        || (is_task_scope(tool) && crate::tool_routing::tool_area(&tool.name) == Some(crate::tool_routing::ToolArea::Tasks))
+}
+
 pub fn authorize_tool_call(
     context: &BackendRequestContext,
     principal: &AuthorizationPrincipal,
@@ -649,11 +657,7 @@ pub fn authorize_tool_call(
             false,
         ));
     }
-    if matches!(projection, ToolCatalogProjection::PublishedTaskManager)
-        && (!is_task_scope(tool)
-            || tool.name == "search_web"
-            || matches!(tool_policy(&tool.name), ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite))
-    {
+    if matches!(projection, ToolCatalogProjection::PublishedTaskManager) && !is_published_tool(tool) {
         return Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La herramienta no está disponible en la publicación de Task Manager.",
@@ -1053,6 +1057,22 @@ mod tests {
     }
 
     #[test]
+    fn a_published_guest_gets_only_task_tools_and_questions() {
+        let mut owner = principal();
+        owner.all_contexts = true;
+        for scope in [BackendScope::TaskManager, BackendScope::Library] {
+            let tools = project_tool_catalog(&context(scope), &owner, &canonical_tool_catalog(), ToolCatalogProjection::PublishedTaskManager)
+                .expect("catalog");
+            assert!(tools.iter().any(|tool| tool.name == "change_task_state"));
+            assert!(tools.iter().any(|tool| tool.name == "request_user_confirmation"));
+            for tool in &tools {
+                let task = crate::tool_routing::tool_area(&tool.name) == Some(crate::tool_routing::ToolArea::Tasks);
+                assert!(task || tool.name.starts_with("request_user_"), "{} reached the publication", tool.name);
+            }
+        }
+    }
+
+    #[test]
     fn published_projection_keeps_only_task_scope() {
         let tools = project_tool_catalog(
             &context(BackendScope::TaskManager),
@@ -1144,3 +1164,4 @@ mod tests {
         );
     }
 }
+

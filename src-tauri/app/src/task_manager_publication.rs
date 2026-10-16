@@ -306,6 +306,23 @@ pub struct TaskManagerPublicationState {
     inner: Arc<Mutex<PublicationRuntime>>,
 }
 
+/// The boards the running publication of `library_id` shares: the scope of
+/// the agent in a published turn. `None` without that publication.
+pub(crate) fn published_board_ids(app: &crate::host::AppHandle, library_id: &str) -> Option<Vec<String>> {
+    let state = app.try_state::<TaskManagerPublicationState>()?;
+    let guard = state.inner.lock().ok()?;
+    let payload = guard.payload.as_ref().filter(|payload| payload.library_id.as_deref() == Some(library_id))?;
+    #[cfg(target_os = "windows")]
+    {
+        Some(publication_task_manager_board_ids(payload)).filter(|ids| !ids.is_empty())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = payload;
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn encode_authenticated_session(user_id: &str, ttl: Duration) -> String {
     let expires_at = SystemTime::now()
@@ -1539,6 +1556,18 @@ fn publication_task_manager_board_ids(publication: &TaskManagerPublicationPayloa
         .unwrap_or_default()
 }
 
+/// The library's contexts (tag and color), which the board and ticket
+/// dialogs offer as in the app.
+#[cfg(target_os = "windows")]
+fn publication_contexts(publication: &TaskManagerPublicationPayload, runtime: &Arc<Mutex<PublicationRuntime>>) -> Value {
+    let app = runtime.lock().ok().and_then(|guard| guard.app_handle.clone());
+    let config = app
+        .zip(publication.library_id.as_deref())
+        .and_then(|(app, library_id)| crate::library_config::read_library_config(&app, library_id).ok().flatten())
+        .unwrap_or_else(crate::backend::library_config::default_library_config);
+    config.get("contexts").filter(|value| value.is_array()).cloned().unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
 #[cfg(target_os = "windows")]
 fn build_publication_bootstrap(
     publication: &TaskManagerPublicationPayload,
@@ -1575,6 +1604,7 @@ fn build_publication_bootstrap(
         "revision": revision,
         "sequence": sequence,
         "settings": build_publication_client_settings(publication),
+        "contexts": publication_contexts(publication, runtime),
         // The reads the page may call; the editor skips the rest.
         "commands": crate::registry::PUBLISHED_COMMANDS,
     })
@@ -4263,6 +4293,8 @@ mod tests {
         assert_eq!(bootstrap["settings"]["pomodoro"]["runState"], "idle");
         assert!(bootstrap.get("aiPreferences").is_none());
         assert_eq!(bootstrap["commands"], serde_json::json!(crate::registry::PUBLISHED_COMMANDS));
+        // Without the library's config, the default contexts.
+        assert!(bootstrap["contexts"].as_array().is_some_and(|contexts| contexts.iter().any(|context| context["tag"] == "#Personal")));
     }
 
     #[test]

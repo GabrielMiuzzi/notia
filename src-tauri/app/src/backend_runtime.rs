@@ -1920,6 +1920,17 @@ impl TauriBackendToolExecutor {
         }
     }
 
+    /// The boards the Task Manager tools may touch: in a published turn,
+    /// only the ones the running publication shares; otherwise all of them.
+    fn task_board_scope(&self, context: &BackendRequestContext) -> Result<Vec<String>, BackendError> {
+        if !matches!(context.persistence_policy, PersistencePolicy::PublishedNoMemory) {
+            return Ok(Vec::new());
+        }
+        crate::task_manager_publication::published_board_ids(&self.app, &context.library_id).ok_or_else(|| {
+            BackendError::new(BackendErrorCode::Forbidden, "La publicación de Task Manager ya no está activa.", false)
+        })
+    }
+
     fn health_context(context: &BackendRequestContext) -> crate::health::HealthContext {
         crate::health::HealthContext {
             library_id: context.library_id.clone(),
@@ -4334,6 +4345,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     registry.inner(),
                     &context.library_id,
                     &context.actor.library_user_id,
+                    self.task_board_scope(context)?,
                     call.name.as_str(),
                     &call.arguments,
                 )?
@@ -4347,6 +4359,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     registry.inner(),
                     &context.library_id,
                     &context.actor.library_user_id,
+                    self.task_board_scope(context)?,
                     &call.id,
                     call.name.as_str(),
                     &call.arguments,

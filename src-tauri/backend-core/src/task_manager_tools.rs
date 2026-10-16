@@ -1973,6 +1973,15 @@ fn validate_mutation(
     mutation: &TaskMutationDto,
 ) -> Result<Vec<TaskEntityRevisionDto>, BackendError> {
     let mut revisions = Vec::new();
+    // A scope is a publication: its guests work on the published boards but
+    // never create, edit or delete boards.
+    let board_change = matches!(
+        mutation,
+        TaskMutationDto::CreateBoard { .. } | TaskMutationDto::UpdateBoard { .. } | TaskMutationDto::DeleteBoard { .. }
+    );
+    if board_change && !context.allowed_board_ids.is_empty() {
+        return Err(forbidden("Los tableros se crean, editan y eliminan desde Notia, no desde el tablero publicado."));
+    }
     match mutation {
         TaskMutationDto::CreateBoard {
             board_id,
@@ -4222,6 +4231,37 @@ mod tests {
             manager.seed_ticket(wrong_board).unwrap_err().code,
             BackendErrorCode::InvalidInput
         );
+    }
+
+    #[test]
+    fn a_publication_never_creates_edits_or_deletes_boards() {
+        let (manager, mut context) = setup();
+        context.allowed_board_ids = vec!["board-a".into()];
+        let request = |mutation| TaskMutationRequestDto {
+            context: context.clone(),
+            operation_id: "op-board".into(),
+            idempotency_key: "idem-board".into(),
+            mutation,
+        };
+        for mutation in [
+            TaskMutationDto::CreateBoard {
+                board_id: "board-a".into(),
+                name: "Nuevo".into(),
+                color: "#4FD1C5".into(),
+                context: None,
+                activity_hours_per_day: None,
+            },
+            TaskMutationDto::UpdateBoard {
+                board_id: "board-a".into(),
+                name: Some("Otro".into()),
+                color: None,
+                context: None,
+                activity_hours_per_day: None,
+            },
+            TaskMutationDto::DeleteBoard { board_id: "board-a".into() },
+        ] {
+            assert_eq!(manager.preview_mutation(&request(mutation)).unwrap_err().code, BackendErrorCode::Forbidden);
+        }
     }
 
     #[test]

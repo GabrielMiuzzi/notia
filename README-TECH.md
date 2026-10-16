@@ -8642,7 +8642,7 @@ Las listas de SAF no traen fecha de modificación, así que el inventario no pue
   - el progreso muestra la nota en texto plano (`plain_text`);
   - `telegram_html_parts` convierte el Markdown en uno o más mensajes de hasta 3800 caracteres de HTML, partidos entre párrafos (o entre líneas si un párrafo es largo), sin partir bloques de código ni etiquetas.
 - **`app/src/telegram_worker.rs`**:
-  - `deliver_notes` manda esas notas completas antes de cada aclaración, confirmación o plan y antes de la respuesta final; lee solo los eventos nuevos desde la última entrega, así una nota no se repite;
+  - `deliver_notes` manda esas notas completas antes de cada aclaración, confirmación o plan (desde 2026-10-15 ya no antes de la respuesta final, y se borran cuando ella llega); lee solo los eventos nuevos desde la última entrega, así una nota no se repite;
   - la respuesta final sale con `send_markdown`, en varias partes si hace falta.
 - **Sin límite de largo**: ningún texto se recorta.
   - La confirmación (`confirmation_parts`), el plan (`plan_parts`) y la pregunta (`question_parts`, en Markdown) se parten en varios mensajes con los botones en el último; antes, la confirmación y el plan se cortaban en 3000 caracteres con «…».
@@ -8658,6 +8658,23 @@ Las listas de SAF no traen fecha de modificación, así que el inventario no pue
 - `cargo test -p notia-app --features bluetooth`: 376.
 - Warnings de Android (61) y Linux (144) sin cambios.
 - Falta repetir la limpieza por Telegram.
+
+### Telegram: las notas se van con la respuesta y sin razonamiento filtrado (2026-10-15)
+
+**Síntoma**: al cargar una comida, antes de «Confirmación requerida» llegó un mensaje con todo el razonamiento del modelo, terminado en `</think>`, y quedó en el chat después de la respuesta final.
+
+**Causa**:
+
+- En una vuelta con herramientas, `translate_tool_response` (`backend_ollama.rs`) pasaba tal cual el texto que acompaña a las llamadas. Si el modelo escribía su razonamiento como contenido, con un `</think>` suelto, ese texto se publicaba como `AssistantNote`.
+- `deliver_notes` manda la nota de la vuelta que pregunta antes de la confirmación, y esa nota quedaba en el chat.
+
+**Qué se hizo**:
+
+- `translate_tool_response` limpia también el texto de las vueltas con llamadas (`clean_answer_text`): saca los bloques `<think>…</think>`, todo lo anterior a un `</think>` suelto y el markup de llamadas. Una nota que queda vacía no se emite.
+- `deliver_notes` manda las notas solo antes de una pregunta, confirmación o plan, y devuelve los mensajes enviados. Cuando la respuesta final llega entera, `delete_messages` los borra: la respuesta reemplaza a los pensamientos, igual que reemplaza al mensaje de progreso. Ya no se mandan notas justo antes de la respuesta. Las acciones programadas hacen lo mismo, también cuando terminan en silencio. Si el pedido falla o se cancela, las notas quedan como contexto.
+- Pendiente: un razonamiento filtrado sin ninguna etiqueta (texto en inglés pegado a la respuesta) no se puede separar con seguridad y sigue llegando. Es del modelo y de la plantilla de Ollama.
+
+**Validaciones**: `cargo test -p notia-app --features bluetooth`: 510, con `the_note_next_to_tool_calls_drops_leaked_reasoning`. Falta probarlo en Telegram.
 
 ### Agenda de Notia para el asistente y confirmación de notas (2026-09-27)
 
@@ -11976,3 +11993,22 @@ Lo demás no cambia: la ventana se recarga sobre la copia (la vista abierta se p
 - `tsc -p tsconfig.app.json` y ESLint sin errores; vitest de `views` y `hooks`: 290 pruebas en 51 archivos.
 
 **Pendiente.** Probarlo en la app con una edición confirmada real, con la nota abierta solo en la PC y abierta a la vez en la tablet.
+
+## Tablero publicado igual al Task Manager (2026-10-16)
+
+Regla de `CLAUDE.md`: el tablero publicado es igual al Task Manager en funciones y vista. La excepción es que el invitado no crea, edita ni elimina tableros.
+
+**Auditoría.** La publicación ya monta el mismo `TaskManagerApp`. Diferencias encontradas:
+
+| Diferencia | Estado |
+|---|---|
+| Crear, editar y eliminar tableros ocultos (`canManageBoards={false}`), pero Rust aceptaba editar y eliminar un tablero publicado | Corregido: `validate_mutation` rechaza `CreateBoard`, `UpdateBoard` y `DeleteBoard` con un alcance de tableros (`Forbidden`) |
+| Sin los contextos de la biblioteca en los diálogos de tablero y ticket | Corregido: el bootstrap trae `contexts` (`publication_contexts`) y `PublishedTaskManagerShell` se los pasa a `TaskManagerApp` |
+| El agente del chat publicado recibía herramientas sin alcance: Gmail (leer, enviar, borrar), Calendar, archivos de memoria del agente e imágenes | Corregido: `is_published_tool` deja solo el área `Tasks` y `request_user_clarification` / `request_user_confirmation` |
+| Las herramientas de Task Manager del agente publicado corrían sobre todos los tableros del usuario (`allowed_board_ids` vacío) | Corregido: `task_board_scope` toma los tableros de la publicación activa (`published_board_ids`). Sin publicación activa de esa biblioteca, `Forbidden` |
+| Historial de Pomodoro no visible: mezcla todos los tableros | Diferencia aceptada por alcance |
+| Sin sugerencias de `[[enlaces]]`: mostrarían las notas de toda la biblioteca | Diferencia aceptada por alcance |
+| Chat publicado propio (efímero, sin agentes ni historial); las preguntas y confirmaciones se responden en la ventana del Owner con `window.prompt` | Pendiente: chat igual al panel lateral |
+| Abrir un ticket muestra `TaskSourceDialog` (el mismo `MarkdownView` en un modal con «Guardar») en vez de la vista de documento | Pendiente: vista de documento igual |
+
+**Validaciones:** `cargo test -p notia-backend-core`: 587 y 1 falla previa (`image_generation::only_sexual_content_with_minors_is_refused`, ajena a este cambio). Incluye `a_publication_never_creates_edits_or_deletes_boards` y `a_published_guest_gets_only_task_tools_and_questions`. `cargo test -p notia-app --features bluetooth`: 510. Vitest de Task Manager: 59. Falta probar la publicación desde otro equipo.

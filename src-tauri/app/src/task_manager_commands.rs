@@ -23,20 +23,29 @@ pub(crate) struct TaskManagerBackendState {
 
 const MAX_OPEN_TASK_MANAGERS: usize = 64;
 
+fn scoped_context(library_id: &str, library_user_id: &str, allowed_board_ids: Vec<String>) -> Result<TaskManagerContextDto, BackendError> {
+    let mut context = TaskManagerContextDto::new(library_id, library_user_id)?;
+    context.allowed_board_ids = allowed_board_ids;
+    context.validate()?;
+    Ok(context)
+}
+
 /// Backend-only entry point used by the canonical agent runtime.  It keeps the
 /// existing command surface intact while ensuring Task Manager reads use the
 /// same authorization and persistent Markdown store as the UI commands.
+/// `allowed_board_ids`: the boards a published turn may touch; empty, all.
 pub(crate) fn execute_backend_read_tool(
     app: &AppHandle,
     state: &TaskManagerBackendState,
     registry: &LibraryBindingRegistry,
     library_id: &str,
     library_user_id: &str,
+    allowed_board_ids: Vec<String>,
     name: &str,
     arguments: &Value,
 ) -> Result<Value, BackendError> {
     let manager = manager(app, state, registry, library_id, library_user_id)?;
-    let context = TaskManagerContextDto::new(library_id, library_user_id)?;
+    let context = scoped_context(library_id, library_user_id, allowed_board_ids)?;
     let mut object = arguments.as_object().cloned().unwrap_or_default();
     object.insert("context".to_string(), serde_json::to_value(&context).map_err(|_| {
         BackendError::new(BackendErrorCode::Internal, "No se pudo preparar el contexto de Task Manager.", true)
@@ -121,12 +130,13 @@ pub(crate) fn execute_backend_mutation_tool(
     registry: &LibraryBindingRegistry,
     library_id: &str,
     library_user_id: &str,
+    allowed_board_ids: Vec<String>,
     operation_id: &str,
     name: &str,
     arguments: &Value,
 ) -> Result<Value, BackendError> {
     let manager = manager(app, state, registry, library_id, library_user_id)?;
-    let context = TaskManagerContextDto::new(library_id, library_user_id)?;
+    let context = scoped_context(library_id, library_user_id, allowed_board_ids)?;
     let groups = manager.read_snapshot(&context)?.groups;
     let preview_request = TaskMutationRequestDto {
         context: context.clone(),
