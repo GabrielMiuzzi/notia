@@ -81,6 +81,9 @@ pub struct TaskItemViewDto {
     pub contexto: Option<String>,
     pub related_documents: Vec<String>,
     pub related_tasks: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub assignees: Vec<String>,
 }
 
 /// Everything the board renders, derived from one snapshot generation.
@@ -237,6 +240,8 @@ pub fn project_board_view(
                 contexto: ticket.context.clone(),
                 related_documents: ticket.related_documents.clone(),
                 related_tasks: ticket.related_tasks.clone(),
+                project: ticket.project.clone(),
+                assignees: ticket.assignees.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -297,6 +302,11 @@ pub enum TaskBoardIntent {
         dynamic_end_date: bool,
         #[serde(default)]
         estimated_hours: f64,
+        /// Project of the ticket; empty, none.
+        #[serde(default)]
+        project: String,
+        #[serde(default)]
+        assignees: Vec<String>,
     },
     EditTask {
         task_path: String,
@@ -316,6 +326,10 @@ pub enum TaskBoardIntent {
         estimated_hours: f64,
         #[serde(default)]
         parent_task_name: String,
+        #[serde(default)]
+        project: String,
+        #[serde(default)]
+        assignees: Vec<String>,
     },
     ChangeState {
         task_path: String,
@@ -644,9 +658,13 @@ pub fn resolve_board_intent(
             end_date,
             dynamic_end_date,
             estimated_hours,
+            project,
+            assignees,
         } => {
             let board = resolver.board(board)?;
             let mut initial_fields = schedule_fields(end_date, *dynamic_end_date, *estimated_hours)?;
+            initial_fields.project = Some(project.clone());
+            initial_fields.assignees = Some(assignees.clone());
             initial_fields.context = Some(
                 board
                     .context
@@ -677,6 +695,8 @@ pub fn resolve_board_intent(
             dynamic_end_date,
             estimated_hours,
             parent_task_name,
+            project,
+            assignees,
         } => {
             let ticket = resolver.ticket(task_path)?;
             let ticket_id = ticket.summary.ticket_id.as_str();
@@ -691,6 +711,8 @@ pub fn resolve_board_intent(
             fields.priority = *priority;
             fields.group_id = resolver.group(&ticket.summary.board_id, group)?;
             fields.parent_ticket_id = Some(resolver.parent(parent_task_name, Some(ticket_id))?);
+            fields.project = Some(project.clone());
+            fields.assignees = Some(assignees.clone());
             vec![update(ticket_id, fields)]
         }
         TaskBoardIntent::ChangeState { task_path, state } => vec![TaskMutationDto::ChangeState {
@@ -1347,6 +1369,8 @@ mod tests {
             context: None,
             related_documents: Vec::new(),
             related_tasks: Vec::new(),
+            project: None,
+            assignees: Vec::new(),
         }
     }
 
@@ -1488,6 +1512,8 @@ mod tests {
             end_date: "2026-10-01".into(),
             dynamic_end_date: false,
             estimated_hours: 3.0,
+            project: " Remesas ".into(),
+            assignees: vec!["Ana".into(), " ana ".into(), "Luis".into()],
         })
         .unwrap();
         let TaskMutationDto::CreateTicket {
@@ -1512,6 +1538,8 @@ mod tests {
         let fields = initial_fields.as_ref().unwrap();
         assert_eq!(fields.context.as_deref(), Some("#Laboral"));
         assert_eq!(fields.dynamic_end_date, Some(false));
+        assert_eq!(fields.project.as_deref(), Some(" Remesas "));
+        assert_eq!(fields.assignees.as_ref().map(Vec::len), Some(3));
     }
 
     #[test]
@@ -1527,6 +1555,8 @@ mod tests {
             end_date: String::new(),
             dynamic_end_date: true,
             estimated_hours: 0.0,
+            project: String::new(),
+            assignees: Vec::new(),
         })
         .is_err());
         let error = resolve(TaskBoardIntent::DeleteTask {

@@ -3,7 +3,7 @@ import { useAppStore } from '../../../store/hooks'
 import { isTextFileDocument, type OpenTextFileDocument, type OpenMermaidFileDocument } from '../../../types/views/fileDocument'
 import type { OpenDocumentTab } from '../../../features/documents/documentsTypes'
 
-const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
+export const MARKDOWN_AUTOSAVE_DEBOUNCE_MS = 1200
 const TEXT_AUTOSAVE_DEBOUNCE_MS = 380
 
 interface PendingTextSaveJob {

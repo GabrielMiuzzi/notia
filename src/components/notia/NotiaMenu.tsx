@@ -45,7 +45,6 @@ import { notiaTimer } from '../../services/runtime/notiaLogger'
 import { saveAiPreferences } from '../../services/preferences/aiSettingsStorage'
 import { useBackupSettingsMigration } from './hooks/useBackupSettingsMigration'
 import { useDevicePreferencesPersistence } from './hooks/useDevicePreferencesPersistence'
-import { useTaskManagerPublicationAiHostBridge } from '../../modules/task-manager/hooks/useTaskManagerPublicationAiHostBridge'
 import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../types/views/markdownSelection'
 import { DEFAULT_LIBRARY_CONTEXTS, type LibraryContext } from '../../services/contexts/libraryContexts'
 import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID } from '../../modules/task-manager/types/taskManagerTypes'
@@ -340,11 +339,6 @@ function NotiaMenuComponent() {
     setTelegramPreferences: handleTelegramPreferencesChange,
     contexts: libraryContexts,
     setContexts: setLibraryContexts,
-  })
-
-  useTaskManagerPublicationAiHostBridge({
-    activeLibrary,
-    aiPreferences,
   })
 
   useTelegramLibraryChanges(activeLibraryId, () => notifyLibraryTreeChanged(activeLibraryPath ?? undefined))

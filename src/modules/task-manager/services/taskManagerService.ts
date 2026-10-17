@@ -54,6 +54,8 @@ export type TaskBoardIntent =
     endDate: string
     dynamicEndDate: boolean
     estimatedHours: number
+    project: string
+    assignees: string[]
   }
   | {
     kind: 'edit-task'
@@ -67,6 +69,8 @@ export type TaskBoardIntent =
     dynamicEndDate: boolean
     estimatedHours: number
     parentTaskName: string
+    project: string
+    assignees: string[]
   }
   | { kind: 'change-state'; taskPath: string; state: TaskState }
   | { kind: 'change-priority'; taskPath: string; priority: TaskPriority }
@@ -170,16 +174,19 @@ export function readTaskMarkdownSource(
   return callBackend('task_manager_read_ticket_source', { payload: { context, logicalPath: taskPath } })
 }
 
+/** Saves a ticket's Markdown; resolves with its new revision when the reply carries it. */
 export async function writeTaskMarkdownSource(
   context: TaskManagerBackendContext,
   taskPath: string,
   content: string,
   expectedRevision: string | undefined,
-): Promise<void> {
+): Promise<string | null> {
   if (!expectedRevision) {
     throw new Error('La tarea cambió en otra sesión. Recargá el ticket antes de guardar.')
   }
-  await callBackend('task_manager_write_ticket_source', {
+  const result = await callBackend<unknown>('task_manager_write_ticket_source', {
     payload: { context, logicalPath: taskPath, content, expectedRevision },
   })
+  const revision = result && typeof result === 'object' && 'revision' in result ? result.revision : null
+  return typeof revision === 'string' ? revision : null
 }

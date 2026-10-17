@@ -8,7 +8,7 @@ import { DEFAULT_TELEGRAM_PREFERENCES, type TelegramPreferences } from '../../se
 import { DEFAULT_QWEN3_TTS_PREFERENCES, type Qwen3TtsPreferences } from '../../services/preferences/qwen3TtsSettingsStorage'
 import { DEFAULT_SPEECH_RECOGNITION_PREFERENCES, type SpeechRecognitionPreferences } from '../../services/preferences/speechRecognitionSettingsStorage'
 import { DEFAULT_TASK_MANAGER_PUBLICATION_PREFERENCES, type TaskManagerPublicationPreferences } from '../../services/preferences/taskManagerPublicationSettingsStorage'
-import type { DevicePreferences } from '../../services/preferences/devicePreferencesStorage'
+import type { DevicePreferences, EditorPreferencesView } from '../../services/preferences/devicePreferencesStorage'
 import type { EditorPagePreferences, PenPreferences } from '../../services/preferences/editorPreferences'
 
 const initialState: PreferencesState = {
@@ -75,7 +75,7 @@ const preferencesSlice = createSlice({
       state.devicePreferencesLoaded = true
     },
     /** The editor sections as the backend saved them. */
-    hydrateEditorPreferences(state, action: PayloadAction<DevicePreferences>) {
+    hydrateEditorPreferences(state, action: PayloadAction<EditorPreferencesView>) {
       state.editorPage = action.payload.editorPage
       state.editorPageSetup = action.payload.editorPageSetup
       state.pen = action.payload.pen

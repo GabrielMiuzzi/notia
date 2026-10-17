@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
+  Autocomplete,
+  Chip,
   FormControlLabel,
   FormControl,
   InputLabel,
@@ -9,14 +11,13 @@ import {
   Switch,
   TextField,
 } from '@mui/material'
-import type { Group, TaskFormData, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
+import type { Group, TaskFormData, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { TaskManagerModal } from "../common/TaskManagerModal"
 
+/** Creates a task or a subtask; an existing task is edited in its Markdown. */
 interface TaskDialogProps {
   open: boolean
-  mode: 'create' | 'edit'
-  task: TaskItem | null
   boardName: string
   createDefaults?: {
     parentTaskName?: string
@@ -25,6 +26,9 @@ interface TaskDialogProps {
   groups: Group[]
   states: readonly TaskState[]
   priorities: readonly TaskPriority[]
+  /** Projects and people of the other tickets, offered while typing. */
+  projectOptions: readonly string[]
+  peopleOptions: readonly string[]
   onClose: () => void
   onSubmit: (formData: TaskFormData) => Promise<void>
 }
@@ -40,17 +44,19 @@ const INITIAL_FORM: TaskFormData = {
   priority: 'Media',
   estimatedHours: 0,
   parentTaskName: '',
+  project: '',
+  assignees: [],
 }
 
 export function TaskDialog({
   open,
-  mode,
-  task,
   boardName,
   createDefaults,
   groups,
   states,
   priorities,
+  projectOptions,
+  peopleOptions,
   onClose,
   onSubmit,
 }: TaskDialogProps) {
@@ -62,22 +68,6 @@ export function TaskDialog({
       return
     }
 
-    if (mode === 'edit' && task) {
-      setForm({
-        title: task.title,
-        detail: task.detail,
-        state: task.state,
-        endDate: task.endDate,
-        dynamicEndDate: task.dynamicEndDate,
-        board: task.board,
-        group: task.group,
-        priority: task.priority || 'Media',
-        estimatedHours: task.estimatedHours,
-        parentTaskName: task.parentTaskName,
-      })
-      return
-    }
-
     setForm({
       ...INITIAL_FORM,
       board: boardName,
@@ -85,9 +75,9 @@ export function TaskDialog({
       parentTaskName: createDefaults?.parentTaskName ?? '',
       dynamicEndDate: true,
     })
-  }, [boardName, createDefaults?.group, createDefaults?.parentTaskName, groups, mode, open, task])
+  }, [boardName, createDefaults?.group, createDefaults?.parentTaskName, groups, open])
 
-  const title = useMemo(() => (mode === 'create' ? 'Nueva tarea' : 'Editar tarea'), [mode])
+  const title = createDefaults?.parentTaskName ? 'Nueva subtarea' : 'Nueva tarea'
 
   const handleSubmit = async () => {
     if (!form.title.trim()) {
@@ -100,6 +90,8 @@ export function TaskDialog({
         ...form,
         title: form.title.trim(),
         detail: form.detail.trim(),
+        project: form.project.trim(),
+        assignees: form.assignees.map((person) => person.trim()).filter(Boolean),
       })
     } finally {
       setIsSubmitting(false)
@@ -161,6 +153,30 @@ export function TaskDialog({
           </Stack>
 
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <Autocomplete
+              freeSolo
+              fullWidth
+              options={projectOptions as string[]}
+              value={form.project}
+              onInputChange={(_event, value) => setForm((previous) => ({ ...previous, project: value }))}
+              renderInput={(params) => <TextField {...params} label="Proyecto" placeholder="Remesas, Corresponsalías…" />}
+            />
+            <Autocomplete
+              multiple
+              freeSolo
+              fullWidth
+              options={peopleOptions as string[]}
+              value={form.assignees}
+              onChange={(_event, value) => setForm((previous) => ({ ...previous, assignees: value.map(String) }))}
+              renderTags={(value, getTagProps) => value.map((person, index) => {
+                const { key, ...tagProps } = getTagProps({ index })
+                return <Chip key={key} size="small" label={person} {...tagProps} />
+              })}
+              renderInput={(params) => <TextField {...params} label="Asignados" placeholder="Escribí un nombre y Enter" />}
+            />
+          </Stack>
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
             <FormControl fullWidth>
               <InputLabel>Grupo</InputLabel>
               <Select
@@ -207,13 +223,11 @@ export function TaskDialog({
             label="Fecha de finalizacion dinamica"
           />
 
-          {mode === 'create' ? (
-            <TextField
-              label="Tarea padre (opcional)"
-              value={form.parentTaskName}
-              onChange={(event) => setForm((previous) => ({ ...previous, parentTaskName: event.target.value }))}
-            />
-          ) : null}
+          <TextField
+            label="Tarea padre (opcional)"
+            value={form.parentTaskName}
+            onChange={(event) => setForm((previous) => ({ ...previous, parentTaskName: event.target.value }))}
+          />
         </Stack>
       </div>
 

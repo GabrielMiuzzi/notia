@@ -66,6 +66,10 @@ interface ChatComposerProps {
   triggerRef: React.RefObject<HTMLButtonElement | null>
   panelRef: React.RefObject<HTMLDivElement | null>
   imageInputRef: React.RefObject<HTMLInputElement | null>
+  /** `false` where the chat takes no files (a published Task Manager). */
+  canAttach?: boolean
+  /** `false` where nothing records the voice (a published Task Manager). */
+  canDictate?: boolean
 }
 
 function ChatComposerComponent({
@@ -112,6 +116,8 @@ function ChatComposerComponent({
   triggerRef,
   panelRef,
   imageInputRef,
+  canAttach = true,
+  canDictate = true,
 }: ChatComposerProps) {
   const qwen3Tts = useAppSelector(selectQwen3TtsSettings)
   const [isConversationMode, setIsConversationMode] = useState(false)
@@ -543,30 +549,34 @@ function ChatComposerComponent({
         </div>
       ) : (
         <div className="notia-chat-panel-composer-bar">
-          <div className="notia-chat-attachment-menu-shell">
+          {canAttach ? (
+            <div className="notia-chat-attachment-menu-shell">
+              <button
+                ref={triggerRef}
+                type="button"
+                className="notia-chat-panel-composer-tool"
+                title="Adjuntar archivo o nota"
+                aria-label="Adjuntar archivo o nota"
+                onClick={onToggleAttachmentMenu}
+                disabled={!library || isSubmitting || !isAiAvailable}
+              >
+                <Plus size={16} strokeWidth={1.75} />
+              </button>
+              {attachmentMenu}
+            </div>
+          ) : null}
+          {canDictate ? (
             <button
-              ref={triggerRef}
               type="button"
               className="notia-chat-panel-composer-tool"
-              title="Adjuntar archivo o nota"
-              aria-label="Adjuntar archivo o nota"
-              onClick={onToggleAttachmentMenu}
-              disabled={!library || isSubmitting || !isAiAvailable}
+              title="Dictar mensaje sin conexión"
+              aria-label="Iniciar dictado por micrófono"
+              onClick={voice.start}
+              disabled={!library || voice.isActive || !voice.isModelReady}
             >
-              <Plus size={16} strokeWidth={1.75} />
+              <Mic size={16} strokeWidth={1.75} />
             </button>
-            {attachmentMenu}
-          </div>
-          <button
-            type="button"
-            className="notia-chat-panel-composer-tool"
-            title="Dictar mensaje sin conexión"
-            aria-label="Iniciar dictado por micrófono"
-            onClick={voice.start}
-            disabled={!library || voice.isActive || !voice.isModelReady}
-          >
-            <Mic size={16} strokeWidth={1.75} />
-          </button>
+          ) : null}
           <button
             type="button"
             className="notia-chat-panel-model"

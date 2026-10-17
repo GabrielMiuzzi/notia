@@ -11,6 +11,8 @@ import { MarkdownDocumentMenu } from '../MarkdownDocumentMenu'
 const saveDevicePreferences = vi.fn()
 vi.mock('../../../services/preferences/devicePreferencesStorage', () => ({
   saveDevicePreferences: (...args: unknown[]) => saveDevicePreferences(...args),
+  // In the app the change is stored as the device's preferences.
+  saveEditorPreferences: (change: unknown) => saveDevicePreferences(change),
 }))
 
 const SETUP = {

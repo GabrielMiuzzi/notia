@@ -615,6 +615,8 @@ pub(crate) fn create_owner_tasks(
             end_date: String::new(),
             dynamic_end_date: true,
             estimated_hours: 0.0,
+            project: String::new(),
+            assignees: Vec::new(),
         };
         if board_execute_in(app, &state, &registry, &context, &intent)? {
             created += 1;
@@ -818,6 +820,24 @@ pub(crate) fn task_manager_execute_for_publication(
             .map_err(|_| BackendError::invalid_input("La operación publicada no es válida."))?;
             let changed = board_execute_in(app, state, registry, &context, &intent)?;
             Ok((json!({ "changed": changed }), changed))
+        }
+        // Page and pen preferences changed in the page: normalized and
+        // derived, never stored on the host.
+        "backend_preview_editor_preferences" => Ok((
+            crate::device_preferences::editor_preferences_view(payload.get("preferences").unwrap_or(&Value::Null)),
+            false,
+        )),
+        // The note's `pageMode` property: a change of the text, no file.
+        "markdown_set_page_mode" => {
+            let payload = serde_json::from_value(payload.clone())
+                .map_err(|_| BackendError::invalid_input("El modo página pedido no es válido."))?;
+            Ok((json!(crate::note_page_mode::markdown_set_page_mode(payload)?), false))
+        }
+        // The strokes over one of the published tickets.
+        command if crate::note_ink::PUBLISHED_INK_COMMANDS.contains(&command) => {
+            crate::note_ink::execute_for_publication(app, &context.library_id, command, payload, |path| {
+                authorized_ticket_path(app, state, registry, &context, path)
+            })
         }
         "task_manager_pomodoro" => {
             let mut command = serde_json::from_value::<PomodoroCommandPayload>(payload.clone())

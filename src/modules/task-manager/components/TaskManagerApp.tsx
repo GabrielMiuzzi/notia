@@ -1,8 +1,10 @@
 import { Alert, Snackbar, ThemeProvider, createTheme } from '@mui/material'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useConfirmationEngine } from '../../../context/confirmation/useConfirmationEngine'
 import { NotiaButton } from '../../../components/common/NotiaButton'
-import type { TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
+import type { TaskItem, TaskManagerChatContext, TaskManagerVaultRef } from '../types/taskManagerTypes'
+import { TaskFilterBar } from './boards/TaskFilterBar'
+import { filterTasks, NO_TASK_FILTERS, taskFilterOptions, type TaskFilters } from '../utils/taskFilters'
 import type { LibraryContext } from '../../../services/contexts/libraryContexts'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../engines/taskIconEngine'
 import { useTaskManager } from '../hooks/useTaskManager'
@@ -43,6 +45,8 @@ interface TaskManagerAppProps {
   publishedBoardNames?: readonly string[]
   canManageBoards?: boolean
   onOpenTaskFile?: (taskPath: string) => void
+  /** Opens a ticket in this page's own editor (a published Task Manager). */
+  onOpenTask?: (task: TaskItem) => void
   onActivePanelChange?: (panelId: string) => void
   onActiveChatContextChange?: (context: TaskManagerChatContext | null) => void
   onPublishedChatContextChange?: (context: TaskManagerChatContext | null) => void
@@ -55,6 +59,7 @@ function TaskManagerAppComponent({
   publishedBoardNames,
   canManageBoards = true,
   onOpenTaskFile,
+  onOpenTask,
   onActivePanelChange,
   onActiveChatContextChange,
   onPublishedChatContextChange,
@@ -146,6 +151,21 @@ function TaskManagerAppComponent({
     [activeBoardTasks, isArchived],
   )
 
+  // Search and filters of the board and the lists; they only choose what shows.
+  const [filters, setFilters] = useState<TaskFilters>(NO_TASK_FILTERS)
+  const filterOptions = useMemo(() => taskFilterOptions(visibleTasks), [visibleTasks])
+  const filteredBoardTasks = useMemo(() => filterTasks(activeBoardTasks, filters), [activeBoardTasks, filters])
+  const filteredFinishedTasks = useMemo(() => filterTasks(finishedTasks, filters), [filters, finishedTasks])
+  const filteredCancelledTasks = useMemo(() => filterTasks(cancelledTasks, filters), [cancelledTasks, filters])
+  const filterCounts = manager.settings.activeTab === FINISHED_TAB_ID
+    ? { shown: filteredFinishedTasks.length, total: finishedTasks.length }
+    : manager.settings.activeTab === CANCELLED_TAB_ID
+      ? { shown: filteredCancelledTasks.length, total: cancelledTasks.length }
+      : {
+        shown: filteredBoardTasks.filter((task) => !isArchived(task)).length,
+        total: activeBoardTasksCount,
+      }
+
   const activePomodoroTasks = useMemo(
     () => visibleTasks.filter((task) => !isArchived(task)),
     [isArchived, visibleTasks],
@@ -230,14 +250,16 @@ function TaskManagerAppComponent({
   }, [activeBoardConfig, manager])
 
   const handleOpenTaskFileWrapped = useCallback((taskPath: string) => {
-    if (!onOpenTaskFile || !manager.settings.activeVaultPath) {
+    if ((!onOpenTaskFile && !onOpenTask) || !manager.settings.activeVaultPath) {
       return
     }
     // The board sends the ticket's logical path; the editor opens the path
     // the explorer shows, as the backend reported it.
     const task = manager.snapshot.tasks.find((item) => item.filePath === taskPath)
-    if (task) onOpenTaskFile(task.path)
-  }, [onOpenTaskFile, manager.settings.activeVaultPath, manager.snapshot.tasks])
+    if (!task) return
+    if (onOpenTask) onOpenTask(task)
+    else onOpenTaskFile?.(task.path)
+  }, [onOpenTaskFile, onOpenTask, manager.settings.activeVaultPath, manager.snapshot.tasks])
 
   const handleOpenPomodoroTaskWrapped = useCallback((taskPath: string) => {
     manager.selectPomodoroTask(taskPath)
@@ -364,14 +386,24 @@ function TaskManagerAppComponent({
 
         </div>
 
+        {manager.settings.activeTab !== POMODORO_TAB_ID ? (
+          <TaskFilterBar
+            filters={filters}
+            onChange={setFilters}
+            projects={filterOptions.projects}
+            people={filterOptions.people}
+            shown={filterCounts.shown}
+            total={filterCounts.total}
+          />
+        ) : null}
+
         <div className="tareas-tab-content tareas-tab-content-animate">
           {activeTabIsBoard ? (
             <TaskBoardView
               boardName={activeBoard}
               groups={visibleGroups}
-              tasks={activeBoardTasks}
+              tasks={filteredBoardTasks}
               onCreateTask={manager.openTaskCreateDialog}
-              onEditTask={manager.openTaskEditDialog}
               onChangeTaskState={manager.updateTaskState}
               onChangeTaskPriority={manager.updateTaskPriority}
               onChangeTaskDedicatedHours={manager.updateTaskDedicatedHours}
@@ -394,7 +426,7 @@ function TaskManagerAppComponent({
           {manager.settings.activeTab === FINISHED_TAB_ID ? (
             <TaskTableView
               title="Tareas completadas"
-              tasks={finishedTasks}
+              tasks={filteredFinishedTasks}
               onChangeTaskState={manager.updateTaskState}
               onDeleteTask={handleDeleteTask}
             />
@@ -403,7 +435,7 @@ function TaskManagerAppComponent({
           {manager.settings.activeTab === CANCELLED_TAB_ID ? (
             <TaskTableView
               title="Tareas canceladas"
-              tasks={cancelledTasks}
+              tasks={filteredCancelledTasks}
               onChangeTaskState={manager.updateTaskState}
               onDeleteTask={handleDeleteTask}
             />
@@ -431,13 +463,13 @@ function TaskManagerAppComponent({
 
         <TaskDialog
           open={manager.taskDialog.open}
-          mode={manager.taskDialog.mode}
-          task={manager.taskDialog.task}
           boardName={manager.settings.activeTab}
           createDefaults={manager.taskCreateDefaults}
           groups={visibleGroups}
           states={manager.taskStates}
           priorities={manager.taskPriorities}
+          projectOptions={filterOptions.projects}
+          peopleOptions={filterOptions.people}
           onClose={manager.closeTaskDialog}
           onSubmit={manager.submitTaskDialog}
         />
@@ -468,7 +500,14 @@ function TaskManagerAppComponent({
           </Alert>
         </Snackbar>
 
-        <Snackbar open={Boolean(manager.infoMessage)} autoHideDuration={3000} onClose={() => manager.setInfoMessage(null)}>
+        {/* What an action did, at the top left: a ticket that leaves the board says where it went. */}
+        <Snackbar
+          open={Boolean(manager.infoMessage)}
+          autoHideDuration={3000}
+          onClose={() => manager.setInfoMessage(null)}
+          anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+          className="tareas-notice"
+        >
           <Alert severity="success" variant="filled" onClose={() => manager.setInfoMessage(null)}>
             {manager.infoMessage}
           </Alert>
@@ -509,7 +548,7 @@ function areTaskManagerAppPropsEqual(
     return false
   }
 
-  if (previous.onOpenTaskFile !== next.onOpenTaskFile) {
+  if (previous.onOpenTaskFile !== next.onOpenTaskFile || previous.onOpenTask !== next.onOpenTask) {
     return false
   }
 

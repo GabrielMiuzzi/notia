@@ -479,10 +479,11 @@ function useLocalVoiceTranscription({
  * the native speech session of its own device, also as a client of a host
  * (a tablet dictates and transcribes its meetings itself). A browser
  * connected to a Notia server, whose backend cannot record, records here and
- * sends the audio. The transport is installed before the interface loads
+ * sends the audio; a published Task Manager, which offers no dictation,
+ * gets that hook idle. The transport is installed before the interface loads
  * and never changes, so the choice is fixed per page.
  */
 export const useVoiceTranscription: typeof useLocalVoiceTranscription =
-  backendKind() === 'remote' && !backendSupports('start_speech_session')
+  backendKind() !== 'local' && !backendSupports('start_speech_session')
     ? useRemoteVoiceTranscription
     : useLocalVoiceTranscription

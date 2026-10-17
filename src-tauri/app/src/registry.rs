@@ -88,6 +88,7 @@ fn route(command: &str) -> Option<Route> {
         "backend_sync_page_link" => backend_sync_page_link,
         "markdown_blocks_resolve" => markdown_blocks_resolve,
         "markdown_set_page_mode" => markdown_set_page_mode,
+        "backend_preview_editor_preferences" => backend_preview_editor_preferences,
         "markdown_ink_load" => markdown_ink_load,
         "markdown_ink_add" => markdown_ink_add,
         "markdown_ink_remove" => markdown_ink_remove,
@@ -272,10 +273,6 @@ fn route(command: &str) -> Option<Route> {
         "coldpass_bluetooth_disconnect" => coldpass_bluetooth_disconnect,
         #[cfg(any(target_os = "android", target_os = "ios", not(feature = "bluetooth")))]
         "coldpass_bluetooth_disconnect" => coldpass_bluetooth_disconnect,
-        #[cfg(target_os = "windows")]
-        "publish_task_manager_ai_stream_event" => publish_task_manager_ai_stream_event,
-        #[cfg(not(target_os = "windows"))]
-        "publish_task_manager_ai_stream_event" => publish_task_manager_ai_stream_event,
         "get_task_manager_publication_url" => get_task_manager_publication_url,
         "get_task_manager_publication_status" => get_task_manager_publication_status,
         "open_task_manager_publication" => open_task_manager_publication,
@@ -381,6 +378,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "backend_sync_page_link",
     "markdown_blocks_resolve",
     "markdown_set_page_mode",
+    "backend_preview_editor_preferences",
     "markdown_ink_load",
     "markdown_ink_add",
     "markdown_ink_remove",
@@ -547,7 +545,6 @@ pub const COMMAND_NAMES: &[&str] = &[
     "coldpass_bluetooth_authenticate",
     "coldpass_bluetooth_send_message",
     "coldpass_bluetooth_disconnect",
-    "publish_task_manager_ai_stream_event",
     "get_task_manager_publication_url",
     "get_task_manager_publication_status",
     "open_task_manager_publication",
@@ -727,6 +724,18 @@ pub const PUBLISHED_COMMANDS: &[&str] = &[
     "task_manager_read_ticket_source",
     "task_manager_write_ticket_source",
     "task_manager_pomodoro",
+    // The ticket's editor: its page and pen preferences (kept in the page),
+    // page mode and the strokes over the ticket.
+    "backend_preview_editor_preferences",
+    "markdown_set_page_mode",
+    "markdown_ink_load",
+    "markdown_ink_add",
+    "markdown_ink_remove",
+    "markdown_ink_restore",
+    "markdown_ink_replace",
+    "markdown_ink_select",
+    "markdown_ink_move",
+    "markdown_ink_erase",
 ];
 
 pub fn is_published_command(command: &str) -> bool {
@@ -1838,16 +1847,6 @@ fn coldpass_bluetooth_disconnect(_app: &AppHandle, _window_label: &str, _command
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::commands::bluetooth::coldpass_bluetooth_disconnect().await) })))
 }
 
-#[cfg(target_os = "windows")]
-fn publish_task_manager_ai_stream_event(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::task_manager_publication::publish_task_manager_ai_stream_event(app.state(), arg(command, args, "requestId")?, arg(command, args, "event")?))))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn publish_task_manager_ai_stream_event(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_result(crate::task_manager_publication::publish_task_manager_ai_stream_event(app.state(), arg(command, args, "requestId")?, arg(command, args, "event")?))))
-}
-
 fn get_task_manager_publication_url(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::task_manager_publication::get_task_manager_publication_url(app.state()))))
 }
@@ -1923,6 +1922,11 @@ fn markdown_blocks_resolve(app: &AppHandle, _window_label: &str, command: &str, 
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::gitbook_blocks::markdown_blocks_resolve(arg0, arg1).await) })))
+}
+
+fn backend_preview_editor_preferences(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let payload: Value = arg(command, args, "payload")?;
+    Ok(Dispatch::Ready(reply_value(crate::device_preferences::editor_preferences_view(payload.get("preferences").unwrap_or(&Value::Null)))))
 }
 
 fn markdown_ink_load(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

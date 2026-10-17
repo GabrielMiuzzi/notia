@@ -43,7 +43,8 @@ import {
   saveSelectedAgentPromptFileName,
   type AgentPromptOption,
 } from '../../../../services/ai/agentPromptRuntime'
-import type { ChatStarter, ChatWorkspaceViewProps, QueuedChatMessage } from './ChatWorkspaceViewTypes'
+import type { ChatWorkspaceViewProps, QueuedChatMessage } from './ChatWorkspaceViewTypes'
+import { DEFAULT_CHAT_STARTERS } from './chatStarters'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview } from '../../../../types/ai/agentContracts'
 import {
@@ -58,23 +59,6 @@ import type { AiOperationHistoryDiff } from './ChatThread'
 
 const EMPTY_PREVIOUS_CHATS: Array<{ id: string; title: string; filePath: string }> = []
 const EMPTY_CONTEXT_PATHS: string[] = []
-const DEFAULT_SUGGESTIONS: ChatStarter[] = [
-  {
-    title: 'Resumí estas notas',
-    description: 'Síntesis de las notas o carpetas que elijas como contexto.',
-    prompt: 'Resume estas notas',
-  },
-  {
-    title: 'Conectá ideas relacionadas',
-    description: 'Encontrá vínculos entre notas de la librería.',
-    prompt: 'Conecta ideas relacionadas',
-  },
-  {
-    title: 'Próximos pasos concretos',
-    description: 'Convertí pendientes en acciones claras.',
-    prompt: 'Dame proximos pasos concretos',
-  },
-]
 /** The context panel starts open only where it fits beside the conversation. */
 const CONTEXT_PANEL_DOCKED_QUERY = '(min-width: 1280px)'
 /** Width of the view below which the phone boards of the canvas apply. */
@@ -96,7 +80,7 @@ export function ChatWorkspaceViewComponent({
   library,
   aiPreferences,
   previousChats = EMPTY_PREVIOUS_CHATS,
-  suggestions = DEFAULT_SUGGESTIONS,
+  suggestions = DEFAULT_CHAT_STARTERS,
   showHistoryPanel = true,
   composerContext = null,
   onClosePanel,
@@ -1557,7 +1541,7 @@ function areChatWorkspaceViewPropsEqual(
     return false
   }
 
-  if ((previous.suggestions ?? DEFAULT_SUGGESTIONS) !== (next.suggestions ?? DEFAULT_SUGGESTIONS)) {
+  if ((previous.suggestions ?? DEFAULT_CHAT_STARTERS) !== (next.suggestions ?? DEFAULT_CHAT_STARTERS)) {
     return false
   }
 

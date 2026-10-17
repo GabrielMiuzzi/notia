@@ -13,7 +13,8 @@ interface MarkdownDocumentMenuProps {
   exportingFormat: MarkdownExportFormat | null
   onTogglePageMode: () => void
   onOpenPageSettings: () => void
-  onExport: (format: MarkdownExportFormat) => void
+  /** `undefined` where the export cannot reach the person (a published Task Manager). */
+  onExport?: (format: MarkdownExportFormat) => void
 }
 
 /** Options of the open note: page mode, its settings, the pen and the exports. */
@@ -85,6 +86,7 @@ export function MarkdownDocumentMenu({
             <span className="notia-document-menu-label"><Settings size={15} aria-hidden="true" />Configuración…</span>
             <kbd className="notia-document-menu-shortcut">Ctrl ,</kbd>
           </button>
+          {onExport ? <>
           <span className="notia-document-menu-divider" aria-hidden="true" />
           <button
             type="button"
@@ -99,6 +101,7 @@ export function MarkdownDocumentMenu({
           <button type="button" role="menuitem" className="notia-document-menu-item" disabled={isExporting} onClick={() => run(() => onExport('google-docs'))}>
             <span className="notia-document-menu-label"><Download size={15} aria-hidden="true" />{exportingFormat === 'google-docs' ? 'Exportando Word…' : 'Exportar como Word'}</span>
           </button>
+          </> : null}
         </div>
       ) : null}
     </div>

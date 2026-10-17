@@ -17,6 +17,7 @@ import type { MarkdownDocumentUpdate, MarkdownSelectionContext } from '../../typ
 import type { LibraryContext } from '../../services/contexts/libraryContexts'
 import type { NotiaLibrary } from '../../types/notia'
 import { useNotiaAction } from '../../context/notiaActions/useNotiaAction'
+import { backendSupports } from '../../services/transport'
 
 const DEFAULT_MARKDOWN_ZOOM = 1
 
@@ -46,6 +47,63 @@ function getSaveStatusLabel(status: NotiaDocumentSaveStatus): string {
   }
 
   return 'Guardado'
+}
+
+/** No note open: what to start with. The app window's actions, so only the app shows it. */
+function MainViewEmpty({ canStart }: { canStart: boolean }) {
+  const handleExplorerToolClick = useNotiaAction('explorerToolClick')
+  const handleHeaderActionClick = useNotiaAction('headerActionClick')
+  const handleRailActionClick = useNotiaAction('railActionClick')
+  return (
+    <main className="notia-main" data-notia-prevent-menu-close>
+      <div className="notia-main-empty">
+        <div className="notia-main-empty-mark" aria-hidden="true">
+          <FileText size={26} strokeWidth={1.5} />
+        </div>
+        <div className="notia-main-empty-copy">
+          <h2>No hay ninguna nota abierta</h2>
+          <p>Elegí un archivo del explorador o empezá uno nuevo.</p>
+        </div>
+        <div className="notia-main-empty-actions">
+          <button
+            type="button"
+            className="notia-main-empty-action"
+            disabled={!canStart}
+            onClick={() => handleExplorerToolClick('new-note')}
+          >
+            <span className="notia-main-empty-action-label">
+              <PencilLine size={15} strokeWidth={1.75} aria-hidden="true" />
+              Nueva nota
+            </span>
+            <kbd>Ctrl N</kbd>
+          </button>
+          <button
+            type="button"
+            className="notia-main-empty-action"
+            disabled={!canStart}
+            onClick={() => handleRailActionClick('chat')}
+          >
+            <span className="notia-main-empty-action-label">
+              <MessageSquare size={15} strokeWidth={1.75} aria-hidden="true" />
+              Nuevo chat
+            </span>
+          </button>
+          <button
+            type="button"
+            className="notia-main-empty-action"
+            disabled={!canStart}
+            onClick={() => handleHeaderActionClick('search')}
+          >
+            <span className="notia-main-empty-action-label">
+              <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+              Ir a archivo
+            </span>
+            <kbd>Ctrl O</kbd>
+          </button>
+        </div>
+      </div>
+    </main>
+  )
 }
 
 function MainViewComponent({
@@ -127,10 +185,6 @@ function MainViewComponent({
     }
   }, [dispatch, onTextDocumentChange])
 
-  const handleExplorerToolClick = useNotiaAction('explorerToolClick')
-  const handleHeaderActionClick = useNotiaAction('headerActionClick')
-  const handleRailActionClick = useNotiaAction('railActionClick')
-
   const handleExport = useCallback(async (format: MarkdownExportFormat) => {
     if (!activeDocument || !isTextFileDocument(activeDocument) || activeDocument.viewKind !== 'markdown') return
     setExportingFormat(format)
@@ -154,62 +208,15 @@ function MainViewComponent({
   }, [activeDocument, activeLibrary, dispatch])
 
   if (!activeDocument) {
-    return (
-      <main className="notia-main" data-notia-prevent-menu-close>
-        <div className="notia-main-empty">
-          <div className="notia-main-empty-mark" aria-hidden="true">
-            <FileText size={26} strokeWidth={1.5} />
-          </div>
-          <div className="notia-main-empty-copy">
-            <h2>No hay ninguna nota abierta</h2>
-            <p>Elegí un archivo del explorador o empezá uno nuevo.</p>
-          </div>
-          <div className="notia-main-empty-actions">
-            <button
-              type="button"
-              className="notia-main-empty-action"
-              disabled={!activeLibrary}
-              onClick={() => handleExplorerToolClick('new-note')}
-            >
-              <span className="notia-main-empty-action-label">
-                <PencilLine size={15} strokeWidth={1.75} aria-hidden="true" />
-                Nueva nota
-              </span>
-              <kbd>Ctrl N</kbd>
-            </button>
-            <button
-              type="button"
-              className="notia-main-empty-action"
-              disabled={!activeLibrary}
-              onClick={() => handleRailActionClick('chat')}
-            >
-              <span className="notia-main-empty-action-label">
-                <MessageSquare size={15} strokeWidth={1.75} aria-hidden="true" />
-                Nuevo chat
-              </span>
-            </button>
-            <button
-              type="button"
-              className="notia-main-empty-action"
-              disabled={!activeLibrary}
-              onClick={() => handleHeaderActionClick('search')}
-            >
-              <span className="notia-main-empty-action-label">
-                <Search size={15} strokeWidth={1.75} aria-hidden="true" />
-                Ir a archivo
-              </span>
-              <kbd>Ctrl O</kbd>
-            </button>
-          </div>
-        </div>
-      </main>
-    )
+    return <MainViewEmpty canStart={Boolean(activeLibrary)} />
   }
 
   const extensionLabel = activeDocument.extension ? `.${activeDocument.extension}` : 'sin extension'
   const isTextDocument = isTextFileDocument(activeDocument)
   const isMarkdownDocument = activeDocument.viewKind === 'markdown'
   const markdownZoomPercent = Math.round(markdownZoom * 100)
+  // The file is written next to the note: only the app can hand it over.
+  const canExport = backendSupports('backend_export_markdown_document')
 
   return (
     <main className="notia-main" data-notia-prevent-menu-close>
@@ -259,7 +266,7 @@ function MainViewComponent({
                 exportingFormat={exportingFormat}
                 onTogglePageMode={() => void togglePageMode()}
                 onOpenPageSettings={() => setSettingsTab('page')}
-                onExport={(format) => void handleExport(format)}
+                onExport={canExport ? (format) => void handleExport(format) : undefined}
               />
             </div>
           ) : null}

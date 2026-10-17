@@ -500,7 +500,7 @@
   flex-direction: column;
   overflow: hidden;
   content-visibility: auto;
-  contain-intrinsic-size: 520px;
+  contain-intrinsic-size: auto 520px;
 }
 
 .tareas-group-header {
@@ -644,7 +644,7 @@
   padding: 13px;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
   content-visibility: auto;
-  contain-intrinsic-size: 220px;
+  contain-intrinsic-size: auto 220px;
 }
 
 .tareas-task-card:hover {
@@ -655,9 +655,24 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  width: 100%;
   min-height: 48px;
   border-style: dashed;
   background: color-mix(in srgb, var(--background-primary) 80%, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tareas-task-card-add:hover {
+  background: var(--background-modifier-hover);
+}
+
+.tareas-task-card-add:focus-visible,
+.tareas-new-group:focus-visible,
+button.tareas-add-link:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .tareas-card-header-band {
@@ -1051,6 +1066,119 @@
   overflow-wrap: anywhere;
 }
 
+/* The preview is Markdown: a few lines, cut with a fade. */
+.tareas-card-preview-markdown {
+  display: block;
+  max-height: calc(11.5px * 1.5 * 6);
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+.tareas-card-preview-markdown .notia-chat-markdown {
+  color: inherit;
+  line-height: 1.5;
+  font-size: inherit;
+}
+
+.tareas-card-preview-markdown .notia-chat-markdown p,
+.tareas-card-preview-markdown .notia-chat-markdown ul,
+.tareas-card-preview-markdown .notia-chat-markdown ol,
+.tareas-card-preview-markdown .notia-chat-markdown blockquote,
+.tareas-card-preview-markdown .notia-chat-markdown pre,
+.tareas-card-preview-markdown .notia-chat-markdown h1,
+.tareas-card-preview-markdown .notia-chat-markdown h2,
+.tareas-card-preview-markdown .notia-chat-markdown h3,
+.tareas-card-preview-markdown .notia-chat-markdown h4,
+.tareas-card-preview-markdown .notia-chat-markdown h5,
+.tareas-card-preview-markdown .notia-chat-markdown h6 {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+
+.tareas-card-preview-markdown .notia-chat-markdown h1,
+.tareas-card-preview-markdown .notia-chat-markdown h2,
+.tareas-card-preview-markdown .notia-chat-markdown h3 {
+  color: var(--text-normal);
+  font-weight: 700;
+}
+
+.tareas-card-preview-markdown .notia-chat-markdown ul,
+.tareas-card-preview-markdown .notia-chat-markdown ol {
+  padding-left: 16px;
+}
+
+.tareas-card-preview-markdown .notia-chat-markdown li + li {
+  margin-top: 0;
+}
+
+/* Project and assigned people of a card. */
+.tareas-card-people {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tareas-card-project {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) var(--tareas-priority-wash), transparent);
+  color: var(--interactive-accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tareas-card-assignees {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.tareas-card-assignee {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px 1px 1px;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--tareas-tint);
+  color: var(--text-normal);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.tareas-card-assignee-initials {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--background-primary-alt);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.tareas-card-assignee-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tareas-card-preview-empty {
   font-style: italic;
   color: color-mix(in srgb, var(--text-muted) 70%, transparent);
@@ -1101,6 +1229,15 @@
   font-size: 11px;
   font-weight: 600;
   user-select: none;
+}
+
+button.tareas-add-link {
+  min-height: 32px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
 }
 
 .tareas-add-link:hover {
@@ -1340,8 +1477,22 @@
 }
 
 .tareas-new-group {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
   margin-top: 10px;
-  padding: 4px;
+  padding: 4px 8px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tareas-new-group:hover {
+  background: var(--background-modifier-hover);
 }
 
 .tareas-table-wrap {
@@ -2100,4 +2251,60 @@
 
 .notia-theme-light .tareas-group-header[data-group-color="#6fcf97"] {
   --tareas-group-color: #16a34a;
+}
+
+/* Search and filters over the tickets. */
+.tareas-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+
+.tareas-filter-search {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.tareas-filter-select {
+  flex: 1 1 140px;
+  max-width: 220px;
+  min-width: 120px;
+}
+
+.tareas-filter-count {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Notices of the board, top left, under the window bar. */
+.tareas-notice.MuiSnackbar-root {
+  top: calc(var(--titlebar-height, 0px) + 12px);
+}
+
+.tareas-notice .MuiAlert-filledSuccess {
+  border: 1px solid var(--interactive-accent);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: 0 12px 28px var(--color-menu-shadow);
+}
+
+.tareas-notice .MuiAlert-filledSuccess .MuiAlert-icon {
+  color: var(--interactive-accent);
+}
+
+/* The comment's Markdown editor: the editor scrolls itself; a comment has no properties. */
+.tareas-comment-editor {
+  display: flex;
+  flex-direction: column;
+  height: min(50vh, 420px);
+  min-height: 220px;
+  overflow: hidden;
+}
+
+.tareas-comment-editor .notia-markdown-properties-wrap {
+  display: none;
 }

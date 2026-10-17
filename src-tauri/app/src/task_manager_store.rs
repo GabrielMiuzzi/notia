@@ -92,6 +92,8 @@ struct RawTicket {
     context: Option<String>,
     related_documents: Vec<String>,
     related_tasks: Vec<String>,
+    project: Option<String>,
+    assignees: Vec<String>,
     comments: Vec<TaskCommentDto>,
 }
 
@@ -786,6 +788,10 @@ fn hydrate_snapshot(
                 .filter(|value| !value.trim().is_empty()),
             related_documents: frontmatter_references(&document.frontmatter, "relatedDocuments"),
             related_tasks: frontmatter_references(&document.frontmatter, "relatedTasks"),
+            project: field_string(&document.frontmatter, "proyecto")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            assignees: frontmatter_assignees(&document.frontmatter),
             comments,
             document: document.clone(),
         };
@@ -848,6 +854,8 @@ fn hydrate_snapshot(
             context: raw.context,
             related_documents: raw.related_documents,
             related_tasks: raw.related_tasks,
+            project: raw.project,
+            assignees: raw.assignees,
         });
         comments.extend(raw.comments);
     }
@@ -1733,6 +1741,14 @@ fn render_ticket(
     if let Some(context) = &ticket.context {
         set_string(&mut fields, "contexto", context);
     }
+    // Project and people: an empty value takes the property out of the note.
+    fields.retain(|key, _| !key.eq_ignore_ascii_case("proyecto") && !key.eq_ignore_ascii_case("asignados"));
+    if let Some(project) = &ticket.project {
+        set_string(&mut fields, "proyecto", project);
+    }
+    if !ticket.assignees.is_empty() {
+        set_array(&mut fields, "asignados", &ticket.assignees);
+    }
     set_string(
         &mut fields,
         "revision",
@@ -2498,6 +2514,18 @@ fn field_u64(fields: &BTreeMap<String, YamlValue>, key: &str) -> Option<u64> {
         })
         .map(|value| value as u64)
 }
+/// The people of a ticket: a list, or names written one after the other
+/// with commas.
+fn frontmatter_assignees(fields: &BTreeMap<String, YamlValue>) -> Vec<String> {
+    let names = field_strings(fields, "asignados")
+        .iter()
+        .flat_map(|value| value.split(',').map(str::to_string).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let mut kept = notia_backend_core::task_manager_tools::normalized_assignees(&names);
+    kept.truncate(notia_backend_core::task_manager_tools::MAX_TASK_ASSIGNEES);
+    kept
+}
+
 fn field_strings(fields: &BTreeMap<String, YamlValue>, key: &str) -> Vec<String> {
     fields
         .iter()
@@ -2841,6 +2869,8 @@ mod tests {
             context: Some("#Trabajo".into()),
             related_documents: vec!["notes/design.md".into()],
             related_tasks: vec!["ticket-other".into()],
+            project: Some("Remesas".into()),
+            assignees: vec!["Ana".into(), "Luis Pérez".into()],
         };
         let snapshot = TaskManagerLibrarySnapshotDto {
             library_id: "library".into(),
@@ -2908,6 +2938,17 @@ mod tests {
         assert_eq!(hydrated_ticket.context, ticket.context);
         assert_eq!(hydrated_ticket.related_documents, ticket.related_documents);
         assert_eq!(hydrated_ticket.related_tasks, ticket.related_tasks);
+        assert_eq!(hydrated_ticket.project.as_deref(), Some("Remesas"));
+        assert_eq!(hydrated_ticket.assignees, ticket.assignees);
+    }
+
+    #[test]
+    fn project_and_people_are_read_written_and_taken_out() {
+        let mut fields = BTreeMap::new();
+        set_string(&mut fields, "asignados", "Ana, Luis,  ana ");
+        assert_eq!(frontmatter_assignees(&fields), vec!["Ana".to_string(), "Luis".to_string()]);
+        set_array(&mut fields, "asignados", &["Eva".into(), "".into()]);
+        assert_eq!(frontmatter_assignees(&fields), vec!["Eva".to_string()]);
     }
 
     #[test]
@@ -2970,6 +3011,8 @@ mod tests {
             context: None,
             related_documents: vec![],
             related_tasks: vec![],
+            project: None,
+            assignees: Vec::new(),
         };
         let comment = |id: &str, minute: i64, body: &str| TaskCommentDto {
             library_id: "library".into(),
@@ -3102,6 +3145,8 @@ mod tests {
             context: None,
             related_documents: vec![],
             related_tasks: vec![],
+            project: None,
+            assignees: Vec::new(),
         }
     }
 
@@ -3170,6 +3215,8 @@ mod tests {
             context: None,
             related_documents: vec![],
             related_tasks: vec![],
+            project: None,
+            assignees: Vec::new(),
         };
         let comment = TaskCommentDto {
             library_id: "library".into(),

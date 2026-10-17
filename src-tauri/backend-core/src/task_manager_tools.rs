@@ -231,6 +231,12 @@ pub struct TaskTicketDto {
     pub related_documents: Vec<String>,
     #[serde(default)]
     pub related_tasks: Vec<String>,
+    /// Project the ticket belongs to (`proyecto`), to filter by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// People the ticket is assigned to (`asignados`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assignees: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,6 +405,11 @@ pub struct TaskUpdateFieldsDto {
     pub order: Option<f64>,
     #[serde(default)]
     pub context: Option<String>,
+    /// An empty project takes it out.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub assignees: Option<Vec<String>>,
     #[serde(default)]
     pub parent_ticket_id: Option<Option<String>>,
 }
@@ -449,6 +460,12 @@ impl TaskUpdateFieldsDto {
         if let Some(context) = &self.context {
             validate_context(context)?;
         }
+        if let Some(project) = &self.project {
+            validate_project(project)?;
+        }
+        if let Some(assignees) = &self.assignees {
+            validate_assignees(assignees)?;
+        }
         Ok(())
     }
 
@@ -469,6 +486,8 @@ impl TaskUpdateFieldsDto {
             && self.deviation_hours.is_none()
             && self.order.is_none()
             && self.context.is_none()
+            && self.project.is_none()
+            && self.assignees.is_none()
             && self.parent_ticket_id.is_none()
     }
 }
@@ -2527,7 +2546,7 @@ fn apply_mutation_to_library(
                     state: *state,
                     priority: *priority,
                     parent_ticket_id: parent_ticket_id.clone(),
-                    detail_preview: bounded_preview(content, 180),
+                    detail_preview: markdown_preview(content),
                     revision: 1,
                     logical_path: String::new(),
                 },
@@ -2545,6 +2564,8 @@ fn apply_mutation_to_library(
                 context: None,
                 related_documents: Vec::new(),
                 related_tasks: Vec::new(),
+                project: None,
+                assignees: Vec::new(),
             };
             if let Some(fields) = initial_fields {
                 apply_fields(&mut ticket, fields);
@@ -2560,7 +2581,7 @@ fn apply_mutation_to_library(
                 .get_mut(ticket_id)
                 .ok_or_else(|| not_found("El ticket no existe."))?;
             ticket.content = content.clone();
-            ticket.summary.detail_preview = bounded_preview(content, 180);
+            ticket.summary.detail_preview = markdown_preview(content);
             ticket.summary.revision = ticket.summary.revision.saturating_add(1);
             affected_ids.push(ticket_id.clone());
             entity_keys.push(EntityKey::new("ticket", ticket_id));
@@ -2654,7 +2675,7 @@ fn apply_mutation_to_library(
                     state: TaskState::Pending,
                     priority: *priority,
                     parent_ticket_id: Some(parent_ticket_id.clone()),
-                    detail_preview: bounded_preview(content, 180),
+                    detail_preview: markdown_preview(content),
                     revision: 1,
                     logical_path: String::new(),
                 },
@@ -2672,6 +2693,8 @@ fn apply_mutation_to_library(
                 context: None,
                 related_documents: Vec::new(),
                 related_tasks: Vec::new(),
+                project: None,
+                assignees: Vec::new(),
             };
             library.tickets.insert(ticket_id.clone(), ticket);
             affected_ids.push(ticket_id.clone());
@@ -2739,7 +2762,7 @@ fn apply_mutation_to_library(
                 .unwrap_or_else(|| format!("Copia de {}", source.summary.title));
             copy.summary.parent_ticket_id = source.summary.parent_ticket_id.clone();
             copy.summary.revision = 1;
-            copy.summary.detail_preview = bounded_preview(&copy.content, 180);
+            copy.summary.detail_preview = markdown_preview(&copy.content);
             library.tickets.insert(new_ticket_id.clone(), copy);
             affected_ids.push(new_ticket_id.clone());
             entity_keys.push(EntityKey::new("ticket", new_ticket_id));
@@ -2803,8 +2826,10 @@ pub fn ticket_detail_preview<'a>(
     let text = std::iter::once(content)
         .chain(comments.iter().map(|comment| comment.body.as_str()))
         .collect::<Vec<_>>()
-        .join(" ");
-    bounded_preview(&text, 180)
+        .join("
+
+");
+    markdown_preview(&text)
 }
 
 fn update_ticket<F>(
@@ -2834,7 +2859,7 @@ fn apply_fields(ticket: &mut TaskTicketDto, fields: &TaskUpdateFieldsDto) {
     }
     if let Some(content) = &fields.content {
         ticket.content = content.clone();
-        ticket.summary.detail_preview = bounded_preview(content, 180);
+        ticket.summary.detail_preview = markdown_preview(content);
     }
     if let Some(state) = fields.state {
         ticket.summary.state = state;
@@ -2877,6 +2902,12 @@ fn apply_fields(ticket: &mut TaskTicketDto, fields: &TaskUpdateFieldsDto) {
     }
     if let Some(context) = &fields.context {
         ticket.context = Some(context.clone());
+    }
+    if let Some(project) = &fields.project {
+        ticket.project = Some(project.trim().to_string()).filter(|project| !project.is_empty());
+    }
+    if let Some(assignees) = &fields.assignees {
+        ticket.assignees = normalized_assignees(assignees);
     }
     if let Some(parent_ticket_id) = &fields.parent_ticket_id {
         ticket.summary.parent_ticket_id = parent_ticket_id.clone();
@@ -3283,6 +3314,10 @@ fn validate_ticket(ticket: &TaskTicketDto) -> Result<(), BackendError> {
     if let Some(context) = &ticket.context {
         validate_context(context)?;
     }
+    if let Some(project) = &ticket.project {
+        validate_project(project)?;
+    }
+    validate_assignees(&ticket.assignees)?;
     validate_references("relatedDocuments", &ticket.related_documents)?;
     validate_references("relatedTasks", &ticket.related_tasks)
 }
@@ -3449,6 +3484,38 @@ fn task_page<T>(items: Vec<T>, offset: usize, requested_limit: usize) -> Bounded
         has_more: offset.saturating_add(limit).min(total) < total,
     }
 }
+/// Most lines and characters of a card's preview.
+const PREVIEW_MAX_LINES: usize = 6;
+const PREVIEW_MAX_CHARS: usize = 280;
+
+/// The beginning of a ticket's Markdown as the card shows it: its first
+/// lines, as written, so lists and emphasis still read as Markdown. A long
+/// line is cut with «…» and the preview ends before what does not fit.
+pub fn markdown_preview(value: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0;
+    for line in value.lines().map(str::trim_end).filter(|line| !line.trim().is_empty()) {
+        let left = PREVIEW_MAX_CHARS.saturating_sub(used);
+        if lines.len() == PREVIEW_MAX_LINES || left == 0 {
+            if let Some(last) = lines.last_mut() {
+                if !last.ends_with('…') {
+                    last.push('…');
+                }
+            }
+            break;
+        }
+        let count = line.chars().count();
+        if count > left {
+            lines.push(format!("{}…", line.chars().take(left.saturating_sub(1)).collect::<String>()));
+            break;
+        }
+        used += count;
+        lines.push(line.to_string());
+    }
+    lines.join("
+")
+}
+
 fn bounded_preview(value: &str, max_chars: usize) -> String {
     let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let chars = value.chars().collect::<Vec<_>>();
@@ -3744,6 +3811,41 @@ fn validate_context(value: &str) -> Result<(), BackendError> {
     }
     Ok(())
 }
+/// Longest project name and person's name of a ticket.
+const MAX_TASK_LABEL_CHARS: usize = 80;
+/// Most people assigned to one ticket.
+pub const MAX_TASK_ASSIGNEES: usize = 20;
+
+/// A project or a person's name: one short line.
+fn valid_label(value: &str) -> bool {
+    value.chars().count() <= MAX_TASK_LABEL_CHARS && !value.chars().any(char::is_control)
+}
+
+fn validate_project(value: &str) -> Result<(), BackendError> {
+    if !valid_label(value) {
+        return Err(invalid("El proyecto no es válido."));
+    }
+    Ok(())
+}
+
+fn validate_assignees(values: &[String]) -> Result<(), BackendError> {
+    if values.len() > MAX_TASK_ASSIGNEES || values.iter().any(|value| value.trim().is_empty() || !valid_label(value)) {
+        return Err(invalid("Las personas asignadas no son válidas."));
+    }
+    Ok(())
+}
+
+/// The people as kept: trimmed, without repeats (ignoring case), in order.
+pub fn normalized_assignees(values: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for value in values.iter().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if !kept.iter().any(|existing| existing.to_lowercase() == value.to_lowercase()) {
+            kept.push(value.to_string());
+        }
+    }
+    kept
+}
+
 fn invalid(message: impl Into<String>) -> BackendError {
     BackendError::invalid_input(message)
 }
@@ -3895,8 +3997,11 @@ mod tests {
             logical_path: String::new(),
         };
         let comments = [comment("b", 2, "segundo"), comment("a", 1, "primero")];
-        assert_eq!(ticket_detail_preview("", &comments), "primero segundo");
-        assert_eq!(ticket_detail_preview("Detalle", &comments[..1]), "Detalle segundo");
+        // Each comment on its own line, as Markdown.
+        assert_eq!(ticket_detail_preview("", &comments), "primero
+segundo");
+        assert_eq!(ticket_detail_preview("Detalle", &comments[..1]), "Detalle
+segundo");
     }
 
     #[derive(Default)]
@@ -4011,6 +4116,8 @@ mod tests {
             context: None,
             related_documents: vec![],
             related_tasks: vec![],
+            project: None,
+            assignees: Vec::new(),
         }
     }
 
@@ -4231,6 +4338,25 @@ mod tests {
             manager.seed_ticket(wrong_board).unwrap_err().code,
             BackendErrorCode::InvalidInput
         );
+    }
+
+    #[test]
+    fn the_card_preview_keeps_the_markdown_lines() {
+        assert_eq!(markdown_preview("Revisar **pagos**
+
+- uno
+- dos
+"), "Revisar **pagos**
+- uno
+- dos");
+        let many = (1..=9).map(|n| format!("- paso {n}")).collect::<Vec<_>>().join("
+");
+        let preview = markdown_preview(&many);
+        assert_eq!(preview.lines().count(), 6);
+        assert!(preview.ends_with('…'));
+        let long = markdown_preview(&"x".repeat(400));
+        assert_eq!(long.chars().count(), 280);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

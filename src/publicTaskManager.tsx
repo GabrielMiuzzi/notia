@@ -7,6 +7,8 @@ import { initializeTaskManagerPublicationClient } from './modules/task-manager/s
 import { createTaskManagerPublicationTransport } from './modules/task-manager/services/taskManagerPublicationTransport'
 import { installBackendTransport } from './services/transport'
 import { store } from './store/index'
+import { hydrateEditorPreferences } from './features/preferences/preferencesSlice'
+import type { EditorPreferencesView } from './services/preferences/devicePreferencesStorage'
 import './index.css'
 import './styles/notia.css'
 
@@ -33,6 +35,11 @@ async function bootstrap(): Promise<void> {
     ? 'task-manager'
     : 'task-mannager'
   window.localStorage.setItem('task-manager:settings:v1', JSON.stringify(bootstrapData.settings))
+  // The ticket editor opens on the host's sheet and pen; changes stay in this page.
+  const editorPreferences = bootstrapData.editorPreferences as EditorPreferencesView | undefined
+  if (editorPreferences?.editorPage && editorPreferences.editorPageSetup && editorPreferences.pen) {
+    store.dispatch(hydrateEditorPreferences(editorPreferences))
+  }
   initializeTaskManagerPublicationClient(publicationPath, {
     publicationEpoch: bootstrapData.publicationEpoch,
     revision: bootstrapData.revision,

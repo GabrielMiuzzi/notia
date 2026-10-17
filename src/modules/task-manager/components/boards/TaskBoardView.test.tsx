@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, createEvent, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, waitFor } from '@testing-library/react'
+import { ConfirmationEngineProvider } from '../../../../context/confirmation/ConfirmationEngine'
 import { TaskBoardView } from './TaskBoardView'
 import type { Group, TaskItem } from '../../types/taskManagerTypes'
 
@@ -33,17 +34,21 @@ function task(name: string, order: number, overrides: Partial<TaskItem> = {}): T
 
 type Placement = { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }
 
-function renderBoard(tasks: TaskItem[] = [], onPlaceTask = vi.fn<(placement: Placement) => Promise<void>>(async () => {})) {
+function renderBoard(
+  tasks: TaskItem[] = [],
+  onPlaceTask = vi.fn<(placement: Placement) => Promise<void>>(async () => {}),
+  onChangeTaskState = vi.fn<(task: TaskItem, nextState: string) => Promise<void>>(async () => {}),
+) {
   const onReorderGroups = vi.fn(async () => {})
   const noop = vi.fn(async () => {})
   const view = render(
+    <ConfirmationEngineProvider>
     <TaskBoardView
       boardName="Trabajo"
       tasks={tasks}
       groups={GROUPS}
       onCreateTask={vi.fn()}
-      onEditTask={vi.fn()}
-      onChangeTaskState={noop}
+      onChangeTaskState={onChangeTaskState}
       onChangeTaskPriority={noop}
       onChangeTaskDedicatedHours={noop}
       onToggleSubtaskDone={noop}
@@ -55,7 +60,8 @@ function renderBoard(tasks: TaskItem[] = [], onPlaceTask = vi.fn<(placement: Pla
       onOpenPomodoroTask={vi.fn()}
       onReorderGroups={onReorderGroups}
       onPlaceTask={onPlaceTask}
-    />,
+    />
+    </ConfirmationEngineProvider>,
   )
   const group = (name: string) => view.container.querySelector<HTMLElement>(`.tareas-group[data-group="${name}"]`)!
   const header = (name: string) => group(name).querySelector<HTMLElement>('.tareas-group-header')!
@@ -64,7 +70,7 @@ function renderBoard(tasks: TaskItem[] = [], onPlaceTask = vi.fn<(placement: Pla
     .from(group(groupName).querySelectorAll<HTMLElement>('.tareas-card-list > .tareas-task-drag-wrap'))
     .map((node) => node.dataset.taskPath?.replace('task-mannager/Trabajo/', '').replace('.md', ''))
   const board = view.container.querySelector<HTMLElement>('.tareas-board')!
-  return { onReorderGroups, onPlaceTask, group, header, card, cardOrder, board }
+  return { onReorderGroups, onPlaceTask, onChangeTaskState, group, header, card, cardOrder, board }
 }
 
 /** happy-dom drops `clientY` from drag event init, so it is set on the event. */
@@ -375,5 +381,52 @@ describe('TaskBoardView with fingers', () => {
     openMove('C')
     fireEvent.click(option('C', 'Sprint'))
     expect(onPlaceTask).toHaveBeenLastCalledWith({ taskPath: paths('C')[0], orderedPaths: paths('C'), group: 'Sprint', parentTaskName: '' })
+  })
+})
+
+describe('TaskBoardView cards', () => {
+  afterEach(cleanup)
+
+  const statusButton = (card: HTMLElement, label: string) => Array
+    .from(card.querySelectorAll<HTMLButtonElement>('.tareas-status-action-btn'))
+    .find((button) => button.textContent?.trim() === label)!
+  const confirmButton = (label: string) => Array
+    .from(document.querySelectorAll<HTMLButtonElement>('.notia-confirm-dialog-button'))
+    .find((button) => button.textContent?.trim() === label)
+
+  it('asks before finishing or dismissing a task, and not before starting it', async () => {
+    const { onChangeTaskState, card } = renderBoard([task('A', 1, { state: 'Pendiente' })])
+
+    fireEvent.click(statusButton(card('A'), 'Finalizar'))
+    await waitFor(() => expect(confirmButton('Finalizar')).toBeDefined())
+    expect(onChangeTaskState).not.toHaveBeenCalled()
+    fireEvent.click(confirmButton('Cancelar')!)
+    await waitFor(() => expect(confirmButton('Cancelar')).toBeUndefined())
+    expect(onChangeTaskState).not.toHaveBeenCalled()
+
+    fireEvent.click(statusButton(card('A'), 'Desestimar'))
+    await waitFor(() => expect(confirmButton('Desestimar')).toBeDefined())
+    fireEvent.click(confirmButton('Desestimar')!)
+    await waitFor(() => expect(onChangeTaskState).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'A' }), 'Cancelada'))
+
+    fireEvent.click(statusButton(card('A'), 'Iniciar'))
+    await waitFor(() => expect(onChangeTaskState).toHaveBeenLastCalledWith(expect.objectContaining({ fileName: 'A' }), 'En progreso'))
+  })
+
+  it('shows the project, the people and the detail as Markdown', () => {
+    const { card } = renderBoard([task('A', 1, { project: 'Remesas', assignees: ['Ana Pérez', 'Luis'], preview: 'Ver **esto**\n\n- uno' })])
+
+    expect(card('A').querySelector('.tareas-card-project')?.textContent).toBe('Remesas')
+    expect(Array.from(card('A').querySelectorAll('.tareas-card-assignee-name')).map((node) => node.textContent)).toEqual(['Ana Pérez', 'Luis'])
+    expect(card('A').querySelector('.tareas-card-assignee-initials')?.textContent).toBe('AP')
+    expect(card('A').querySelector('.tareas-card-preview strong')?.textContent).toBe('esto')
+    expect(card('A').querySelector('.tareas-card-preview li')?.textContent).toBe('uno')
+  })
+
+  it('creates a task from a real button', () => {
+    const { group } = renderBoard([])
+    const add = group('Backlog').querySelector<HTMLButtonElement>('button.tareas-task-card-add')
+    expect(add?.type).toBe('button')
+    expect(add?.textContent).toContain('Nueva tarea')
   })
 })

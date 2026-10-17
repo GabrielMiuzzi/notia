@@ -40,6 +40,8 @@ interface ChatPanelHeaderProps {
   /** Asks and deletes; resolves when it is done or declined. */
   onDeleteChat: (chat: ChatListItem) => Promise<void>
   onClose?: () => void
+  /** `false` in an ephemeral chat (a published Task Manager): no history. */
+  showHistory?: boolean
 }
 
 function AgentMenu({
@@ -343,6 +345,7 @@ export function ChatPanelHeader({
   onNewChat,
   onDeleteChat,
   onClose,
+  showHistory = true,
 }: ChatPanelHeaderProps) {
   const selected = agents.find((agent) => agent.fileName === selectedAgentFileName) ?? agents[0]
   return (
@@ -358,14 +361,16 @@ export function ChatPanelHeader({
         )}
         {chatTitle ? <span className="notia-chat-panel-chat-title" title={chatTitle}>· {chatTitle}</span> : null}
       </div>
-      <HistoryMenu
-        library={library}
-        selectedChatFilePath={selectedChatFilePath}
-        agentLookOf={agentLookOf}
-        onPickChat={onPickChat}
-        onNewChat={onNewChat}
-        onDeleteChat={onDeleteChat}
-      />
+      {showHistory ? (
+        <HistoryMenu
+          library={library}
+          selectedChatFilePath={selectedChatFilePath}
+          agentLookOf={agentLookOf}
+          onPickChat={onPickChat}
+          onNewChat={onNewChat}
+          onDeleteChat={onDeleteChat}
+        />
+      ) : null}
       <button type="button" className="notia-chat-panel-action" aria-label="Nuevo chat" title="Nuevo chat" onClick={onNewChat}>
         <MessageSquarePlus size={16} strokeWidth={1.75} aria-hidden="true" />
       </button>

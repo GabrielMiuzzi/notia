@@ -32,6 +32,8 @@ export interface MarkdownChangeBuffer<Doc> {
   /** Forgets what is pending. */
   cancel: () => void
   hasPending: () => boolean
+  /** Whether it has the document the editor started from. */
+  hasStart: () => boolean
 }
 
 export function createMarkdownChangeBuffer<Doc>({
@@ -85,7 +87,7 @@ export function createMarkdownChangeBuffer<Doc>({
     pending = null
   }
 
-  return { schedule, reset, flush, cancel, hasPending: () => pending !== null }
+  return { schedule, reset, flush, cancel, hasPending: () => pending !== null, hasStart: () => last !== null }
 }
 
 interface MarkdownChangeState {
@@ -108,7 +110,7 @@ export function isMarkdownChange(transaction: { docChanged: boolean; storedMarks
  * document (the note opened or replaced from outside) is the new starting
  * point and drops what was pending. Losing focus writes at once.
  */
-export function createMarkdownChangePlugin(buffer: Pick<MarkdownChangeBuffer<ProseNode>, 'schedule' | 'reset' | 'flush'>): Plugin {
+export function createMarkdownChangePlugin(buffer: Pick<MarkdownChangeBuffer<ProseNode>, 'schedule' | 'reset' | 'flush' | 'hasStart'>): Plugin {
   return new Plugin<MarkdownChangeState>({
     key: markdownChangeKey,
     state: {
@@ -118,8 +120,11 @@ export function createMarkdownChangePlugin(buffer: Pick<MarkdownChangeBuffer<Pro
     view: (view) => {
       // The view is made again when the state is replaced; a state that
       // kept its changes (the shared room reconfiguring it) keeps them pending.
+      // The first view always starts from its document: what Milkdown
+      // changed while opening the note is not the person's change, and
+      // without a start the person's first change would become it.
       const initial = markdownChangeKey.getState(view.state)
-      if (initial && !initial.changed) buffer.reset(initial.doc)
+      if (initial && (!initial.changed || !buffer.hasStart())) buffer.reset(initial.doc)
       return {
         update: (updatedView, previousState) => {
           const next = markdownChangeKey.getState(updatedView.state)

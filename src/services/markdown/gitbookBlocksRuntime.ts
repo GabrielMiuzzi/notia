@@ -1,4 +1,4 @@
-import { callBackend } from '../transport'
+import { backendSupports, callBackend } from '../transport'
 
 /*
  * What the GitBook blocks of a note resolve to in its library. Rust reads the
@@ -59,6 +59,10 @@ export function resolveGitbookBlocks(
   source: string,
   request: GitbookBlocksRequest,
 ): Promise<GitbookBlocksResponse> {
+  // A published Task Manager does not read the library around a ticket.
+  if (!backendSupports('markdown_blocks_resolve')) {
+    return Promise.resolve({ expressions: [], conditions: [], references: [], includes: [] })
+  }
   return callBackend<GitbookBlocksResponse>('markdown_blocks_resolve', {
     payload: { libraryId, path, source, ...request },
   })

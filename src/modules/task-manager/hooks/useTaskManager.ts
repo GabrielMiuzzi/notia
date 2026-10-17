@@ -34,10 +34,9 @@ import {
 } from '../services/taskManagerPublicationClient'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
 
+/** The dialog only creates: a task is edited in its Markdown, as a double click opens it. */
 interface TaskDialogState {
   open: boolean
-  mode: 'create' | 'edit'
-  task: TaskItem | null
 }
 
 interface BoardDialogState {
@@ -85,7 +84,6 @@ export interface UseTaskManagerResult {
   setActiveTab: (tab: string) => void
   reload: () => Promise<void>
   openTaskCreateDialog: (request?: TaskCreationRequest) => void
-  openTaskEditDialog: (task: TaskItem) => void
   closeTaskDialog: () => void
   submitTaskDialog: (formData: TaskFormData) => Promise<void>
   updateTaskState: (task: TaskItem, nextState: string) => Promise<void>
@@ -149,6 +147,17 @@ function isPublishedTaskManager(): boolean {
   return typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
 }
 
+/** What a change of state tells the person. */
+function stateNotice(state: string): string {
+  switch (state) {
+    case 'Finalizada': return 'Tarea finalizada'
+    case 'Cancelada': return 'Tarea desestimada'
+    case 'En progreso': return 'Tarea en progreso'
+    case 'Bloqueada': return 'Tarea bloqueada'
+    default: return 'Tarea pendiente'
+  }
+}
+
 function backendContextOf(libraryId?: string, libraryUserId?: string): TaskManagerBackendContext | null {
   const library = libraryId?.trim()
   const user = libraryUserId?.trim()
@@ -205,7 +214,7 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
   const [error, setError] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [publicationConflict, setPublicationConflict] = useState<TaskManagerConflictDetails | null>(null)
-  const [taskDialog, setTaskDialog] = useState<TaskDialogState>({ open: false, mode: 'create', task: null })
+  const [taskDialog, setTaskDialog] = useState<TaskDialogState>({ open: false })
   const [taskCreateDefaults, setTaskCreateDefaults] = useState<{ parentTaskName?: string; group?: string }>({})
   const [boardDialog, setBoardDialog] = useState<BoardDialogState>({ open: false, mode: 'create', board: null })
   const [groupDialog, setGroupDialog] = useState<GroupDialogState>({ open: false, mode: 'create', group: null })
@@ -332,7 +341,8 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
   }, [])
 
   /** Sends an intent and renders the backend's resulting view. */
-  const runIntent = useCallback(async (intent: TaskBoardIntent, failure: string): Promise<boolean> => {
+  /** Runs an intent; `success`, when given, is the notice the person sees once it is done. */
+  const runIntent = useCallback(async (intent: TaskBoardIntent, failure: string, success?: string): Promise<boolean> => {
     if (!context) {
       setError('El Task Manager necesita una biblioteca abierta.')
       return false
@@ -342,6 +352,7 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
       await executeTaskBoardIntent(context, intent)
       await reload()
       setPublicationConflict(null)
+      if (success) setInfoMessage(success)
       return true
     } catch (intentError) {
       reportFailure(intentError, failure)
@@ -364,62 +375,46 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     setTaskCreateDefaults(request?.kind === 'subtask'
       ? { parentTaskName: request.parentTaskName, group: request.group }
       : { group: request?.group })
-    setTaskDialog({ open: true, mode: 'create', task: null })
-  }, [])
-
-  const openTaskEditDialog = useCallback((task: TaskItem) => {
-    setTaskDialog({ open: true, mode: 'edit', task })
+    setTaskDialog({ open: true })
   }, [])
 
   const closeTaskDialog = useCallback(() => {
     setTaskCreateDefaults({})
-    setTaskDialog({ open: false, mode: 'create', task: null })
+    setTaskDialog({ open: false })
   }, [])
 
   const submitTaskDialog = useCallback(async (formData: TaskFormData) => {
-    const editedTask = taskDialog.mode === 'edit' ? taskDialog.task : null
-    if (taskDialog.mode === 'edit' && !editedTask) {
-      setError('No se encontró la tarea que se intenta editar.')
-      return
+    const intent: TaskBoardIntent = {
+      kind: 'create-task',
+      board: formData.board,
+      title: formData.title,
+      detail: formData.detail,
+      group: formData.group,
+      priority: formData.priority || null,
+      state: formData.state,
+      parentTaskName: formData.parentTaskName,
+      endDate: formData.endDate,
+      dynamicEndDate: formData.dynamicEndDate,
+      estimatedHours: formData.estimatedHours,
+      project: formData.project,
+      assignees: formData.assignees,
     }
-    const intent: TaskBoardIntent = editedTask
-      ? {
-        kind: 'edit-task',
-        taskPath: editedTask.filePath,
-        title: formData.title,
-        detail: formData.detail,
-        state: formData.state,
-        priority: formData.priority || null,
-        group: formData.group,
-        endDate: formData.endDate,
-        dynamicEndDate: formData.dynamicEndDate,
-        estimatedHours: formData.estimatedHours,
-        parentTaskName: formData.parentTaskName,
-      }
-      : {
-        kind: 'create-task',
-        board: formData.board,
-        title: formData.title,
-        detail: formData.detail,
-        group: formData.group,
-        priority: formData.priority || null,
-        state: formData.state,
-        parentTaskName: formData.parentTaskName,
-        endDate: formData.endDate,
-        dynamicEndDate: formData.dynamicEndDate,
-        estimatedHours: formData.estimatedHours,
-      }
-    if (await runIntent(intent, 'No se pudo guardar la tarea')) {
+    const notice = formData.parentTaskName.trim() ? 'Subtarea creada' : 'Tarea creada'
+    if (await runIntent(intent, 'No se pudo guardar la tarea', notice)) {
       closeTaskDialog()
     }
-  }, [closeTaskDialog, runIntent, taskDialog.mode, taskDialog.task])
+  }, [closeTaskDialog, runIntent])
 
   const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
-    await runIntent({ kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState }, 'No se pudo cambiar el estado de la tarea')
+    await runIntent(
+      { kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState },
+      'No se pudo cambiar el estado de la tarea',
+      stateNotice(nextState),
+    )
   }, [runIntent])
 
   const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
-    await runIntent({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, 'No se pudo cambiar la prioridad de la tarea')
+    await runIntent({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, 'No se pudo cambiar la prioridad de la tarea', `Prioridad: ${nextPriority}`)
   }, [runIntent])
 
   const updateTaskDedicatedHours = useCallback(async (task: TaskItem, nextDedicatedHours: number) => {
@@ -431,15 +426,19 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
   }, [runIntent])
 
   const deleteTaskItem = useCallback(async (task: TaskItem) => {
-    await runIntent({ kind: 'delete-task', taskPath: task.filePath }, 'No se pudo eliminar la tarea')
+    await runIntent({ kind: 'delete-task', taskPath: task.filePath }, 'No se pudo eliminar la tarea', 'Tarea eliminada')
   }, [runIntent])
 
   const toggleSubtaskDone = useCallback(async (task: TaskItem, done: boolean) => {
-    await runIntent({ kind: 'change-state', taskPath: task.filePath, state: done ? 'Finalizada' : 'Pendiente' }, 'No se pudo actualizar la subtarea')
+    await runIntent(
+      { kind: 'change-state', taskPath: task.filePath, state: done ? 'Finalizada' : 'Pendiente' },
+      'No se pudo actualizar la subtarea',
+      done ? 'Subtarea finalizada' : 'Subtarea pendiente',
+    )
   }, [runIntent])
 
   const addTaskComment = useCallback(async (task: TaskItem, comment: string) => {
-    await runIntent({ kind: 'add-comment', taskPath: task.filePath, comment }, 'No se pudo agregar el comentario')
+    await runIntent({ kind: 'add-comment', taskPath: task.filePath, comment }, 'No se pudo agregar el comentario', 'Comentario agregado')
   }, [runIntent])
 
   const loadTaskSource = useCallback(async (taskPath: string): Promise<string> => {
@@ -546,7 +545,10 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
   }, [runIntent])
 
   const placeTask = useCallback(async (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => {
-    await runIntent({ kind: 'place-task', ...placement }, 'No se pudo reordenar la tarea')
+    // Changing group is news; reordering inside it is not.
+    const before = snapshotRef.current.tasks.find((task) => task.filePath === placement.taskPath)
+    const moved = before && before.group !== placement.group
+    await runIntent({ kind: 'place-task', ...placement }, 'No se pudo reordenar la tarea', moved ? `Tarea movida a «${placement.group || 'Sin grupo'}»` : undefined)
   }, [runIntent])
 
   // --- Pomodoro -----------------------------------------------------------
@@ -667,7 +669,6 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     setActiveTab,
     reload,
     openTaskCreateDialog,
-    openTaskEditDialog,
     closeTaskDialog,
     submitTaskDialog,
     updateTaskState,

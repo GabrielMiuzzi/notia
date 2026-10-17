@@ -5,6 +5,7 @@ import type { InkPoint, InkStroke, InkStrokeDraft, InkTool } from '../../../../.
 import type { FlowBreak } from '../paginationPlugin'
 import { createStrokesOnPages, estimatedBreaks, isPageStroke, pageToFlow, strokeInFlow } from './inkFlow'
 import { INK_COLOR_TOKENS, inkShape, widthAt } from './inkPaths'
+import { backendSupports } from '../../../../../services/transport'
 
 /*
  * The canvas over the note: an SVG as large as the sheet (only the pages, in
@@ -546,7 +547,8 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
           style={{ left: selectionBox.right, top: selectionBox.top }}
         >
           <span>{selected.length === 1 ? '1 trazo' : `${selected.length} trazos`}</span>
-          <button
+          {/* A published Task Manager does not read handwriting with its host's AI. */}
+          {backendSupports('markdown_ink_convert') ? <button
             type="button"
             className="notia-ink-convert"
             disabled={converting}
@@ -557,7 +559,7 @@ function InkLayerInner({ strokes, tool, pen, sheet, breaks, scrollContainerRef, 
           >
             <Sparkles size={15} strokeWidth={1.75} aria-hidden="true" />
             {converting ? <span>Convirtiendo…</span> : null}
-          </button>
+          </button> : null}
           <button
             type="button"
             disabled={converting}

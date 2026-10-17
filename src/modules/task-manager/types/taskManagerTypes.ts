@@ -66,6 +66,10 @@ export interface TaskItem {
   contexto?: string
   relatedDocuments?: string[]
   relatedTasks?: string[]
+  /** Project the ticket belongs to (Remesas, Corresponsalías…). */
+  project?: string
+  /** People the ticket is assigned to. */
+  assignees?: string[]
 }
 
 export interface TaskFormData {
@@ -80,6 +84,8 @@ export interface TaskFormData {
   estimatedHours: number
   parentTaskName: string
   contexto?: string
+  project: string
+  assignees: string[]
 }
 
 export type TaskCreationRequest =

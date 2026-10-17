@@ -7,7 +7,7 @@ import {
   setEditorPreferencesError,
   setPenPreferences,
 } from '../../../features/preferences/preferencesSlice'
-import { saveDevicePreferences } from '../../../services/preferences/devicePreferencesStorage'
+import { saveEditorPreferences } from '../../../services/preferences/devicePreferencesStorage'
 import type { EditorPagePreferences, PenPreferences } from '../../../services/preferences/editorPreferences'
 
 const SAVE_ERROR = 'No se pudo guardar la configuración. Se restauró el valor anterior.'
@@ -29,13 +29,13 @@ export function useEditorPreferences() {
   const error = useAppSelector((state) => state.preferences.editorPreferencesError)
 
   const updatePage = useCallback((patch: Partial<EditorPagePreferences>) => {
-    const previous = store.getState().preferences.editorPage
-    if (!previous) return
+    const { editorPage: previous, pen: currentPen } = store.getState().preferences
+    if (!previous || !currentPen) return
     const next = { ...previous, ...patch }
     dispatch(setEditorPagePreferences(next))
     saveQueue = saveQueue
       .catch(() => undefined)
-      .then(() => saveDevicePreferences({ editorPage: next }))
+      .then(() => saveEditorPreferences({ editorPage: next }, { editorPage: previous, pen: currentPen }))
       .then((saved) => dispatch(hydrateEditorPreferences(saved)))
       .catch(() => {
         dispatch(setEditorPagePreferences(previous))
@@ -44,13 +44,13 @@ export function useEditorPreferences() {
   }, [dispatch, store])
 
   const updatePen = useCallback((patch: Partial<PenPreferences>) => {
-    const previous = store.getState().preferences.pen
-    if (!previous) return
+    const { pen: previous, editorPage: currentPage } = store.getState().preferences
+    if (!previous || !currentPage) return
     const next = { ...previous, ...patch }
     dispatch(setPenPreferences(next))
     saveQueue = saveQueue
       .catch(() => undefined)
-      .then(() => saveDevicePreferences({ pen: next }))
+      .then(() => saveEditorPreferences({ pen: next }, { editorPage: currentPage, pen: previous }))
       .then((saved) => dispatch(hydrateEditorPreferences(saved)))
       .catch(() => {
         dispatch(setPenPreferences(previous))

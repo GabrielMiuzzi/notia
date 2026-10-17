@@ -14,7 +14,8 @@
 //! way is saved with a note, so the next message keeps its context.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
@@ -45,6 +46,13 @@ pub(crate) const TITLE_EVENT: &str = "ai-chat-title";
 pub(crate) const AGENT_EVENT: &str = "ai-chat-agent";
 /// How long a question waits for the person before the turn is cancelled.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How often a published turn passes the runtime's new events on.
+const RELAY_INTERVAL: Duration = Duration::from_millis(120);
+
+/// Where the events of a turn go when it is not the window's: the published
+/// Task Manager page that asked. It takes the event's name, as the window
+/// would receive it, and its payload; it returns whether it was delivered.
+pub(crate) type TurnForward = Arc<dyn Fn(&str, serde_json::Value) -> bool + Send + Sync>;
 /// Changed operations of this session that the interface may undo.
 const MAX_UNDOABLE_OPERATIONS: usize = 50;
 
@@ -68,6 +76,59 @@ struct ActiveTurn {
     /// Questions the agent asked and the person's answers, not yet placed
     /// among the turn's replies.
     exchanges: Vec<StoredChatMessage>,
+    /// A published turn: its questions and messages go to the page.
+    forward: Option<TurnForward>,
+}
+
+/// Sends a turn's event to the page that asked, or to the window.
+fn deliver<T: Serialize + Clone>(app: &AppHandle, forward: Option<&TurnForward>, event: &str, payload: T) -> bool {
+    match forward {
+        Some(forward) => serde_json::to_value(payload).map(|value| forward(event, value)).unwrap_or(false),
+        None => app.emit(event, payload).is_ok(),
+    }
+}
+
+/// Passes the runtime events of a published turn to its page while it runs;
+/// dropping it sends what is left and stops.
+struct EventRelay {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EventRelay {
+    fn start(runtime: BackendRuntimeState, context: crate::backend::BackendRequestContext, forward: TurnForward) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("notia-published-chat-events".into())
+            .spawn(move || {
+                let mut after = 0;
+                loop {
+                    let last_pass = stopping.load(Ordering::SeqCst);
+                    for envelope in runtime.request_events(&context, after).unwrap_or_default() {
+                        after = after.max(envelope.sequence);
+                        if let Ok(value) = serde_json::to_value(&envelope) {
+                            forward(crate::backend_tauri::BACKEND_EVENT, value);
+                        }
+                    }
+                    if last_pass {
+                        break;
+                    }
+                    std::thread::sleep(RELAY_INTERVAL);
+                }
+            })
+            .ok();
+        Self { stop, thread }
+    }
+}
+
+impl Drop for EventRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -351,16 +412,17 @@ fn ask(
     operation: &OperationToken,
 ) -> Option<ResumeDecision> {
     let (sender, receiver) = mpsc::channel();
-    {
+    let forward = {
         let mut turns = state.turns.lock().ok()?;
         let turn = turns.get_mut(request_id)?;
         if turn.cancelled {
             return None;
         }
         turn.answer = Some(sender);
-    }
+        turn.forward.clone()
+    };
     let event = InteractionEvent { request_id: request_id.to_string(), interaction: interaction_dto(interaction) };
-    let answer = if app.emit(INTERACTION_EVENT, event).is_ok() { receiver.recv_timeout(ANSWER_TIMEOUT).ok() } else { None };
+    let answer = if deliver(app, forward.as_ref(), INTERACTION_EVENT, event) { receiver.recv_timeout(ANSWER_TIMEOUT).ok() } else { None };
     if let Ok(mut turns) = state.turns.lock() {
         if let Some(turn) = turns.get_mut(request_id) {
             turn.answer = None;
@@ -416,16 +478,16 @@ fn plan_answer(accepted: bool, suggestion: Option<&str>) -> String {
 /// shows them at once and the turn saves them before the agent's reply, so
 /// they neither vanish from the screen nor from the chat's history.
 fn record_exchange(app: &AppHandle, state: &AiChatState, request_id: &str, question: &str, answer: &str) {
-    let (run_request_id, messages) = {
+    let (run_request_id, messages, forward) = {
         let Ok(mut turns) = state.turns.lock() else { return };
         let Some(turn) = turns.get_mut(request_id) else { return };
         let messages = exchange_messages(question, answer, turn.speaker.clone());
         turn.exchanges.extend(messages.iter().cloned());
-        (turn.identity.context.request_id.clone(), messages)
+        (turn.identity.context.request_id.clone(), messages, turn.forward.clone())
     };
     for message in messages {
         let phase = AgentPhase::Message { run_request_id: run_request_id.clone(), message };
-        let _ = app.emit(AGENT_EVENT, AgentEvent { request_id: request_id.to_string(), phase });
+        deliver(app, forward.as_ref(), AGENT_EVENT, AgentEvent { request_id: request_id.to_string(), phase });
     }
 }
 
@@ -983,6 +1045,74 @@ fn prompt_agent(prompt_name: Option<&str>) -> Option<String> {
 type TurnReplies = (Vec<StoredChatMessage>, bool, Option<BackendError>);
 
 fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, BackendError> {
+    send_with(app, payload, None)
+}
+
+/// A question of a published Task Manager: what its guest wrote and the
+/// conversation so far, which only the page keeps.
+// The publication server, which asks for these turns, runs on Windows.
+#[cfg(target_os = "windows")]
+pub(crate) struct PublishedTurn {
+    pub library_id: String,
+    pub library_user_id: String,
+    pub request_id: String,
+    pub message: String,
+    pub messages: Vec<StoredChatMessage>,
+    pub attachments: Vec<StoredChatAttachment>,
+}
+
+/// Runs a published turn: the Task Manager agent without memory, over the
+/// published boards, as the session's library user. Its events, questions
+/// and messages go to `forward`; nothing is saved.
+// The publication server, which asks for these turns, runs on Windows.
+#[cfg(target_os = "windows")]
+pub(crate) fn run_published_turn(app: &AppHandle, turn: PublishedTurn, forward: TurnForward) -> Result<ChatTurnOutcome, BackendError> {
+    let payload = ChatSendPayload {
+        library_id: turn.library_id,
+        request_id: turn.request_id,
+        mode: TurnMode::Published,
+        settings: None,
+        scope: "task-manager".to_string(),
+        message: turn.message,
+        context: None,
+        attachments: turn.attachments,
+        prompt_name: None,
+        undo_operation_id: None,
+        workspace: None,
+        selection: ContextSelection::default(),
+        library_user_id: Some(turn.library_user_id),
+        chat: ChatTarget::Transient { messages: turn.messages },
+    };
+    send_with(app, payload, Some(forward))
+}
+
+/// The library user a published turn runs for, while it runs.
+// The publication server, which asks for these turns, runs on Windows.
+#[cfg(target_os = "windows")]
+pub(crate) fn published_turn_user(app: &AppHandle, request_id: &str) -> Option<String> {
+    let state = app.state::<AiChatState>();
+    let turns = state.turns.lock().ok()?;
+    turns
+        .get(request_id)
+        .filter(|turn| turn.forward.is_some())
+        .map(|turn| turn.identity.context.actor.library_user_id.clone())
+}
+
+/// Answers the question a published turn waits on.
+// The publication server, which asks for these turns, runs on Windows.
+#[cfg(target_os = "windows")]
+pub(crate) fn answer_published_turn(app: &AppHandle, request_id: &str, answer: InteractionAnswer) -> Result<(), BackendError> {
+    answer_turn(&app.state::<AiChatState>(), request_id, answer)
+}
+
+/// Cancels a published turn: the question it waits on, or the running agent.
+// The publication server, which asks for these turns, runs on Windows.
+#[cfg(target_os = "windows")]
+pub(crate) fn cancel_published_turn(app: &AppHandle, request_id: &str) -> Result<(), BackendError> {
+    cancel_turn(app, request_id, false)
+}
+
+fn send_with(app: &AppHandle, payload: ChatSendPayload, forward: Option<TurnForward>) -> Result<ChatTurnOutcome, BackendError> {
     // The message as the person wrote it (it may be empty when they sent
     // only files) and the request the agent reads.
     let message = payload.message.trim().to_string();
@@ -1048,9 +1178,12 @@ fn send(app: &AppHandle, payload: ChatSendPayload) -> Result<ChatTurnOutcome, Ba
                 stopped_by_message: false,
                 speaker: prompt_agent(payload.prompt_name.as_deref()),
                 exchanges: Vec::new(),
+                forward: forward.clone(),
             },
         );
     }
+    // A published page follows the runtime's events of its turn.
+    let _relay = forward.map(|forward| EventRelay::start(runtime.clone(), identity.context.clone(), forward));
     // Agents speak in the chats of the app, not in Meeting or published boards.
     let agents = match (&chat, payload.mode) {
         (Some(document), TurnMode::Chat) if payload.undo_operation_id.is_none() => {
@@ -1183,15 +1316,19 @@ pub(crate) async fn ai_chat_send(app: AppHandle, payload: ChatSendPayload) -> Re
 
 /// The person's answer to the question the turn is waiting on.
 pub(crate) fn ai_chat_answer(state: crate::host::State<'_, AiChatState>, payload: ChatAnswerPayload) -> Result<(), BackendError> {
+    answer_turn(&state, &payload.request_id, payload.answer)
+}
+
+fn answer_turn(state: &AiChatState, request_id: &str, answer: InteractionAnswer) -> Result<(), BackendError> {
     let sender = state
         .turns
         .lock()
         .map_err(|_| internal("No se pudo responder la consulta."))?
-        .get_mut(&payload.request_id)
+        .get_mut(request_id)
         .and_then(|turn| turn.answer.take())
         .ok_or_else(|| BackendError::new(BackendErrorCode::Conflict, "La consulta ya no espera una respuesta.", false))?;
     sender
-        .send(payload.answer)
+        .send(answer)
         .map_err(|_| BackendError::new(BackendErrorCode::Conflict, "La consulta ya no espera una respuesta.", false))
 }
 

@@ -3,6 +3,7 @@ import {
   invokePublishedTaskManagerMutation,
   isTaskManagerPublicationMutationCommand,
 } from './taskManagerPublicationClient'
+import { createPublishedChatChannel, PUBLISHED_CHAT_COMMANDS } from './publishedChatChannel'
 
 export interface TaskManagerPublicationTransport extends BackendTransport {
   /** The reads the publication allows, as its bootstrap lists them. */
@@ -12,9 +13,10 @@ export interface TaskManagerPublicationTransport extends BackendTransport {
 /**
  * Backend of a published Task Manager page. Reads go to `<path>/invoke`;
  * mutations travel through the collaborative WebSocket of the publication
- * client, which also delivers the changes (so backend events are not used
- * here). The publication server authorizes every command by itself;
- * `supports` only tells the interface which reads it may skip.
+ * client, which also delivers the changes. The chat's commands and events
+ * go through the publication's chat endpoints (`publishedChatChannel`).
+ * The publication server authorizes every command by itself; `supports`
+ * only tells the interface which reads it may skip.
  */
 export function createTaskManagerPublicationTransport(
   publicationPath: string,
@@ -24,6 +26,7 @@ export function createTaskManagerPublicationTransport(
   let sessionInvalid = false
   let rateLimitedUntil = 0
   let allowedCommands = new Set<string>()
+  const chat = createPublishedChatChannel(publicationPath, fetchImpl)
 
   return {
     kind: 'published',
@@ -32,6 +35,7 @@ export function createTaskManagerPublicationTransport(
       if (isTaskManagerPublicationMutationCommand(command)) {
         return invokePublishedTaskManagerMutation(command, args) as Promise<T>
       }
+      if (PUBLISHED_CHAT_COMMANDS.has(command)) return chat.call<T>(command, args)
       if (sessionInvalid) {
         throw new Error('La sesión publicada venció. Volvé a iniciar sesión.')
       }
@@ -60,9 +64,9 @@ export function createTaskManagerPublicationTransport(
       }
       return (body as { result: T }).result
     },
-    subscribe: (): Promise<Unsubscribe> => Promise.resolve(() => undefined),
+    subscribe: <T,>(event: string, handler: (payload: T) => void): Promise<Unsubscribe> => Promise.resolve(chat.subscribe(event, handler)),
     fileUrl: (path: string) => path,
-    supports: (command: string) => isTaskManagerPublicationMutationCommand(command) || allowedCommands.has(command),
+    supports: (command: string) => isTaskManagerPublicationMutationCommand(command) || PUBLISHED_CHAT_COMMANDS.has(command) || allowedCommands.has(command),
     allowCommands: (commands) => {
       allowedCommands = new Set(commands)
     },

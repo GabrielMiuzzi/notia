@@ -1,11 +1,12 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { TextField } from '@mui/material'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
 import { TASK_PRIORITIES, TASK_STATES } from '../../constants/taskManagerConstants'
 import type { Group, TaskCreationRequest, TaskItem, TaskPriority, TaskState } from '../../types/taskManagerTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { TaskManagerModal } from '../common/TaskManagerModal'
 import { TaskSourceDialog, type TaskSourceDialogState } from '../dialogs/TaskSourceDialog'
+import { TaskCommentDialog } from '../dialogs/TaskCommentDialog'
+import { useConfirmationEngine } from '../../../../context/confirmation/useConfirmationEngine'
+import { ChatMarkdownMessage } from '../../../../components/notia/views/chat/ChatMarkdownMessage'
 import type { LibraryContext } from '../../../../services/contexts/libraryContexts'
 import { useSubmenuEngine } from '../../../../hooks/useSubmenuEngine'
 
@@ -14,7 +15,6 @@ interface TaskBoardViewProps {
   tasks: TaskItem[]
   groups: Group[]
   onCreateTask: (request?: TaskCreationRequest) => void
-  onEditTask: (task: TaskItem) => void
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
   onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
   onChangeTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
@@ -89,10 +89,15 @@ interface TouchDragState {
   active: boolean
 }
 
-interface TaskCommentDialogState {
-  task: TaskItem
-  text: string
+/** Where a card was on the screen before an action, to keep it there after the board reloads. */
+interface CardAnchor {
+  taskPath: string
+  top: number
+  scrollTop: number
 }
+
+/** How long the board keeps a card in place after its action: the reload arrives in a transition. */
+const CARD_ANCHOR_HOLD_MS = 1500
 
 interface BoardTaskDerivations {
   boardTasks: TaskItem[]
@@ -107,7 +112,6 @@ export function TaskBoardView({
   tasks,
   groups,
   onCreateTask,
-  onEditTask,
   onChangeTaskState,
   onChangeTaskPriority,
   onChangeTaskDedicatedHours,
@@ -128,7 +132,12 @@ export function TaskBoardView({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(groups.map((group) => getGroupKey(group))))
   const previousGroupKeysRef = useRef<Set<string>>(new Set(groups.map((group) => getGroupKey(group))))
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<string>>(() => new Set())
-  const [commentDialog, setCommentDialog] = useState<TaskCommentDialogState | null>(null)
+  const [commentTask, setCommentTask] = useState<TaskItem | null>(null)
+  const { confirm } = useConfirmationEngine()
+  const cardAnchorRef = useRef<CardAnchor | null>(null)
+  const cardAnchorTimerRef = useRef<number | null>(null)
+  /** A mouse drag (the browser's own) of a task, a subtask or a group is under way. */
+  const nativeDragRef = useRef(false)
   const [sourceDialog, setSourceDialog] = useState<TaskSourceDialogState | null>(null)
   const [draggedGroupName, setDraggedGroupName] = useState<string | null>(null)
   const [draggedTaskPath, setDraggedTaskPath] = useState<string | null>(null)
@@ -176,6 +185,7 @@ export function TaskBoardView({
 
   const startTopLevelTaskDrag = useCallback((taskPath: string) => {
     draggedTaskPathRef.current = taskPath
+    nativeDragRef.current = true
     setDraggedTaskPath(taskPath)
   }, [])
 
@@ -327,8 +337,64 @@ export function TaskBoardView({
   }, [])
 
   const openCommentDialog = useCallback((task: TaskItem) => {
-    setCommentDialog({ task, text: '' })
+    setCommentTask(task)
   }, [])
+
+  /**
+   * Runs an action of a card keeping that card where it is on the screen:
+   * the board reloads and lists may grow or shrink above it, but the view
+   * does not move. Without the card (it left the board) the scroll stays.
+   */
+  const keepCardInPlace = useCallback(async (taskPath: string, action: () => Promise<void>) => {
+    const container = scrollParent(boardRef.current)
+    const card = boardRef.current?.querySelector(`[data-task-path="${CSS.escape(taskPath)}"]`)
+    cardAnchorRef.current = { taskPath, top: card?.getBoundingClientRect().top ?? 0, scrollTop: container.scrollTop }
+    if (cardAnchorTimerRef.current !== null) window.clearTimeout(cardAnchorTimerRef.current)
+    try {
+      await action()
+    } finally {
+      cardAnchorTimerRef.current = window.setTimeout(() => {
+        cardAnchorRef.current = null
+        cardAnchorTimerRef.current = null
+      }, CARD_ANCHOR_HOLD_MS)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    const anchor = cardAnchorRef.current
+    if (!anchor) return
+    const container = scrollParent(boardRef.current)
+    const card = boardRef.current?.querySelector(`[data-task-path="${CSS.escape(anchor.taskPath)}"]`)
+    if (card) container.scrollTop += card.getBoundingClientRect().top - anchor.top
+    else container.scrollTop = anchor.scrollTop
+  }, [tasks, groups])
+
+  useEffect(() => () => {
+    if (cardAnchorTimerRef.current !== null) window.clearTimeout(cardAnchorTimerRef.current)
+  }, [])
+
+  /** Finishing or dismissing a task takes it off the board: it is asked first. */
+  const changeTaskState = useCallback(async (task: TaskItem, nextState: string) => {
+    const leaving = nextState === 'Finalizada'
+      ? { title: 'Finalizar tarea', message: `¿Finalizar «${task.title}»? Pasa a Completadas.`, confirmLabel: 'Finalizar', tone: 'default' as const }
+      : nextState === 'Cancelada'
+        ? { title: 'Desestimar tarea', message: `¿Desestimar «${task.title}»? Pasa a Canceladas.`, confirmLabel: 'Desestimar', tone: 'danger' as const }
+        : null
+    if (leaving && !(await confirm({ ...leaving, cancelLabel: 'Cancelar' }))) return
+    await keepCardInPlace(task.filePath, () => onChangeTaskState(task, nextState))
+  }, [confirm, keepCardInPlace, onChangeTaskState])
+
+  const changeTaskPriority = useCallback((task: TaskItem, priority: TaskPriority) => (
+    keepCardInPlace(task.filePath, () => onChangeTaskPriority(task, priority))
+  ), [keepCardInPlace, onChangeTaskPriority])
+
+  const changeTaskDedicatedHours = useCallback((task: TaskItem, hours: number) => (
+    keepCardInPlace(task.filePath, () => onChangeTaskDedicatedHours(task, hours))
+  ), [keepCardInPlace, onChangeTaskDedicatedHours])
+
+  const toggleSubtaskDone = useCallback((task: TaskItem, done: boolean) => (
+    keepCardInPlace(task.filePath, () => onToggleSubtaskDone(task, done))
+  ), [keepCardInPlace, onToggleSubtaskDone])
 
   const handleSubtaskDragOverTarget = useCallback((parentTaskPath: string, targetIndex: number) => {
     const current = subtaskDropTargetRef.current
@@ -440,6 +506,10 @@ export function TaskBoardView({
   }, [boardTasks, draggedSubtaskPath, parentTaskBySubtaskPath, placeTask, subtasksByParentPath])
 
   /** The card's «Mover» menu: one place up or down, or to the end of another group. */
+  /**
+   * Moves keep the view: up or down the card stays under the finger; to
+   * another group the card leaves and the scroll stays where it was.
+   */
   const handleMoveTask = useCallback((task: TaskItem, move: TaskMove) => {
     const groupName = task.group || UNGROUPED_NAME
     const groupTasks = groupedTopLevelTasks[groupName] ?? EMPTY_TASKS
@@ -449,15 +519,15 @@ export function TaskBoardView({
     }
     if (move.kind === 'group') {
       const targetCount = (groupedTopLevelTasks[move.groupName] ?? EMPTY_TASKS).length
-      void handleTopLevelTaskDrop(move.groupName, targetCount, task.filePath)
+      void keepCardInPlace('', () => handleTopLevelTaskDrop(move.groupName, targetCount, task.filePath))
       return
     }
     const nextIndex = move.kind === 'up' ? index - 1 : index + 1
     if (nextIndex < 0 || nextIndex >= groupTasks.length) {
       return
     }
-    void handleTopLevelTaskDrop(groupName, nextIndex, task.filePath)
-  }, [groupedTopLevelTasks, handleTopLevelTaskDrop])
+    void keepCardInPlace(task.filePath, () => handleTopLevelTaskDrop(groupName, nextIndex, task.filePath))
+  }, [groupedTopLevelTasks, handleTopLevelTaskDrop, keepCardInPlace])
 
   /** Groups each card can be moved to: the configured ones but its own. */
   const moveTargetsByGroup = useMemo(() => {
@@ -495,13 +565,9 @@ export function TaskBoardView({
     return { groupName, index }
   }, [groupedTopLevelTasks])
 
-  const submitCommentDialog = async () => {
-    if (!commentDialog) {
-      return
-    }
-
-    await onAddTaskComment(commentDialog.task, commentDialog.text)
-    setCommentDialog(null)
+  const submitComment = async (task: TaskItem, comment: string) => {
+    await keepCardInPlace(task.filePath, () => onAddTaskComment(task, comment))
+    setCommentTask(null)
   }
 
   const openTaskSourceDialog = useCallback(async (task: TaskItem) => {
@@ -630,7 +696,8 @@ export function TaskBoardView({
   const autoScrollStep = useCallback(() => {
     const scroll = autoScrollRef.current
     scroll.frame = null
-    if (!touchDragRef.current?.active) {
+    const touching = Boolean(touchDragRef.current?.active)
+    if (!touching && !nativeDragRef.current) {
       return
     }
     const container = scrollParent(boardRef.current)
@@ -655,9 +722,33 @@ export function TaskBoardView({
     if (container.scrollTop === before) {
       return
     }
-    retargetRef.current(scroll.x, scroll.y)
+    if (touching) retargetRef.current(scroll.x, scroll.y)
     scroll.frame = window.requestAnimationFrame(autoScrollStep)
   }, [])
+
+  // A mouse drag scrolls the board too when it nears the top or the bottom:
+  // a ticket reaches the lists out of sight. The browser's own scrolling
+  // during a drag is slow or missing in some views.
+  useEffect(() => {
+    const onDragOver = (event: DragEvent) => {
+      if (!nativeDragRef.current) return
+      const scroll = autoScrollRef.current
+      scroll.x = event.clientX
+      scroll.y = event.clientY
+      if (scroll.frame === null) scroll.frame = window.requestAnimationFrame(autoScrollStep)
+    }
+    const onDragEnd = () => {
+      nativeDragRef.current = false
+    }
+    document.addEventListener('dragover', onDragOver)
+    document.addEventListener('dragend', onDragEnd)
+    document.addEventListener('drop', onDragEnd)
+    return () => {
+      document.removeEventListener('dragover', onDragOver)
+      document.removeEventListener('dragend', onDragEnd)
+      document.removeEventListener('drop', onDragEnd)
+    }
+  }, [autoScrollStep])
 
   /** Places the dragged item's label just above the finger. */
   const moveTouchGhost = useCallback((clientX: number, clientY: number) => {
@@ -916,6 +1007,7 @@ export function TaskBoardView({
                       event.dataTransfer.effectAllowed = 'move'
                       event.dataTransfer.setData('text/plain', group.name)
                     }
+                    nativeDragRef.current = true
                     setDraggedGroupName(group.name)
                   } : undefined}
                   onDragEnd={managed ? clearGroupDrag : undefined}
@@ -972,11 +1064,10 @@ export function TaskBoardView({
                               isSubtasksExpanded={expandedSubtasks.has(task.filePath)}
                               onToggleSubtasks={toggleSubtasks}
                               onCreateTask={onCreateTask}
-                              onEditTask={onEditTask}
-                              onChangeTaskState={onChangeTaskState}
-                              onChangeTaskPriority={onChangeTaskPriority}
-                              onChangeTaskDedicatedHours={onChangeTaskDedicatedHours}
-                              onToggleSubtaskDone={onToggleSubtaskDone}
+                              onChangeTaskState={changeTaskState}
+                              onChangeTaskPriority={changeTaskPriority}
+                              onChangeTaskDedicatedHours={changeTaskDedicatedHours}
+                              onToggleSubtaskDone={toggleSubtaskDone}
                               onAddTaskComment={openCommentDialog}
                               onOpenTaskSource={openTaskSourceDialog}
                               onOpenTaskFile={onOpenTaskFile}
@@ -984,7 +1075,10 @@ export function TaskBoardView({
                               activeSubtaskDropIndex={
                                 subtaskDropTarget?.parentTaskPath === task.filePath ? subtaskDropTarget.index : null
                               }
-                              onSubtaskDragStart={setDraggedSubtaskPath}
+                              onSubtaskDragStart={(path) => {
+                                nativeDragRef.current = path !== null
+                                setDraggedSubtaskPath(path)
+                              }}
                               onSubtaskDragEnd={handleSubtaskDragEnd}
                               onSubtaskDragOverTarget={handleSubtaskDragOverTarget}
                               onSubtaskDragLeaveTarget={handleSubtaskDragLeaveTarget}
@@ -1000,12 +1094,16 @@ export function TaskBoardView({
                       )
                     })}
                     {slotIndex !== null && slotIndex >= otherIndex ? dropSlot : null}
-                    <div className="tareas-task-card tareas-task-card-add">
-                      <span className="tareas-add-link" onClick={() => onCreateTask({ kind: 'task', group: managed ? group.name : '' })}>
+                    <button
+                      type="button"
+                      className="tareas-task-card tareas-task-card-add"
+                      onClick={() => onCreateTask({ kind: 'task', group: managed ? group.name : '' })}
+                    >
+                      <span className="tareas-add-link">
                         <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
                         Nueva tarea
                       </span>
-                    </div>
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -1013,38 +1111,15 @@ export function TaskBoardView({
           })}
         </div>
 
-        <div className="tareas-new-group">
-          <span className="tareas-add-link" onClick={onCreateGroup}>
+        <button type="button" className="tareas-new-group" onClick={onCreateGroup}>
+          <span className="tareas-add-link">
             <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
             Nuevo grupo
           </span>
-        </div>
+        </button>
       </div>
 
-      <TaskManagerModal open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} size="md" >
-        <div className="tareas-dialog-header">
-          <h2>Agregar comentario</h2>
-        </div>
-        <div className="tareas-dialog-body">
-          <TextField
-            autoFocus
-            multiline
-            minRows={5}
-            fullWidth
-            value={commentDialog?.text ?? ''}
-            onChange={(event) => {
-              setCommentDialog((previous) => previous ? { ...previous, text: event.target.value } : previous)
-            }}
-            sx={{ mt: 1 }}
-          />
-        </div>
-        <div className="tareas-dialog-actions">
-          <NotiaButton onClick={() => setCommentDialog(null)}>Cancelar</NotiaButton>
-          <NotiaButton variant="primary" onClick={() => void submitCommentDialog()} disabled={!commentDialog?.text.trim()}>
-            Guardar comentario
-          </NotiaButton>
-        </div>
-      </TaskManagerModal>
+      <TaskCommentDialog task={commentTask} onClose={() => setCommentTask(null)} onSubmit={submitComment} />
 
       {sourceDialog ? (
         <TaskSourceDialog
@@ -1069,7 +1144,6 @@ interface TaskCardProps {
   isSubtasksExpanded: boolean
   onToggleSubtasks: (taskPath: string) => void
   onCreateTask: (request?: TaskCreationRequest) => void
-  onEditTask: (task: TaskItem) => void
   onChangeTaskState: (task: TaskItem, nextState: string) => Promise<void>
   onChangeTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
   onChangeTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
@@ -1099,7 +1173,6 @@ function TaskCardComponent({
   isSubtasksExpanded,
   onToggleSubtasks,
   onCreateTask,
-  onEditTask,
   onChangeTaskState,
   onChangeTaskPriority,
   onChangeTaskDedicatedHours,
@@ -1288,7 +1361,7 @@ function TaskCardComponent({
           size="icon"
           className="tareas-card-header-edit-btn"
           title="Editar tarea"
-          onClick={() => onEditTask(task)}
+          onClick={() => onOpenTaskSource(task)}
         >
           <TaskManagerIcon name={TASK_ICON_NAME.edit} size={11} />
         </NotiaButton>
@@ -1371,9 +1444,27 @@ function TaskCardComponent({
 
       </div>
 
+      {task.project || task.assignees?.length ? (
+        <div className="tareas-card-people">
+          {task.project ? <span className="tareas-card-project" title="Proyecto">{task.project}</span> : null}
+          {task.assignees?.length ? (
+            <ul className="tareas-card-assignees" aria-label="Asignados">
+              {task.assignees.map((person) => (
+                <li key={person} className="tareas-card-assignee" title={person}>
+                  <span className="tareas-card-assignee-initials" aria-hidden="true">{initialsOf(person)}</span>
+                  <span className="tareas-card-assignee-name">{person}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="tareas-card-detail-row">
         {task.preview ? (
-          <p className="tareas-card-preview">{task.preview}</p>
+          <div className="tareas-card-preview tareas-card-preview-markdown">
+            <ChatMarkdownMessage source={task.preview} />
+          </div>
         ) : (
           <p className="tareas-card-preview tareas-card-preview-empty">Sin detalle</p>
         )}
@@ -1401,10 +1492,10 @@ function TaskCardComponent({
           </span>
         ) : <span className="tareas-card-subtasks">Sin subtareas</span>}
 
-        <span className="tareas-add-link" onClick={() => onCreateTask({ kind: 'subtask', parentTaskName: task.fileName, group: task.group })}>
+        <button type="button" className="tareas-add-link" onClick={() => onCreateTask({ kind: 'subtask', parentTaskName: task.fileName, group: task.group })}>
           <TaskManagerIcon name={TASK_ICON_NAME.plus} size={12} />
           Subtarea
-        </span>
+        </button>
       </div>
 
       {subtasks.length > 0 && isSubtasksExpanded ? (
@@ -1650,6 +1741,12 @@ function orderedStatusActions(state: string) {
   return state === 'En progreso'
     ? [byId.finish, byId['start-stop'], byId.dismiss]
     : [byId['start-stop'], byId.finish, byId.dismiss]
+}
+
+/** Up to two letters of a person's name, for their badge. */
+function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  return words.slice(0, 2).map((word) => word.charAt(0).toUpperCase()).join('') || '?'
 }
 
 function toClassName(value: string): string {

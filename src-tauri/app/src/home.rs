@@ -856,6 +856,8 @@ mod tests {
             contexto: None,
             related_documents: Vec::new(),
             related_tasks: Vec::new(),
+            project: None,
+            assignees: Vec::new(),
         }
     }
 

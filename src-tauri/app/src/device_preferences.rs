@@ -70,6 +70,24 @@ fn with_page_setup(mut preferences: Value) -> Value {
     preferences
 }
 
+/// The editor's sections (`editorPage`, `editorPageSetup`, `pen`) of
+/// `preferences` as the backend normalizes them, without storing anything:
+/// a published Task Manager starts from the host's and keeps its changes in
+/// the page.
+pub(crate) fn editor_preferences_view(preferences: &Value) -> Value {
+    let view = with_page_setup(normalize_device_preferences(preferences));
+    serde_json::json!({
+        "editorPage": view["editorPage"],
+        "editorPageSetup": view["editorPageSetup"],
+        "pen": view["pen"],
+    })
+}
+
+/// The host's editor preferences, for a published Task Manager.
+pub(crate) fn host_editor_preferences(app: &AppHandle) -> Value {
+    editor_preferences_view(&read(app).unwrap_or(Value::Null))
+}
+
 pub(crate) fn backend_device_preferences(app: AppHandle) -> DevicePreferences {
     let stored = read(&app);
     DevicePreferences {

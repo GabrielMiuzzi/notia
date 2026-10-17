@@ -168,74 +168,140 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron guardar los trazos.", true))?
 }
 
-pub(crate) async fn markdown_ink_load(app: AppHandle, payload: InkNotePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        let document = read(&app, &payload.library_id, &payload.path)?;
-        Ok(InkStrokesResult { strokes: document.strokes })
+fn load(app: &AppHandle, payload: InkNotePayload) -> Result<InkStrokesResult, BackendError> {
+    let document = read(app, &payload.library_id, &payload.path)?;
+    Ok(InkStrokesResult { strokes: document.strokes })
+}
+
+fn add(app: &AppHandle, payload: InkAddPayload) -> Result<InkStroke, BackendError> {
+    let stroke = note_ink::prepare_stroke(payload.stroke)?;
+    update(app, &payload.library_id, &payload.path, |document| {
+        note_ink::add_stroke(document, stroke.clone())?;
+        Ok(stroke)
     })
-    .await
+}
+
+fn remove(app: &AppHandle, payload: InkRemovePayload) -> Result<InkStrokesResult, BackendError> {
+    update(app, &payload.library_id, &payload.path, |document| {
+        Ok(InkStrokesResult { strokes: note_ink::remove_strokes(document, &payload.ids) })
+    })
+}
+
+fn restore(app: &AppHandle, payload: InkRestorePayload) -> Result<InkStrokesResult, BackendError> {
+    update(app, &payload.library_id, &payload.path, |document| {
+        note_ink::restore_strokes(document, payload.strokes.clone())?;
+        Ok(InkStrokesResult { strokes: payload.strokes })
+    })
+}
+
+fn replace(app: &AppHandle, payload: InkRestorePayload) -> Result<InkStrokesResult, BackendError> {
+    update(app, &payload.library_id, &payload.path, |document| {
+        note_ink::replace_strokes(document, payload.strokes.clone())?;
+        Ok(InkStrokesResult { strokes: payload.strokes })
+    })
+}
+
+fn select(app: &AppHandle, payload: InkSelectPayload) -> Result<InkSelectResult, BackendError> {
+    let document = read(app, &payload.library_id, &payload.path)?;
+    Ok(InkSelectResult { ids: note_ink::select_in_lasso(&document, &payload.lasso)? })
+}
+
+fn move_strokes(app: &AppHandle, payload: InkMovePayload) -> Result<InkStrokesResult, BackendError> {
+    update(app, &payload.library_id, &payload.path, |document| {
+        Ok(InkStrokesResult { strokes: note_ink::move_strokes(document, &payload.ids, payload.dx, payload.dy)? })
+    })
+}
+
+fn erase(app: &AppHandle, payload: InkErasePayload) -> Result<InkStrokesResult, BackendError> {
+    update_if(
+        app,
+        &payload.library_id,
+        &payload.path,
+        |document| Ok(InkStrokesResult { strokes: note_ink::erase(document, payload.page, &payload.points, payload.radius)? }),
+        |result| !result.strokes.is_empty(),
+    )
+}
+
+pub(crate) async fn markdown_ink_load(app: AppHandle, payload: InkNotePayload) -> Result<InkStrokesResult, BackendError> {
+    blocking(move || load(&app, payload)).await
 }
 
 /// Saves a stroke and returns it as kept: smoothed and simplified.
 pub(crate) async fn markdown_ink_add(app: AppHandle, payload: InkAddPayload) -> Result<InkStroke, BackendError> {
-    blocking(move || {
-        let stroke = note_ink::prepare_stroke(payload.stroke)?;
-        update(&app, &payload.library_id, &payload.path, |document| {
-            note_ink::add_stroke(document, stroke.clone())?;
-            Ok(stroke)
-        })
-    })
-    .await
+    blocking(move || add(&app, payload)).await
 }
 
 pub(crate) async fn markdown_ink_remove(app: AppHandle, payload: InkRemovePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        update(&app, &payload.library_id, &payload.path, |document| {
-            Ok(InkStrokesResult { strokes: note_ink::remove_strokes(document, &payload.ids) })
-        })
-    })
-    .await
+    blocking(move || remove(&app, payload)).await
 }
 
 pub(crate) async fn markdown_ink_restore(app: AppHandle, payload: InkRestorePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        update(&app, &payload.library_id, &payload.path, |document| {
-            note_ink::restore_strokes(document, payload.strokes.clone())?;
-            Ok(InkStrokesResult { strokes: payload.strokes })
-        })
-    })
-    .await
+    blocking(move || restore(&app, payload)).await
 }
 
 /// New versions of strokes already kept: the ones drawn on a page, moved
 /// into the note's flow once the editor has laid the pages out.
 pub(crate) async fn markdown_ink_replace(app: AppHandle, payload: InkRestorePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        update(&app, &payload.library_id, &payload.path, |document| {
-            note_ink::replace_strokes(document, payload.strokes.clone())?;
-            Ok(InkStrokesResult { strokes: payload.strokes })
-        })
-    })
-    .await
+    blocking(move || replace(&app, payload)).await
 }
 
 /// The strokes the lasso takes.
 pub(crate) async fn markdown_ink_select(app: AppHandle, payload: InkSelectPayload) -> Result<InkSelectResult, BackendError> {
-    blocking(move || {
-        let document = read(&app, &payload.library_id, &payload.path)?;
-        Ok(InkSelectResult { ids: note_ink::select_in_lasso(&document, &payload.lasso)? })
-    })
-    .await
+    blocking(move || select(&app, payload)).await
 }
 
 /// Moves the selected strokes and returns them as they are now.
 pub(crate) async fn markdown_ink_move(app: AppHandle, payload: InkMovePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        update(&app, &payload.library_id, &payload.path, |document| {
-            Ok(InkStrokesResult { strokes: note_ink::move_strokes(document, &payload.ids, payload.dx, payload.dy)? })
-        })
+    blocking(move || move_strokes(&app, payload)).await
+}
+
+/// The strokes commands a published Task Manager may run, on its tickets.
+pub(crate) const PUBLISHED_INK_COMMANDS: &[&str] = &[
+    "markdown_ink_load",
+    "markdown_ink_add",
+    "markdown_ink_remove",
+    "markdown_ink_restore",
+    "markdown_ink_replace",
+    "markdown_ink_select",
+    "markdown_ink_move",
+    "markdown_ink_erase",
+];
+
+/// Runs a strokes command of a published Task Manager over one of its
+/// tickets: the library is the publication's, whatever the page sent, and
+/// `authorize` checks that the note is a ticket of the published boards.
+/// Strokes are not Task Manager data: the publication's boards need no
+/// reload after them, so the second value is always `false`.
+pub(crate) fn execute_for_publication(
+    app: &AppHandle,
+    library_id: &str,
+    command: &str,
+    payload: &serde_json::Value,
+    authorize: impl FnOnce(&str) -> Result<(), BackendError>,
+) -> Result<(serde_json::Value, bool), BackendError> {
+    let invalid = || BackendError::invalid_input("Los trazos pedidos no son válidos.");
+    let mut payload = payload.clone();
+    let object = payload.as_object_mut().ok_or_else(invalid)?;
+    object.insert("libraryId".to_string(), serde_json::Value::String(library_id.to_string()));
+    let path = object.get("path").and_then(serde_json::Value::as_str).ok_or_else(invalid)?.to_string();
+    authorize(&path)?;
+    fn decode<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T, BackendError> {
+        serde_json::from_value(payload).map_err(|_| BackendError::invalid_input("Los trazos pedidos no son válidos."))
+    }
+    let value = |result: Result<serde_json::Value, serde_json::Error>| {
+        result.map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudieron leer los trazos.", true))
+    };
+    Ok(match command {
+        "markdown_ink_load" => (value(serde_json::to_value(load(app, decode(payload)?)?))?, false),
+        "markdown_ink_select" => (value(serde_json::to_value(select(app, decode(payload)?)?))?, false),
+        "markdown_ink_add" => (value(serde_json::to_value(add(app, decode(payload)?)?))?, false),
+        "markdown_ink_remove" => (value(serde_json::to_value(remove(app, decode(payload)?)?))?, false),
+        "markdown_ink_restore" => (value(serde_json::to_value(restore(app, decode(payload)?)?))?, false),
+        "markdown_ink_replace" => (value(serde_json::to_value(replace(app, decode(payload)?)?))?, false),
+        "markdown_ink_move" => (value(serde_json::to_value(move_strokes(app, decode(payload)?)?))?, false),
+        "markdown_ink_erase" => (value(serde_json::to_value(erase(app, decode(payload)?)?))?, false),
+        _ => return Err(invalid()),
     })
-    .await
 }
 
 fn png_base64(raster: InkRaster) -> Result<String, BackendError> {
@@ -272,16 +338,7 @@ pub(crate) async fn markdown_ink_convert(app: AppHandle, payload: InkConvertPayl
 
 /// Takes out what the eraser touched and returns it, so undo can put it back.
 pub(crate) async fn markdown_ink_erase(app: AppHandle, payload: InkErasePayload) -> Result<InkStrokesResult, BackendError> {
-    blocking(move || {
-        update_if(
-            &app,
-            &payload.library_id,
-            &payload.path,
-            |document| Ok(InkStrokesResult { strokes: note_ink::erase(document, payload.page, &payload.points, payload.radius)? }),
-            |result| !result.strokes.is_empty(),
-        )
-    })
-    .await
+    blocking(move || erase(&app, payload)).await
 }
 
 /// Before an explorer operation: whether the strokes may follow it. A paste

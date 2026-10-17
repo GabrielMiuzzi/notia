@@ -4,6 +4,8 @@ import { Editor, defaultValueCtx, editorViewCtx, rootCtx, serializerCtx } from '
 import { commonmark } from '@milkdown/kit/preset/commonmark'
 import { $prose, replaceAll } from '@milkdown/kit/utils'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
+import { EditorState } from '@milkdown/kit/prose/state'
+import { EditorView } from '@milkdown/kit/prose/view'
 import {
   createMarkdownChangeBuffer,
   createMarkdownChangePlugin,
@@ -163,6 +165,28 @@ describe('createMarkdownChangePlugin', () => {
     expect(buffer.hasPending()).toBe(false)
     buffer.flush()
     expect(emit).not.toHaveBeenCalled()
+  })
+
+  it('writes the first change even when the state changed before the view opened', async () => {
+    const { buffer, emit, view } = await open('Hola')
+    // As Milkdown does while it opens a note: a change applied to the
+    // state before the view exists.
+    const opened = view.state.apply(view.state.tr.insertText('!', view.state.doc.content.size - 1))
+    const fresh = createMarkdownChangeBuffer<ProseNode>({
+      isSame: (left, right) => left === right || left.eq(right),
+      serialize: (doc) => editor!.action((ctx) => ctx.get(serializerCtx)(doc)),
+      emit,
+    })
+    const plugin = createMarkdownChangePlugin(fresh)
+    const state = EditorState.create({ doc: opened.doc, plugins: [plugin] })
+      .apply(EditorState.create({ doc: opened.doc, plugins: [plugin] }).tr.insertText('?', 1))
+    const second = new EditorView(document.createElement('div'), { state })
+    second.dispatch(second.state.tr.insertText(' mundo', second.state.doc.content.size - 1))
+    fresh.flush()
+    expect(emit).toHaveBeenCalledTimes(1)
+    expect(emit.mock.calls[0]?.[0].trim()).toBe('?Hola! mundo')
+    second.destroy()
+    expect(buffer.hasStart()).toBe(true)
   })
 
   it('writes at once when the editor loses focus', async () => {
