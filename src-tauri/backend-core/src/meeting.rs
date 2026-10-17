@@ -1513,6 +1513,198 @@ pub(crate) fn initials(name: &str) -> String {
 }
 
 /// `mm:ss`, or `h:mm:ss` past the first hour.
+// --- Agent tools over the meeting --------------------------------------------
+
+impl MeetingRecord {
+    /// The meeting as the agent reads it: state, speakers, the context its
+    /// AI uses and the Notas IA.
+    pub fn agent_overview(&self, ai_context: Option<&crate::meeting_ai::MeetingAiContext>) -> Value {
+        let status = match self.status {
+            MeetingStatus::Live => "grabando",
+            MeetingStatus::Processing => "separando-hablantes",
+            MeetingStatus::Completed => "finalizada",
+        };
+        serde_json::json!({
+            "open": true,
+            "status": status,
+            "startedAt": self.start.date_label,
+            "durationMs": self.duration_ms,
+            "speakers": self.speakers.iter().map(|speaker| serde_json::json!({ "id": speaker.id, "name": speaker.name })).collect::<Vec<_>>(),
+            "aiContext": match ai_context {
+                None => serde_json::json!({ "mode": "ninguno" }),
+                Some(context) if context.folder.is_some() => serde_json::json!({ "mode": "carpeta", "folder": context.folder }),
+                Some(context) => serde_json::json!({ "mode": "biblioteca", "contexts": context.contexts }),
+            },
+            "marks": self.marks.len(),
+            "liveLines": self.lines.len(),
+            "turns": self.segments.len(),
+            "notes": serde_json::to_value(&self.ai_notes.notes).unwrap_or(Value::Null),
+        })
+    }
+
+    /// Replaces the sections of the Notas IA the agent sent; the rest stay.
+    /// A task whose text does not change keeps its id and its sent mark.
+    pub fn apply_notes_update(&mut self, update: crate::meeting_tools::NotesUpdate) {
+        if let Some(tasks) = update.tasks {
+            let mut earlier = self
+                .ai_notes
+                .notes
+                .tasks
+                .iter()
+                .map(|task| (task_key(&task.text), (task.id.clone(), task.sent)))
+                .collect::<HashMap<_, _>>();
+            let mut next = tasks;
+            for task in &mut next {
+                match earlier.remove(&task_key(&task.text)) {
+                    Some((id, sent)) => {
+                        task.id = id;
+                        task.sent = sent;
+                    }
+                    None => task.id = self.next_id("note-task"),
+                }
+            }
+            self.ai_notes.notes.tasks = next;
+        }
+        let notes = &mut self.ai_notes.notes;
+        if let Some(objective) = update.objective {
+            notes.objective = objective;
+        }
+        if let Some(decisions) = update.decisions {
+            notes.decisions = decisions;
+        }
+        if let Some(open_questions) = update.open_questions {
+            notes.open_questions = open_questions;
+        }
+        if let Some(topics) = update.topics {
+            notes.topics = topics;
+        }
+    }
+
+    /// Appends to the Notas IA without touching what is there; an item the
+    /// notes already have is skipped. Returns how many items were added.
+    pub fn apply_notes_addition(&mut self, addition: crate::meeting_tools::NotesAddition) -> usize {
+        let mut added = 0;
+        let notes = &mut self.ai_notes.notes;
+        let mut extend = |list: &mut Vec<String>, items: Vec<String>| {
+            for item in items {
+                if list.len() >= crate::meeting_ai::MAX_LIST_ITEMS {
+                    break;
+                }
+                if !list.iter().any(|known| task_key(known) == task_key(&item)) {
+                    list.push(item);
+                    added += 1;
+                }
+            }
+        };
+        extend(&mut notes.decisions, addition.decisions);
+        extend(&mut notes.open_questions, addition.open_questions);
+        for (title, at_ms, items) in addition.topic_items {
+            let topic = match notes.topics.iter_mut().find(|topic| task_key(&topic.title) == task_key(&title)) {
+                Some(topic) => topic,
+                None => {
+                    if notes.topics.len() >= crate::meeting_ai::MAX_TOPICS {
+                        continue;
+                    }
+                    notes.topics.push(crate::meeting_ai::MeetingNoteTopic { title, at_ms, items: Vec::new() });
+                    notes.topics.last_mut().expect("just pushed")
+                }
+            };
+            for item in items {
+                if topic.items.len() >= crate::meeting_ai::MAX_TOPIC_ITEMS {
+                    break;
+                }
+                if !topic.items.iter().any(|known| task_key(known) == task_key(&item)) {
+                    topic.items.push(item);
+                    added += 1;
+                }
+            }
+        }
+        let existing = notes.tasks.iter().map(|task| task_key(&task.text)).collect::<HashSet<_>>();
+        let mut new_tasks = Vec::new();
+        for task in addition.tasks {
+            if notes.tasks.len() + new_tasks.len() >= crate::meeting_ai::MAX_NOTE_TASKS {
+                break;
+            }
+            if !existing.contains(&task_key(&task.text)) && !new_tasks.iter().any(|known: &crate::meeting_ai::MeetingNoteTask| task_key(&known.text) == task_key(&task.text)) {
+                new_tasks.push(task);
+            }
+        }
+        for mut task in new_tasks {
+            task.id = self.next_id("note-task");
+            self.ai_notes.notes.tasks.push(task);
+            added += 1;
+        }
+        added
+    }
+
+    /// Replaces a misheard word or phrase in the whole transcript (the live
+    /// lines and the separated turns): whole words, ignoring case, keeping
+    /// a leading capital. Returns how many occurrences changed.
+    pub fn replace_in_transcript(&mut self, from: &str, to: &str) -> usize {
+        let from_lower = from.chars().map(lowered).collect::<Vec<_>>();
+        if from_lower.is_empty() || to.trim().is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        let texts = self.lines.iter_mut().map(|line| &mut line.text).chain(self.segments.iter_mut().map(|segment| &mut segment.text));
+        for text in texts {
+            let (next, replaced) = replace_word(text, &from_lower, to);
+            if replaced > 0 {
+                *text = next;
+                count += replaced;
+            }
+        }
+        count
+    }
+}
+
+/// Key a note item or a task text is matched with: folded, one line.
+fn task_key(text: &str) -> String {
+    crate::meeting_ai::fold(&single_line(text))
+}
+
+fn lowered(character: char) -> char {
+    character.to_lowercase().next().unwrap_or(character)
+}
+
+/// `text` with each whole-word occurrence of `from_lower` (already lowered)
+/// replaced by `to`; an occurrence starting with a capital keeps it.
+fn replace_word(text: &str, from_lower: &[char], to: &str) -> (String, usize) {
+    let chars = text.chars().collect::<Vec<_>>();
+    let matches_at = |at: usize| {
+        if at + from_lower.len() > chars.len() {
+            return false;
+        }
+        if from_lower.iter().enumerate().any(|(offset, expected)| lowered(chars[at + offset]) != *expected) {
+            return false;
+        }
+        let before_ok = at == 0 || !chars[at - 1].is_alphanumeric();
+        let after = at + from_lower.len();
+        before_ok && (after >= chars.len() || !chars[after].is_alphanumeric())
+    };
+    let mut result = String::with_capacity(text.len());
+    let mut count = 0;
+    let mut index = 0;
+    while index < chars.len() {
+        if matches_at(index) {
+            if chars[index].is_uppercase() && to.chars().next().is_some_and(char::is_lowercase) {
+                let mut replacement = to.chars();
+                let first = replacement.next().expect("to is not empty");
+                result.extend(first.to_uppercase());
+                result.push_str(replacement.as_str());
+            } else {
+                result.push_str(to);
+            }
+            count += 1;
+            index += from_lower.len();
+        } else {
+            result.push(chars[index]);
+            index += 1;
+        }
+    }
+    (result, count)
+}
+
 pub fn format_clock(ms: u64) -> String {
     let seconds = ms / 1_000;
     let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
@@ -1662,19 +1854,40 @@ Devolvé {{\"segments\": [{{\"id\": \"S1\", \"text\": \"...\"}}]}} con todas las
     )
 }
 
-/// The JSON object of an AI answer, tolerating a code fence or text around it.
-pub(crate) fn json_object(answer: &str) -> Option<Value> {
-    let start = answer.find('{')?;
-    let end = answer.rfind('}')?;
-    (start < end).then(|| serde_json::from_str(&answer[start..=end]).ok()).flatten()
+/// The JSON object of an AI answer, tolerating a code fence or text around
+/// it. Some models write their reasoning before the answer, example objects
+/// included, when thinking is off: among everything that parses, the longest
+/// object carrying one of `keys` wins, and the longest at all without them.
+pub(crate) fn json_object_expecting(answer: &str, keys: &[&str]) -> Option<Value> {
+    let mut best: Option<(bool, usize, Value)> = None;
+    let mut next = 0;
+    for (start, _) in answer.match_indices('{') {
+        // A brace inside an object already found belongs to it.
+        if start < next {
+            continue;
+        }
+        let mut values = serde_json::Deserializer::from_str(&answer[start..]).into_iter::<Value>();
+        let Some(Ok(value)) = values.next() else { continue };
+        let length = values.byte_offset();
+        next = start + length;
+        if !value.is_object() {
+            continue;
+        }
+        let expected = keys.iter().any(|key| value.get(key).is_some());
+        if best.as_ref().is_none_or(|(best_expected, best_length, _)| (expected, length) > (*best_expected, *best_length)) {
+            best = Some((expected, length, value));
+        }
+    }
+    best.map(|(_, _, value)| value)
 }
+
 
 fn clipped(text: &str, max_chars: usize) -> String {
     text.trim().chars().take(max_chars).collect::<String>().trim().to_string()
 }
 
 pub fn parse_insights(answer: &str, request: MeetingInsightsRequest) -> Result<ParsedInsights, BackendError> {
-    let object = json_object(answer)
+    let object = json_object_expecting(answer, &["summary", "keyPoints", "tasks"])
         .filter(Value::is_object)
         .ok_or_else(|| BackendError::invalid_input("La IA no devolvió un resultado válido. Probá de nuevo."))?;
     let summary = request
@@ -1726,7 +1939,7 @@ pub fn parse_insights(answer: &str, request: MeetingInsightsRequest) -> Result<P
 
 /// Corrected text of each segment id of the batch.
 pub fn parse_corrections(answer: &str, batch: &CorrectionBatch) -> HashMap<String, String> {
-    let Some(object) = json_object(answer) else { return HashMap::new() };
+    let Some(object) = json_object_expecting(answer, &["segments"]) else { return HashMap::new() };
     object
         .get("segments")
         .and_then(Value::as_array)
@@ -1766,6 +1979,31 @@ mod tests {
             6_000,
         );
         record
+    }
+
+    #[test]
+    fn the_answer_object_is_found_after_reasoning_with_braces() {
+        // A model that writes its reasoning when thinking is off.
+        let answer = "Let me analyze. Each topic is {\"title\": \"...\"} and {incomplete.\n\n```json\n{\"objective\": \"Remesas\", \"topics\": [{\"title\": \"Proveedor\"}]}\n```";
+        assert_eq!(json_object_expecting(answer, &[]), Some(serde_json::json!({ "objective": "Remesas", "topics": [{ "title": "Proveedor" }] })));
+        assert_eq!(json_object_expecting("{\"a\": 1}", &[]), Some(serde_json::json!({ "a": 1 })));
+        assert_eq!(json_object_expecting("sin objeto {roto", &[]), None);
+        assert_eq!(json_object_expecting("[1, 2]", &[]), None);
+    }
+
+    #[test]
+    fn the_object_with_the_expected_keys_beats_a_longer_fragment_of_the_reasoning() {
+        // The reasoning holds a long valid example; the real answer is shorter.
+        let answer = "Primero reviso {\"borrador\": \"una lista larga de ideas sueltas que no es la respuesta pedida\"} y termino:\n{\"objective\": \"Remesas\"}";
+        assert_eq!(
+            json_object_expecting(answer, &["objective", "topics"]),
+            Some(serde_json::json!({ "objective": "Remesas" })),
+        );
+        // Without the keys anywhere, the longest object still wins.
+        assert_eq!(
+            json_object_expecting("{\"a\": 1} {\"b\": \"mas largo\"}", &["objective"]),
+            Some(serde_json::json!({ "b": "mas largo" })),
+        );
     }
 
     #[test]

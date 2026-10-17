@@ -31,7 +31,7 @@
 use serde_json::Value;
 
 use crate::catalog::{tool_policy, ToolPolicy};
-use crate::context::BackendScope;
+use crate::context::{BackendChannel, BackendScope};
 use crate::protocol::ToolDefinition;
 
 /// The tool the agent calls to change the areas of its tools mid-run.
@@ -49,6 +49,7 @@ pub const MAX_ROUTER_IMAGES: usize = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolArea {
     Library,
+    Meeting,
     Tasks,
     Finance,
     Routine,
@@ -62,8 +63,9 @@ pub enum ToolArea {
 }
 
 impl ToolArea {
-    pub const ALL: [ToolArea; 11] = [
+    pub const ALL: [ToolArea; 12] = [
         ToolArea::Library,
+        ToolArea::Meeting,
         ToolArea::Tasks,
         ToolArea::Finance,
         ToolArea::Routine,
@@ -79,6 +81,7 @@ impl ToolArea {
     pub fn id(self) -> &'static str {
         match self {
             Self::Library => "biblioteca",
+            Self::Meeting => "reunion",
             Self::Tasks => "tareas",
             Self::Finance => "finanzas",
             Self::Routine => "rutina",
@@ -96,6 +99,7 @@ impl ToolArea {
     fn description(self) -> &'static str {
         match self {
             Self::Library => "notas y documentos de la biblioteca: buscar, leer, crear, anotar o guardar texto, editar, exportar y comparar",
+            Self::Meeting => "la reunión abierta en Meeting: ver su estado y sus Notas IA, modificarlas o agregarles elementos, corregir palabras mal transcriptas y cambiar el contexto de biblioteca de su IA",
             Self::Tasks => "Task Manager: tableros, tickets, estados, prioridades, comentarios y subtareas",
             Self::Finance => "finanzas personales: gastos, pagos, tarjetas, sueldos, ahorro, servicios, productos, precios y cotizaciones",
             Self::Routine => "rutina diaria y hábitos: checklist del día, marcar hábitos cumplidos, tareas recurrentes de la rutina y metas de la rueda de la vida",
@@ -127,6 +131,7 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Some(ToolArea::Routine),
         ToolPolicy::AgendaRead | ToolPolicy::AgendaWrite => Some(ToolArea::Agenda),
         ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite => Some(ToolArea::Actions),
+        ToolPolicy::MeetingRead | ToolPolicy::MeetingWrite => Some(ToolArea::Meeting),
         ToolPolicy::RecipeRead | ToolPolicy::RecipeWrite => Some(ToolArea::Recipes),
         ToolPolicy::HealthRead | ToolPolicy::HealthWrite => Some(ToolArea::Health),
         ToolPolicy::GymRead | ToolPolicy::GymWrite => Some(ToolArea::Gym),
@@ -152,8 +157,12 @@ pub fn needs_routing(tools: &[ToolDefinition]) -> bool {
 }
 
 /// The area of a module's own chat, which the router prefers and falls back
-/// to; the general chats have none.
-pub fn home_area(scope: &BackendScope) -> Option<ToolArea> {
+/// to; the general chats have none. A chat over the Meeting view talks on
+/// the Meeting channel: the open meeting is its home.
+pub fn home_area(scope: &BackendScope, channel: &BackendChannel) -> Option<ToolArea> {
+    if *channel == BackendChannel::Meeting {
+        return Some(ToolArea::Meeting);
+    }
     match scope {
         BackendScope::Finance => Some(ToolArea::Finance),
         BackendScope::TaskManager => Some(ToolArea::Tasks),
@@ -497,7 +506,8 @@ mod tests {
         assert!(parse_switch_arguments(&serde_json::json!({ "areas": ["correo"] }), &offered).unwrap_err().contains("finanzas, recetas, salud"));
         assert!(parse_switch_arguments(&serde_json::json!({}), &offered).is_err());
         // A module's chat suggests its area to the router and falls back to it.
-        assert_eq!(home_area(&BackendScope::Finance), Some(ToolArea::Finance));
+        assert_eq!(home_area(&BackendScope::Finance, &BackendChannel::App), Some(ToolArea::Finance));
+        assert_eq!(home_area(&BackendScope::Library, &BackendChannel::Meeting), Some(ToolArea::Meeting));
         let (system, _) = router_prompt(&offered, &[RouterMessage { from_user: true, content: "almorcé milanesa", attachments: 0 }], Some(ToolArea::Finance));
         assert!(system.contains("abierto en el módulo «finanzas»"));
         assert_eq!(fallback_areas("almorcé milanesa", &offered, false, Some(ToolArea::Finance))[0], ToolArea::Finance);

@@ -212,6 +212,33 @@ pub fn resolve_model(settings: &AiSettings, available: &[String]) -> Result<Stri
         .ok_or_else(|| BackendError::invalid_input("No hay modelos disponibles en Ollama."))
 }
 
+/// Context tokens reserved for the task's answer, over the prompt. The
+/// answer itself is not capped: a model that writes its reasoning before
+/// the answer needs more, and the task's timeout stops a runaway one.
+pub const TASK_OUTPUT_TOKENS: usize = 4_096;
+/// Context sizes a task asks for, smallest first. Few sizes, so a local
+/// model is not reloaded on every request for a slightly different one.
+/// A request larger than every step asks for what it needs: the only
+/// ceiling is the model's own context.
+const TASK_CONTEXT_TOKENS: [usize; 4] = [16_384, 32_768, 65_536, 131_072];
+/// Characters per token, on the safe side for Spanish text.
+const CHARS_PER_TOKEN: usize = 3;
+/// Tokens an attached image takes.
+const IMAGE_TOKENS: usize = 1_536;
+
+/// Ollama `options` of a one-shot task. Without `num_ctx` a local model
+/// reads only its default context (2048 tokens) and drops the start of a
+/// longer prompt, with its instructions: it answers something else, or
+/// writes until the request times out. `max_context` is the model's own
+/// context limit, when Ollama reports it: the request never asks beyond
+/// it, and nothing else caps the size. Cloud models ignore both values.
+pub fn task_options(prompt_chars: usize, images: usize, max_context: Option<usize>) -> Value {
+    let needed = prompt_chars.div_ceil(CHARS_PER_TOKEN) + images * IMAGE_TOKENS + TASK_OUTPUT_TOKENS;
+    let num_ctx = TASK_CONTEXT_TOKENS.into_iter().find(|size| *size >= needed).unwrap_or(needed);
+    let num_ctx = max_context.map_or(num_ctx, |max| num_ctx.min(max));
+    serde_json::json!({ "num_ctx": num_ctx })
+}
+
 pub const INKMATH_SYSTEM_PROMPT: &str = "Sos un transcriptor preciso de formulas matematicas manuscritas a LaTeX.";
 pub const INKMATH_USER_PROMPT: &str = "Transcribi exclusivamente la formula matematica manuscrita de la imagen a LaTeX. Responde solo con el codigo LaTeX, sin delimitadores, bloques Markdown ni explicaciones. Conserva fracciones, indices, exponentes, raices, integrales, sumatorias y saltos de linea visibles. No inventes simbolos que no aparezcan en la imagen.";
 
@@ -237,6 +264,22 @@ pub const TRANSCRIPT_SYSTEM_PROMPT: &str = "Sos el asistente de Notia. Responde 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_asks_for_a_context_that_holds_its_prompt_and_answer() {
+        let options = |chars: usize, images: usize, max: Option<usize>| task_options(chars, images, max)["num_ctx"].as_u64().unwrap();
+        // A meeting's notes request: transcript, library and earlier notes.
+        assert_eq!(options(34_000, 0, None), 16_384);
+        assert_eq!(options(40_000, 0, Some(262_144)), 32_768);
+        assert_eq!(options(1_000, 2, None), 16_384);
+        // Larger than every step: what it needs, up to the model's context.
+        assert_eq!(options(1_000_000, 0, None), 337_430);
+        assert_eq!(options(1_000_000, 0, Some(262_144)), 262_144);
+        // A model smaller than the step the request would take.
+        assert_eq!(options(40_000, 0, Some(8_192)), 8_192);
+        // The answer is never capped: a model may reason before it answers.
+        assert!(task_options(10, 0, None).get("num_predict").is_none());
+    }
 
     #[test]
     fn endpoints_are_reduced_to_scheme_and_host() {

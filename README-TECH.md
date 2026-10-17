@@ -12008,7 +12008,133 @@ Regla de `CLAUDE.md`: el tablero publicado es igual al Task Manager en funciones
 | Las herramientas de Task Manager del agente publicado corrían sobre todos los tableros del usuario (`allowed_board_ids` vacío) | Corregido: `task_board_scope` toma los tableros de la publicación activa (`published_board_ids`). Sin publicación activa de esa biblioteca, `Forbidden` |
 | Historial de Pomodoro no visible: mezcla todos los tableros | Diferencia aceptada por alcance |
 | Sin sugerencias de `[[enlaces]]`: mostrarían las notas de toda la biblioteca | Diferencia aceptada por alcance |
-| Chat publicado propio (efímero, sin agentes ni historial); las preguntas y confirmaciones se responden en la ventana del Owner con `window.prompt` | Pendiente: chat igual al panel lateral |
-| Abrir un ticket muestra `TaskSourceDialog` (el mismo `MarkdownView` en un modal con «Guardar») en vez de la vista de documento | Pendiente: vista de documento igual |
+| Chat publicado propio; el turno lo coordinaba la ventana del Owner (`useTaskManagerPublicationAiHostBridge`), que contestaba las preguntas y confirmaciones con `window.prompt` | Corregido: ver «Chat publicado» abajo |
+| Tocar el título de un ticket no hacía nada (solo el doble toque abría `TaskSourceDialog`) | Corregido: ver «Tickets en pestañas» abajo |
 
 **Validaciones:** `cargo test -p notia-backend-core`: 587 y 1 falla previa (`image_generation::only_sexual_content_with_minors_is_refused`, ajena a este cambio). Incluye `a_publication_never_creates_edits_or_deletes_boards` y `a_published_guest_gets_only_task_tools_and_questions`. `cargo test -p notia-app --features bluetooth`: 510. Vitest de Task Manager: 59. Falta probar la publicación desde otro equipo.
+
+### Chat publicado
+
+- **Turno en Rust.** `POST /ai/stream` ya no le pasa la pregunta a la ventana del Owner: `register_published_ai_host_request` arranca `ai_chat::run_published_turn` en un hilo. Corre en modo `Published`, con el usuario de la sesión, chat transitorio y la configuración de IA de la biblioteca (`configure_from_library_config`). No hace falta la ventana abierta en esa biblioteca. Se borraron `useTaskManagerPublicationAiHostBridge`, `publishedTaskManagerChatRuntime`, `publishedTaskManagerChatProxyRuntime` y el comando `publish_task_manager_ai_stream_event`.
+- **Eventos.** `ActiveTurn.forward` (`TurnForward`) manda a la página lo que la ventana recibiría:
+  - las preguntas, confirmaciones y planes (`ai-chat-interaction`);
+  - los mensajes del intercambio (`ai-chat-agent`);
+  - los eventos del runtime (`notia:backend-event`), que `EventRelay` lee de `request_events` cada 120 ms.
+  - Cada línea del NDJSON es `{type: 'event', name, payload}`, y el cierre es `{type: 'done', outcome}` o `{type: 'error', error}`.
+- **Respuestas.** `POST /ai/answer {requestId, answer}` y `POST /ai/cancel {requestId}` (`serve_publication_ai_control`). Solo los acepta el usuario de la sesión que inició el turno, y mientras el turno corre (`published_turn_user`). Si la página se va o el stream se cancela, el turno se cancela.
+- **Validación.** `requestId` de 1 a 64 caracteres `[A-Za-z0-9_-]`, mensaje de hasta 50.000 caracteres y hasta 100 mensajes previos, solo `user` y `assistant` (`published_chat_messages`).
+- **Página.** `publishedChatChannel` implementa `ai_chat_send`, `ai_chat_answer` y `ai_chat_cancel`, y esos tres eventos, en el transporte publicado. Así `PublishedTaskManagerChat` usa el mismo `startChatTurn` que la app y las mismas piezas del panel lateral:
+  - `ChatPanelHeader`, sin agentes y con `showHistory={false}`;
+  - `ChatPanelWelcome` con `DEFAULT_CHAT_STARTERS`, que ahora vive en `chatStarters.ts`;
+  - `ChatThread`, con preguntas, confirmaciones y planes;
+  - `ChatComposer`, con `canAttach={false}` y `canDictate={false}`.
+- **Efímero.** La conversación vive en la página; cerrar el panel o tocar «Nuevo chat» la borra. Un turno que falla vuelve el borrador y la conversación a como estaban y muestra el error en un diálogo, como la app.
+- **Dictado.** `useVoiceTranscription` elige el hook remoto para cualquier transporte que no sea local. En la publicación queda inactivo, porque no ofrece `speech_remote_audio`.
+
+### Tickets en pestañas
+
+- **Abrir.** `TaskManagerApp` recibe `onOpenTask`. La publicación abre el ticket en una pestaña de la barra de título, junto a una pestaña fija «Task Manager» que vuelve al tablero: en la app se vuelve desde la barra lateral.
+- **Vista.** La pestaña muestra el mismo `MainView` de la app. Su estado vacío, que usa las acciones de la ventana, pasó a `MainViewEmpty`.
+- **Guardado.** `usePublishedTicketTabs` lee y escribe con `task_manager_read_ticket_source` y `task_manager_write_ticket_source`, con la revisión. Guarda 1200 ms después del último cambio (`MARKDOWN_AUTOSAVE_DEBOUNCE_MS`, el de la app), de a un guardado por ticket. Al cerrar la pestaña guarda lo pendiente. Un conflicto pide cerrar y volver a abrir el ticket. `writeTaskMarkdownSource` devuelve la revisión nueva cuando la respuesta la trae.
+- **Comandos nuevos de la publicación** (`PUBLISHED_COMMANDS`):
+  - `markdown_set_page_mode`: es puro;
+  - `markdown_ink_*` (cargar, agregar, quitar, reponer, reemplazar, seleccionar, mover, borrar): pasan por `note_ink::execute_for_publication`, que usa la biblioteca de la publicación y exige que la nota sea un ticket autorizado (`authorized_ticket_path`). No marcan `changed`, para que los tableros no se recarguen por cada trazo;
+  - `backend_preview_editor_preferences`: normaliza página y lápiz y deriva el formato sin guardar nada.
+- **Preferencias del editor.** El bootstrap trae `editorPreferences`, que son la página y el lápiz del host (`host_editor_preferences`). Los cambios del invitado quedan en la página (`saveEditorPreferences`).
+- **Límites.** El límite de `/invoke` subió a 480 por minuto por sesión y 720 por IP, porque escribir a mano manda un pedido por trazo.
+- **Lo que la publicación no ofrece**, y cómo se resuelve en la interfaz:
+  - exportar: el archivo quedaría en la biblioteca del host; `MarkdownDocumentMenu` no muestra exportar sin `onExport`;
+  - convertir trazos con IA: `InkLayer` oculta el botón sin `markdown_ink_convert`;
+  - resolver bloques GitBook: `resolveGitbookBlocks` devuelve vacío sin `markdown_blocks_resolve`;
+  - enlaces a otras notas e imágenes de la biblioteca.
+
+### Corrección del editor: el primer cambio de una nota se perdía
+
+- **Síntoma.** Al abrir una nota en un navegador real y hacer un solo cambio (por ejemplo, marcar una tarea), el cambio no se escribía. Solo se guardaba si después había otro cambio.
+- **Causa.** Milkdown aplica una transacción al estado antes de crear la vista. Al crearse, el plugin de `markdownChangeBuffer` ya veía `changed: true` y no fijaba el punto de partida (`reset`), así que el primer cambio de la persona pasaba a ser ese punto de partida.
+- **Corrección.** La primera vista siempre parte de su documento (`buffer.hasStart()`). Una vista que el cuarto compartido rehace mantiene lo pendiente, como antes. El test `writes the first change even when the state changed before the view opened` falla sin la corrección.
+
+**Validaciones (2026-10-16):**
+
+- Pruebas automáticas: `cargo test -p notia-app --features bluetooth` 511 y `cargo test -p notia-backend-core` 587 más la falla previa de `image_generation`. Vitest 603, con `publishedChatChannel.test.ts`. Pasan `tsc` y `eslint`. `cargo check --target aarch64-linux-android`: sin errores, 59 warnings, como antes. Las funciones del turno publicado son solo de Windows, porque el servidor de publicación existe solo en Windows.
+- Harness con Vite y Chrome por DevTools, con el transporte simulado: el ticket se abre en su pestaña con la misma vista de la app; marcar una tarea guarda solo, con la revisión esperada; el chat lateral escribe, envía y muestra la respuesta.
+- Falta probar con la publicación real desde otro equipo: turno real, preguntas y confirmaciones del agente, trazos y conflictos.
+
+## Task Manager: proyecto, personas, filtros y vista estable (2026-10-16)
+
+Pedido en una lista de mejoras sobre el tablero; como el tablero publicado usa el mismo `TaskManagerApp`, todo vale para los dos.
+
+### Contrato
+
+- **Frontmatter.** `task_manager_store.rs` lee `proyecto` (texto) y `asignados` (lista o texto separado por comas) y los escribe así. Al escribir quita las variantes con otras mayúsculas para no duplicar claves.
+- **Ticket.** `TaskTicketDto` suma `project: Option<String>` y `assignees: Vec<String>`. `TaskUpdateFieldsDto` suma `project` (vacío lo quita) y `assignees`. `normalized_assignees` recorta, quita vacíos y repetidos sin distinguir mayúsculas; el máximo es 20 personas de hasta 80 caracteres, igual que el proyecto.
+- **Vista.** `TaskItemViewDto` lleva `project` y `assignees`. Las intenciones `create-task` y `edit-task` aceptan los dos campos con `#[serde(default)]`.
+- **Herramientas.** `update_task_fields` y `bulk_update_tasks` aceptan `project` y `assignees`: el agente asigna proyecto y personas.
+- **Detalle de la tarjeta.** `markdown_preview` reemplaza al recorte plano de 180 caracteres: conserva las líneas (hasta 6 y 280 caracteres) para que la tarjeta lo muestre con `ChatMarkdownMessage`.
+
+### Interfaz
+
+- **Filtros.** `utils/taskFilters.ts` y `TaskFilterBar`: búsqueda sin acentos ni mayúsculas, y estado, prioridad, proyecto y persona. Es una excepción visual: solo elige qué tickets ya entregados por Rust se muestran, sin cambiar datos ni orden. Una subtarea que coincide mantiene a su tarea, y una tarea que queda mantiene sus subtareas. Se aplica al tablero, a la tabla y a Completadas y Canceladas, no a Pomodoro.
+- **Avisos.** `useTaskManager.runIntent` recibe el aviso de éxito («Tarea finalizada», «Tarea desestimada», «Prioridad: Alta», «Tarea movida a «grupo»», «Comentario agregado»…). El `Snackbar` está arriba a la izquierda, debajo de la barra de la ventana, con los tokens del tema.
+- **Confirmación.** `TaskBoardView.changeTaskState` pide confirmación con `useConfirmationEngine` antes de pasar a `Finalizada` o `Cancelada`, desde los botones y desde el menú de estado. El tablero publicado ya tenía el `ConfirmationEngineProvider`.
+- **Vista quieta.** `keepCardInPlace` guarda la posición en pantalla de la tarjeta antes de la acción, y un `useLayoutEffect` sobre `tasks`/`groups` la restaura tras cada recarga durante 1,5 s. Si la tarjeta ya no está (finalizada, desestimada o movida a otro grupo), vuelve al mismo `scrollTop`. Los grupos y tarjetas usan `contain-intrinsic-size: auto …` para que `content-visibility` recuerde su altura real y no salte el scroll.
+- **Arrastre con mouse.** Un `dragover` en `document` alimenta el mismo `autoScrollStep` del arrastre con el dedo mientras hay un arrastre nativo (tarea, subtarea o grupo): cerca del borde el tablero se desplaza en cada cuadro.
+- **Edición.** El lápiz abre `TaskSourceDialog`, igual que el doble clic. Se quitó el modo edición de `TaskDialog` y `openTaskEditDialog`; el diálogo solo crea. La intención `edit-task` de Rust sigue disponible.
+- **Comentario.** `TaskCommentDialog` usa `MarkdownView` (Milkdown, carga diferida) y oculta el panel de propiedades; al guardar descarga lo pendiente del editor con `flushPendingEditorChanges`.
+- **Botones.** «Nueva tarea», «Subtarea» y «Nuevo grupo» son `<button type="button">` que ocupan toda su área.
+
+**Validaciones (2026-10-16):**
+
+- `npx tsc --noEmit -p tsconfig.app.json` y ESLint de `src/modules/task-manager` sin errores. Vitest: `taskFilters` (5) y `TaskBoardView` (19, con confirmación, Markdown, proyecto, personas y botón).
+- `cargo test -p notia-backend-core` 588 más la falla previa de `image_generation`; `cargo test -p notia-app task_manager` 71; `cargo check --target aarch64-linux-android` con las 59 advertencias de base.
+- Harness con Vite y Chrome por DevTools: confirmar «Finalizar» deja el `scrollTop` igual (662 → 662) y muestra «Tarea finalizada»; la búsqueda «remesas» deja 9 de 18; arrastrar con el mouse cerca del borde superior lleva el tablero de 1791 a 0; el comentario abre Milkdown; a 390 px los filtros se acomodan en dos columnas.
+- Falta probar en Android con el dedo (arrastre y vista quieta) y en la publicación real.
+
+## Meeting: Notas IA y repaso que no terminaban (2026-10-16)
+
+**Síntomas.** Las Notas IA se quedaban en «El agente está escribiendo las notas…» o fallaban con «La IA no devolvió notas válidas. Probá de nuevo.». Al finalizar, el repaso se quedaba en la búsqueda de nombres de los hablantes y terminaba en «La operación superó el tiempo permitido».
+
+**Causas.**
+
+- **Contexto de Ollama.** `ai_tasks::complete` y `stream_complete` no mandaban `options`. Un modelo local usa entonces su contexto por defecto: 2048 tokens en esta máquina, medido con `prompt_eval_count` (2050 sobre un pedido de 4522). Ollama descarta el principio del prompt, que es donde están las instrucciones. El modelo contesta otra cosa, en prosa, y no hay JSON. Sin `num_predict` puede escribir hasta agotar los 180 s del pedido. Los pedidos de Meeting superan ese límite: transcripción de hasta 24.000 caracteres para las notas y 40.000 para los nombres.
+- **Razonamiento antes del JSON.** Un modelo de nube con `think: false` escribe su análisis en la respuesta, con llaves de ejemplo, antes del bloque JSON (reproducido con `glm-5.3-flash`, el modelo en uso: hasta 16.000 caracteres de razonamiento). `meeting::json_object` tomaba desde la primera `{` hasta la última `}` y no podía leerlo. Además, un primer intento de tope de salida (`num_predict` 4096) cortaba ese razonamiento antes del JSON final (`done_reason: length`), con el mismo error: no hay tope de salida; el guard contra una generación infinita es el timeout de 180 s de la tarea.
+
+**Corrección.**
+
+- `ai_settings::task_options(caracteres, imágenes, contexto_máximo)` arma `{"num_ctx"}`. Estima 3 caracteres por token, 1536 tokens por imagen y reserva `TASK_OUTPUT_TOKENS` (4096) de contexto para la respuesta; la respuesta en sí no tiene tope. Elige el menor escalón de 16.384, 32.768, 65.536 o 131.072 que alcance (pocos tamaños para que el modelo local no se recargue en cada pedido); un pedido mayor que todos los escalones pide lo que necesita. El único techo es el contexto máximo del modelo: `ai_tasks::model_context` lo consulta a Ollama (`/api/show`, clave `*.context_length` de `model_info`; en Android la agrega `inspectModel` del puente como `contextLength`) y lo cachea 10 minutos por modelo. Sin dato (modelo de nube, endpoint caído, valor menor a 2048) no hay techo. Los modelos de nube ignoran ambos valores; se comprobó que aceptan el campo.
+- `OllamaTransport::chat` y `stream_chat` reciben `options`, y `Value::Null` no manda nada. En escritorio van en `OllamaChatRequest` y en Android en el payload del puente. `AiBridgePlugin.kt` los agrega al cuerpo en `toolChat` y `rawChatStreaming`. El agente del chat sigue sin `options`.
+- `meeting::json_object_expecting(respuesta, claves)` recorre todos los objetos parseables de la respuesta: gana el más largo que tenga alguna de las claves esperadas y, sin ninguna, el más largo. Saltea las llaves que caen dentro de un objeto ya encontrado y tolera el texto, las llaves sueltas y el bloque de código alrededor. Las notas esperan `objective…tasks`, el resumen `summary/keyPoints/tasks`, la limpieza `segments` y los nombres `speakers`; así un objeto de ejemplo del razonamiento no tapa la respuesta real.
+
+**Validaciones (2026-10-16):**
+
+- Pruebas con Ollama 0.40.2, mismo pedido que manda Notia:
+  - `qwen3.5:4b` local: sin `options`, notas y nombres salen en prosa. Con el contexto calculado, JSON válido en 15 s para las notas y en 6,5 s para los nombres, con 32.000 caracteres de transcripción.
+  - `glm-5.3-flash:cloud` (el modelo configurado): con el tope de salida, 1 de 3 corridas terminaba en `done_reason: length` con el JSON cortado; sin tope, 4 de 4 corridas con una transcripción de 24.000 caracteres devuelven las notas completas (13–27 s, hasta 4.254 tokens de salida). Regresiones: `the_answer_object_is_found_after_reasoning_with_braces` y `the_object_with_the_expected_keys_beats_a_longer_fragment_of_the_reasoning`.
+- `cargo test -p notia-backend-core` con 590 pruebas, más la falla previa de `image_generation`. Pruebas nuevas: `a_task_asks_for_a_context_that_holds_its_prompt_and_answer` y `the_answer_object_is_found_after_reasoning_with_braces`.
+- `cargo test -p notia-app --features bluetooth` con 512 pruebas; `cargo check --target aarch64-linux-android` con las 59 advertencias de base; `:app:compileArm64DebugKotlin` compila el puente con `options`.
+- Falta probar una reunión real con el modelo configurado en la app, y en Android.
+
+## Meeting: herramientas del agente sobre la reunión abierta (2026-10-16)
+
+Pedido: que el chat desplegable de IA de la derecha, sobre Meeting, pueda modificar y agregar notas, cambiar el contexto y corregir la transcripción.
+
+### Herramientas (área `reunion`, `backend-core/src/meeting_tools.rs`)
+
+- `get_meeting_overview` (lectura): estado (`grabando`/`separando-hablantes`/`finalizada`), fecha, duración, hablantes, contexto de la IA y Notas IA completas. Sin reunión abierta devuelve `{open: false}`.
+- `update_meeting_notes`: reemplaza solo las secciones enviadas (`objective`, `decisions`, `openQuestions`, `topics`, `tasks`); una tarea cuyo texto no cambia conserva id y marca de enviada al Task Manager (misma regla que `parse_notes`).
+- `add_meeting_notes`: agrega sin borrar (decisiones, preguntas, notas de un tema —lo crea si falta— y tareas); omite duplicados (comparación sin tildes ni mayúsculas) y responde cuántos agregó.
+- `set_meeting_ai_context`: `mode` `biblioteca` (con `contexts` opcional; sin ellos, los no sensibles —los `locked` solo si se nombran—), `carpeta` (con `folder`, validada contra las carpetas con notas) o `ninguno`. Guarda la elección en `meetingAiContext` de device-preferences (como el picker) y la aplica a la reunión abierta (`MeetingContextChoice::ai_context`, espejo de `useMeetingAiContext`).
+- `correct_meeting_transcript`: hasta 20 pares `{from, to}`; `MeetingRecord::replace_in_transcript` reemplaza palabra completa, sin distinguir mayúsculas y conservando la inicial mayúscula, en las líneas en vivo y en las intervenciones separadas; responde las apariciones cambiadas por par.
+
+### Cableado
+
+- Parsing y límites en `meeting_tools.rs` (reutiliza los topes de `meeting_ai`); los cambios los aplica `MeetingRecord` (`meeting.rs`). El ejecutor vive en `app/src/meeting.rs` (`execute_agent_tool`), opera sobre la reunión abierta del equipo y anuncia el cambio a la vista. En Host/Cliente responde por la reunión del host; la reunión local de un cliente Android no es visible para el agente del host.
+- Catálogo: scopes `[Library]`, escrituras con confirmación; `ToolPolicy::MeetingRead/Write` solo autoriza al Owner en scope `library` (fuera de Finanzas, tablero publicado y usuarios no Owner).
+- Ruteo: área nueva `reunion` (`ToolArea::Meeting`). `home_area` ahora recibe el canal: un chat sobre la vista Meeting (canal `Meeting`, fijado por `turn_route` con view `meeting`) arranca y cae en esa área; desde otros chats el router la elige por su descripción.
+- Guía del prompt (`prompt_guidance`): leer con `get_meeting_overview` antes de tocar; `update` reemplaza secciones completas, `add` suma; contar los reemplazos hechos.
+- Esquemas en `tool_schemas.json` (5 entradas). Sin cambios de frontend: el chat lateral ya manda `view: "meeting"`.
+
+**Validaciones (2026-10-16):**
+
+- `cargo test -p notia-backend-core`: 599 pruebas (parsing, reemplazo de palabra con mayúscula inicial, update que conserva id/enviada, addition sin duplicados, autorización del catálogo: Owner sí, invitado y tablero publicado no), más la falla previa de `image_generation`. `cargo test -p notia-app --features bluetooth`: 512. Android check con las 59 advertencias de base.
+- Falta probar con el modelo real en una reunión abierta (chat lateral y Telegram).

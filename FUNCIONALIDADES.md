@@ -19,6 +19,7 @@
 - Usuarios por biblioteca con contextos permitidos; Owner conserva acceso a todos los contextos.
 - Inicio de sesión del Owner al abrir la app (primer inicio, recordar sesión y datos, cambiar contraseña, cerrar sesión) y `.notia/notiaConfig.json` cifrado con su contraseña, sin recuperación.
 - Inicio de sesión del Task Manager publicado con el mismo diseño: primer inicio para usuarios sin contraseña, recordar sesión y datos, y cambio de contraseña.
+- Task Manager publicado igual al de la app: tickets que se abren en pestañas con el editor de la app (guardado automático, modo página, lápiz y trazos) y chat lateral igual al de la app, efímero y sin agentes, con las preguntas y confirmaciones del agente en el propio chat.
 - Exportación de notas a PDF (solo de notas en modo página) y DOCX con formato y sin las propiedades: fórmulas compuestas como texto en el PDF y como ecuaciones editables en Word, diagramas Mermaid y XGraph como imagen de su vista en el PDF, con el tamaño de página, los márgenes y la numeración configurados.
 - Modo página por nota (propiedad `pageMode`, apagado por defecto) en notas Markdown: hojas A3, orientación, márgenes y numeración, con títulos que pasan a la hoja siguiente junto con lo que introducen; sin modo página, la nota es una hoja con el mismo fondo, del ancho de un A3, centrada y sin fin hacia abajo.
 - Selección de varios bloques del editor Markdown con un rectángulo arrastrado desde un lugar vacío, como en el escritorio de Windows.
@@ -56,6 +57,7 @@
 - Meeting: repaso automático con IA al terminar la separación: ordena la transcripción (palabras mal oídas, muletillas, repeticiones) y nombra a los hablantes que la conversación identifica.
 - Meeting: «Reuniones anteriores» (panel en escritorio, pantalla propia en el celular) con las reuniones guardadas como nota, agrupadas por fecha, con búsqueda por título o contenido, y apertura de una reunión guardada para seguir trabajando con ella.
 - Meeting: «Pasar por IA» (resumen, puntos clave, tareas enviables al Task Manager y corrección), preguntas a la reunión con el minuto citado, guardado como nota Markdown y exportación a PDF o Word.
+- Meeting: herramientas del agente sobre la reunión abierta (chat lateral, chat principal y Telegram del Owner): ver estado y Notas IA, modificar o agregar notas, cambiar el contexto de la IA y corregir palabras de la transcripción.
 - Chat efímero de Meeting en el panel lateral con la transcripción como contexto.
 - Dictado y síntesis de voz offline, con reconocimiento Whisper large-v3-turbo y texto en vivo por LocalAgreement.
 - Búsqueda web pública sanitizada, con citas por URLs devueltas y límite operativo de seis búsquedas únicas por solicitud.
@@ -77,7 +79,8 @@
 - Sincronización de ColdPass mediante Bluetooth.
 - Extensión de Chrome NotIA (`chrome-ext/notia`): en una llamada de Microsoft Teams en Chrome, marca en la grabación de Meeting quién habla en cada momento, con nombre (por los subtítulos en directo o el contorno de quien habla); nombra las frases en vivo y los hablantes al terminar.
 - Extensión de Chrome para ColdPass (`chrome-ext/coldpass`): completa credenciales guardadas, ofrece guardar las nuevas y genera contraseñas, conectada al modo Host de esta computadora.
-- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas.
+- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor escritos con el editor Markdown, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas (lápiz o doble clic).
+- Task Manager: proyecto y personas asignadas por ticket, búsqueda y filtros por estado, prioridad, proyecto y persona, detalle de la tarjeta en Markdown, avisos de las acciones, confirmación para finalizar o desestimar y vista que no se mueve al cambiar un ticket.
 - Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
 - Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.
 - Herramientas de Task Manager del asistente en el chat del tablero, el chat principal y Telegram: tickets, comentarios (agregar, corregir y eliminar), subtareas y grupos (crear, renombrar, cambiar color, reordenar columnas y eliminar vacíos).

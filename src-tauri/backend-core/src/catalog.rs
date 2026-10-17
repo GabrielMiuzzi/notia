@@ -35,6 +35,9 @@ pub enum ToolPolicy {
     /// The AI actions of the library: the Owner's only.
     AiActionRead,
     AiActionWrite,
+    /// The open Meeting of this device: the Owner's only.
+    MeetingRead,
+    MeetingWrite,
     Memory,
     /// Gmail and Google Calendar of the library's connected accounts;
     /// confidential, like finance.
@@ -230,6 +233,8 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     catalog.extend(routine_tools(&super::gym::tools::GYM_WRITE_TOOLS, false));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_READ_TOOLS, true));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_WRITE_TOOLS, false));
+    catalog.extend(meeting_tools(&super::meeting_tools::MEETING_READ_TOOLS, true));
+    catalog.extend(meeting_tools(&super::meeting_tools::MEETING_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
         ["undo_ai_operation"],
         BackendScope::Library,
@@ -422,6 +427,22 @@ fn routine_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
         .collect()
 }
 
+/// The Meeting tools work on the open meeting of this device, from the
+/// library chats (the side chat over Meeting, the main chat, Telegram).
+fn meeting_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
+    names
+        .iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Tool versionada del catálogo backend.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Library],
+            read_only,
+            requires_confirmation: !read_only,
+        })
+        .collect()
+}
+
 /// Recetas live in the library: the library chat, Telegram and the chat of
 /// Finanzas reach them; a photo of a dish sent by Telegram becomes a recipe.
 fn recipe_tools(names: &[&str], read_only: bool) -> Vec<ToolDefinition> {
@@ -584,6 +605,8 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::gym::tools::is_gym_write_tool(name) => ToolPolicy::GymWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
+        name if super::meeting_tools::MEETING_READ_TOOLS.contains(&name) => ToolPolicy::MeetingRead,
+        name if super::meeting_tools::is_meeting_write_tool(name) => ToolPolicy::MeetingWrite,
         name if super::image_generation::is_image_tool(name) => ToolPolicy::Images,
         "list_agenda" => ToolPolicy::AgendaRead,
         "create_agenda_event"
@@ -762,6 +785,18 @@ pub fn authorize_tool_call(
             "Las acciones de IA son solo del Owner de la biblioteca.",
             false,
         )),
+        // The meeting is recorded on the Owner's device: only the Owner's
+        // library chats reach it.
+        ToolPolicy::MeetingRead | ToolPolicy::MeetingWrite
+            if context.actor.is_library_owner() && context.scope == BackendScope::Library =>
+        {
+            Ok(())
+        }
+        ToolPolicy::MeetingRead | ToolPolicy::MeetingWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "Las herramientas de la reunión son solo del Owner.",
+            false,
+        )),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite
             if principal.can_access_confidential_context()
                 && matches!(context.scope, BackendScope::Finance | BackendScope::Library) =>
@@ -890,6 +925,27 @@ mod tests {
             scopes: vec![scope],
             read_only,
             requires_confirmation: !read_only,
+        }
+    }
+
+    #[test]
+    fn meeting_tools_are_the_owners_and_stay_out_of_published_boards() {
+        let tools = project_tool_catalog(&context(BackendScope::Library), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog");
+        for name in crate::meeting_tools::MEETING_READ_TOOLS.iter().chain(crate::meeting_tools::MEETING_WRITE_TOOLS.iter()) {
+            let tool = tools.iter().find(|tool| tool.name == *name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(tool.requires_confirmation, !tool.read_only, "{name}");
+        }
+        assert_eq!(tool_policy("correct_meeting_transcript"), ToolPolicy::MeetingWrite);
+        assert_eq!(tool_policy("get_meeting_overview"), ToolPolicy::MeetingRead);
+        assert_eq!(crate::tool_routing::tool_area("update_meeting_notes"), Some(crate::tool_routing::ToolArea::Meeting));
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), allowed_contexts: Vec::new(), ..principal() };
+        let guest_tools = project_tool_catalog(&guest, &guest_principal, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("guest");
+        assert!(guest_tools.iter().all(|tool| !crate::meeting_tools::is_meeting_tool(&tool.name)));
+        let board = project_tool_catalog(&context(BackendScope::TaskManager), &principal(), &canonical_tool_catalog(), ToolCatalogProjection::PublishedTaskManager);
+        if let Ok(board) = board {
+            assert!(board.iter().all(|tool| !crate::meeting_tools::is_meeting_tool(&tool.name)));
         }
     }
 

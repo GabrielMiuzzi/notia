@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::error::BackendError;
 use crate::library_config::normalize_context_tag;
-use crate::meeting::{format_clock, initials, json_object, MeetingMark};
+use crate::meeting::{format_clock, initials, json_object_expecting, MeetingMark};
 
 /// Selection value of the notes that have no context.
 pub const UNTAGGED: &str = "sin-contexto";
@@ -35,14 +35,14 @@ const MIN_TERM_CHARS: usize = 3;
 pub const NOTES_TRANSCRIPT_CHARS: usize = 24_000;
 /// Time between two automatic notes passes while recording.
 pub const NOTES_PASS_INTERVAL_MS: u64 = 5 * 60 * 1_000;
-const MAX_OBJECTIVE_CHARS: usize = 400;
-const MAX_ITEM_CHARS: usize = 300;
-const MAX_LIST_ITEMS: usize = 20;
-const MAX_TOPICS: usize = 40;
-const MAX_TOPIC_ITEMS: usize = 12;
-const MAX_TOPIC_TITLE_CHARS: usize = 120;
-const MAX_NOTE_TASKS: usize = 30;
-const MAX_TASK_FIELD_CHARS: usize = 60;
+pub(crate) const MAX_OBJECTIVE_CHARS: usize = 400;
+pub(crate) const MAX_ITEM_CHARS: usize = 300;
+pub(crate) const MAX_LIST_ITEMS: usize = 20;
+pub(crate) const MAX_TOPICS: usize = 40;
+pub(crate) const MAX_TOPIC_ITEMS: usize = 12;
+pub(crate) const MAX_TOPIC_TITLE_CHARS: usize = 120;
+pub(crate) const MAX_NOTE_TASKS: usize = 30;
+pub(crate) const MAX_TASK_FIELD_CHARS: usize = 60;
 
 // --- Library context -----------------------------------------------------------
 
@@ -108,7 +108,7 @@ impl MeetingAiContext {
 
 /// `a/b`, without surrounding slashes, `.` or `..` segments, or backslashes;
 /// `None` for an empty value (the whole library).
-fn normalized_folder(folder: &str) -> Result<Option<String>, BackendError> {
+pub(crate) fn normalized_folder(folder: &str) -> Result<Option<String>, BackendError> {
     let trimmed = folder.trim().trim_matches('/');
     if trimmed.is_empty() {
         return Ok(None);
@@ -171,6 +171,20 @@ pub struct MeetingContextChoice {
 }
 
 impl MeetingContextChoice {
+    /// The context a meeting reads with this choice, as the picker derives
+    /// it: a folder, the whole library limited to `contexts`, or nothing
+    /// (`None`) with «Ninguna».
+    pub fn ai_context(&self, library_id: &str) -> Option<MeetingAiContext> {
+        if !self.whole_library {
+            return self.folder.clone().map(|folder| MeetingAiContext {
+                library_id: library_id.to_string(),
+                folder: Some(folder),
+                contexts: None,
+            });
+        }
+        Some(MeetingAiContext { library_id: library_id.to_string(), folder: None, contexts: Some(self.contexts.clone()) })
+    }
+
     /// A stored choice made valid: a safe folder (or none) and well-formed
     /// contexts, once each; `None` for a value that is not a choice.
     pub fn from_stored(value: &Value) -> Option<Self> {
@@ -461,7 +475,7 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn fold(text: &str) -> String {
+pub(crate) fn fold(text: &str) -> String {
     text.to_lowercase()
         .chars()
         .map(|character| match character {
@@ -687,8 +701,7 @@ Listas vacías si todavía no hay nada.\n",
 /// name them. An answer without any note does not replace notes the
 /// meeting already has.
 pub fn parse_notes(answer: &str, previous: &MeetingAiNotes) -> Result<MeetingAiNotes, BackendError> {
-    let object = json_object(answer)
-        .filter(Value::is_object)
+    let object = json_object_expecting(answer, &["objective", "decisions", "openQuestions", "topics", "tasks"])
         .ok_or_else(|| BackendError::invalid_input("La IA no devolvió notas válidas. Probá de nuevo."))?;
     let text = |value: Option<&Value>, max: usize| -> String {
         value.and_then(Value::as_str).map(|text| clip(text, max)).unwrap_or_default()
@@ -781,7 +794,7 @@ pub fn parse_notes(answer: &str, previous: &MeetingAiNotes) -> Result<MeetingAiN
 }
 
 /// `mm:ss` or `h:mm:ss` in milliseconds.
-fn parse_clock(value: &str) -> Option<u64> {
+pub(crate) fn parse_clock(value: &str) -> Option<u64> {
     let parts = value.trim().split(':').map(|part| part.trim().parse::<u64>().ok()).collect::<Option<Vec<_>>>()?;
     let seconds = match parts.as_slice() {
         [minutes, seconds] if *seconds < 60 => minutes * 60 + seconds,
@@ -791,7 +804,7 @@ fn parse_clock(value: &str) -> Option<u64> {
     Some(seconds * 1_000)
 }
 
-fn clip(text: &str, max_chars: usize) -> String {
+pub(crate) fn clip(text: &str, max_chars: usize) -> String {
     single_line(text).chars().take(max_chars).collect::<String>().trim().to_string()
 }
 

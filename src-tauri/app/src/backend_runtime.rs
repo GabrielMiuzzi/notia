@@ -1349,6 +1349,11 @@ impl TauriBackendToolExecutor {
             "add_agenda_note",
             "set_agenda_note_done",
             "delete_agenda_note",
+            "get_meeting_overview",
+            "update_meeting_notes",
+            "add_meeting_notes",
+            "set_meeting_ai_context",
+            "correct_meeting_transcript",
             "list_gmail_messages",
             "read_gmail_message",
             "list_gmail_labels",
@@ -4395,6 +4400,9 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     .map_err(Self::agenda_error)?
             }
             name if notia_backend_core::mail_tools::is_mail_tool(name) => crate::mail_tools::execute(&self.app, context, call)?,
+            name if notia_backend_core::meeting_tools::is_meeting_tool(name) => {
+                crate::meeting::execute_agent_tool(&self.app, &context.library_id, name, &call.arguments)?
+            }
             "get_weather" => crate::weather::execute_tool(&self.app, &context.library_id, &call.arguments)?,
             _ => {
                 return Err(BackendError::new(
@@ -4416,7 +4424,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::meeting_tools::is_meeting_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4860,7 +4868,7 @@ fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &Agen
         return None;
     }
     let offered = offered_areas(&request.tools);
-    let home = home_area(&request.context.scope);
+    let home = home_area(&request.context.scope, &request.context.channel);
     let attachment_count = |message: &BackendMessage| message.images.len() + message.attachments.len();
     // The last request goes with the text of its files and its first images:
     // the attachment itself tells what kind of request it is.

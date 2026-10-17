@@ -64,6 +64,7 @@ pub fn scope_guidance(
         BackendScope::Document => document(&mut guidance, snapshot),
     }
     agenda_tools(&mut guidance, today);
+    meeting_tools(&mut guidance);
     recipe_tools(&mut guidance);
     health_tools(&mut guidance, today);
     gym_tools(&mut guidance);
@@ -178,6 +179,20 @@ fn general(guidance: &mut Guidance, context: &BackendRequestContext) {
     guidance.push_if(
         &["request_user_clarification"],
         "Cuando haya varias opciones razonables, llamá request_user_clarification con cada alternativa concreta en choices. Una aclaración define la operación pero nunca la autoriza: la herramienta de mutación mostrará su propia confirmación.",
+    );
+}
+
+/// The tools over the open Meeting, in the chat over that view and in the
+/// library chats.
+fn meeting_tools(guidance: &mut Guidance) {
+    if !guidance.has("get_meeting_overview") {
+        return;
+    }
+    guidance.push(
+        "Reunión (Meeting): usá get_meeting_overview antes de tocar las notas o la transcripción; si no hay una reunión abierta, decilo sin inventar. \
+update_meeting_notes reemplaza completas solo las secciones que mandás (releé las notas primero); para sumar sin borrar usá add_meeting_notes. \
+correct_meeting_transcript corrige una palabra o frase mal transcripta en toda la transcripción (palabra completa, sin distinguir mayúsculas): contá cuántas apariciones cambiaste. \
+set_meeting_ai_context cambia qué parte de la biblioteca lee la IA de la reunión y queda guardado para las próximas reuniones.",
     );
 }
 

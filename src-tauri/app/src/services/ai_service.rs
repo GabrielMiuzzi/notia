@@ -91,6 +91,8 @@ pub struct AiModelListResult {
 #[serde(rename_all = "camelCase")]
 pub struct AiModelDetailsResult {
     pub capabilities: Vec<String>,
+    /// The model's context limit in tokens, when Ollama reports it.
+    pub context_length: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -148,6 +150,9 @@ struct OllamaModelDescriptor {
 struct OllamaShowResponse {
     #[serde(default)]
     capabilities: Vec<String>,
+    /// Architecture-prefixed details, such as `qwen35.context_length`.
+    #[serde(default)]
+    model_info: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,6 +175,8 @@ struct OllamaChatRequest<'a> {
     model: &'a str,
     stream: bool,
     think: &'a serde_json::Value,
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    options: &'a serde_json::Value,
     messages: &'a [AiChatMessage],
 }
 
@@ -623,8 +630,14 @@ pub async fn inspect_ollama_model(
         .json::<OllamaShowResponse>()
         .await
         .map_err(|_| "Ollama devolvio capacidades de modelo invalidas.".to_string())?;
+    let context_length = payload
+        .model_info
+        .iter()
+        .find(|(key, _)| key.ends_with(".context_length"))
+        .and_then(|(_, value)| value.as_u64());
     Ok(AiModelDetailsResult {
         capabilities: payload.capabilities,
+        context_length,
     })
 }
 
@@ -634,6 +647,7 @@ pub async fn run_ollama_chat(
     model: &str,
     messages: &[AiChatMessage],
     think: &serde_json::Value,
+    options: &serde_json::Value,
 ) -> Result<AiChatResult, String> {
     let normalized_model = model.trim();
     if normalized_model.is_empty() {
@@ -654,6 +668,7 @@ pub async fn run_ollama_chat(
                 model: normalized_model,
                 stream: false,
                 think,
+                options,
                 messages,
             }),
         settings,
@@ -763,6 +778,7 @@ where
         model,
         messages,
         think,
+        &serde_json::Value::Null,
         Arc::new(AtomicBool::new(false)),
         on_delta,
     )
@@ -775,6 +791,7 @@ pub async fn stream_ollama_chat_with_cancellation<F>(
     model: &str,
     messages: &[AiChatMessage],
     think: &serde_json::Value,
+    options: &serde_json::Value,
     cancellation: Arc<AtomicBool>,
     mut on_delta: F,
 ) -> Result<String, String>
@@ -800,6 +817,7 @@ where
                 model: normalized_model,
                 stream: true,
                 think,
+                options,
                 messages,
             }),
         settings,

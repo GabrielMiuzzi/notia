@@ -1062,6 +1062,134 @@ pub(crate) async fn meeting_ai_context_options(
 /// Device preferences section with the «Contexto para la IA» of each library.
 const CONTEXT_CHOICES_SECTION: &str = "meetingAiContext";
 
+// --- Agent tools --------------------------------------------------------------
+
+/// Executes one of the agent's Meeting tools (the chat over the Meeting
+/// view, the library chat, Telegram). The meeting lives on this device: a
+/// host answers about its own meeting, never about a client's.
+pub(crate) fn execute_agent_tool(
+    app: &AppHandle,
+    library_id: &str,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<serde_json::Value, BackendError> {
+    use notia_backend_core::meeting_tools as tools;
+    match name {
+        "get_meeting_overview" => {
+            let inner = lock(app)?;
+            Ok(match inner.record.as_ref() {
+                Some(record) => record.agent_overview(inner.ai_context.as_ref()),
+                None => no_open_meeting(),
+            })
+        }
+        "update_meeting_notes" => {
+            let update = tools::parse_notes_update(arguments)?;
+            with_open_meeting(app, |record| {
+                record.apply_notes_update(update);
+                Ok(json!({ "ok": true, "changed": true, "notes": notes_value(record) }))
+            })
+        }
+        "add_meeting_notes" => {
+            let addition = tools::parse_notes_addition(arguments)?;
+            with_open_meeting(app, |record| {
+                let added = record.apply_notes_addition(addition);
+                Ok(json!({ "ok": true, "changed": added > 0, "added": added, "notes": notes_value(record) }))
+            })
+        }
+        "correct_meeting_transcript" => {
+            let replacements = tools::parse_replacements(arguments)?;
+            with_open_meeting(app, |record| {
+                let mut results = Vec::new();
+                let mut total = 0;
+                for (from, to) in &replacements {
+                    let count = record.replace_in_transcript(from, to);
+                    total += count;
+                    results.push(json!({ "from": from, "to": to, "count": count }));
+                }
+                let mut value = json!({ "ok": true, "changed": total > 0, "replacements": results });
+                if total == 0 {
+                    value["message"] = json!("Ninguna aparición coincide; revisá la palabra exacta con get_meeting_overview o la transcripción.");
+                }
+                Ok(value)
+            })
+        }
+        "set_meeting_ai_context" => set_agent_ai_context(app, library_id, arguments),
+        _ => Err(BackendError::new(BackendErrorCode::Unsupported, "La herramienta de reunión no existe.", false)),
+    }
+}
+
+fn no_open_meeting() -> serde_json::Value {
+    json!({ "open": false, "message": "No hay una reunión abierta en Meeting." })
+}
+
+fn notes_value(record: &MeetingRecord) -> serde_json::Value {
+    serde_json::to_value(&record.ai_notes.notes).unwrap_or(serde_json::Value::Null)
+}
+
+/// Runs `change` on the open meeting, whatever its id, and announces it.
+fn with_open_meeting(
+    app: &AppHandle,
+    change: impl FnOnce(&mut MeetingRecord) -> Result<serde_json::Value, BackendError>,
+) -> Result<serde_json::Value, BackendError> {
+    let (value, meeting_id) = {
+        let mut guard = lock(app)?;
+        let record = guard
+            .record
+            .as_mut()
+            .ok_or_else(|| BackendError::invalid_input("No hay una reunión abierta en Meeting."))?;
+        (change(record)?, record.id.clone())
+    };
+    announce(app, &meeting_id);
+    Ok(value)
+}
+
+/// `set_meeting_ai_context`: validates the choice against the library,
+/// saves it for the next recordings and applies it to the open meeting.
+fn set_agent_ai_context(app: &AppHandle, library_id: &str, arguments: &serde_json::Value) -> Result<serde_json::Value, BackendError> {
+    let mut choice = notia_backend_core::meeting_tools::parse_context_choice(arguments)?;
+    let (files, _) = crate::library_inventory::inventory_files(app, library_id)?;
+    let catalog = crate::library_graph::context_tags(app, library_id);
+    let options = meeting_ai::context_options(&files, &catalog);
+    if let Some(folder) = &choice.folder {
+        if !options.folders.iter().any(|known| &known.path == folder) {
+            let known = options.folders.iter().take(40).map(|known| known.path.as_str()).collect::<Vec<_>>().join(", ");
+            return Err(BackendError::invalid_input(format!("La carpeta «{folder}» no está entre las carpetas con notas de la biblioteca: {known}.")));
+        }
+    }
+    if choice.whole_library {
+        if choice.contexts.is_empty() {
+            // Without explicit contexts, the unlocked ones: the sensitive
+            // contexts only enter when the person names them.
+            choice.contexts = options.contexts.iter().filter(|context| !context.locked).map(|context| context.tag.clone()).collect();
+        } else if let Some(unknown) = choice
+            .contexts
+            .iter()
+            .find(|tag| !options.contexts.iter().any(|known| known.tag.eq_ignore_ascii_case(tag)))
+        {
+            let known = options.contexts.iter().map(|known| known.tag.as_str()).collect::<Vec<_>>().join(", ");
+            return Err(BackendError::invalid_input(format!("El contexto «{unknown}» no existe en la biblioteca. Contextos: {known}.")));
+        }
+    }
+    crate::device_preferences::update_section(app, CONTEXT_CHOICES_SECTION, |saved| {
+        meeting_ai::with_context_choice(saved, library_id, &choice)
+    })?;
+    let context = choice.ai_context(library_id).map(meeting_ai::MeetingAiContext::normalized).transpose()?;
+    let open_meeting_id = {
+        let mut guard = lock(app)?;
+        guard.ai_context = context;
+        guard.record.as_ref().map(|record| record.id.clone())
+    };
+    if let Some(meeting_id) = &open_meeting_id {
+        announce(app, meeting_id);
+    }
+    Ok(json!({
+        "ok": true,
+        "changed": true,
+        "appliedToOpenMeeting": open_meeting_id.is_some(),
+        "choice": { "wholeLibrary": choice.whole_library, "folder": choice.folder, "contexts": choice.contexts },
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MeetingSaveContextChoicePayload {

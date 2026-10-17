@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::meeting::json_object;
+use crate::meeting::json_object_expecting;
 
 /// Characters of transcript in one cleanup request.
 pub const CLEANUP_BATCH_CHARS: usize = 6_000;
@@ -73,7 +73,7 @@ Transcripción:\n{}",
 
 /// The names of the answer, by speaker id; ids outside `known` are dropped.
 pub fn parse_speaker_names(answer: &str, known: &[String]) -> Vec<(String, String)> {
-    let Some(object) = json_object(answer) else { return Vec::new() };
+    let Some(object) = json_object_expecting(answer, &["speakers"]) else { return Vec::new() };
     let Some(speakers) = object.get("speakers").and_then(Value::as_array) else { return Vec::new() };
     let mut names: Vec<(String, String)> = Vec::new();
     for speaker in speakers {

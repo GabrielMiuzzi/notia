@@ -75,7 +75,16 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
                 JSONObject().put("name", model),
             )
             val capabilities = response.optJSONArray("capabilities") ?: JSONArray()
-            JSObject().put("capabilities", capabilities)
+            val result = JSObject().put("capabilities", capabilities)
+            // The context limit comes architecture-prefixed, such as "qwen35.context_length".
+            response.optJSONObject("model_info")?.let { info ->
+                info.keys().forEach { key ->
+                    if (key.endsWith(".context_length") && info.optLong(key) > 0) {
+                        result.put("contextLength", info.optLong(key))
+                    }
+                }
+            }
+            result
         }
     }
 
@@ -123,6 +132,7 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
                 .put("messages", JSONArray(args.string("messagesJson")))
                 .put("tools", JSONArray(args.string("toolsJson")))
             args.value("think")?.let { body.put("think", JSONObject.wrap(it)) }
+            args.value("options")?.let { body.put("options", JSONObject.wrap(it)) }
             val response = request(
                 args.string("ollamaUrl"),
                 args.string("apiKey"),
@@ -305,6 +315,7 @@ class AiBridgePlugin(private val activity: Activity) : Plugin(activity) {
         val toolsJson = args.string("toolsJson")
         if (toolsJson.isNotBlank()) body.put("tools", JSONArray(toolsJson))
         args.value("think")?.let { body.put("think", JSONObject.wrap(it)) }
+        args.value("options")?.let { body.put("options", JSONObject.wrap(it)) }
         val connection = openConnection(
             args.string("ollamaUrl"),
             args.string("apiKey"),

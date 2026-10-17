@@ -67,12 +67,15 @@ impl OllamaProviderConfig {
 /// Port used by the provider adapter. The native implementation delegates to
 /// `services::ai_service`; tests can use a deterministic mock at this boundary.
 pub trait OllamaTransport: Send + Sync {
+    /// `options` are Ollama's model options (`num_ctx`, `num_predict`);
+    /// `Value::Null` sends none.
     fn chat(
         &self,
         settings: &AiHttpSettings,
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
     ) -> Result<AiChatResult, BackendError>;
 
@@ -93,6 +96,7 @@ pub trait OllamaTransport: Send + Sync {
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError>;
@@ -202,16 +206,18 @@ impl OllamaTransport for NativeOllamaTransport {
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
     ) -> Result<AiChatResult, BackendError> {
         let settings = settings.clone();
         let model = model.to_string();
         let messages = messages.to_vec();
         let think = think.clone();
+        let options = options.clone();
         run_with_control(
             move || {
                 let result = crate::host::async_runtime::block_on(crate::services::ai_service::run_ollama_chat(
-                    &settings, &model, &messages, &think,
+                    &settings, &model, &messages, &think, &options,
                 ));
                 // An empty answer is not a transport failure: the agent
                 // decides how to continue, as with streaming.
@@ -260,6 +266,7 @@ impl OllamaTransport for NativeOllamaTransport {
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError> {
@@ -267,6 +274,7 @@ impl OllamaTransport for NativeOllamaTransport {
         let model = model.to_string();
         let messages = messages.to_vec();
         let think = think.clone();
+        let options = options.clone();
         let result = drive_native_stream(control, on_delta, move |cancellation, on_delta| {
             crate::host::async_runtime::block_on(
                 crate::services::ai_service::stream_ollama_chat_with_cancellation(
@@ -274,6 +282,7 @@ impl OllamaTransport for NativeOllamaTransport {
                     &model,
                     &messages,
                     &think,
+                    &options,
                     cancellation,
                     on_delta,
                 ),
@@ -404,20 +413,15 @@ impl OllamaTransport for AndroidOllamaTransport {
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
     ) -> Result<AiChatResult, BackendError> {
         let messages = serde_json::to_value(messages).map_err(|_| {
             BackendError::invalid_input("Los mensajes no se pudieron serializar para Ollama.")
         })?;
-        let response = self.tool_chat(
-            settings,
-            model,
-            &messages,
-            &Value::Array(Vec::new()),
-            think,
-            DEFAULT_TOOL_TIMEOUT_SECS,
-            control,
-        )?;
+        let mut payload = Self::tool_chat_payload(settings, model, &messages, &Value::Array(Vec::new()), think, DEFAULT_TOOL_TIMEOUT_SECS);
+        payload["options"] = options.clone();
+        let response = self.call_tool_chat(payload, control)?;
         if response
             .get("error")
             .and_then(Value::as_str)
@@ -448,20 +452,7 @@ impl OllamaTransport for AndroidOllamaTransport {
         timeout_secs: u64,
         control: &RequestControl,
     ) -> Result<Value, BackendError> {
-        let app = self.app.clone();
-        let payload = json!({
-            "ollamaUrl": settings.ollama_url,
-            "apiKey": settings.api_key,
-            "model": model,
-            "think": think,
-            "messagesJson": messages.to_string(),
-            "toolsJson": tools.to_string(),
-            "timeoutSeconds": timeout_secs,
-        });
-        run_with_control(
-            move || crate::mobile_ai_bridge::call_android_ai_plugin(&app, "toolChat", payload),
-            control,
-        )
+        self.call_tool_chat(Self::tool_chat_payload(settings, model, messages, tools, think, timeout_secs), control)
     }
 
     fn stream_chat(
@@ -470,6 +461,7 @@ impl OllamaTransport for AndroidOllamaTransport {
         model: &str,
         messages: &[AiChatMessage],
         think: &Value,
+        options: &Value,
         control: &RequestControl,
         on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
     ) -> Result<String, BackendError> {
@@ -478,6 +470,7 @@ impl OllamaTransport for AndroidOllamaTransport {
             "apiKey": settings.api_key,
             "model": model,
             "think": think,
+            "options": options,
             "messagesJson": serde_json::to_string(messages).map_err(|_| {
                 BackendError::invalid_input("Los mensajes no se pudieron serializar para Ollama.")
             })?,
@@ -522,6 +515,33 @@ impl OllamaTransport for AndroidOllamaTransport {
 
 #[cfg(target_os = "android")]
 impl AndroidOllamaTransport {
+    fn tool_chat_payload(
+        settings: &AiHttpSettings,
+        model: &str,
+        messages: &Value,
+        tools: &Value,
+        think: &Value,
+        timeout_secs: u64,
+    ) -> Value {
+        json!({
+            "ollamaUrl": settings.ollama_url,
+            "apiKey": settings.api_key,
+            "model": model,
+            "think": think,
+            "messagesJson": messages.to_string(),
+            "toolsJson": tools.to_string(),
+            "timeoutSeconds": timeout_secs,
+        })
+    }
+
+    fn call_tool_chat(&self, payload: Value, control: &RequestControl) -> Result<Value, BackendError> {
+        let app = self.app.clone();
+        run_with_control(
+            move || crate::mobile_ai_bridge::call_android_ai_plugin(&app, "toolChat", payload),
+            control,
+        )
+    }
+
     /// Streams a backend-built `/api/chat` request through the Kotlin bridge
     /// and returns its final result once the bridge resolved it.
     fn stream_raw(
@@ -610,6 +630,7 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
             &self.config.model,
             &messages,
             &self.config.think,
+            &Value::Null,
             control,
         )?;
         control.check()?;
@@ -640,6 +661,7 @@ impl<T: OllamaTransport> AgentProvider for OllamaAgentProvider<T> {
             &self.config.model,
             &messages,
             &self.config.think,
+            &Value::Null,
             control,
             &mut |delta| {
                 control.check()?;
@@ -1005,6 +1027,7 @@ mod tests {
             _: &str,
             messages: &[AiChatMessage],
             _: &Value,
+            _: &Value,
             _: &RequestControl,
         ) -> Result<AiChatResult, BackendError> {
             *self.seen_messages.lock().expect("messages lock") = messages.to_vec();
@@ -1035,6 +1058,7 @@ mod tests {
             _: &str,
             messages: &[AiChatMessage],
             _: &Value,
+            _: &Value,
             _: &RequestControl,
             on_delta: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,
         ) -> Result<String, BackendError> {
@@ -1051,7 +1075,7 @@ mod tests {
     }
 
     impl OllamaTransport for StreamingToolTransport {
-        fn chat(&self, _: &AiHttpSettings, _: &str, _: &[AiChatMessage], _: &Value, _: &RequestControl) -> Result<AiChatResult, BackendError> {
+        fn chat(&self, _: &AiHttpSettings, _: &str, _: &[AiChatMessage], _: &Value, _: &Value, _: &RequestControl) -> Result<AiChatResult, BackendError> {
             unreachable!()
         }
 
@@ -1064,6 +1088,7 @@ mod tests {
             _: &AiHttpSettings,
             _: &str,
             _: &[AiChatMessage],
+            _: &Value,
             _: &Value,
             _: &RequestControl,
             _: &mut dyn FnMut(AiChatStreamDelta) -> Result<(), BackendError>,

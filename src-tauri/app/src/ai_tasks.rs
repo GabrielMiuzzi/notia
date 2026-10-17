@@ -25,6 +25,8 @@ use crate::services::ai_service::{AiChatMessage, AiHttpSettings};
 
 const HEALTH_CACHE_TTL: Duration = Duration::from_secs(10);
 const MODEL_LIST_CACHE_TTL: Duration = Duration::from_secs(30);
+/// A model's context limit only changes when the model is replaced.
+const MODEL_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const TASK_TIMEOUT: Duration = Duration::from_secs(180);
 const INSPECTION_CONCURRENCY: usize = 4;
 
@@ -34,6 +36,8 @@ const INSPECTION_CONCURRENCY: usize = 4;
 pub(crate) struct AiTasksState {
     health: Mutex<Option<(String, Instant, AiHealthDto)>>,
     models: Mutex<HashMap<String, (Instant, Vec<AiModelOptionDto>)>>,
+    /// Context limit of each model, as Ollama reports it.
+    contexts: Mutex<HashMap<String, (Instant, Option<usize>)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +129,47 @@ fn provider_model_names(app: &AppHandle, settings: &AiSettings) -> Result<Vec<St
 fn provider_capabilities(_app: &AppHandle, settings: &AiSettings, model: &str) -> Result<Vec<String>, String> {
     crate::host::async_runtime::block_on(crate::services::ai_service::inspect_ollama_model(&http(settings), model))
         .map(|result| result.capabilities)
+}
+
+#[cfg(not(target_os = "android"))]
+fn provider_context_length(_app: &AppHandle, settings: &AiSettings, model: &str) -> Result<Option<u64>, String> {
+    crate::host::async_runtime::block_on(crate::services::ai_service::inspect_ollama_model(&http(settings), model))
+        .map(|result| result.context_length)
+}
+
+#[cfg(target_os = "android")]
+fn provider_context_length(app: &AppHandle, settings: &AiSettings, model: &str) -> Result<Option<u64>, String> {
+    let raw = crate::mobile_ai_bridge::call_android_ai_plugin(
+        app,
+        "inspectModel",
+        serde_json::json!({ "ollamaUrl": settings.ollama_url, "apiKey": settings.api_key, "model": model }),
+    )?;
+    Ok(raw.get("contextLength").and_then(Value::as_u64))
+}
+
+/// The model's context limit in tokens, so a task never asks Ollama for
+/// more. `None` when the provider does not report one (a cloud model, an
+/// unreachable endpoint): the task then asks for what it needs.
+fn model_context(app: &AppHandle, settings: &AiSettings, model: &str) -> Option<usize> {
+    let state = app.state::<AiTasksState>();
+    let key = format!("{}::{model}", models_key(settings));
+    if let Ok(guard) = state.contexts.lock() {
+        if let Some((at, context)) = guard.get(&key) {
+            if at.elapsed() < MODEL_CONTEXT_CACHE_TTL {
+                return *context;
+            }
+        }
+    }
+    let context = provider_context_length(app, settings, model)
+        .ok()
+        .flatten()
+        .map(|tokens| tokens as usize)
+        // A tiny or absurd value is a reporting problem, not a limit.
+        .filter(|tokens| *tokens >= 2_048);
+    if let Ok(mut guard) = state.contexts.lock() {
+        guard.insert(key, (Instant::now(), context));
+    }
+    context
 }
 
 #[cfg(target_os = "android")]
@@ -240,11 +285,17 @@ fn task_messages(system: &str, user: &str, images: Vec<String>) -> Vec<AiChatMes
 /// One answer from the provider, without tools and without thinking.
 pub(crate) fn complete(app: &AppHandle, settings: &AiSettings, system: &str, user: &str, images: Vec<String>) -> Result<String, BackendError> {
     let model = resolve_model(app, settings)?;
+    let options = ai_settings::task_options(
+        system.chars().count() + user.chars().count(),
+        images.len(),
+        model_context(app, settings, &model),
+    );
     let answer = crate::backend_ollama::platform_ollama_transport(app).chat(
         &http(settings),
         &model,
         &task_messages(system, user, images),
         &Value::Bool(false),
+        &options,
         &RequestControl::new(Some(TASK_TIMEOUT)),
     )?;
     let answer = answer.answer.trim().to_string();
@@ -270,6 +321,7 @@ pub(crate) fn stream_complete(
         &model,
         &task_messages(system, user, Vec::new()),
         &Value::Bool(false),
+        &ai_settings::task_options(system.chars().count() + user.chars().count(), 0, model_context(app, settings, &model)),
         control,
         &mut |delta| {
             if let crate::services::ai_service::AiChatStreamDelta::Content(delta) = delta {
