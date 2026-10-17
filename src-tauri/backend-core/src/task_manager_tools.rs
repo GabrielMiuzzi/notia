@@ -16,7 +16,11 @@ use super::library_tools::BoundedPage;
 use super::protocol::{MutationPreviewAction, ToolDefinition};
 use super::BackendScope;
 
+pub use crate::task_board_plan::{TaskBoardConfigDto, TaskBoardMemberDto, TaskBoardPlanDto, TaskBoardProjectDto, TaskColumnKind};
+
 pub const MAX_TASK_BOARDS: usize = 64;
+/// Why a task is blocked, as the card shows it.
+pub const MAX_TASK_BLOCK_NOTE_CHARS: usize = 500;
 pub const MAX_TASK_GROUPS: usize = 512;
 pub const MAX_TASK_TICKETS: usize = 2_000;
 /// Comments a library may hold in total, 100 per ticket on average.
@@ -133,6 +137,9 @@ pub enum TaskPriority {
     High,
     #[serde(rename = "Urgente")]
     Urgent,
+    /// Past its date: goes before every other priority.
+    #[serde(rename = "Atrasado")]
+    Overdue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,9 +178,18 @@ pub struct TaskGroupDto {
     pub revision: u64,
     #[serde(default)]
     pub order: u32,
+    /// What the column means to the planner; `None` until someone sets it
+    /// (then it is recognized by its name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TaskColumnKind>,
 }
 
 impl TaskGroupDto {
+    /// Kind of the column: the saved one, or the one its name implies.
+    pub fn column_kind(&self) -> TaskColumnKind {
+        self.kind.unwrap_or_else(|| TaskColumnKind::infer(&self.name))
+    }
+
     pub fn validate(&self) -> Result<(), BackendError> {
         validate_id("libraryId", &self.library_id)?;
         validate_id("groupId", &self.group_id)?;
@@ -237,6 +253,15 @@ pub struct TaskTicketDto {
     /// People the ticket is assigned to (`asignados`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignees: Vec<String>,
+    /// When the running time of an «En progreso» ticket started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<i64>,
+    /// When the ticket was finished or cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at_unix_ms: Option<i64>,
+    /// Why the ticket is blocked (`bloqueo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,6 +437,13 @@ pub struct TaskUpdateFieldsDto {
     pub assignees: Option<Vec<String>>,
     #[serde(default)]
     pub parent_ticket_id: Option<Option<String>>,
+    #[serde(default)]
+    pub started_at_unix_ms: Option<Option<i64>>,
+    #[serde(default)]
+    pub closed_at_unix_ms: Option<Option<i64>>,
+    /// An empty note takes it out.
+    #[serde(default)]
+    pub block_note: Option<String>,
 }
 
 impl TaskUpdateFieldsDto {
@@ -466,6 +498,12 @@ impl TaskUpdateFieldsDto {
         if let Some(assignees) = &self.assignees {
             validate_assignees(assignees)?;
         }
+        for value in [self.started_at_unix_ms, self.closed_at_unix_ms].into_iter().flatten().flatten() {
+            validate_timestamp(value)?;
+        }
+        if let Some(note) = &self.block_note {
+            validate_text("blockNote", note, MAX_TASK_BLOCK_NOTE_CHARS)?;
+        }
         Ok(())
     }
 
@@ -489,6 +527,9 @@ impl TaskUpdateFieldsDto {
             && self.project.is_none()
             && self.assignees.is_none()
             && self.parent_ticket_id.is_none()
+            && self.started_at_unix_ms.is_none()
+            && self.closed_at_unix_ms.is_none()
+            && self.block_note.is_none()
     }
 }
 
@@ -507,6 +548,9 @@ pub enum TaskMutationDto {
         /// Hours of work per day used to schedule the board's tickets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         activity_hours_per_day: Option<f64>,
+        /// Workday, sprints and divisions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<TaskBoardPlanDto>,
     },
     UpdateBoard {
         board_id: String,
@@ -515,6 +559,22 @@ pub enum TaskMutationDto {
         context: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         activity_hours_per_day: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<TaskBoardPlanDto>,
+    },
+    /// People and projects of a board. Removed people are unassigned from
+    /// every ticket of the board and removed projects leave their tickets
+    /// without a project, in the same operation.
+    UpdateBoardPeople {
+        board_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        members: Option<Vec<TaskBoardMemberDto>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projects: Option<Vec<TaskBoardProjectDto>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed_members: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed_projects: Vec<String>,
     },
     DeleteBoard {
         board_id: String,
@@ -524,6 +584,8 @@ pub enum TaskMutationDto {
         group_id: String,
         name: String,
         color: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        column_kind: Option<TaskColumnKind>,
     },
     DeleteGroup {
         board_id: String,
@@ -534,6 +596,9 @@ pub enum TaskMutationDto {
         group_id: String,
         name: String,
         color: String,
+        /// `None` keeps the kind the group has.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        column_kind: Option<TaskColumnKind>,
     },
     ReorderGroups {
         board_id: String,
@@ -614,6 +679,13 @@ pub enum TaskMutationDto {
     DeleteTicket {
         ticket_id: String,
     },
+    /// Puts back a ticket that was deleted (undo), with its comments, as it
+    /// was: same id, fields and location.
+    RestoreDeletedTicket {
+        ticket: Box<TaskTicketDto>,
+        #[serde(default)]
+        comments: Vec<TaskCommentDto>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -656,12 +728,16 @@ pub struct TaskEntityRevisionDto {
 pub struct TaskManagerConfigDto {
     #[serde(default)]
     pub activity_hours_per_day: BTreeMap<String, f64>,
+    /// Calendar, people and projects of each board, by board id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boards: BTreeMap<String, TaskBoardConfigDto>,
 }
 
 impl Default for TaskManagerConfigDto {
     fn default() -> Self {
         Self {
             activity_hours_per_day: BTreeMap::new(),
+            boards: BTreeMap::new(),
         }
     }
 }
@@ -1367,6 +1443,10 @@ impl InMemoryTaskManager {
                 .config
                 .activity_hours_per_day
                 .retain(|board_id, _| visible_board_ids.contains(board_id.as_str()));
+            snapshot
+                .config
+                .boards
+                .retain(|board_id, _| visible_board_ids.contains(board_id.as_str()));
         }
         TaskManagerSnapshotDto {
             version: TASK_MANAGER_SNAPSHOT_VERSION,
@@ -1808,6 +1888,7 @@ impl TaskManagerReadPort for InMemoryTaskManager {
                 TaskPriority::Medium,
                 TaskPriority::High,
                 TaskPriority::Urgent,
+                TaskPriority::Overdue,
             ],
         })
     }
@@ -1994,6 +2075,7 @@ fn validate_mutation(
     let mut revisions = Vec::new();
     // A scope is a publication: its guests work on the published boards but
     // never create, edit or delete boards.
+    // People and projects are not the board itself: guests manage them.
     let board_change = matches!(
         mutation,
         TaskMutationDto::CreateBoard { .. } | TaskMutationDto::UpdateBoard { .. } | TaskMutationDto::DeleteBoard { .. }
@@ -2008,6 +2090,7 @@ fn validate_mutation(
             color,
             context: board_context,
             activity_hours_per_day,
+            plan,
         } => {
             validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
@@ -2015,6 +2098,9 @@ fn validate_mutation(
             validate_color(color)?;
             if let Some(board_context) = board_context {
                 validate_context(board_context)?;
+            }
+            if let Some(plan) = plan {
+                plan.validate()?;
             }
             if !context.allows_board(board_id) {
                 return Err(forbidden("El tablero no pertenece al alcance autorizado."));
@@ -2029,6 +2115,7 @@ fn validate_mutation(
             color,
             context: board_context,
             activity_hours_per_day,
+            plan,
         } => {
             validate_activity_hours(*activity_hours_per_day)?;
             let board = accessible_board(library, context, board_id)?;
@@ -2040,6 +2127,45 @@ fn validate_mutation(
             }
             if let Some(board_context) = board_context {
                 validate_context(board_context)?;
+            }
+            if let Some(plan) = plan {
+                plan.validate()?;
+            }
+            revisions.push(entity_revision("board", &board.board_id, board.revision));
+        }
+        TaskMutationDto::UpdateBoardPeople {
+            board_id,
+            members,
+            projects,
+            removed_members,
+            removed_projects,
+        } => {
+            let board = accessible_board(library, context, board_id)?;
+            if let Some(members) = members {
+                crate::task_board_plan::validate_members(members)?;
+            }
+            if let Some(projects) = projects {
+                crate::task_board_plan::validate_projects(projects)?;
+            }
+            if removed_members.len() > crate::task_board_plan::MAX_BOARD_MEMBERS
+                || removed_projects.len() > crate::task_board_plan::MAX_BOARD_PROJECTS
+            {
+                return Err(invalid("La operación supera el límite de personas o proyectos."));
+            }
+            // The cascade touches every ticket of the board that uses them.
+            let fold = crate::task_board_plan::fold;
+            for ticket in library.tickets.values().filter(|ticket| ticket.summary.board_id == *board_id) {
+                let unassigned = ticket
+                    .assignees
+                    .iter()
+                    .any(|name| removed_members.iter().any(|removed| fold(removed) == fold(name)));
+                let cleared = ticket
+                    .project
+                    .as_deref()
+                    .is_some_and(|project| removed_projects.iter().any(|removed| fold(removed) == fold(project)));
+                if unassigned || cleared {
+                    revisions.push(entity_revision("ticket", &ticket.summary.ticket_id, ticket.summary.revision));
+                }
             }
             revisions.push(entity_revision("board", &board.board_id, board.revision));
         }
@@ -2066,6 +2192,7 @@ fn validate_mutation(
             group_id,
             name,
             color,
+            ..
         } => {
             let board = accessible_board(library, context, board_id)?;
             validate_id("groupId", group_id)?;
@@ -2085,14 +2212,29 @@ fn validate_mutation(
             if group.board_id != *board_id {
                 return Err(forbidden("El grupo no pertenece al tablero."));
             }
-            if library
+            // Only open tasks keep a column: finished and cancelled ones and
+            // the subtasks of tasks elsewhere leave it with the column.
+            let open_tasks = library
                 .tickets
                 .values()
-                .any(|ticket| ticket.summary.group_id.as_ref() == Some(group_id))
+                .filter(|ticket| {
+                    ticket.summary.group_id.as_ref() == Some(group_id)
+                        && ticket.summary.parent_ticket_id.is_none()
+                        && !ticket.summary.state.is_archived()
+                })
+                .count();
+            if open_tasks > 0 {
+                return Err(conflict(match open_tasks {
+                    1 => "No se puede eliminar una columna con 1 tarea abierta: movela, finalizala o eliminala antes.".to_string(),
+                    count => format!("No se puede eliminar una columna con {count} tareas abiertas: movelas, finalizalas o eliminalas antes."),
+                }));
+            }
+            for ticket in library
+                .tickets
+                .values()
+                .filter(|ticket| ticket.summary.group_id.as_ref() == Some(group_id))
             {
-                return Err(conflict(
-                    "No se puede eliminar un grupo con tickets asignados.",
-                ));
+                revisions.push(entity_revision("ticket", &ticket.summary.ticket_id, ticket.summary.revision));
             }
             revisions.push(entity_revision("board", board_id, board.revision));
             revisions.push(entity_revision("group", group_id, group.revision));
@@ -2102,6 +2244,7 @@ fn validate_mutation(
             group_id,
             name,
             color,
+            ..
         } => {
             let board = accessible_board(library, context, board_id)?;
             let group = library
@@ -2395,6 +2538,30 @@ fn validate_mutation(
             }
             revisions.push(entity_revision("ticket", ticket_id, ticket.summary.revision));
         }
+        TaskMutationDto::RestoreDeletedTicket { ticket, comments } => {
+            validate_ticket(ticket)?;
+            let board = accessible_board(library, context, &ticket.summary.board_id)?;
+            if ticket.summary.library_id != context.library_id {
+                return Err(invalid("El ticket pertenece a otra biblioteca."));
+            }
+            if library.tickets.contains_key(&ticket.summary.ticket_id) {
+                return Err(conflict("La tarea ya está en el tablero."));
+            }
+            validate_group_for_board(library, ticket.summary.group_id.as_deref(), &ticket.summary.board_id)?;
+            if let Some(parent_id) = &ticket.summary.parent_ticket_id {
+                root_parent_for_board(library, parent_id, &ticket.summary.board_id)?;
+            }
+            if comments.len() > MAX_TASK_LIBRARY_COMMENTS {
+                return Err(invalid("La tarea supera el límite de comentarios."));
+            }
+            for comment in comments {
+                validate_comment(comment)?;
+                if comment.ticket_id != ticket.summary.ticket_id || library.comments.contains_key(&comment.comment_id) {
+                    return Err(invalid("Un comentario de la tarea no es válido."));
+                }
+            }
+            revisions.push(entity_revision("board", &board.board_id, board.revision));
+        }
     }
     revisions.sort_by(|left, right| {
         left.entity_type
@@ -2418,12 +2585,16 @@ fn apply_mutation_to_library(
             color,
             context: board_context,
             activity_hours_per_day,
+            plan,
         } => {
             if let Some(hours) = activity_hours_per_day {
                 library
                     .config
                     .activity_hours_per_day
                     .insert(board_id.clone(), *hours);
+            }
+            if let Some(plan) = plan {
+                set_board_plan(library, board_id, plan);
             }
             library.boards.insert(
                 board_id.clone(),
@@ -2445,12 +2616,16 @@ fn apply_mutation_to_library(
             color,
             context: board_context,
             activity_hours_per_day,
+            plan,
         } => {
             if let Some(hours) = activity_hours_per_day {
                 library
                     .config
                     .activity_hours_per_day
                     .insert(board_id.clone(), *hours);
+            }
+            if let Some(plan) = plan {
+                set_board_plan(library, board_id, plan);
             }
             let board = library
                 .boards
@@ -2471,13 +2646,52 @@ fn apply_mutation_to_library(
         }
         TaskMutationDto::DeleteBoard { board_id } => {
             library.boards.remove(board_id);
+            library.config.boards.remove(board_id);
             affected_ids.push(board_id.clone());
+        }
+        TaskMutationDto::UpdateBoardPeople {
+            board_id,
+            members,
+            projects,
+            removed_members,
+            removed_projects,
+        } => {
+            let fold = crate::task_board_plan::fold;
+            let entry = library.config.boards.entry(board_id.clone()).or_default();
+            if let Some(members) = members {
+                entry.members = Some(members.clone());
+            }
+            if let Some(projects) = projects {
+                entry.projects = Some(projects.clone());
+            }
+            let removed_members = removed_members.iter().map(|name| fold(name)).collect::<HashSet<_>>();
+            let removed_projects = removed_projects.iter().map(|name| fold(name)).collect::<HashSet<_>>();
+            for ticket in library.tickets.values_mut().filter(|ticket| ticket.summary.board_id == *board_id) {
+                let before = (ticket.assignees.len(), ticket.project.clone());
+                ticket.assignees.retain(|name| !removed_members.contains(&fold(name)));
+                if ticket.project.as_deref().is_some_and(|project| removed_projects.contains(&fold(project))) {
+                    ticket.project = None;
+                }
+                if before != (ticket.assignees.len(), ticket.project.clone()) {
+                    ticket.summary.revision = ticket.summary.revision.saturating_add(1);
+                    affected_ids.push(ticket.summary.ticket_id.clone());
+                    entity_keys.push(EntityKey::new("ticket", &ticket.summary.ticket_id));
+                }
+            }
+            let board = library
+                .boards
+                .get_mut(board_id)
+                .ok_or_else(|| not_found("El tablero no existe."))?;
+            board.revision = board.revision.saturating_add(1);
+            affected_ids.push(board_id.clone());
+            entity_keys.push(EntityKey::new("board", board_id));
         }
         TaskMutationDto::CreateGroup {
             board_id,
             group_id,
             name,
             color,
+            column_kind,
         } => {
             library.groups.insert(
                 group_id.clone(),
@@ -2489,6 +2703,7 @@ fn apply_mutation_to_library(
                     color: color.clone(),
                     revision: 1,
                     order: library.groups.values().filter(|group| group.board_id == *board_id).count() as u32,
+                    kind: *column_kind,
                 },
             );
             affected_ids.push(group_id.clone());
@@ -2496,12 +2711,36 @@ fn apply_mutation_to_library(
         }
         TaskMutationDto::DeleteGroup { group_id, .. } => {
             library.groups.remove(group_id);
+            // Finished and cancelled tasks stay without a column; a subtask
+            // goes to its task's column.
+            let parent_groups = library
+                .tickets
+                .values()
+                .map(|ticket| (ticket.summary.ticket_id.clone(), ticket.summary.group_id.clone()))
+                .collect::<HashMap<_, _>>();
+            for ticket in library
+                .tickets
+                .values_mut()
+                .filter(|ticket| ticket.summary.group_id.as_ref() == Some(group_id))
+            {
+                let parent_group = ticket
+                    .summary
+                    .parent_ticket_id
+                    .as_ref()
+                    .and_then(|parent| parent_groups.get(parent).cloned().flatten())
+                    .filter(|parent_group| parent_group != group_id);
+                ticket.summary.group_id = parent_group;
+                ticket.summary.revision = ticket.summary.revision.saturating_add(1);
+                affected_ids.push(ticket.summary.ticket_id.clone());
+                entity_keys.push(EntityKey::new("ticket", &ticket.summary.ticket_id));
+            }
             affected_ids.push(group_id.clone());
         }
         TaskMutationDto::UpdateGroup {
             group_id,
             name,
             color,
+            column_kind,
             ..
         } => {
             let group = library
@@ -2510,6 +2749,9 @@ fn apply_mutation_to_library(
                 .ok_or_else(|| not_found("El grupo no existe."))?;
             group.name = name.clone();
             group.color = color.clone();
+            if column_kind.is_some() {
+                group.kind = *column_kind;
+            }
             group.revision = group.revision.saturating_add(1);
             affected_ids.push(group_id.clone());
             entity_keys.push(EntityKey::new("group", group_id));
@@ -2566,6 +2808,9 @@ fn apply_mutation_to_library(
                 related_tasks: Vec::new(),
                 project: None,
                 assignees: Vec::new(),
+                started_at_unix_ms: None,
+                closed_at_unix_ms: None,
+                block_note: None,
             };
             if let Some(fields) = initial_fields {
                 apply_fields(&mut ticket, fields);
@@ -2695,6 +2940,9 @@ fn apply_mutation_to_library(
                 related_tasks: Vec::new(),
                 project: None,
                 assignees: Vec::new(),
+                started_at_unix_ms: None,
+                closed_at_unix_ms: None,
+                block_note: None,
             };
             library.tickets.insert(ticket_id.clone(), ticket);
             affected_ids.push(ticket_id.clone());
@@ -2796,6 +3044,16 @@ fn apply_mutation_to_library(
                 library.comments.remove(&comment_id);
             }
             affected_ids.push(ticket.summary.ticket_id);
+        }
+        TaskMutationDto::RestoreDeletedTicket { ticket, comments } => {
+            let ticket_id = ticket.summary.ticket_id.clone();
+            library.tickets.insert(ticket_id.clone(), ticket.as_ref().clone());
+            for comment in comments {
+                library.users.insert(comment.author_user_id.clone());
+                library.comments.insert(comment.comment_id.clone(), comment.clone());
+            }
+            affected_ids.push(ticket_id.clone());
+            entity_keys.push(EntityKey::new("ticket", &ticket_id));
         }
     }
     for key in entity_keys.iter().filter(|key| key.entity_type == "ticket") {
@@ -2912,6 +3170,25 @@ fn apply_fields(ticket: &mut TaskTicketDto, fields: &TaskUpdateFieldsDto) {
     if let Some(parent_ticket_id) = &fields.parent_ticket_id {
         ticket.summary.parent_ticket_id = parent_ticket_id.clone();
     }
+    if let Some(started_at) = fields.started_at_unix_ms {
+        ticket.started_at_unix_ms = started_at;
+    }
+    if let Some(closed_at) = fields.closed_at_unix_ms {
+        ticket.closed_at_unix_ms = closed_at;
+    }
+    if let Some(note) = &fields.block_note {
+        ticket.block_note = Some(note.trim().to_string()).filter(|note| !note.is_empty());
+    }
+}
+
+/// Saves the board's workday, sprints and divisions; its activity hours
+/// follow the workday.
+fn set_board_plan(library: &mut LibraryState, board_id: &str, plan: &TaskBoardPlanDto) {
+    library
+        .config
+        .activity_hours_per_day
+        .insert(board_id.to_string(), plan.hours_per_day());
+    library.config.boards.entry(board_id.to_string()).or_default().plan = Some(plan.clone());
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2979,6 +3256,7 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             color,
             context,
             activity_hours_per_day,
+            ..
         } => {
             validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
@@ -2988,12 +3266,19 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
                 validate_context(context)?;
             }
         }
+        TaskMutationDto::UpdateBoardPeople { board_id, .. } => {
+            validate_id("boardId", board_id)?;
+        }
+        TaskMutationDto::RestoreDeletedTicket { ticket, .. } => {
+            validate_id("ticketId", &ticket.summary.ticket_id)?;
+        }
         TaskMutationDto::UpdateBoard {
             board_id,
             name,
             color,
             context,
             activity_hours_per_day,
+            ..
         } => {
             validate_activity_hours(*activity_hours_per_day)?;
             validate_id("boardId", board_id)?;
@@ -3015,6 +3300,7 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             group_id,
             name,
             color,
+            ..
         } => {
             validate_id("boardId", board_id)?;
             validate_id("groupId", group_id)?;
@@ -3030,6 +3316,7 @@ fn validate_mutation_shape(mutation: &TaskMutationDto) -> Result<(), BackendErro
             group_id,
             name,
             color,
+            ..
         } => {
             validate_id("boardId", board_id)?;
             validate_id("groupId", group_id)?;
@@ -3318,8 +3605,23 @@ fn validate_ticket(ticket: &TaskTicketDto) -> Result<(), BackendError> {
         validate_project(project)?;
     }
     validate_assignees(&ticket.assignees)?;
+    for value in [ticket.started_at_unix_ms, ticket.closed_at_unix_ms].into_iter().flatten() {
+        validate_timestamp(value)?;
+    }
+    if let Some(note) = &ticket.block_note {
+        validate_text("blockNote", note, MAX_TASK_BLOCK_NOTE_CHARS)?;
+    }
     validate_references("relatedDocuments", &ticket.related_documents)?;
     validate_references("relatedTasks", &ticket.related_tasks)
+}
+
+/// Milliseconds since the epoch that JavaScript can hold.
+fn validate_timestamp(value: i64) -> Result<(), BackendError> {
+    if (0..=9_007_199_254_740_991).contains(&value) {
+        Ok(())
+    } else {
+        Err(invalid("La fecha de la tarea no es válida."))
+    }
 }
 impl TaskTicketSummaryDto {
     fn validate(&self) -> Result<(), BackendError> {
@@ -3410,6 +3712,8 @@ fn mutation_summary(mutation: &TaskMutationDto) -> String {
         TaskMutationDto::ArchiveTicket { .. } => "Archivar ticket".to_string(),
         TaskMutationDto::RestoreTicket { .. } => "Restaurar ticket".to_string(),
         TaskMutationDto::DeleteTicket { .. } => "Eliminar ticket".to_string(),
+        TaskMutationDto::UpdateBoardPeople { .. } => "Actualizar personas y proyectos".to_string(),
+        TaskMutationDto::RestoreDeletedTicket { .. } => "Deshacer la eliminación".to_string(),
     }
 }
 fn affected_ids(mutation: &TaskMutationDto) -> (Vec<String>, Vec<String>) {
@@ -3428,6 +3732,7 @@ fn affected_ids(mutation: &TaskMutationDto) -> (Vec<String>, Vec<String>) {
         | TaskMutationDto::RestoreTicket { ticket_id }
         | TaskMutationDto::DeleteTicket { ticket_id } => vec![ticket_id.clone()],
         TaskMutationDto::BulkUpdate { ticket_ids, .. } => ticket_ids.clone(),
+        TaskMutationDto::RestoreDeletedTicket { ticket, .. } => vec![ticket.summary.ticket_id.clone()],
         TaskMutationDto::DuplicateTicket {
             ticket_id,
             new_ticket_id,
@@ -3443,7 +3748,9 @@ fn affected_ids(mutation: &TaskMutationDto) -> (Vec<String>, Vec<String>) {
         | TaskMutationDto::DeleteGroup { board_id, .. }
         | TaskMutationDto::UpdateGroup { board_id, .. }
         | TaskMutationDto::ReorderGroups { board_id, .. }
+        | TaskMutationDto::UpdateBoardPeople { board_id, .. }
         | TaskMutationDto::CreateTicket { board_id, .. } => vec![board_id.clone()],
+        TaskMutationDto::RestoreDeletedTicket { ticket, .. } => vec![ticket.summary.board_id.clone()],
         TaskMutationDto::AddSubtask { .. }
         | TaskMutationDto::ReplaceTicketContent { .. }
         | TaskMutationDto::AddComment { .. }
@@ -3587,6 +3894,18 @@ fn library_state_from_snapshot(
         validate_id("boardId", board_id)?;
         if !hours.is_finite() || !(0.0..=24.0).contains(hours) {
             return Err(invalid("activityHoursPerDay no es válido."));
+        }
+    }
+    for (board_id, board) in &snapshot.config.boards {
+        validate_id("boardId", board_id)?;
+        if let Some(plan) = &board.plan {
+            plan.validate()?;
+        }
+        if let Some(members) = &board.members {
+            crate::task_board_plan::validate_members(members)?;
+        }
+        if let Some(projects) = &board.projects {
+            crate::task_board_plan::validate_projects(projects)?;
         }
     }
     if snapshot.users.len() > MAX_TASK_USERS {
@@ -3891,6 +4210,14 @@ pub fn task_manager_read_tool_contracts() -> Vec<ToolDefinition> {
             "get_task_board_summary",
             "Resume tickets de un tablero por estado, prioridad y grupo.",
         ),
+        (
+            "get_task_board_settings",
+            "Devuelve el calendario, las personas, los proyectos y las columnas de un tablero.",
+        ),
+        (
+            "get_task_board_plan",
+            "Devuelve el plan de Management de un tablero: fechas, holguras y ruta crítica.",
+        ),
     ]
     .into_iter()
     .map(|(name, description)| ToolDefinition {
@@ -3930,11 +4257,6 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
             "add_task_subtask",
             "Prepara una subtarea validando su padre principal.",
         ),
-        (
-            "move_task_group",
-            "Prepara el movimiento a un grupo del mismo tablero.",
-        ),
-        ("change_task_state", "Prepara un cambio de estado."),
         ("change_task_priority", "Prepara un cambio de prioridad."),
         (
             "update_task_fields",
@@ -3944,13 +4266,10 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
             "bulk_update_tasks",
             "Prepara una actualización masiva acotada.",
         ),
-        ("duplicate_task", "Prepara la duplicación de un ticket."),
-        ("archive_task", "Prepara el archivado de un ticket."),
-        ("restore_task", "Prepara la restauración de un ticket."),
         ("create_task_group", "Prepara la creación de un grupo."),
         (
             "update_task_group",
-            "Prepara el cambio de nombre o color de un grupo.",
+            "Prepara el cambio de nombre, color o tipo de un grupo.",
         ),
         (
             "reorder_task_groups",
@@ -3958,8 +4277,26 @@ pub fn task_manager_mutation_tool_contracts() -> Vec<ToolDefinition> {
         ),
         (
             "delete_task_group",
-            "Prepara la eliminación de un grupo vacío.",
+            "Prepara la eliminación de un grupo sin tareas abiertas.",
         ),
+        ("move_task_group", "Prepara el movimiento a una columna del mismo tablero con sus reglas."),
+        ("change_task_state", "Prepara un cambio de estado con el cronómetro del tablero."),
+        ("duplicate_task", "Prepara la duplicación de una tarea con sus subtareas."),
+        ("archive_task", "Prepara la finalización de una tarea."),
+        ("restore_task", "Prepara la recuperación de una tarea finalizada o cancelada."),
+        ("set_task_time", "Prepara el cambio de horas estimadas o dedicadas."),
+        ("set_task_people", "Prepara la asignación de personas del tablero."),
+        ("set_task_project", "Prepara el proyecto de una tarea."),
+        ("start_task_timer", "Prepara el inicio del cronómetro de una tarea."),
+        ("pause_task_timer", "Prepara la pausa del cronómetro de una tarea."),
+        ("set_task_block_note", "Prepara el motivo de bloqueo de una tarea."),
+        ("set_task_dependencies", "Prepara las dependencias de una tarea, sin ciclos."),
+        ("toggle_task_subtask", "Prepara marcar una subtarea como hecha o pendiente."),
+        ("add_task_board_member", "Prepara agregar una persona al tablero."),
+        ("remove_task_board_member", "Prepara quitar una persona del tablero."),
+        ("add_task_board_project", "Prepara agregar un proyecto al tablero."),
+        ("remove_task_board_project", "Prepara eliminar un proyecto del tablero."),
+        ("update_task_board_calendar", "Prepara el cambio de jornada, sprints o divisiones de un tablero."),
     ]
     .into_iter()
     .map(|(name, description)| ToolDefinition {
@@ -4081,6 +4418,7 @@ segundo");
                 color: "#654321".into(),
                 revision: 1,
                 order: 0,
+                kind: None,
             })
             .unwrap();
         let context = TaskManagerContextDto::new("library-a", "user-a").unwrap();
@@ -4118,6 +4456,9 @@ segundo");
             related_tasks: vec![],
             project: None,
             assignees: Vec::new(),
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         }
     }
 
@@ -4376,6 +4717,7 @@ segundo");
                 color: "#4FD1C5".into(),
                 context: None,
                 activity_hours_per_day: None,
+                plan: None,
             },
             TaskMutationDto::UpdateBoard {
                 board_id: "board-a".into(),
@@ -4383,6 +4725,7 @@ segundo");
                 color: None,
                 context: None,
                 activity_hours_per_day: None,
+                plan: None,
             },
             TaskMutationDto::DeleteBoard { board_id: "board-a".into() },
         ] {
@@ -4402,6 +4745,7 @@ segundo");
                 color: "#654321".into(),
                 revision: 1,
                 order: 1,
+                kind: None,
             })
             .unwrap();
         manager
@@ -4446,6 +4790,7 @@ segundo");
                     color: "#654321".into(),
                     revision: 1,
                     order,
+                    kind: None,
                 })
                 .unwrap();
         }

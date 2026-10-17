@@ -1,8 +1,18 @@
 import { callBackend as callTransport } from '../../../services/transport'
 import type {
+  TaskArchive,
+  TaskBoardPlan,
+  TaskBoardPlanPreview,
+  TaskColumnKind,
+  TaskColumnKindOption,
+  TaskPaletteColor,
+} from '../types/taskBoardTypes'
+import type { ManagementRequest, ManagementView } from '../types/managementTypes'
+import type {
   Board,
   Group,
   PomodoroDurations,
+  PomodoroPhase,
   PomodoroLogEntry,
   PomodoroState,
   TaskItem,
@@ -30,6 +40,13 @@ export interface TaskManagerSnapshot {
   pomodoroEntries: PomodoroLogEntry[]
   /** Ticket paths of each panel (board name, finished or cancelled). */
   panelPaths: Record<string, string[]>
+  /** Rows of Completadas and Canceladas, newest first. */
+  archive: TaskArchive
+  finishedCount: number
+  cancelledCount: number
+  /** Colors boards, people and projects can take. */
+  palette: TaskPaletteColor[]
+  columnKinds: TaskColumnKindOption[]
 }
 
 export const EMPTY_TASK_MANAGER_SNAPSHOT: TaskManagerSnapshot = {
@@ -39,6 +56,11 @@ export const EMPTY_TASK_MANAGER_SNAPSHOT: TaskManagerSnapshot = {
   tasks: [],
   pomodoroEntries: [],
   panelPaths: {},
+  archive: { finished: [], cancelled: [] },
+  finishedCount: 0,
+  cancelledCount: 0,
+  palette: [],
+  columnKinds: [],
 }
 
 export type TaskBoardIntent =
@@ -79,13 +101,42 @@ export type TaskBoardIntent =
   | { kind: 'delete-task'; taskPath: string }
   | { kind: 'add-comment'; taskPath: string; comment: string }
   | { kind: 'place-task'; taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }
-  | { kind: 'create-board'; name: string; color: string; activityHoursPerDay: number; contexto: string }
-  | { kind: 'update-board'; previousName: string; name: string; color: string; activityHoursPerDay: number; contexto: string }
+  | { kind: 'create-board'; name: string; color: string; activityHoursPerDay: number; contexto: string; plan?: TaskBoardPlan }
+  | { kind: 'update-board'; previousName: string; name: string; color: string; activityHoursPerDay: number; contexto: string; plan?: TaskBoardPlan }
   | { kind: 'delete-board'; name: string }
-  | { kind: 'create-group'; board: string; name: string; color: string }
-  | { kind: 'update-group'; previousBoard: string; previousName: string; name: string; color: string }
+  | { kind: 'create-group'; board: string; name: string; color: string; columnKind?: TaskColumnKind }
+  | { kind: 'update-group'; previousBoard: string; previousName: string; name: string; color: string; columnKind?: TaskColumnKind }
   | { kind: 'delete-group'; board: string; name: string }
   | { kind: 'reorder-groups'; board: string; groupNames: string[] }
+  // Card actions. Finish, cancel and delete answer with an undo token.
+  | { kind: 'start-task'; taskPath: string }
+  | { kind: 'pause-task'; taskPath: string }
+  | { kind: 'finish-task'; taskPath: string }
+  | { kind: 'cancel-task'; taskPath: string }
+  | { kind: 'unblock-task'; taskPath: string }
+  | { kind: 'rename-task'; taskPath: string; title: string }
+  /** Appends the task to the end of a column (Bloqueado blocks it). */
+  | { kind: 'move-task'; taskPath: string; group: string }
+  | { kind: 'duplicate-task'; taskPath: string }
+  /** An empty project takes it out; an unknown one is created in the board. */
+  | { kind: 'set-task-project'; taskPath: string; project: string }
+  | { kind: 'set-task-people'; taskPath: string; people: string[] }
+  /** Hours in steps the time popover offers; a running task keeps running. */
+  | { kind: 'set-task-time'; taskPath: string; estimatedHours?: number; dedicatedHours?: number }
+  | { kind: 'set-block-note'; taskPath: string; note: string }
+  | { kind: 'add-subtask'; taskPath: string; title: string }
+  | { kind: 'toggle-subtask'; taskPath: string }
+  /** Tasks this one waits for; a cycle is rejected. */
+  | { kind: 'set-dependencies'; taskPath: string; dependencyPaths: string[] }
+  | { kind: 'restore-tasks'; taskPaths: string[] }
+  | { kind: 'delete-tasks'; taskPaths: string[] }
+  | { kind: 'undo'; token: string }
+  // People and projects of a board.
+  | { kind: 'add-board-member'; board: string; name: string }
+  | { kind: 'remove-board-member'; board: string; name: string }
+  | { kind: 'add-board-project'; board: string; name: string; color: string }
+  | { kind: 'remove-board-project'; board: string; name: string }
+  | { kind: 'move-group'; board: string; name: string; direction: 'left' | 'right' }
 
 /** What the person or the countdown asks of the Pomodoro timer. */
 export type PomodoroAction =
@@ -99,6 +150,29 @@ export type PomodoroAction =
   | { kind: 'enter-deviation' }
   | { kind: 'exit-deviation' }
   | { kind: 'tick' }
+  /** Ends the current phase now and moves to the next one, stopped. */
+  | { kind: 'skip' }
+  /** Picks a mode: the timer stops and starts that mode from the top. */
+  | { kind: 'select-phase'; phase: PomodoroPhase }
+
+/** A preset of durations the Pomodoro offers. */
+export interface PomodoroPreset {
+  name: string
+  /** «Estándar · 25/5». */
+  label: string
+  description: string
+  durations: PomodoroDurations
+  active: boolean
+}
+
+/** Pomodoros of the device's day, for «Registros del día». */
+export interface PomodoroToday {
+  count: number
+  focusMinutes: number
+  /** Finished work phases per hour, 24 values. */
+  byHour: number[]
+  currentHour: number
+}
 
 export interface PomodoroResult {
   state: PomodoroState
@@ -106,6 +180,9 @@ export interface PomodoroResult {
   changed: boolean
   /** The timer moved but its event could not be logged. */
   recordError?: string
+  presets: PomodoroPreset[]
+  /** Null on a published board, which does not read the log. */
+  today: PomodoroToday | null
 }
 
 /** The backend rejects with its error object; surface its message. */
@@ -127,14 +204,49 @@ export function readTaskBoardView(context: TaskManagerBackendContext): Promise<T
   return callBackend<TaskManagerSnapshot>('task_manager_board_view', { payload: context })
 }
 
+/** What the backend answers to an intent. */
+export interface TaskBoardExecuteResult {
+  changed: boolean
+  /** Finish, cancel and delete can be undone for 5 seconds with this token. */
+  undo?: { token: string; kind: 'finish' | 'cancel' | 'delete'; title: string } | null
+  /** Ticket id of a task the intent created, to highlight it. */
+  focusTaskId?: string | null
+}
+
 export async function executeTaskBoardIntent(
   context: TaskManagerBackendContext,
   intent: TaskBoardIntent,
-): Promise<boolean> {
-  const result = await callBackend<{ changed: boolean }>('task_manager_board_execute', {
+): Promise<TaskBoardExecuteResult> {
+  return callBackend<TaskBoardExecuteResult>('task_manager_board_execute', {
     payload: { context, intent },
   })
-  return result.changed
+}
+
+/** Device date and time as `YYYY-MM-DDTHH:MM`, the «now» of the calendar. */
+export function localNow(at: Date = new Date()): string {
+  const { localDate, localTime } = localDateTime(at)
+  return `${localDate}T${localTime}`
+}
+
+/** Management plan of a board: dates, slack, Gantt, network and table. */
+export function readManagementView(
+  context: TaskManagerBackendContext,
+  board: string,
+  request: ManagementRequest,
+): Promise<ManagementView> {
+  return callBackend<ManagementView>('task_manager_management_view', {
+    payload: { context, board, request, localNow: localNow() },
+  })
+}
+
+/** Preview of the settings «Editar tablero» is editing. */
+export function readBoardPlanPreview(
+  context: TaskManagerBackendContext,
+  request: { boardName: string; contexto: string; plan: TaskBoardPlan },
+): Promise<TaskBoardPlanPreview> {
+  return callBackend<TaskBoardPlanPreview>('task_manager_board_plan_preview', {
+    payload: { context, ...request, localNow: localNow() },
+  })
 }
 
 function twoDigits(value: number): string {

@@ -172,7 +172,8 @@
             "Baja",
             "Media",
             "Alta",
-            "Urgente"
+            "Urgente",
+            "Atrasado"
           ]
         }
       },
@@ -205,13 +206,13 @@
     }
   },
   "archive_task": {
-    "description": "Archiva un ticket. Requiere confirmación visible.",
+    "description": "Finaliza una tarea (pasa a Completadas), sumando el tiempo que corría. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "ticketId": {
           "type": "string",
-          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
         }
       },
       "required": [
@@ -259,7 +260,8 @@
                 "Baja",
                 "Media",
                 "Alta",
-                "Urgente"
+                "Urgente",
+                "Atrasado"
               ]
             },
             "groupId": {
@@ -324,7 +326,8 @@
             "Baja",
             "Media",
             "Alta",
-            "Urgente"
+            "Urgente",
+            "Atrasado"
           ]
         }
       },
@@ -335,13 +338,13 @@
     }
   },
   "change_task_state": {
-    "description": "Cambia el estado de un ticket. Requiere confirmación visible.",
+    "description": "Cambia el estado de una tarea con el cronómetro del tablero: En progreso empieza a contar el tiempo; cualquier otro estado suma lo corrido a las horas dedicadas; Finalizada y Cancelada registran la fecha de cierre. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "ticketId": {
           "type": "string",
-          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
         },
         "state": {
           "type": "string",
@@ -1209,6 +1212,21 @@
         "color": {
           "type": "string",
           "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "notes",
+            "current-sprint",
+            "next-sprint",
+            "next-division",
+            "refine",
+            "review",
+            "blocked",
+            "overdue",
+            "custom"
+          ],
+          "description": "Tipo de columna para el plan: notes (Anotadores, fuera del plan), current-sprint, next-sprint (empieza en el próximo sprint), next-division (empieza en la próxima división, «Próximo Q»), refine, review, blocked (bloquea lo que entra), overdue o custom."
         }
       },
       "required": [
@@ -1253,7 +1271,8 @@
             "Baja",
             "Media",
             "Alta",
-            "Urgente"
+            "Urgente",
+            "Atrasado"
           ]
         },
         "tags": {
@@ -1316,7 +1335,7 @@
     }
   },
   "delete_task_group": {
-    "description": "Elimina un grupo sin tickets asignados. Requiere confirmación visible.",
+    "description": "Elimina un grupo (columna) sin tareas abiertas; las finalizadas o canceladas que estaban en él quedan sin columna. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -1336,16 +1355,17 @@
     }
   },
   "duplicate_task": {
-    "description": "Duplica un ticket, opcionalmente con otro título. Requiere confirmación visible.",
+    "description": "Duplica una tarea justo debajo de ella: «título (copia)» o el título que indiques, sin horas, con las mismas personas, proyecto y dependencias, y sus subtareas sin marcar. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "ticketId": {
           "type": "string",
-          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
         },
         "title": {
-          "type": "string"
+          "type": "string",
+          "description": "Título de la copia; omitilo para «título (copia)»."
         }
       },
       "required": [
@@ -1813,21 +1833,22 @@
     }
   },
   "move_task_group": {
-    "description": "Mueve un ticket a otro grupo del mismo tablero. Requiere confirmación visible.",
+    "description": "Mueve una tarea al final de otra columna de su tablero, con las reglas del tablero: entrar a una columna «Bloqueado» la bloquea (y suma el tiempo que corría), salir de ella la deja pendiente, y sus subtareas van con ella. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "ticketId": {
           "type": "string",
-          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
         },
         "groupId": {
           "type": "string",
-          "description": "groupId destino; omitilo para quitar el grupo."
+          "description": "groupId destino, de get_task_manager_options o get_task_board_settings."
         }
       },
       "required": [
-        "ticketId"
+        "ticketId",
+        "groupId"
       ]
     }
   },
@@ -2102,13 +2123,13 @@
     }
   },
   "restore_task": {
-    "description": "Restaura un ticket archivado. Requiere confirmación visible.",
+    "description": "Recupera una tarea finalizada o cancelada: vuelve a su columna como Pendiente. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "ticketId": {
           "type": "string",
-          "description": "ticketId devuelto por search_task_tickets o read_all_task_tickets."
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
         }
       },
       "required": [
@@ -3075,7 +3096,8 @@
               "Baja",
               "Media",
               "Alta",
-              "Urgente"
+              "Urgente",
+              "Atrasado"
             ]
           }
         },
@@ -3435,7 +3457,8 @@
                 "Baja",
                 "Media",
                 "Alta",
-                "Urgente"
+                "Urgente",
+                "Atrasado"
               ]
             },
             "groupId": {
@@ -3486,7 +3509,7 @@
     }
   },
   "update_task_group": {
-    "description": "Renombra un grupo (columna) de un tablero o cambia su color; conserva su id, su posición y sus tickets. Enviá name, color o ambos: lo que se omite queda igual. Requiere confirmación visible.",
+    "description": "Renombra un grupo (columna) de un tablero, cambia su color o su tipo; conserva su id, su posición y sus tickets. Enviá name, color, kind o varios: lo que se omite queda igual. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -3506,6 +3529,21 @@
           "type": "string",
           "pattern": "^#[0-9A-Fa-f]{6}$",
           "description": "Color hexadecimal nuevo."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "notes",
+            "current-sprint",
+            "next-sprint",
+            "next-division",
+            "refine",
+            "review",
+            "blocked",
+            "overdue",
+            "custom"
+          ],
+          "description": "Tipo de columna para el plan: notes (Anotadores, fuera del plan), current-sprint, next-sprint (empieza en el próximo sprint), next-division (empieza en la próxima división, «Próximo Q»), refine, review, blocked (bloquea lo que entra), overdue o custom."
         }
       },
       "required": [
@@ -6202,6 +6240,348 @@
         "replacements"
       ],
       "additionalProperties": false
+    }
+  },
+  "set_task_time": {
+    "description": "Cambia las horas estimadas y/o dedicadas de una tarea (en horas, por ejemplo 1.5). estimatedHours 0 la deja sin estimación. Si la tarea está corriendo, el cronómetro sigue desde el nuevo total dedicado. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        },
+        "estimatedHours": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Horas estimadas."
+        },
+        "dedicatedHours": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Horas dedicadas en total."
+        }
+      },
+      "required": [
+        "ticketId"
+      ]
+    }
+  },
+  "set_task_people": {
+    "description": "Asigna personas a una tarea. Solo se pueden asignar personas del tablero (get_task_board_settings → people); para alguien nuevo, agregalo antes con add_task_board_member. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Nombres tal como figuran en el tablero."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "add",
+            "remove"
+          ],
+          "description": "replace (por defecto) deja exactamente esas personas; add las suma; remove las quita."
+        }
+      },
+      "required": [
+        "ticketId",
+        "people"
+      ]
+    }
+  },
+  "set_task_project": {
+    "description": "Pone una tarea en un proyecto del tablero. Un nombre que el tablero no tiene se agrega como proyecto nuevo con un color libre; un texto vacío quita el proyecto. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        },
+        "project": {
+          "type": "string",
+          "description": "Nombre del proyecto, o vacío para quitarlo."
+        }
+      },
+      "required": [
+        "ticketId",
+        "project"
+      ]
+    }
+  },
+  "start_task_timer": {
+    "description": "Inicia una tarea: pasa a En progreso y empieza a contar el tiempo dedicado. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        }
+      },
+      "required": [
+        "ticketId"
+      ]
+    }
+  },
+  "pause_task_timer": {
+    "description": "Pausa una tarea en progreso: vuelve a Pendiente y suma el tiempo corrido a las horas dedicadas. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        }
+      },
+      "required": [
+        "ticketId"
+      ]
+    }
+  },
+  "set_task_block_note": {
+    "description": "Escribe por qué está bloqueada una tarea (se ve en la tarjeta); un texto vacío lo quita. Para bloquearla, movela a la columna Bloqueado o cambiá su estado a Bloqueada. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        },
+        "note": {
+          "type": "string",
+          "description": "Motivo del bloqueo, hasta 500 caracteres."
+        }
+      },
+      "required": [
+        "ticketId",
+        "note"
+      ]
+    }
+  },
+  "set_task_dependencies": {
+    "description": "Define de qué tareas del mismo tablero depende una tarea (empieza después de que terminen); reemplaza la lista. Se rechaza si crearía un ciclo. Una lista vacía quita las dependencias. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId devuelto por search_task_tickets, read_all_task_tickets o get_task_board_plan."
+        },
+        "dependsOnTicketIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "description": "ticketIds de las tareas que tienen que terminar antes."
+        }
+      },
+      "required": [
+        "ticketId",
+        "dependsOnTicketIds"
+      ]
+    }
+  },
+  "toggle_task_subtask": {
+    "description": "Marca una subtarea como hecha (Finalizada) o pendiente. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "ticketId de la subtarea (read_task_tickets lista las subtareas)."
+        },
+        "done": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ticketId",
+        "done"
+      ]
+    }
+  },
+  "add_task_board_member": {
+    "description": "Agrega una persona al tablero para poder asignarle tareas; recibe un color de la paleta. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre y apellido de la persona."
+        }
+      },
+      "required": [
+        "boardId",
+        "name"
+      ]
+    }
+  },
+  "remove_task_board_member": {
+    "description": "Quita una persona del tablero y de todas sus tareas. El propietario no se puede quitar. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "boardId",
+        "name"
+      ]
+    }
+  },
+  "add_task_board_project": {
+    "description": "Agrega un proyecto al tablero. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "Color hexadecimal; omitilo para el primero libre de la paleta."
+        }
+      },
+      "required": [
+        "boardId",
+        "name"
+      ]
+    }
+  },
+  "remove_task_board_project": {
+    "description": "Elimina un proyecto del tablero; sus tareas quedan sin proyecto. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "boardId",
+        "name"
+      ]
+    }
+  },
+  "update_task_board_calendar": {
+    "description": "Cambia el calendario de un tablero: la jornada (las horas por día del plan), los días activos, los sprints (definen Sprint actual y Sprint siguiente) y las divisiones del año (definen Próximo Q). Enviá solo lo que cambia. No está disponible en el tablero publicado. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "workdayStart": {
+          "type": "string",
+          "description": "Inicio de la jornada HH:MM, en pasos de 30 minutos."
+        },
+        "workdayEnd": {
+          "type": "string",
+          "description": "Fin de la jornada HH:MM, en pasos de 30 minutos."
+        },
+        "workDays": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Días activos. Día de la semana en español: lunes, martes, miércoles, jueves, viernes, sábado o domingo."
+        },
+        "sprintWeeks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "sprintStartDay": {
+          "type": "string",
+          "description": "Día en que empiezan los sprints, de lunes a viernes."
+        },
+        "divisionsPerYear": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "description": "4 son trimestres (Q1–Q4), 2 semestres, 12 meses."
+        },
+        "divisionPrefix": {
+          "type": "string",
+          "maxLength": 4,
+          "description": "Prefijo de las divisiones, como Q o T."
+        },
+        "yearStartMonth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Mes en que empieza el año del tablero (1 = enero)."
+        }
+      },
+      "required": [
+        "boardId"
+      ]
+    }
+  },
+  "get_task_board_settings": {
+    "description": "Devuelve el calendario de un tablero (jornada, días, sprint actual y siguiente con fechas, divisiones), sus personas, sus proyectos y sus columnas con groupId, tipo y tareas abiertas.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        }
+      },
+      "required": [
+        "boardId"
+      ]
+    }
+  },
+  "get_task_board_plan": {
+    "description": "Devuelve el plan de Management de un tablero, calculado por Notia: rango, carga del equipo, quién está más cargado, cuándo termina lo planificado, la ruta crítica y cada tarea planificada con letra, ticketId, personas, horas restantes, dependencias, inicio, fin, inicio tardío, holgura, si es crítica y a quién espera. No calcules fechas por tu cuenta.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "boardId": {
+          "type": "string",
+          "description": "boardId devuelto por get_task_manager_options."
+        },
+        "divisionOffset": {
+          "type": "integer",
+          "description": "Divisiones después (o antes, negativo) de la actual; 0 por defecto."
+        }
+      },
+      "required": [
+        "boardId"
+      ]
     }
   }
 }

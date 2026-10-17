@@ -8,6 +8,7 @@
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike};
 use notia_backend_core::chat_list::ChatClock;
+use notia_backend_core::task_manager_tools::TaskColumnKind;
 use notia_backend_core::{TaskBoardViewDto, TaskPriority, TaskState};
 use serde::{Deserialize, Serialize};
 
@@ -181,6 +182,7 @@ fn notes_summary(data: &HomeAgendaData) -> HomeNotes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum HomeTaskChip {
+    Overdue,
     Urgent,
     High,
     Medium,
@@ -227,7 +229,7 @@ pub(crate) struct HomeTasks {
     focus: Option<HomeFocus>,
 }
 
-/// Group name without case or accents, to recognize the usual columns.
+/// Name without case or accents.
 fn folded(value: &str) -> String {
     value
         .trim()
@@ -244,17 +246,28 @@ fn folded(value: &str) -> String {
         .collect()
 }
 
+/// Kind of the column a task sits in: the board's, or the one its name
+/// implies.
+fn column_kind(view: &TaskBoardViewDto, task: &notia_backend_core::task_manager_ui::TaskItemViewDto) -> TaskColumnKind {
+    view.groups
+        .iter()
+        .find(|group| group.board == task.board && group.name == task.group)
+        .map(|group| group.kind)
+        .unwrap_or_else(|| TaskColumnKind::infer(&task.group))
+}
+
 /// Blocked by its state or by the column it sits in.
-fn is_blocked(task: &notia_backend_core::task_manager_ui::TaskItemViewDto) -> bool {
-    task.state == TaskState::Blocked || folded(&task.group).starts_with("bloquead")
+fn is_blocked(view: &TaskBoardViewDto, task: &notia_backend_core::task_manager_ui::TaskItemViewDto) -> bool {
+    task.state == TaskState::Blocked || column_kind(view, task) == TaskColumnKind::Blocked
 }
 
 fn priority_rank(priority: TaskPriority) -> u8 {
     match priority {
-        TaskPriority::Urgent => 0,
-        TaskPriority::High => 1,
-        TaskPriority::Medium => 2,
-        TaskPriority::Low => 3,
+        TaskPriority::Overdue => 0,
+        TaskPriority::Urgent => 1,
+        TaskPriority::High => 2,
+        TaskPriority::Medium => 3,
+        TaskPriority::Low => 4,
     }
 }
 
@@ -274,7 +287,7 @@ fn tasks_summary(view: &TaskBoardViewDto, pomodoro_task: Option<&str>) -> HomeTa
         .iter()
         .filter(|task| matches!(task.state, TaskState::Pending | TaskState::InProgress | TaskState::Blocked))
         .collect::<Vec<_>>();
-    let in_group = |name: &str| open.iter().filter(|task| folded(&task.group) == name).count();
+    let in_group = |kind: TaskColumnKind| open.iter().filter(|task| column_kind(view, task) == kind).count();
     let mut ranked = open.clone();
     ranked.sort_by(|left, right| {
         priority_rank(left.priority)
@@ -289,18 +302,19 @@ fn tasks_summary(view: &TaskBoardViewDto, pomodoro_task: Option<&str>) -> HomeTa
     };
     HomeTasks {
         completed: view.tasks.iter().filter(|task| task.state == TaskState::Completed).count(),
-        sprint: in_group("sprint actual"),
-        review: in_group("en revision"),
-        blocked: open.iter().filter(|task| is_blocked(task)).count(),
-        urgent_count: open.iter().filter(|task| task.priority == TaskPriority::Urgent).count(),
+        sprint: in_group(TaskColumnKind::CurrentSprint),
+        review: in_group(TaskColumnKind::Review),
+        blocked: open.iter().filter(|task| is_blocked(view, task)).count(),
+        urgent_count: open.iter().filter(|task| task.priority >= TaskPriority::Urgent).count(),
         urgent: ranked
             .into_iter()
             .take(URGENT_TASKS)
             .map(|task| {
-                let (chip, chip_label) = if is_blocked(task) {
+                let (chip, chip_label) = if is_blocked(view, task) {
                     (HomeTaskChip::Blocked, "Bloqueada")
                 } else {
                     match task.priority {
+                        TaskPriority::Overdue => (HomeTaskChip::Overdue, "Atrasado"),
                         TaskPriority::Urgent => (HomeTaskChip::Urgent, "Urgente"),
                         TaskPriority::High => (HomeTaskChip::High, "Alta"),
                         TaskPriority::Medium => (HomeTaskChip::Medium, "Media"),
@@ -858,6 +872,13 @@ mod tests {
             related_tasks: Vec::new(),
             project: None,
             assignees: Vec::new(),
+            project_color: None,
+            people: Vec::new(),
+            started_at_unix_ms: None,
+            block_note: String::new(),
+            dependencies: Vec::new(),
+            subtask_done: 0,
+            subtask_total: 0,
         }
     }
 
@@ -869,6 +890,11 @@ mod tests {
             groups: Vec::new(),
             pomodoro_entries: Vec::new(),
             panel_paths: Default::default(),
+            archive: Default::default(),
+            finished_count: 0,
+            cancelled_count: 0,
+            palette: Vec::new(),
+            column_kinds: Vec::new(),
             tasks: vec![
                 task("Informe", "Sprint actual", TaskState::Pending, TaskPriority::Medium),
                 task("Performance", "Sprint actual", TaskState::InProgress, TaskPriority::Urgent),

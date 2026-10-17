@@ -11,7 +11,7 @@ export interface HomeCard<T> {
   error?: string
 }
 
-export type HomePriority = 'urgent' | 'high' | 'medium' | 'low'
+export type HomePriority = 'overdue' | 'urgent' | 'high' | 'medium' | 'low'
 
 export interface HomeAgendaDay {
   date: string

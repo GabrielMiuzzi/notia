@@ -79,13 +79,19 @@
 - Sincronización de ColdPass mediante Bluetooth.
 - Extensión de Chrome NotIA (`chrome-ext/notia`): en una llamada de Microsoft Teams en Chrome, marca en la grabación de Meeting quién habla en cada momento, con nombre (por los subtítulos en directo o el contorno de quien habla); nombra las frases en vivo y los hablantes al terminar.
 - Extensión de Chrome para ColdPass (`chrome-ext/coldpass`): completa credenciales guardadas, ofrece guardar las nuevas y genera contraseñas, conectada al modo Host de esta computadora.
-- Task Manager con tableros Kanban, grupos/columnas, vista de tabla, subtareas, comentarios con fecha, hora y autor escritos con el editor Markdown, títulos visibles con separadores de ruta y edición de cada tarea con el editor Markdown de las notas (lápiz o doble clic).
-- Task Manager: proyecto y personas asignadas por ticket, búsqueda y filtros por estado, prioridad, proyecto y persona, detalle de la tarjeta en Markdown, avisos de las acciones, confirmación para finalizar o desestimar y vista que no se mueve al cambiar un ticket.
-- Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con el menú **Mover** de cada tarjeta (subir, bajar o pasar a otro grupo).
+- Task Manager con vistas Tablero, Lista y Management, columnas plegables con tipo (Anotadores, Sprint actual, Sprint siguiente, Próximo Q, A refinar, En revisión, Bloqueado, Atrasado), subtareas, comentarios con fecha, hora y autor escritos con el editor Markdown y edición de cada tarea con el editor Markdown de las notas.
+- Prioridades Atrasado (la más urgente), Urgente, Alta, Media y Baja.
+- Tarjeta de tarea con prioridad, proyecto, personas del tablero, círculo de tiempo dedicado sobre estimado, subtareas, motivo de bloqueo, cronómetro (Iniciar, Pausar, Finalizar), renombrar, duplicar, mover a otra columna, desestimar y eliminar con Deshacer de 5 segundos.
+- Búsqueda (tecla /) y filtros por estado, prioridad, proyecto y persona en las tres vistas; la vista elegida se recuerda por tablero; Nueva tarea con la tecla N.
+- Management: plan con fecha y hora por tarea (dependencias, una tarea por persona, liberación por sprint o división), ruta crítica, KPIs de rango, carga y fin, Gantt por tarea o por persona, red CPM y tabla CPM con predecesoras editables sin ciclos.
+- Personas y proyectos de cada tablero en un panel lateral; quitar una persona o un proyecto lo saca de sus tareas.
+- Editar tablero: nombre, color, contexto, jornada y días activos, sprints y divisiones del año con vista previa.
+- Completadas y Canceladas con búsqueda, filtros, selección múltiple para recuperar o eliminar y carga de a 20.
+- Mover tareas y subtareas con el dedo (mantener presionado y deslizar, con desplazamiento automático) o con **⋯ → Mover a**.
 - Operaciones de Task Manager (tareas, tableros, grupos, orden por arrastre y registro Pomodoro) resueltas y validadas en Rust en Windows y Android.
-- Herramientas de Task Manager del asistente en el chat del tablero, el chat principal y Telegram: tickets, comentarios (agregar, corregir y eliminar), subtareas y grupos (crear, renombrar, cambiar color, reordenar columnas y eliminar vacíos).
+- Herramientas de Task Manager del asistente en el chat del tablero, el chat principal y Telegram: tickets, comentarios (agregar, corregir y eliminar), subtareas, grupos (crear, renombrar, cambiar color o tipo, reordenar y eliminar), estimaciones y horas dedicadas, personas y proyectos de cada tarea y del tablero, cronómetro, motivo de bloqueo, dependencias, duplicar, mover con las reglas de Bloqueado, calendario del tablero (jornada, sprints y divisiones) y consulta del plan de Management.
 - Contexto obligatorio por tablero; las notas Markdown dentro de un tablero heredan y conservan el contexto del tablero, y Graph View colorea sus tickets con ese contexto.
-- Temporizador Pomodoro integrado en Task Manager, guardado en el backend para cada biblioteca y usuario.
+- Temporizador Pomodoro integrado en Task Manager, guardado en el backend para cada biblioteca y usuario: modos Trabajo, Descanso corto y largo, ciclos de 2 a 8, presets, saltar, tarea vinculada por tablero (su foco suma horas dedicadas) y registros del día con mapa por hora.
 - Publicación colaborativa de Task Manager en la red local con autenticación por usuario de biblioteca, creación de tareas y subtareas.
 - Modo servidor sin ventana (`notia --headless`, Windows y Linux): API HTTPS con contraseña del dueño, eventos por WebSocket, registro de bibliotecas por consola y bloqueo exclusivo de la carpeta de datos compartida con la aplicación.
 - Uso de Notia desde el navegador contra un servidor headless: ingreso con la contraseña del dueño, la misma interfaz con eventos en vivo, imágenes de las bibliotecas y dictado grabado en el navegador; recupera los eventos perdidos al reconectar o avisa que hay que recargar; las funciones que dependen del equipo servidor se ocultan.

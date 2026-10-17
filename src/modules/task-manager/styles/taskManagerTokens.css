@@ -1,0 +1,44 @@
+/*
+ * Task Manager palette. Every color of the module comes from these tokens,
+ * which follow the app palette (`.notia-app-shell` dark, `.notia-theme-light`
+ * light). Washes are made with color-mix over these tokens.
+ */
+.tareas-root {
+  --tm-ink: var(--color-main-bg, #0f1420);
+  --tm-panel: var(--color-menu-panel-bg, #161d2e);
+  --tm-raised: var(--color-card-bg, #1b2438);
+  --tm-selected: color-mix(in srgb, var(--tm-raised) 82%, var(--tm-text) 7%);
+  --tm-hairline: var(--color-border-soft, #29334a);
+  --tm-hairline-strong: color-mix(in srgb, var(--tm-hairline) 70%, var(--tm-text) 14%);
+  --tm-text: var(--color-heading-text, #edf0f5);
+  --tm-muted: var(--color-muted-text, #8892a6);
+  --tm-teal: var(--color-accent-text, #4fd1c5);
+  --tm-teal-hover: color-mix(in srgb, var(--tm-teal) 84%, white 16%);
+  --tm-on-teal: var(--color-on-accent, #0f1420);
+  --tm-coral: var(--color-coral, #ff6b6b);
+  --tm-amber: var(--color-amber, #ffb86b);
+  --tm-periwinkle: var(--color-periwinkle, #6c8eff);
+  --tm-sage: var(--color-sage, #6fcf97);
+  --tm-violet: var(--color-violet, #a78bfa);
+  --tm-gold: var(--color-gold, #d9b44a);
+  --tm-rosa: var(--color-rosa, #f28cb1);
+  --tm-slate: var(--color-slate, #64748b);
+  --tm-overlay: color-mix(in srgb, var(--tm-ink) 55%, transparent);
+  --tm-shadow: rgba(0, 0, 0, 0.85);
+  --tm-priority-overdue: var(--tm-rosa);
+  --tm-priority-urgent: var(--tm-coral);
+  --tm-priority-high: var(--tm-amber);
+  --tm-priority-medium: var(--tm-periwinkle);
+  --tm-priority-low: var(--tm-sage);
+  --tm-wash: 15%;
+  --tareas-font-display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  --tareas-font-text: 'Public Sans', 'Segoe UI', system-ui, sans-serif;
+}
+
+.notia-theme-light .tareas-root {
+  --tm-selected: #eef1f6;
+  --tm-hairline-strong: #c5cdda;
+  --tm-teal-hover: color-mix(in srgb, var(--tm-teal) 86%, black 14%);
+  --tm-shadow: rgba(22, 32, 46, 0.22);
+  --tm-wash: 10%;
+}

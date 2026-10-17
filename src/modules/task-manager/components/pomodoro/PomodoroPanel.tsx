@@ -1,669 +1,651 @@
-import { useEffect, useRef, useState } from 'react'
-import type { MutableRefObject } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import {
   formatPomodoroCountdown,
-  getDeviationElapsedSeconds,
   getPhaseDurationSeconds,
   getPomodoroPhaseLabel,
   getPomodoroRemainingSeconds,
 } from '../../utils/pomodoroDisplay'
-import { getEntriesByDate, toLocalDateText } from '../../engines/pomodoroLogEngine'
-import { TASK_ICON_NAME, TaskManagerIcon } from '../../engines/taskIconEngine'
-import type { PomodoroDurations, PomodoroLogEntry, PomodoroState, TaskItem } from '../../types/taskManagerTypes'
-import { NotiaButton } from '../../../../components/common/NotiaButton'
-import { NotiaCard } from '../../../../components/common/NotiaCard'
-import { TaskManagerModal } from '../common/TaskManagerModal'
+import type { PomodoroAction, PomodoroPreset, PomodoroToday } from '../../services/taskManagerService'
+import type { Board, PomodoroDurations, PomodoroPhase, PomodoroState, TaskItem } from '../../types/taskManagerTypes'
+import '../../styles/taskManagerTokens.css'
+import '../../styles/taskPomodoro.css'
 
-interface PomodoroPanelProps {
+export interface PomodoroPanelProps {
   state: PomodoroState
+  presets: PomodoroPreset[]
+  today: PomodoroToday | null
+  boards: Board[]
+  /** Open tasks of every board (root tasks and subtasks) from the snapshot. */
   tasks: TaskItem[]
-  entries: PomodoroLogEntry[]
-  onSelectTask: (taskPath: string | null) => void
-  onStart: () => Promise<void>
-  onPause: () => void
-  onResume: () => void
-  onReset: () => void
-  onEnterDeviation: () => void
-  onExitDeviation: () => Promise<void>
-  onSetDurations: (durations: PomodoroDurations) => void
-  onDeleteEntry: (entryId: string) => Promise<void>
+  onAction: (action: PomodoroAction) => Promise<void>
   onNotify: (message: string | null) => void
 }
 
-const BREAK_MESSAGES = [
-  'Respira profundo y estira cuello y hombros.',
-  'Tomá agua y alejate un minuto de la pantalla.',
-  'Un descanso corto mantiene el ritmo.',
-  'Pausa breve, mente fresca.',
+const PHASES: PomodoroPhase[] = ['work', 'short-break', 'long-break']
+const RING_RADIUS = 130
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
+
+/** Stepper limits of the design; Rust clamps the values again. */
+const STEPPERS: Array<{ key: keyof PomodoroDurations; label: string; step: number; min: number; max: number; unit: string }> = [
+  { key: 'workMinutes', label: 'Trabajo', step: 5, min: 5, max: 90, unit: 'min' },
+  { key: 'shortBreakMinutes', label: 'Descanso corto', step: 1, min: 1, max: 30, unit: 'min' },
+  { key: 'longBreakMinutes', label: 'Descanso largo', step: 5, min: 5, max: 60, unit: 'min' },
+  { key: 'cycles', label: 'Ciclos', step: 1, min: 2, max: 8, unit: 'por serie' },
 ]
 
-const POMODORO_PRESETS: Array<{ title: string; usage: string; durations: PomodoroDurations }> = [
-  {
-    title: '⭐ Estándar - 25/5',
-    usage: 'tareas moderadas, programación, estudio, mantener ritmo constante sin quemarse.',
-    durations: { workMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15 },
-  },
-  {
-    title: '⚡ Sprint - 50/10',
-    usage: 'trabajo profundo con bloques largos y pausas más amplias.',
-    durations: { workMinutes: 50, shortBreakMinutes: 10, longBreakMinutes: 20 },
-  },
-  {
-    title: '🧠 Ligero - 15/3',
-    usage: 'inicio de jornada, tareas livianas o cuando cuesta arrancar.',
-    durations: { workMinutes: 15, shortBreakMinutes: 3, longBreakMinutes: 10 },
-  },
-  {
-    title: '🏋 Intenso - 45/7',
-    usage: 'foco sostenido con pausas cortas de recuperación.',
-    durations: { workMinutes: 45, shortBreakMinutes: 7, longBreakMinutes: 18 },
-  },
-]
+const PRIORITY_TONE: Record<string, string> = {
+  Atrasado: 'overdue',
+  Urgente: 'urgent',
+  Alta: 'high',
+  Media: 'medium',
+  Baja: 'low',
+}
 
-export function PomodoroPanel({
-  state,
-  tasks,
-  entries,
-  onSelectTask,
-  onStart,
-  onPause,
-  onResume,
-  onReset,
-  onEnterDeviation,
-  onExitDeviation,
-  onSetDurations,
-  onDeleteEntry,
-  onNotify,
-}: PomodoroPanelProps) {
+type Popover = 'board' | 'preset' | null
+
+export function PomodoroPanel({ state, presets, today, boards, tasks, onAction, onNotify }: PomodoroPanelProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [isPresetModalOpen, setIsPresetModalOpen] = useState(false)
-  const previousVisualStateRef = useRef<{ phase: PomodoroState['phase']; runState: PomodoroState['runState']; isDeviationActive: boolean } | null>(null)
+  const [popover, setPopover] = useState<Popover>(null)
+  const [pickedBoard, setPickedBoard] = useState<string | null>(null)
+  const [boardSwaps, setBoardSwaps] = useState(0)
+  const previousRef = useRef<{ phase: PomodoroPhase; runState: PomodoroState['runState'] } | null>(null)
+  const tickSentForRef = useRef<number | null>(null)
   const lastBreathSecondRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const panelRef = useRef<HTMLDivElement | null>(null)
-  const ringRef = useRef<HTMLDivElement | null>(null)
-  const timeRef = useRef<HTMLDivElement | null>(null)
+  const boardButtonRef = useRef<HTMLButtonElement | null>(null)
+  const presetButtonRef = useRef<HTMLButtonElement | null>(null)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+
+  const run = useCallback((action: PomodoroAction) => {
+    onAction(action).catch((error: unknown) => {
+      onNotify(error instanceof Error ? error.message : 'No se pudo actualizar el pomodoro.')
+    })
+  }, [onAction, onNotify])
+
+  // The countdown is drawn from the backend's end timestamp, once a second.
+  useEffect(() => {
+    setNowMs(Date.now())
+    if (state.runState !== 'running') return undefined
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [state.runState, state.endTimestamp])
+
+  const totalSeconds = Math.max(1, getPhaseDurationSeconds(state.durations, state.phase))
+  const remainingSeconds = Math.min(totalSeconds, getPomodoroRemainingSeconds(state, nowMs))
+  const isRunning = state.runState === 'running'
+
+  // At zero the backend closes the phase; asked once per countdown.
+  useEffect(() => {
+    if (!isRunning || state.endTimestamp === null || remainingSeconds > 0) return
+    if (tickSentForRef.current === state.endTimestamp) return
+    tickSentForRef.current = state.endTimestamp
+    run({ kind: 'tick' })
+  }, [isRunning, remainingSeconds, run, state.endTimestamp])
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setNowMs(Date.now())
-    }, 1000)
-
-    return () => window.clearInterval(intervalId)
-  }, [])
-
-  const elapsedDeviationSeconds = getDeviationElapsedSeconds(state, nowMs)
-  const remainingSeconds = getPomodoroRemainingSeconds(state, nowMs)
-  const displayedSeconds = state.isDeviationActive ? elapsedDeviationSeconds : remainingSeconds
-
-  const totalSeconds = Math.max(
-    1,
-    state.isDeviationActive
-      ? Math.max(1, state.deviationBaseRemainingSeconds)
-      : getPhaseDurationSeconds(state.durations, state.phase),
-  )
-
-  const elapsedSeconds = state.isDeviationActive
-    ? elapsedDeviationSeconds
-    : Math.max(0, totalSeconds - remainingSeconds)
-
-  const progressPercent = Math.min(100, (elapsedSeconds / totalSeconds) * 100)
-  const visualMode = resolveVisualMode(state)
-  const runGlyph = state.runState === 'running'
-    ? null
-    : state.runState === 'paused'
-      ? <TaskManagerIcon name={TASK_ICON_NAME.pause} size={12} />
-      : <TaskManagerIcon name={TASK_ICON_NAME.stop} size={10} />
-  const runStateLabel = resolveRunStateLabel(state)
-  const breakMessage = resolveBreakMessage(state)
-
-  const selectedTask = tasks.find((task) => task.filePath === state.selectedTaskPath) ?? null
-  const todayEntries = getEntriesByDate(entries, toLocalDateText(new Date()))
-  const hourlyCounts = buildHourlyCounts(todayEntries)
-  const cycleValue = state.completedWorkCycles > 0
-    ? state.completedWorkCycles % 4 === 0
-      ? 4
-      : state.completedWorkCycles % 4
-    : 0
-
-  useEffect(() => {
-    const previous = previousVisualStateRef.current
-    if (previous) {
-      const phaseChanged = previous.phase !== state.phase || previous.isDeviationActive !== state.isDeviationActive
-      const runStateChanged = previous.runState !== state.runState
-
-      if (phaseChanged) {
-        triggerTransientClass(ringRef.current, 'is-phase-shift', 520)
-        triggerTransientClass(timeRef.current, 'is-phase-shift-time', 520)
-        triggerTransientClass(panelRef.current, 'tareas-pomodoro-panel-flash', 900)
-        playPomodoroAlarmShort(audioContextRef)
-      }
-
-      if (runStateChanged) {
-        triggerTransientClass(ringRef.current, 'is-runstate-shift', 520)
-      }
-
-      if (phaseChanged && previous.runState === 'running') {
-        if (previous.phase === 'work') {
-          onNotify(`Pomodoro finalizado. Iniciando ${getPomodoroPhaseLabel(state.phase).toLowerCase()}.`)
-        } else {
-          onNotify(`Descanso finalizado. Iniciando ${getPomodoroPhaseLabel(state.phase).toLowerCase()}.`)
-        }
+    const previous = previousRef.current
+    if (previous && previous.phase !== state.phase) {
+      playPomodoroAlarmShort(audioContextRef)
+      if (previous.runState === 'running') {
+        const next = getPomodoroPhaseLabel(state.phase).toLowerCase()
+        onNotify(previous.phase === 'work' ? `Pomodoro finalizado. Sigue ${next}.` : `Descanso finalizado. Sigue ${next}.`)
       }
     }
-
-    previousVisualStateRef.current = {
-      phase: state.phase,
-      runState: state.runState,
-      isDeviationActive: state.isDeviationActive,
-    }
-  }, [onNotify, state.isDeviationActive, state.phase, state.runState])
+    previousRef.current = { phase: state.phase, runState: state.runState }
+  }, [onNotify, state.phase, state.runState])
 
   useEffect(() => {
-    const shouldPlayBreath = state.runState === 'running'
-      && !state.isDeviationActive
-      && remainingSeconds > 0
-      && remainingSeconds <= 4
-
-    if (!shouldPlayBreath) {
+    if (!isRunning || remainingSeconds <= 0 || remainingSeconds > 4) {
       lastBreathSecondRef.current = null
       return
     }
-
-    if (lastBreathSecondRef.current === remainingSeconds) {
-      return
-    }
-
+    if (lastBreathSecondRef.current === remainingSeconds) return
     lastBreathSecondRef.current = remainingSeconds
     playPomodoroBreathTick(audioContextRef)
-  }, [remainingSeconds, state.isDeviationActive, state.runState])
+  }, [isRunning, remainingSeconds])
 
   useEffect(() => () => {
     const context = audioContextRef.current
-    if (context && context.state !== 'closed') {
-      void context.close().catch(() => {})
-    }
+    if (context && context.state !== 'closed') void context.close().catch(() => {})
     audioContextRef.current = null
   }, [])
 
+  const togglePlay = useCallback(() => {
+    if (state.runState === 'running') run({ kind: 'pause' })
+    else if (state.runState === 'paused') run({ kind: 'resume' })
+    else run({ kind: 'start' })
+  }, [run, state.runState])
+
+  const reset = useCallback(() => run({ kind: 'reset' }), [run])
+
+  // Space and R work anywhere in the view except while typing or in a menu.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      if (popover !== null || isEditableTarget(event.target)) return
+      if (event.key === ' ' || event.code === 'Space') {
+        if (isActivatableTarget(event.target)) return
+        event.preventDefault()
+        togglePlay()
+      } else if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault()
+        reset()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [popover, reset, togglePlay])
+
+  // Focus goes to the current item when a menu opens.
+  useEffect(() => {
+    if (popover === null) return
+    const current = popoverRef.current?.querySelector<HTMLElement>('[aria-checked="true"]')
+      ?? popoverRef.current?.querySelector<HTMLElement>('button')
+    current?.focus()
+  }, [popover])
+
+  const closePopover = (restoreFocus: boolean) => {
+    const opener = popover === 'board' ? boardButtonRef.current : presetButtonRef.current
+    setPopover(null)
+    if (restoreFocus) opener?.focus()
+  }
+
+  const onPopoverKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closePopover(true)
+    }
+  }
+
+  const linkedTask = state.selectedTaskPath
+    ? tasks.find((task) => task.filePath === state.selectedTaskPath) ?? null
+    : null
+  const activeBoard = boards.find((board) => board.name === pickedBoard)
+    ?? boards.find((board) => board.name === linkedTask?.board)
+    ?? boards[0]
+    ?? null
+  const boardTasks = activeBoard ? tasks.filter((task) => task.board === activeBoard.name) : []
+  const candidateGroups = [
+    { label: 'En progreso', items: boardTasks.filter((task) => task.state === 'En progreso') },
+    { label: 'Pendientes', items: boardTasks.filter((task) => task.state === 'Pendiente') },
+  ].filter((group) => group.items.length > 0)
+
+  const pickBoard = (name: string) => {
+    if (name !== activeBoard?.name) setBoardSwaps((count) => count + 1)
+    setPickedBoard(name)
+    closePopover(true)
+  }
+
+  const activePreset = presets.find((preset) => preset.active) ?? null
+  const cycles = Math.max(1, state.durations.cycles)
+  const cyclesInSet = state.completedWorkCycles % cycles
+  const dashOffset = RING_CIRCUMFERENCE * (1 - remainingSeconds / totalSeconds)
+  const statusLabel = state.runState === 'running'
+    ? state.phase === 'work' ? 'En foco' : 'Descansando'
+    : state.runState === 'paused' ? 'En pausa' : 'Preparado'
+
+  const step = (key: keyof PomodoroDurations, delta: number, min: number, max: number) => {
+    const value = Math.max(min, Math.min(max, state.durations[key] + delta))
+    if (value === state.durations[key]) return
+    run({ kind: 'set-durations', durations: { ...state.durations, [key]: value } })
+  }
+
   return (
-    <div className="tareas-pomodoro-panel" ref={panelRef}>
-      <div className="tareas-pomodoro-top">
-        <h2 className="tareas-pomodoro-phase">{getPomodoroPhaseLabel(state.phase)}</h2>
-        <span className="tareas-pomodoro-cycles-badge">{cycleValue} / 4</span>
-      </div>
-
-      <div className="tareas-pomodoro-timer-wrap">
-        <div
-          className="tareas-pomodoro-progress"
-          ref={ringRef}
-          data-mode={visualMode}
-          data-run-state={state.runState}
-          style={{ ['--tareas-pomodoro-progress' as string]: `${progressPercent}%` }}
-        >
-          <div className="tareas-pomodoro-progress-inner">
-            <div className={`tareas-pomodoro-time${state.isDeviationActive ? ' is-deviation' : ''}`} ref={timeRef}>
-              {formatPomodoroCountdown(displayedSeconds)}
-            </div>
-            {runGlyph ? <div className="tareas-pomodoro-run-glyph">{runGlyph}</div> : null}
-          </div>
-        </div>
-      </div>
-
-      <p className="tareas-pomodoro-break-message">{breakMessage}</p>
-
-      <div className="tareas-pomodoro-controls">
-        <div className="tareas-pomodoro-controls-icons">
-          {state.runState === 'running' ? (
-            <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onPause} title="Pausar">
-              <TaskManagerIcon name={TASK_ICON_NAME.pause} size={14} />
-            </NotiaButton>
-          ) : (
-            <NotiaButton
-              className="tareas-pomodoro-btn tareas-pomodoro-btn-icon"
-              onClick={() => {
-                if (state.runState === 'paused') {
-                  onResume()
-                } else {
-                  void onStart()
-                }
-              }}
-              title={state.runState === 'paused' ? 'Reanudar' : 'Iniciar'}
-            >
-              <TaskManagerIcon name={TASK_ICON_NAME.play} size={14} />
-            </NotiaButton>
-          )}
-
-          <NotiaButton className="tareas-pomodoro-btn tareas-pomodoro-btn-icon" onClick={onReset} title="Reiniciar">
-            <TaskManagerIcon name={TASK_ICON_NAME.reset} size={14} />
-          </NotiaButton>
-
-          <NotiaButton
-            className={`tareas-pomodoro-btn tareas-pomodoro-btn-icon${state.isDeviationActive ? ' is-deviation-active' : ''}`}
-            onClick={() => {
-              if (state.isDeviationActive) {
-                void onExitDeviation()
-              } else {
-                onEnterDeviation()
-              }
-            }}
-            title={state.isDeviationActive ? 'Finalizar desvío' : 'Iniciar desvío'}
-            disabled={!state.isDeviationActive && state.runState !== 'running'}
-          >
-            <TaskManagerIcon name={TASK_ICON_NAME.clock} size={14} />
-          </NotiaButton>
-        </div>
-      </div>
-
-      <div className="tareas-pomodoro-state-bar" data-state={state.isDeviationActive ? 'deviation' : state.runState}>{runStateLabel}</div>
-
-      <div className="tareas-pomodoro-config">
-        <h3>Duraciones (min)</h3>
-        <div
-          className="tareas-pomodoro-config-card"
-          role="button"
-          tabIndex={0}
-          onDoubleClick={() => setIsPresetModalOpen(true)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              setIsPresetModalOpen(true)
-            }
-          }}
-        >
-          <h4 className="tareas-pomodoro-config-card-title">⭐ Estándar - {state.durations.workMinutes}/{state.durations.shortBreakMinutes}</h4>
-          <div className="tareas-pomodoro-config-card-divider" />
-          <p className="tareas-pomodoro-config-card-label">Uso</p>
-          <p className="tareas-pomodoro-config-card-text">tareas moderadas, programación, estudio, mantener ritmo constante sin quemarse.</p>
-          <div className="tareas-pomodoro-config-card-divider" />
-          <p className="tareas-pomodoro-config-card-text">Trabajo: {state.durations.workMinutes} min</p>
-          <p className="tareas-pomodoro-config-card-text">Descanso corto: {state.durations.shortBreakMinutes} min</p>
-          <p className="tareas-pomodoro-config-card-text">Descanso largo: {state.durations.longBreakMinutes} min</p>
-          <p className="tareas-pomodoro-config-card-text">Ciclos: 4</p>
-          <p className="tareas-pomodoro-config-card-hint">Doble click para cambiar duración</p>
-        </div>
-      </div>
-
-      <TaskManagerModal open={isPresetModalOpen} onClose={() => setIsPresetModalOpen(false)} size="lg" >
-        <div className="tareas-dialog-header">
-          <h2>Elegir duración Pomodoro</h2>
-        </div>
-        <div className="tareas-dialog-body">
-          <div className="tareas-pomodoro-preset-grid">
-            {POMODORO_PRESETS.map((preset) => {
-              const isSelected = preset.durations.workMinutes === state.durations.workMinutes
-                && preset.durations.shortBreakMinutes === state.durations.shortBreakMinutes
-                && preset.durations.longBreakMinutes === state.durations.longBreakMinutes
-
-              return (
-                <NotiaCard
-                  key={preset.title}
-                  className="tareas-pomodoro-config-card tareas-pomodoro-preset-card"
-                  selected={isSelected}
-                  interactive
-                  onClick={() => {
-                    onSetDurations(preset.durations)
-                    setIsPresetModalOpen(false)
-                  }}
+    <div className="tm-pomodoro">
+      <div className="tm-pomodoro-columns">
+        <section className="tm-pomodoro-card tm-pomodoro-timer" aria-label="Temporizador">
+          <div className="tm-pomodoro-timer-top">
+            <div className="tm-pomodoro-modes" role="group" aria-label="Modo">
+              {PHASES.map((phase) => (
+                <button
+                  key={phase}
+                  type="button"
+                  className="tm-pomodoro-mode"
+                  aria-pressed={state.phase === phase}
+                  onClick={() => run({ kind: 'select-phase', phase })}
                 >
-                  <h4 className="tareas-pomodoro-config-card-title">{preset.title}</h4>
-                  <div className="tareas-pomodoro-config-card-divider" />
-                  <p className="tareas-pomodoro-config-card-label">Uso</p>
-                  <p className="tareas-pomodoro-config-card-text">{preset.usage}</p>
-                  <div className="tareas-pomodoro-config-card-divider" />
-                  <p className="tareas-pomodoro-config-card-text">Trabajo: {preset.durations.workMinutes} min</p>
-                  <p className="tareas-pomodoro-config-card-text">Descanso corto: {preset.durations.shortBreakMinutes} min</p>
-                  <p className="tareas-pomodoro-config-card-text">Descanso largo: {preset.durations.longBreakMinutes} min</p>
-                </NotiaCard>
-              )
-            })}
+                  {getPomodoroPhaseLabel(phase)}
+                </button>
+              ))}
+            </div>
+            <span className="tm-pomodoro-cycle">
+              Ciclo
+              <span className="tm-pomodoro-cycle-dots" aria-hidden="true">
+                {Array.from({ length: cycles }, (_, index) => (
+                  <span key={index} className={`tm-pomodoro-cycle-dot${index < cyclesInSet ? ' is-done' : ''}`} />
+                ))}
+              </span>
+              <span className="tm-pomodoro-cycle-label">{cyclesInSet} / {cycles}</span>
+            </span>
           </div>
-        </div>
-        <div className="tareas-dialog-actions">
-          <NotiaButton onClick={() => setIsPresetModalOpen(false)}>Cerrar</NotiaButton>
-        </div>
-      </TaskManagerModal>
 
-      <div className="tareas-pomodoro-task-section">
-        <h3>Tarea vinculada</h3>
+          <div className="tm-pomodoro-ring">
+            <svg role="img" aria-label="Progreso del temporizador" viewBox="0 0 300 300" className="tm-pomodoro-ring-svg">
+              <circle cx="150" cy="150" r={RING_RADIUS} className="tm-pomodoro-ring-track" />
+              <circle
+                cx="150"
+                cy="150"
+                r={RING_RADIUS}
+                className="tm-pomodoro-ring-progress"
+                strokeDasharray={RING_CIRCUMFERENCE.toFixed(2)}
+                strokeDashoffset={dashOffset.toFixed(2)}
+              />
+            </svg>
+            <div className="tm-pomodoro-ring-center">
+              <span className="tm-pomodoro-ring-mode">{getPomodoroPhaseLabel(state.phase)}</span>
+              <span className="tm-pomodoro-clock" role="timer" aria-label={`Tiempo restante ${formatPomodoroCountdown(remainingSeconds)}`}>
+                {formatPomodoroCountdown(remainingSeconds)}
+              </span>
+              <span className="tm-pomodoro-status" aria-live="polite">{statusLabel}</span>
+            </div>
+          </div>
 
-        {selectedTask ? (
-          <div className="tareas-card-list tareas-pomodoro-task-card-list">
-            <div className="tareas-task-card">
-              <div className="tareas-card-title-row">
-                <span className="tareas-task-card-title">{selectedTask.title}</span>
+          <div className="tm-pomodoro-controls">
+            <button type="button" className="tm-pomodoro-round" aria-label="Reiniciar" title="Reiniciar" onClick={reset}>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5M4 4v4.5h4.5" /></svg>
+            </button>
+            <button
+              type="button"
+              className="tm-pomodoro-play"
+              aria-label={isRunning ? 'Pausar' : 'Iniciar'}
+              title={isRunning ? 'Pausar' : 'Iniciar'}
+              onClick={togglePlay}
+            >
+              {isRunning ? (
+                <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1.2" /><rect x="13.8" y="5" width="4.2" height="14" rx="1.2" /></svg>
+              ) : (
+                <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" className="tm-pomodoro-play-icon"><path d="M7.5 4.8v14.4L19 12z" /></svg>
+              )}
+            </button>
+            <button type="button" className="tm-pomodoro-round" aria-label="Saltar al siguiente" title="Saltar al siguiente" onClick={() => run({ kind: 'skip' })}>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l10 7-10 7zM19 5v14" /></svg>
+            </button>
+          </div>
+          <span className="tm-pomodoro-hint">Espacio para iniciar o pausar · R para reiniciar</span>
+        </section>
+
+        <div className="tm-pomodoro-side">
+          <section className="tm-pomodoro-card tm-pomodoro-linked" aria-label="Tarea vinculada">
+            <div className="tm-pomodoro-card-head">
+              <h2 className="tm-pomodoro-card-title">Tarea vinculada</h2>
+              <div className={`tm-pomodoro-anchor${popover === 'board' ? ' is-open' : ''}`}>
+                <button
+                  ref={boardButtonRef}
+                  type="button"
+                  className="tm-pomodoro-board-btn"
+                  aria-haspopup="dialog"
+                  aria-expanded={popover === 'board'}
+                  aria-label={`Tablero: ${activeBoard?.name ?? 'ninguno'}. Cambiar`}
+                  disabled={boards.length === 0}
+                  onClick={() => setPopover(popover === 'board' ? null : 'board')}
+                >
+                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" className="tm-pomodoro-muted-icon"><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M9.5 4v16M15 4v16" /></svg>
+                  <span className="tm-pomodoro-board-btn-label">Tablero</span>
+                  <span className="tm-pomodoro-board-btn-name">{activeBoard?.name ?? '—'}</span>
+                  <Chevron />
+                </button>
+                {popover === 'board' ? (
+                  <div ref={popoverRef} className="tm-pomodoro-menu tm-pomodoro-board-menu" role="dialog" aria-label="Elegir tablero" onKeyDown={onPopoverKeyDown}>
+                    <span className="tm-pomodoro-menu-title">Operar sobre</span>
+                    <div role="radiogroup" aria-label="Tableros" className="tm-pomodoro-menu-list">
+                      {boards.map((board) => {
+                        const checked = board.name === activeBoard?.name
+                        const active = board.counts.inProgress + board.counts.pending
+                        return (
+                          <button
+                            key={board.name}
+                            type="button"
+                            role="radio"
+                            aria-checked={checked}
+                            className="tm-pomodoro-menu-item"
+                            onClick={() => pickBoard(board.name)}
+                          >
+                            <span className="tm-pomodoro-board-initial" aria-hidden="true">{board.name.slice(0, 1)}</span>
+                            <span className="tm-pomodoro-menu-text">
+                              <span className="tm-pomodoro-menu-name">{board.name}</span>
+                              <span className="tm-pomodoro-menu-sub">
+                                {active > 0 ? `${board.counts.inProgress} en progreso · ${board.counts.pending} pendientes` : 'Sin tareas activas'}
+                              </span>
+                            </span>
+                            {checked ? <CheckIcon /> : null}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
-              {selectedTask.preview ? <p className="tareas-card-preview">{selectedTask.preview}</p> : null}
-              <div className="tareas-card-progress-row">
-                <div className="tareas-card-progress-band">
-                  <div className="tareas-card-progress-band-fill" style={{ width: `${taskProgress(selectedTask)}%` }} />
-                  <div className="tareas-card-progress-band-text">
-                    {formatHours(selectedTask.dedicatedHours)}/{formatHours(selectedTask.estimatedHours)} +-&gt; {formatHours(selectedTask.deviationHours)}
+            </div>
+
+            {linkedTask ? (
+              <div className="tm-pomodoro-linked-task">
+                <span className="tm-pomodoro-linked-meta">
+                  {linkedTask.priority ? <PriorityChip priority={linkedTask.priority} /> : null}
+                  {linkedTask.board} · {linkedTask.group || 'Sin grupo'}
+                </span>
+                <span className="tm-pomodoro-linked-title">{linkedTask.title}</span>
+                <span className="tm-pomodoro-linked-foot">
+                  <span>El foco de esta sesión se registra en esta tarea.</span>
+                  <button type="button" className="tm-pomodoro-unlink" onClick={() => run({ kind: 'select-task', taskPath: null })}>
+                    Desvincular
+                  </button>
+                </span>
+              </div>
+            ) : (
+              <div className="tm-pomodoro-unlinked">
+                <span className="tm-pomodoro-unlinked-icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></svg>
+                </span>
+                <span className="tm-pomodoro-unlinked-text">
+                  <span className="tm-pomodoro-unlinked-title">Ninguna tarea vinculada</span>
+                  <span className="tm-pomodoro-unlinked-hint">Elegí una de las que tenés en progreso.</span>
+                </span>
+              </div>
+            )}
+
+            <div key={`${activeBoard?.name ?? ''}:${boardSwaps}`} className={`tm-pomodoro-candidates${boardSwaps > 0 ? ' is-swapped' : ''}`}>
+              {candidateGroups.map((group) => (
+                <div key={group.label} className="tm-pomodoro-candidate-group">
+                  <span className="tm-pomodoro-candidate-label">{group.label}</span>
+                  <div className="tm-pomodoro-candidate-list">
+                    {group.items.map((task) => {
+                      const isLinked = task.filePath === state.selectedTaskPath
+                      return (
+                        <button
+                          key={task.filePath}
+                          type="button"
+                          className={`tm-pomodoro-pick${isLinked ? ' is-linked' : ''}`}
+                          aria-pressed={isLinked}
+                          onClick={() => {
+                            if (!isLinked) run({ kind: 'select-task', taskPath: task.filePath })
+                          }}
+                        >
+                          <span className="tm-pomodoro-pick-dot" data-priority={PRIORITY_TONE[task.priority] ?? 'none'} aria-hidden="true" />
+                          <span className="tm-pomodoro-pick-text">
+                            <span className="tm-pomodoro-pick-title">{task.title}</span>
+                            <span className="tm-pomodoro-pick-group">{task.group || 'Sin grupo'}</span>
+                          </span>
+                          <span className="tm-pomodoro-pick-action">{isLinked ? 'Vinculada' : 'Vincular'}</span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
+              ))}
+              {activeBoard && candidateGroups.length === 0 ? (
+                <div className="tm-pomodoro-no-candidates">
+                  <span className="tm-pomodoro-no-candidates-title">Sin tareas activas en «{activeBoard.name}»</span>
+                  <span className="tm-pomodoro-no-candidates-hint">Elegí otro tablero o creá una tarea en este.</span>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="tm-pomodoro-card tm-pomodoro-durations" aria-label="Duraciones">
+            <div className="tm-pomodoro-card-head">
+              <h2 className="tm-pomodoro-card-title">Duraciones</h2>
+              <div className={`tm-pomodoro-anchor${popover === 'preset' ? ' is-open' : ''}`}>
+                <button
+                  ref={presetButtonRef}
+                  type="button"
+                  className="tm-pomodoro-preset-btn"
+                  aria-haspopup="menu"
+                  aria-expanded={popover === 'preset'}
+                  disabled={presets.length === 0}
+                  onClick={() => setPopover(popover === 'preset' ? null : 'preset')}
+                >
+                  <StarIcon />
+                  {activePreset?.label ?? 'Personalizado'}
+                  <Chevron />
+                </button>
+                {popover === 'preset' ? (
+                  <div ref={popoverRef} className="tm-pomodoro-menu tm-pomodoro-preset-menu" role="menu" aria-label="Elegir duraciones" onKeyDown={onPopoverKeyDown}>
+                    {presets.map((preset) => (
+                      <button
+                        key={preset.name}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={preset.active}
+                        className="tm-pomodoro-menu-item tm-pomodoro-preset-item"
+                        onClick={() => {
+                          run({ kind: 'set-durations', durations: preset.durations })
+                          closePopover(true)
+                        }}
+                      >
+                        <span className="tm-pomodoro-menu-text">
+                          <span className="tm-pomodoro-menu-name">{preset.label}</span>
+                          <span className="tm-pomodoro-menu-sub">{preset.description}</span>
+                        </span>
+                        {preset.active ? <CheckIcon /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
-          </div>
-        ) : (
-          <div className="tareas-pomodoro-task-card">
-            <p className="tareas-pomodoro-task-card-meta">No hay tarea seleccionada</p>
-            <p className="tareas-pomodoro-task-card-hint">Seleccioná una tarea con el botón</p>
-          </div>
-        )}
-
-        <NotiaButton
-          className="tareas-pomodoro-btn tareas-pomodoro-task-change-btn"
-          onClick={() => pickLinkedTask(tasks, state.selectedTaskPath, onSelectTask)}
-          disabled={state.runState === 'running'}
-          title={state.runState === 'running' ? 'No se puede cambiar la tarea mientras corre el contador' : 'Cambiar tarea vinculada'}
-        >
-          Cambiar tarea vinculada
-        </NotiaButton>
-      </div>
-
-      <div className="tareas-pomodoro-log-section">
-        <h3>Registros del dia</h3>
-
-        {todayEntries.length === 0 ? (
-          <p className="tareas-pomodoro-log-empty">todavia no se registran pomodoros en el dia</p>
-        ) : (
-          <div className="tareas-pomodoro-log-table-wrap">
-            <table className="tareas-pomodoro-log-table">
-              <thead>
-                <tr>
-                  <th>Horario</th>
-                  <th>Tipo de pomodoro</th>
-                  <th>Duración elegida</th>
-                  <th>Tarea</th>
-                  <th>Tiempo</th>
-                  <th>Desvío</th>
-                  <th>Finalización</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {todayEntries.map((entry) => (
-                  <tr key={`${entry.id}-${entry.time}`}>
-                    <td>{entry.time}</td>
-                    <td>{entry.type}</td>
-                    <td>{entry.durationChoice}</td>
-                    <td>{entry.task}</td>
-                    <td>{formatHours(entry.durationMinutes)} min</td>
-                    <td>{formatHours(entry.deviationHours)} h</td>
-                    <td>{entry.finalized ? 'true' : 'false'}</td>
-                    <td className="tareas-pomodoro-log-actions">
-                      <NotiaButton className="tareas-pomodoro-log-delete-btn" onClick={() => void onDeleteEntry(entry.id)} title="Eliminar registro">
-                        <TaskManagerIcon name={TASK_ICON_NAME.trash} size={12} />
-                      </NotiaButton>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="tareas-pomodoro-heatmap">
-          <h4>Heatmap horario (trabajo)</h4>
-          <div className="tareas-pomodoro-heatmap-grid">
-            {hourlyCounts.map((count, hour) => {
-              const maxCount = Math.max(1, ...hourlyCounts)
-              const level = count === 0 ? 0 : Math.min(4, Math.ceil((count / maxCount) * 4))
-
-              return (
-                <div key={hour} className={`tareas-pomodoro-heatmap-cell is-level-${level}`}>
-                  <span className="tareas-pomodoro-heatmap-hour">{String(hour).padStart(2, '0')}</span>
-                  <span className="tareas-pomodoro-heatmap-count">{count}</span>
-                </div>
-              )
-            })}
-          </div>
+            {activePreset ? <p className="tm-pomodoro-preset-description">{activePreset.description}</p> : null}
+            <div className="tm-pomodoro-steppers">
+              {STEPPERS.map((stepper) => {
+                const value = state.durations[stepper.key]
+                return (
+                  <div key={stepper.key} className="tm-pomodoro-stepper">
+                    <span className="tm-pomodoro-stepper-text">
+                      <span className="tm-pomodoro-stepper-label">{stepper.label}</span>
+                      <span className="tm-pomodoro-stepper-value">
+                        {value}
+                        <span className="tm-pomodoro-stepper-unit">{stepper.unit}</span>
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="tm-pomodoro-step-btn"
+                      aria-label={`Restar ${stepper.label}`}
+                      disabled={value <= stepper.min}
+                      onClick={() => step(stepper.key, -stepper.step, stepper.min, stepper.max)}
+                    >
+                      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M5 12h14" /></svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="tm-pomodoro-step-btn"
+                      aria-label={`Sumar ${stepper.label}`}
+                      disabled={value >= stepper.max}
+                      onClick={() => step(stepper.key, stepper.step, stepper.min, stepper.max)}
+                    >
+                      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
         </div>
       </div>
+
+      <section className="tm-pomodoro-card tm-pomodoro-log" aria-label="Registros del día">
+        {today ? (
+          <>
+            <div className="tm-pomodoro-log-head">
+              <h2 className="tm-pomodoro-card-title">Registros del día</h2>
+              <span className="tm-pomodoro-log-stat"><span className="tm-pomodoro-log-number">{today.count}</span>pomodoros</span>
+              <span className="tm-pomodoro-log-stat"><span className="tm-pomodoro-log-number">{today.focusMinutes}</span>min de foco</span>
+              <span className="tm-pomodoro-spacer" />
+              <span className="tm-pomodoro-legend" aria-hidden="true">
+                Menos
+                <span className="tm-pomodoro-legend-cell" data-level="0" />
+                <span className="tm-pomodoro-legend-cell" data-level="1" />
+                <span className="tm-pomodoro-legend-cell" data-level="2" />
+                <span className="tm-pomodoro-legend-cell" data-level="3" />
+                Más
+              </span>
+            </div>
+            <div className="tm-pomodoro-heatmap">
+              <span className="tm-pomodoro-heatmap-title">Por hora · Trabajo</span>
+              <div className="tm-pomodoro-heatmap-grid" role="list" aria-label="Pomodoros por hora">
+                {HOURS.map((hour) => {
+                  const count = today.byHour[hour] ?? 0
+                  const tip = `${padHour(hour)}:00 · ${count} ${count === 1 ? 'pomodoro' : 'pomodoros'}`
+                  return (
+                    <span
+                      key={hour}
+                      role="listitem"
+                      aria-label={tip}
+                      title={tip}
+                      data-count={count}
+                      data-level={heatLevel(count)}
+                      className={`tm-pomodoro-heat-cell${hour === today.currentHour ? ' is-now' : ''}`}
+                    />
+                  )
+                })}
+              </div>
+              <div className="tm-pomodoro-heatmap-hours" aria-hidden="true">
+                {HOURS.map((hour) => (
+                  <span key={hour} className={hour === today.currentHour ? 'is-now' : undefined}>
+                    {hour % 3 === 0 ? padHour(hour) : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {today.count === 0 ? (
+              <LogNote>Todavía no registraste pomodoros hoy. Cuando completes uno aparece acá, con la tarea vinculada.</LogNote>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className="tm-pomodoro-log-head">
+              <h2 className="tm-pomodoro-card-title">Registros del día</h2>
+            </div>
+            <LogNote>Los registros del día no se muestran en el tablero publicado.</LogNote>
+          </>
+        )}
+      </section>
+
+      {popover !== null ? <div className="tm-pomodoro-backdrop" aria-hidden="true" onClick={() => closePopover(false)} /> : null}
     </div>
   )
 }
 
-function resolveVisualMode(state: PomodoroState):
-  | 'prepared'
-  | 'work'
-  | 'short-break'
-  | 'long-break'
-  | 'paused-work'
-  | 'paused-short-break'
-  | 'paused-long-break'
-  | 'deviation' {
-  if (state.isDeviationActive) {
-    return 'deviation'
-  }
-
-  if (state.runState === 'idle') {
-    return 'prepared'
-  }
-
-  if (state.runState === 'paused') {
-    if (state.phase === 'short-break') {
-      return 'paused-short-break'
-    }
-
-    if (state.phase === 'long-break') {
-      return 'paused-long-break'
-    }
-
-    return 'paused-work'
-  }
-
-  if (state.phase === 'short-break') {
-    return 'short-break'
-  }
-
-  if (state.phase === 'long-break') {
-    return 'long-break'
-  }
-
-  return 'work'
+function heatLevel(count: number): number {
+  if (count <= 0) return 0
+  if (count === 1) return 1
+  if (count < 4) return 2
+  return 3
 }
 
-function resolveRunStateLabel(state: PomodoroState): string {
-  if (state.runState === 'idle') {
-    return 'Preparado'
-  }
-
-  if (state.runState === 'paused') {
-    return 'Pausado...'
-  }
-
-  if (state.isDeviationActive) {
-    return 'Desvío activo...'
-  }
-
-  if (state.phase === 'work') {
-    return 'Trabajando...'
-  }
-
-  if (state.phase === 'short-break') {
-    return 'Descanso corto...'
-  }
-
-  if (state.phase === 'long-break') {
-    return 'Descanso largo...'
-  }
-
-  return 'Listo'
+function padHour(hour: number): string {
+  return String(hour).padStart(2, '0')
 }
 
-function resolveBreakMessage(state: PomodoroState): string {
-  if (state.phase !== 'short-break' && state.phase !== 'long-break') {
-    return ''
-  }
-
-  const seed = state.completedWorkCycles + (state.phase === 'long-break' ? 7 : 3)
-  return BREAK_MESSAGES[seed % BREAK_MESSAGES.length]
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
 }
 
-function formatHours(value: number): string {
-  return (Math.round(value * 100) / 100).toFixed(2)
+/** Space already presses a focused button or link; the shortcut stays out. */
+function isActivatableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('button, a[href], [role="button"], [role="menuitem"], [role="radio"]') !== null
 }
 
-function taskProgress(task: TaskItem): number {
-  if (task.estimatedHours <= 0) {
-    return 0
-  }
-
-  return Math.min(100, Math.max(0, Math.round((task.dedicatedHours / task.estimatedHours) * 100)))
+function PriorityChip({ priority }: { priority: string }) {
+  return (
+    <span className="tm-pomodoro-priority" data-priority={PRIORITY_TONE[priority] ?? 'none'}>
+      <span className="tm-pomodoro-priority-dot" aria-hidden="true" />
+      {priority}
+    </span>
+  )
 }
 
-function buildHourlyCounts(entries: PomodoroLogEntry[]): number[] {
-  const workEntries = entries.filter((entry) => entry.type.toLowerCase().includes('trabajo'))
-  const counts = Array.from({ length: 24 }, () => 0)
-
-  for (const entry of workEntries) {
-    const hour = Number.parseInt(entry.time.slice(0, 2), 10)
-    if (Number.isNaN(hour) || hour < 0 || hour > 23) {
-      continue
-    }
-
-    counts[hour] += 1
-  }
-
-  return counts
+function LogNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="tm-pomodoro-log-note">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 2M10 2.5h4" /></svg>
+      {children}
+    </div>
+  )
 }
 
-function pickLinkedTask(tasks: TaskItem[], selectedTaskPath: string | null, onSelectTask: (taskPath: string | null) => void): void {
-  const topLevelTasks = tasks
-    .filter((task) => !task.parentTaskName.trim())
-    .filter((task) => task.state === 'En progreso')
+function Chevron() {
+  return (
+    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="tm-pomodoro-chevron"><path d="M6 9l6 6 6-6" /></svg>
+  )
+}
 
-  if (topLevelTasks.length === 0) {
-    window.alert('No hay tareas en progreso para vincular.')
-    return
-  }
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" className="tm-pomodoro-check"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+  )
+}
 
-  const currentIndex = topLevelTasks.findIndex((task) => task.filePath === selectedTaskPath)
-  const options = ['0. Sin tarea', ...topLevelTasks.map((task, index) => `${index + 1}. ${task.title}`)].join('\n')
-  const rawValue = window.prompt(`Selecciona una tarea:\n${options}`, currentIndex >= 0 ? String(currentIndex + 1) : '1')
-
-  if (rawValue === null) {
-    return
-  }
-
-  const selectedIndex = Number.parseInt(rawValue, 10)
-  if (Number.isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex > topLevelTasks.length) {
-    return
-  }
-
-  if (selectedIndex === 0) {
-    onSelectTask(null)
-    return
-  }
-
-  onSelectTask(topLevelTasks[selectedIndex - 1].filePath)
+function StarIcon() {
+  return (
+    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" className="tm-pomodoro-star"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z" /></svg>
+  )
 }
 
 function ensureAudioContext(audioContextRef: MutableRefObject<AudioContext | null>): AudioContext | null {
-  if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-    return audioContextRef.current
-  }
-
+  if (audioContextRef.current && audioContextRef.current.state !== 'closed') return audioContextRef.current
   const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-  if (!AudioContextCtor) {
-    return null
-  }
-
+  if (!AudioContextCtor) return null
   try {
     audioContextRef.current = new AudioContextCtor()
   } catch {
     audioContextRef.current = null
   }
-
   return audioContextRef.current
 }
 
+function playTone(
+  audioContextRef: MutableRefObject<AudioContext | null>,
+  shape: (context: AudioContext, oscillator: OscillatorNode, gain: GainNode, now: number) => number,
+): void {
+  const audioContext = ensureAudioContext(audioContextRef)
+  if (!audioContext) return
+  const play = () => {
+    try {
+      const now = audioContext.currentTime
+      const oscillator = audioContext.createOscillator()
+      const gain = audioContext.createGain()
+      const stopAt = shape(audioContext, oscillator, gain, now)
+      oscillator.connect(gain)
+      gain.connect(audioContext.destination)
+      oscillator.start(now)
+      oscillator.stop(stopAt)
+    } catch {
+      // Autoplay or audio errors leave the timer silent.
+    }
+  }
+  if (audioContext.state === 'suspended') {
+    void audioContext.resume().then(play).catch(() => {})
+    return
+  }
+  play()
+}
+
+/** Soft tick of the last four seconds. */
 function playPomodoroBreathTick(audioContextRef: MutableRefObject<AudioContext | null>): void {
-  const audioContext = ensureAudioContext(audioContextRef)
-  if (!audioContext) {
-    return
-  }
-
-  const playTick = () => {
-    try {
-      const now = audioContext.currentTime
-      const oscillator = audioContext.createOscillator()
-      const gain = audioContext.createGain()
-
-      oscillator.type = 'sine'
-      oscillator.frequency.value = 660
-
-      gain.gain.setValueAtTime(0.0001, now)
-      gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015)
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16)
-
-      oscillator.connect(gain)
-      gain.connect(audioContext.destination)
-
-      oscillator.start(now)
-      oscillator.stop(now + 0.16)
-    } catch {
-      // Ignore browser autoplay/audio errors.
-    }
-  }
-
-  if (audioContext.state === 'suspended') {
-    void audioContext.resume().then(playTick).catch(() => {})
-    return
-  }
-
-  playTick()
+  playTone(audioContextRef, (_context, oscillator, gain, now) => {
+    oscillator.type = 'sine'
+    oscillator.frequency.value = 660
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16)
+    return now + 0.16
+  })
 }
 
+/** Short alarm when the phase changes. */
 function playPomodoroAlarmShort(audioContextRef: MutableRefObject<AudioContext | null>): void {
-  const audioContext = ensureAudioContext(audioContextRef)
-  if (!audioContext) {
-    return
-  }
-
-  const playAlarm = () => {
-    try {
-      const now = audioContext.currentTime
-      const oscillator = audioContext.createOscillator()
-      const gain = audioContext.createGain()
-
-      oscillator.type = 'triangle'
-      oscillator.frequency.setValueAtTime(988, now)
-      oscillator.frequency.exponentialRampToValueAtTime(784, now + 0.24)
-
-      gain.gain.setValueAtTime(0.0001, now)
-      gain.gain.exponentialRampToValueAtTime(0.11, now + 0.015)
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28)
-
-      oscillator.connect(gain)
-      gain.connect(audioContext.destination)
-
-      oscillator.start(now)
-      oscillator.stop(now + 0.3)
-    } catch {
-      // Ignore browser autoplay/audio errors.
-    }
-  }
-
-  if (audioContext.state === 'suspended') {
-    void audioContext.resume().then(playAlarm).catch(() => {})
-    return
-  }
-
-  playAlarm()
-}
-
-function triggerTransientClass(element: HTMLElement | null, className: string, durationMs: number): void {
-  if (!element) {
-    return
-  }
-
-  element.classList.remove(className)
-  void element.offsetWidth
-  element.classList.add(className)
-
-  window.setTimeout(() => {
-    element.classList.remove(className)
-  }, durationMs)
+  playTone(audioContextRef, (_context, oscillator, gain, now) => {
+    oscillator.type = 'triangle'
+    oscillator.frequency.setValueAtTime(988, now)
+    oscillator.frequency.exponentialRampToValueAtTime(784, now + 0.24)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.11, now + 0.015)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28)
+    return now + 0.3
+  })
 }

@@ -1,16 +1,37 @@
 import type { TASK_PRIORITIES, TASK_STATES } from '../constants/taskManagerConstants'
+import type {
+  TaskBoardCounts,
+  TaskBoardMember,
+  TaskBoardPlan,
+  TaskBoardProject,
+  TaskColumnKind,
+  TaskPersonChip,
+} from './taskBoardTypes'
 
 export interface Board {
   name: string
   color: string
   activityHoursPerDay: number
   contexto?: string
+  /** Workday, sprints and divisions (defaults when never saved). */
+  plan: TaskBoardPlan
+  members: TaskBoardMember[]
+  projects: TaskBoardProject[]
+  counts: TaskBoardCounts
+  /** Color the next person or project of the board gets. */
+  nextMemberColor: string
+  nextProjectColor: string
 }
 
 export interface Group {
   name: string
   color: string
   board?: string
+  kind: TaskColumnKind
+  /** «Sprint 21 · 12 oct – 25 oct» for sprint and division columns. */
+  hint?: string
+  /** Open root tasks of the column. */
+  taskCount: number
 }
 
 export type TaskState = (typeof TASK_STATES)[number]
@@ -70,6 +91,19 @@ export interface TaskItem {
   project?: string
   /** People the ticket is assigned to. */
   assignees?: string[]
+  /** Board color of the project; null without a project. */
+  projectColor?: string | null
+  /** Assigned people with their board colors and initials. */
+  people?: TaskPersonChip[]
+  /** When the running time started (ms since the epoch); null when stopped. */
+  startedAtUnixMs?: number | null
+  /** Why the task is blocked; empty without a note. */
+  blockNote?: string
+  /** Logical paths of the tasks this one waits for. */
+  dependencies?: string[]
+  /** Subtasks of a root task: done and total. */
+  subtaskDone?: number
+  subtaskTotal?: number
 }
 
 export interface TaskFormData {
@@ -99,6 +133,8 @@ export interface PomodoroDurations {
   workMinutes: number
   shortBreakMinutes: number
   longBreakMinutes: number
+  /** Work phases before a long break, 2 to 8. */
+  cycles: number
 }
 
 export interface PomodoroState {

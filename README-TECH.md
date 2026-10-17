@@ -12138,3 +12138,153 @@ Pedido: que el chat desplegable de IA de la derecha, sobre Meeting, pueda modifi
 
 - `cargo test -p notia-backend-core`: 599 pruebas (parsing, reemplazo de palabra con mayúscula inicial, update que conserva id/enviada, addition sin duplicados, autorización del catálogo: Owner sí, invitado y tablero publicado no), más la falla previa de `image_generation`. `cargo test -p notia-app --features bluetooth`: 512. Android check con las 59 advertencias de base.
 - Falta probar con el modelo real en una reunión abierta (chat lateral y Telegram).
+
+## Task Manager rediseñado: tablero, lista, Management y Pomodoro (2026-10-17)
+
+Implementa la especificación funcional «Munin · Task Manager» (claude.ai/artifact/8K5aaevmZNo1T6hY62ggxJ) con el diseño del lienzo claude.ai/artifact/QD8PjEfhZyHHTunoRADJ8p. La especificación se escribió sin el contexto del proyecto: se tomó como referencia funcional y se adaptó al modelo existente (tickets Markdown, grupos con nombre, store por biblioteca). El tablero publicado monta el mismo `TaskManagerApp`, así que todo vale también para él.
+
+### Contraste con la especificación
+
+| Spec | Implementación |
+|---|---|
+| Entidades nuevas (`Board`, `Column`, `Task`, `Subtask`, `Member`, `Project`, `Dependency`) persistidas en `gaia/…` | Se extendió el modelo existente: tickets Markdown con frontmatter y `.notia-task-manager.json`. No hay migración que reescriba archivos: los campos nuevos son opcionales y tienen valores por defecto. |
+| `ColumnKind` reemplaza la lógica por nombre | `TaskGroupDto.kind: Option<TaskColumnKind>`. Sin tipo guardado, `TaskColumnKind::infer` lo deduce del nombre (Anotadores, Sprint actual, Sprint siguiente, Próximo…, A refinar, En revisión, Bloquead…, Atrasad…); el diálogo de columna permite fijarlo. Inicio (`home.rs`) cuenta por tipo. |
+| `Subtask { title, done }` | Las subtareas siguen siendo tickets hijos; «hecha» es `Finalizada`. El panel de la tarjeta las marca, agrega y elimina. |
+| `dependency_set`, `subtask_*`, `member_*`, `project_*`, `pomodoro_*`, `undo(token)` como comandos | Intenciones de `task_manager_board_execute` (`TaskBoardIntent`), el contrato existente; el Pomodoro sigue en `task_manager_pomodoro`. |
+| `board_snapshot` | `task_manager_board_view`, extendido. |
+| `timer_tick` cada segundo | No hay evento por segundo: la vista trae `startedAtUnixMs` y la interfaz dibuja el reloj (`dedicado + ahora − inicio`), igual que el Pomodoro con `endTimestamp`. Ver «Decisiones». |
+| «Pausar» devuelve a Pendiente | Así se implementó (`pause-task`). |
+| Escala de 4 Q, paleta y fuentes | Tokens `--tm-*` (`styles/taskManagerTokens.css`) sobre la paleta de `CLAUDE.md`; se agregó el acento **Atrasado** (`#F28CB1` / `#DB2777`) que usa el diseño. |
+| Planificador `plan(board, now) -> Plan` con los 14 casos | `backend-core/src/task_planner.rs` con los casos de la sección 16 como pruebas. |
+
+### Modelo y persistencia
+
+- **Ticket** (`TaskTicketDto`): `started_at_unix_ms` (frontmatter `inicioProgreso`, ISO 8601 con el desfase local, solo mientras corre), `closed_at_unix_ms` (`cerradaEn`, al finalizar o desestimar) y `block_note` (`bloqueo`, hasta 500 caracteres). `dependencies` guarda ids de tickets; los valores que no son ids quedan en el archivo y el planificador los ignora. `TaskUpdateFieldsDto` suma los tres campos (`Some(None)` borra los tiempos; una nota vacía borra el bloqueo).
+- **Columna** (`TaskGroupDto.kind`): quinto campo del índice del tablero (`groups: ["nombre|color|revisión|id|tipo"]`) y `kind` en el JSON compartido. Los lectores anteriores ignoran ese campo.
+- **Tablero** (`TaskManagerConfigDto.boards[board_id]: TaskBoardConfigDto`): `plan` (`TaskBoardPlanDto`: inicio y fin de la jornada en minutos con pasos de 30, `workDays` de lunes a domingo, `sprintWeeks` 1–8, `sprintStartWeekday` 0–4, `divisionsPerYear` 1–12, `divisionPrefix` de 1 a 4 caracteres, `yearStartMonth`), `members` (`{name, color, isOwner}`) y `projects` (`{name, color}`). Se guardan en `.notia-task-manager.json` (`boards[].plan/members/projects`); un valor que no valida se ignora y el tablero usa sus valores por defecto. Guardar la jornada actualiza `activityHoursPerDay`.
+- **Valores por defecto** (sin datos guardados): jornada 09:00–18:00 de lunes a viernes, sprints de 2 semanas desde el lunes, 4 divisiones «Q» desde enero. Un tablero con `activityHoursPerDay` distinto de 24 conserva esas horas desde las 09:00. Las personas son el Owner (propietario) más las personas asignadas en sus tickets; los proyectos, los de sus tickets, con colores de la paleta.
+- **Mutaciones nuevas** (`TaskMutationDto`): `UpdateBoard`/`CreateBoard` con `plan`; `CreateGroup`/`UpdateGroup` con `columnKind`; `UpdateBoardPeople { members?, projects?, removedMembers, removedProjects }`, que en la misma operación quita a las personas de los tickets del tablero y deja sin proyecto a los tickets del proyecto eliminado; `RestoreDeletedTicket { ticket, comments }` para deshacer una eliminación con el mismo id, campos y comentarios.
+- **Invitado del tablero publicado**: `validate_mutation` sigue rechazando crear, editar y eliminar tableros (la jornada, los sprints y las divisiones viajan en `UpdateBoard`). `UpdateBoardPeople` está permitido: personas y proyectos se administran desde las tarjetas.
+
+### Calendario del tablero (`backend-core/src/task_board_plan.rs`)
+
+- Año fiscal desde `yearStartMonth`. Divisiones: meses completos cuando 12 es múltiplo de la cantidad (Q4 = 1 oct – 31 dic); si no, días iguales (5 divisiones de 73 días en 2026).
+- Sprints: el primero arranca el primer día de inicio a partir del comienzo del año fiscal y la numeración se reinicia cada año; los días anteriores pertenecen al último sprint del año anterior, que termina el día antes del primero del año nuevo. Sprint 21 de 2026 = 12–25 oct.
+- `WorkCalendar`: el plan arranca ahora si es día y hora hábil, a la hora de inicio si la jornada no empezó, o al inicio del próximo día hábil. Convierte horas hábiles en fecha y hora; un final que cae en el límite de un día se lee como el fin de ese día (18:00), nunca como el inicio del siguiente.
+- `plan_preview` arma lo que muestra «Editar tablero»: resumen, textos de la jornada según el contexto (Laboral, Estudiantil, Personal o propio) y sus atajos, horas por día y por semana, sprint actual, siguiente y posterior, sprints del año y la barra del año con la división actual y el día de hoy. Comando `task_manager_board_plan_preview { context, boardName, contexto, plan, localNow }`.
+- La vista de columnas trae `hint` («Sprint 21 · 12 oct – 25 oct», «Q1 2027 · 1 ene – 31 mar») para las columnas de sprint y de próxima división.
+
+### Acciones de la tarjeta (`backend-core/src/task_board_actions.rs`)
+
+`resolve_board_intent_outcome` devuelve las mutaciones, el plan de deshacer y el ticket a resaltar; `resolve_board_intent` sigue devolviendo solo las mutaciones.
+
+| Intención | Regla |
+|---|---|
+| `start-task` | `En progreso` e `inicioProgreso` = ahora. |
+| `pause-task`, `unblock-task` | `Pendiente`; si corría, suma el tiempo a `dedicado`. |
+| `finish-task`, `cancel-task` | Suma el tiempo, estado `Finalizada`/`Cancelada`, `cerradaEn` = ahora; devuelve deshacer. |
+| `change-state` (menú de estado y asistente de la vista) | Las mismas reglas de cronómetro y cierre. |
+| `delete-task` | Devuelve deshacer con `RestoreDeletedTicket`. |
+| `move-task` | Al final de la columna; a una columna `blocked` la bloquea (y suma el tiempo), fuera de ella la deja pendiente. `place-task` (arrastrar) aplica la misma regla. Las subtareas no se mueven solas. |
+| `duplicate-task` | Copia «título (copia)» justo debajo, sin horas, con las mismas personas, proyecto y dependencias, y sus subtareas sin marcar. |
+| `set-task-project` | Un nombre que no existe se agrega al tablero con el primer color libre de la paleta. |
+| `set-task-people` | Solo personas del tablero (sin distinguir mayúsculas ni tildes). |
+| `set-task-time` | Estimado y dedicado ≥ 0; si la tarea corre, el cronómetro sigue desde el nuevo total. |
+| `set-block-note`, `add-subtask`, `toggle-subtask`, `rename-task` | — |
+| `set-dependencies` | Tareas del mismo tablero, hasta 20; un ciclo se rechaza con «Crearía un ciclo: «X» ya espera a esta tarea.» (`task_planner::creates_cycle`). |
+| `restore-tasks`, `delete-tasks` | Completadas y Canceladas; eliminar borra primero las subtareas. |
+| `add/remove-board-member`, `add/remove-board-project` | El propietario no se quita; nombres repetidos se rechazan. |
+| `move-group` | Mueve la columna a la izquierda o a la derecha. |
+| `undo` | Lo resuelve el adaptador (ver abajo). |
+
+**Deshacer.** `task_manager_commands.rs` guarda cada plan de deshacer en memoria con un token (`UNDO_TOKENS`, hasta 128) ligado a la biblioteca y al usuario. Vale 5 s más 2 s de margen para la ida y vuelta (`UNDO_WINDOW_MS`, `UNDO_GRACE_MS`) y se usa una sola vez. `task_manager_board_execute` responde `{ changed, undo?: { token, kind: finish|cancel|delete, title }, focusTaskId? }`, también por el WebSocket de la publicación. Un reinicio de Notia descarta los tokens.
+
+### Vista del tablero (`project_board_view_for`)
+
+`task_manager_board_view` recibe del adaptador quién mira (nombre del usuario y del Owner, de `library_users::library_user_names`) y la fecha local, y suma:
+
+- por tablero: `plan`, `members` (iniciales, color, `isOwner`, `isMe`, tareas abiertas asignadas y rol «Vos · Propietario», «Propietario», «Vos · Miembro» o «Miembro»), `projects` (con sus tareas), `counts` (raíces abiertas, en progreso y pendientes), `nextMemberColor` (paleta en rotación) y `nextProjectColor` (primero sin usar);
+- por columna: `kind`, `hint` y `taskCount`;
+- por tarea: `projectColor`, `people` (iniciales y color del tablero; slate si la persona no está en el tablero), `startedAtUnixMs` (solo en progreso), `blockNote`, `dependencies` (rutas lógicas), `subtaskDone`/`subtaskTotal`;
+- `archive.finished/cancelled`: filas de Completadas y Canceladas de la más reciente a la más vieja (por `cerradaEn`, después `fechaFin`), con tablero, columna de origen y su color, prioridad, proyecto, personas, «6 / 16 h» y período; una subtarea aparece solo si su tarea ya no existe;
+- `finishedCount`, `cancelledCount`, `palette` (8 colores con nombre) y `columnKinds` (tipos con su etiqueta).
+
+### Management (`task_planner.rs`, `task_management_view.rs`)
+
+- `planner_input` toma las tareas raíz abiertas del tablero en orden de columnas y tarjetas, con sus horas dedicadas en vivo. `plan()` implementa 9.1–9.6: letras A, B…; duración `max(0,5; redondeo a 0,25 de estimado − dedicado)` o una jornada si no hay estimación; liberación por tipo de columna (Sprint siguiente desde el próximo sprint, Próximo Q desde la próxima división); CPM sin recursos para el desempate; planificación serial con una tarea por persona y relleno de huecos; espera y a quién; aristas de recurso. `analyze()` calcula holguras y ruta crítica (holgura < 0,05 h) sobre las tareas visibles en la división.
+- `management_view()` devuelve todo lo que se dibuja: selector de divisiones, rango (Auto, Sprints o Q completo), escala (`clamp(round(1100 / días), 14, 64)` px por día; grilla diaria desde 34 px), bandas de meses, sprints y días, fines de semana, línea de «ahora», KPIs, filas del Gantt por tarea o por persona con barras, esperas y holguras en píxeles, aviso de tareas fuera de la división, la red CPM con posiciones de nodos y trazos de aristas, y la tabla CPM. Las opciones de predecesoras se mandan una vez (`candidates`) y cada fila trae sus `dependencyPaths` y `cycleLetters`.
+- Comando `task_manager_management_view { context, board, request: { divisionOffset, rangeMode: auto|sprints|division, groupBy: task|person }, localNow }`, también en `PUBLISHED_COMMANDS`. La interfaz lo vuelve a pedir al cambiar el tablero (generación), el pedido o cada minuto. Rendimiento medido: plan y análisis de 200 tareas ≈ 1,5 ms; dos vistas completas ≈ 71 ms en debug.
+
+### Pomodoro
+
+- `PomodoroDurationsDto.cycles` (2–8, por defecto 4) decide cada cuántos trabajos toca el descanso largo. `clamp_durations` limita trabajo 5–90, descanso corto 1–30 y largo 5–60 minutos (antes 1–180).
+- Acciones nuevas: `skip` (termina la fase, registra lo que corrió como parcial y deja la siguiente lista, detenida; saltar un trabajo cuenta el ciclo) y `select-phase` (detiene y arranca ese modo desde el principio, registrando lo que corrió).
+- La respuesta suma `presets` (Estándar 25/5/15, Sprint 50/10/20, Ligero 15/3/10, Intenso 45/7/20, con el activo marcado) y `today` (`pomodoro_log::day_summary`: trabajos finalizados, minutos de trabajo y trabajos por hora del día local). La publicación recibe `today: null`.
+- La interfaz quitó el modo desvío: el estado lo conserva por compatibilidad, pero no se puede activar desde la pantalla.
+
+### Interfaz
+
+- **Shell** (`components/TaskManagerApp.tsx`, `components/shell/*`, `styles/taskShell.css`): encabezado, pestañas con contadores que laten, búsqueda (`/`) y filtros (botones con menú), selector de vista, avisos (deshacer abajo al centro durante 5 s, errores, aviso de fase del Pomodoro). Atajos `N` y `/` en `window`, ignorados al escribir, con modificadores o con un diálogo modal abierto. La vista y las columnas plegadas (tablero y lista por separado) se guardan por tablero en `localStorage` (`task-manager:board-views:v1`). La ruta de la biblioteca se muestra sin el prefijo `//?/`; una URI SAF muestra solo el nombre.
+- **Componentes**: `board/TaskKanbanView`, `card/*` (tarjeta, selector de prioridad, proyecto, personas, tiempo, menú fijo con «Mover a», subtareas, motivo de bloqueo, arrastre con mouse y dedo en `useTaskDrag`), `list/TaskListView`, `management/TaskManagementView`, `archive/TaskArchiveView`, `pomodoro/PomodoroPanel`, `dialogs/BoardEditDialog`, `people/BoardPeopleDrawer`. `GroupDialog` suma el tipo de columna. `TaskSourceDialog` y `TaskCommentDialog` pasaron al shell.
+- **Excepciones visuales en TypeScript**: el reloj y el anillo de tiempo de una tarea en progreso, el filtrado y la búsqueda (`utils/taskFilters.ts`, también para Completadas y Canceladas), la agrupación de tareas en columnas y subtareas, la paginación de Completadas y el plegado por defecto de las columnas vacías.
+- **Se eliminaron** `TaskBoardView`, `TaskTableView`, `TaskFilterBar`, `TaskDialog` (crear con formulario: ahora «Nueva tarea» crea en la columna y se completa en la tarjeta), `BoardDialog`, `ActivityHoursClockPicker`, `archivedPanels`, `engines/taskIconEngine` y `engines/pomodoroLogEngine`, y las reglas de `taskManager.css` que solo usaban esos componentes (quedan las de los diálogos).
+- **Android y táctil**: todo lo que se revela al pasar el mouse se ve siempre con puntero grueso; áreas de toque de 44 px; arrastre por pulsación larga y alternativa «Mover a»; renombrar desde el menú; el panel de personas no se cierra con el clic fantasma de Android. Los anchos responden al contenedor (`@container`), no al viewport.
+
+### Decisiones fuera de la especificación
+
+- Sin evento `timer_tick`: emitir cada segundo por Tauri y por el WebSocket de la publicación costaba más que dibujar el reloj desde `startedAtUnixMs`.
+- El invitado administra personas y proyectos; no edita jornada, sprints ni divisiones.
+- Un cambio de estado hecho por las herramientas del asistente (`ChangeState` del agente) no suma el tiempo corriendo: el cronómetro solo lo mueven las intenciones del tablero.
+- El tiempo de foco del Pomodoro se suma a las horas dedicadas aunque la tarea también esté corriendo.
+- Mover una tarea a «Sin grupo» no está disponible (la intención exige una columna).
+- `Nueva tarea` se deshabilita fuera de las pestañas de tablero.
+
+### Validaciones (2026-10-17)
+
+- `cargo test -p notia-backend-core`: 650 y la falla previa de `image_generation::only_sexual_content_with_minors_is_refused`. Nuevas: `task_board_plan` 10, `task_planner` 19 (casos 1–11 y 14 de la spec), `task_management_view` 12 (casos 12 y 13), `task_board_actions` 9, Pomodoro 1.
+- `cargo test -p notia-app --features bluetooth`: 513 (incluye `the_running_time_block_note_column_kind_and_board_calendar_survive_a_reload`, de punta a punta sobre una biblioteca temporal).
+- `cargo check --offline --target aarch64-linux-android`: sin errores, con las 59 advertencias de base.
+- `npx tsc --noEmit -p tsconfig.app.json` y `npx eslint src/modules/task-manager` sin errores; `npx vitest run src/modules/task-manager`: 162 en 15 archivos. `npx vite build` compila la app y `public-task-manager.html`.
+- Vista previa con Vite y Chrome sin cabeza, con la vista del tablero y de Management generadas por el Rust real: tablero, lista en tema claro, Management, Completadas y Pomodoro a 1440 px y tablero y Pomodoro a 390 px.
+- Pendiente: probar en la app de Windows, en la tablet Android (arrastre con el dedo, menús, teclado virtual), en el tablero publicado desde otro equipo, con datos reales (44 tareas, 56 completadas y 13 canceladas de la biblioteca de trabajo) y el modelo del asistente.
+
+### Corrección: eliminar una columna con tareas finalizadas (2026-10-17)
+
+- **Síntoma.** La columna «Atrasado» mostraba 0 tareas, pero eliminarla respondía «No se puede eliminar un grupo con tickets asignados.».
+- **Causa.** `validate_mutation` (`DeleteGroup`) rechazaba la eliminación si cualquier ticket tenía ese `group_id`, también los finalizados y cancelados, que el tablero no muestra. En la biblioteca de trabajo eran 6 tickets de `finished/default/` con `equipo: Atrasado`. Las subtareas tampoco acompañaban a su tarea al moverla de columna (`move-task` y `place-task` solo cambiaban la tarea), así que una columna podía quedar ocupada por subtareas de tareas que estaban en otra.
+- **Corrección.**
+  - Solo bloquean las tareas raíz abiertas, y el mensaje dice cuántas son («No se puede eliminar una columna con 2 tareas abiertas: movelas, finalizalas o eliminalas antes.»).
+  - En la misma operación, los tickets finalizados o cancelados de la columna quedan sin columna (`equipo` vacío; Completadas y Canceladas los muestran como «Sin grupo») y una subtarea abierta pasa a la columna de su tarea. Recuperar una de esas tareas la deja en «Sin grupo» del tablero.
+  - `move-task` y `place-task` mueven las subtareas a la columna de su tarea (`subtasks_to_column`).
+- **Validación.** `a_column_with_only_finished_tasks_can_be_deleted_and_they_stay_without_a_column` y `subtasks_follow_their_task_to_another_column` (`task_board_actions`). `cargo test -p notia-backend-core` 652 más la falla previa de `image_generation`; `cargo test -p notia-app --features bluetooth` 513. Falta eliminar «Atrasado» en la app.
+
+### Prioridad «Atrasado» (2026-10-17)
+
+- `TaskPriority::Overdue` se serializa «Atrasado» y es la más alta: el orden derivado queda Baja < Media < Alta < Urgente < Atrasado, así que el planificador (que ordena por prioridad después de «en progreso») la pone antes que Urgente. Prueba: `an_overdue_task_goes_before_an_urgent_one`.
+- Frontmatter: `prioridad: Atrasado`; se leen también «atrasada» y «overdue» (`the_overdue_priority_is_read_and_written_as_atrasado`).
+- Herramientas del asistente: los seis `enum` de prioridad de `tool_schemas.json` aceptan «Atrasado»; `get_task_manager_options` la lista; la guía del prompt la explica.
+- Inicio: va primera entre las más urgentes, con chip `overdue`, y cuenta en el número de urgentes.
+- Interfaz: selector con «Atrasado» primero y teclas 1 a 5 («Ya se pasó de su fecha»), filtros, Completadas, Canceladas y Pomodoro. Color rosa, el de la columna Atrasado: token global nuevo `--color-rosa` (`#f28cb1` / `#db2777`) en `notia.css`, que usan `--tm-rosa` y `--tm-priority-overdue` del Task Manager y `--home-overdue` de Inicio. Se agregó a la tabla de chips de prioridad de `CLAUDE.md`.
+- Validación: `cargo test -p notia-backend-core` 653 más la falla previa de `image_generation`; `cargo test -p notia-app --features bluetooth` 514; `tsc`, ESLint y Vitest 703.
+
+### Herramientas del asistente para todo el tablero (2026-10-17)
+
+Pedido: que el agente maneje todas las funciones del tablero (estimaciones, personas, proyectos, etc.).
+
+- **Módulo** `backend-core/src/task_board_tool_input.rs`. Cada herramienta se convierte en la misma `TaskBoardIntent` que manda la interfaz (`board_tool_plan`) y se ejecuta con `board_execute_in`, así que el agente sigue las reglas del tablero: cronómetro, columna Bloqueado, subtareas que acompañan a su tarea, personas del tablero, proyecto nuevo con color libre, dependencias sin ciclos, invitado sin cambios de calendario. `board_tool_plan` también arma el texto de la confirmación con los títulos de los tickets y falla antes de pedir confirmación si un dato no vale (persona fuera del tablero, ticket fuera de alcance, hora fuera de los pasos de 30 minutos).
+- **Escritura** (`TASK_BOARD_ACTION_TOOLS`, política `TaskWrite`, con confirmación): `set_task_time` (estimado y/o dedicado), `set_task_people` (`mode` replace, add o remove), `set_task_project` (vacío lo quita, uno nuevo se crea), `start_task_timer`, `pause_task_timer`, `set_task_block_note`, `set_task_dependencies` (`dependsOnTicketIds`), `toggle_task_subtask` (`done`), `add_task_board_member`, `remove_task_board_member`, `add_task_board_project`, `remove_task_board_project` y `update_task_board_calendar` (solo los campos enviados: `workdayStart`/`workdayEnd` HH:MM, `workDays` por nombre, `sprintWeeks`, `sprintStartDay`, `divisionsPerYear`, `divisionPrefix`, `yearStartMonth`).
+- **Herramientas existentes que pasaron a las reglas del tablero**: `change_task_state` (cronómetro y fecha de cierre), `archive_task` (finaliza), `restore_task` (recupera a su columna), `move_task_group` (`groupId` ahora obligatorio; Bloqueado y subtareas) y `duplicate_task` («(copia)» con subtareas; un `title` renombra la copia después). Salieron de `TASK_MUTATION_TOOLS`, que queda con las 13 que mapean a una mutación directa. `create_task_group` y `update_task_group` aceptan `kind` (tipo de columna).
+- **Lectura** (`TaskRead`): `get_task_board_settings` (calendario con sprint y división actual y siguiente, personas con tareas abiertas, proyectos y columnas con `groupId`, tipo y tareas abiertas) y `get_task_board_plan` (rango, KPIs, ruta crítica y cada tarea planificada con letra, `ticketId`, personas, restante, dependencias, inicio, espera, fin, inicio tardío, holgura y si es crítica; acepta `divisionOffset`). Es el mismo cálculo que la vista Management.
+- **Cableado**: esquemas en `tool_schemas.json`, contratos en `task_manager_mutation_tool_contracts`/`task_manager_read_tool_contracts`, `tool_policy`, `supported_tool_names`, despacho y vista previa en `backend_runtime.rs`, ejecución en `task_manager_commands::execute_board_action_tool` y `board_tool_summary`. El ruteo por área ya las ubica en «tareas» (su nombre contiene `task`). La guía del prompt pide usar estas herramientas y no calcular fechas.
+- **Aviso de cambios**: las herramientas del tablero y las mutaciones directas del agente ahora emiten `task-manager-changed` al cambiar algo, así el tablero abierto y la publicación se actualizan.
+- **Tablero publicado**: el invitado tiene las mismas herramientas sobre sus tableros; `update_task_board_calendar` responde `Forbidden`, como editar el tablero.
+- **Validación**: `cargo test -p notia-backend-core` 657 más la falla previa de `image_generation` (pruebas nuevas en `task_board_tool_input`: personas solo del tablero y los tres modos, textos de confirmación, calendario parcial y lectura de ajustes); `cargo test -p notia-app --features bluetooth` 514; `cargo check --target aarch64-linux-android` sin errores, con las 59 advertencias de base. Falta probarlo con el modelo real en el chat lateral, el chat principal y Telegram.
+
+### Título de la tarjeta y modal de comentario (2026-10-17)
+
+- **Doble clic en el título** abre `TaskSourceDialog` (el ticket en Milkdown, con sus propiedades y guardado) en lugar de renombrar (`TaskTitle` en `card/TaskParts.tsx`, también en la Lista). Renombrar queda en el menú ⋯. Con mouse, el clic simple sigue abriendo el ticket después de 220 ms; en táctil, el toque lo abre y el editor está en **⋯ → Editar nota**.
+- **Doble clic en el detalle**: la vista previa de la tarjeta (detalle y comentarios), el motivo de bloqueo y la línea de detalle de la Lista abren el mismo modal con doble clic. Prueba: `opens the ticket editor with a double click on the detail`.
+- **Título completo al pasar el mouse**: el botón del título lleva `title` con el título entero, porque la tarjeta lo recorta a dos líneas y la Lista a una.
+- **Modal de comentario**: el editor usaba la columna de las notas, con 48–120 px de margen izquierdo para el agarre de bloques, y el texto quedaba muy corrido a la derecha. `.tareas-comment-editor` fija `--notia-editor-gutter` y `--notia-editor-right` en 14 px (el margen del encabezado del diálogo) y sin sangría extra.
+- **Texto de ayuda en español**: `MarkdownView` acepta `placeholder` y lo pasa a Crepe (`Crepe.Feature.Placeholder`); por defecto «Escribí acá…» (antes el editor mostraba «Please enter…» en todas las notas) y el comentario usa «Escribí el comentario…».
+- **Validación**: `tsc`, ESLint y Vitest de Task Manager (163, con la prueba nueva del doble clic y el `title`); captura en Chrome del modal de comentario con el texto alineado al título.

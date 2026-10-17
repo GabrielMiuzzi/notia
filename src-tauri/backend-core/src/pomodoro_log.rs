@@ -104,6 +104,32 @@ fn is_header_row(line: &str) -> bool {
     line.contains("fecha | horario | tipo de pomodoro") || line.contains("| --- |")
 }
 
+/// Pomodoros of one day for «Registros del día»: finished work phases,
+/// minutes of work and finished work phases per hour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PomodoroDayDto {
+    pub count: u32,
+    pub focus_minutes: u32,
+    pub by_hour: Vec<u32>,
+    pub current_hour: u32,
+}
+
+pub fn day_summary(entries: &[PomodoroEntryDto], date: &str, current_hour: u32) -> PomodoroDayDto {
+    let mut summary = PomodoroDayDto { count: 0, focus_minutes: 0, by_hour: vec![0; 24], current_hour: current_hour.min(23) };
+    let mut minutes = 0.0;
+    for entry in entries.iter().filter(|entry| entry.date == date && entry.kind == "Trabajo") {
+        minutes += entry.duration_minutes.max(0.0);
+        if entry.finalized {
+            summary.count += 1;
+            let hour = entry.time.get(..2).and_then(|hour| hour.parse::<usize>().ok()).unwrap_or(0).min(23);
+            summary.by_hour[hour] += 1;
+        }
+    }
+    summary.focus_minutes = minutes.round() as u32;
+    summary
+}
+
 pub fn read_pomodoro_entries(content: &str) -> Vec<PomodoroEntryDto> {
     let mut entries = Vec::new();
     for (index, line) in content.lines().enumerate() {

@@ -579,6 +579,8 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "read_task_tickets"
         | "get_task_manager_options"
         | "get_task_board_summary" => ToolPolicy::TaskRead,
+        name if super::task_board_tool_input::is_task_board_read_tool(name) => ToolPolicy::TaskRead,
+        name if super::task_board_tool_input::is_task_board_action_tool(name) => ToolPolicy::TaskWrite,
         "set_agent_execution_plan"
         | "set_task_execution_plan"
         | "create_agent_plan"

@@ -1,22 +1,15 @@
 import { subscribeBackend, type Unsubscribe } from '../../../services/transport'
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TASK_PRIORITIES, TASK_STATES } from '../constants/taskManagerConstants'
 import type {
   Board,
   Group,
-  PomodoroDurations,
   PomodoroState,
-  TaskCreationRequest,
-  TaskFormData,
-  TaskItem,
   TaskManagerSettings,
   TaskManagerVaultRef,
-  TaskPriority,
-  TaskState,
 } from '../types/taskManagerTypes'
+import type { TaskBoardPlan, TaskColumnKind } from '../types/taskBoardTypes'
 import { clearLegacyPomodoroState, loadActiveTaskTab, loadLegacyPomodoroState, saveActiveTaskTab } from '../services/taskManagerStorage'
 import {
-  deletePomodoroEntry,
   EMPTY_TASK_MANAGER_SNAPSHOT,
   executeTaskBoardIntent,
   readTaskBoardView,
@@ -24,6 +17,9 @@ import {
   runPomodoroAction,
   writeTaskMarkdownSource,
   type PomodoroAction,
+  type PomodoroPreset,
+  type PomodoroToday,
+  type TaskBoardExecuteResult,
   type TaskBoardIntent,
   type TaskManagerBackendContext,
   type TaskManagerSnapshot,
@@ -33,11 +29,6 @@ import {
   TaskManagerPublicationMutationError,
 } from '../services/taskManagerPublicationClient'
 import { normalizeFilesystemPath } from '../../../utils/files/normalizeFilesystemPath'
-
-/** The dialog only creates: a task is edited in its Markdown, as a double click opens it. */
-interface TaskDialogState {
-  open: boolean
-}
 
 interface BoardDialogState {
   open: boolean
@@ -49,6 +40,33 @@ interface GroupDialogState {
   open: boolean
   mode: 'create' | 'edit'
   group: Group | null
+}
+
+export interface PeoplePanelState {
+  open: boolean
+  tab: 'people' | 'projects'
+}
+
+/** «Tarea finalizada / desestimada / eliminada» with «Deshacer» for 5 s. */
+export interface TaskUndoToast {
+  id: number
+  token: string
+  kind: 'finish' | 'cancel' | 'delete'
+  title: string
+}
+
+export interface BoardSaveValue {
+  name: string
+  color: string
+  contexto: string
+  plan: TaskBoardPlan
+}
+
+export interface GroupSaveValue {
+  name: string
+  color: string
+  board: string
+  columnKind: TaskColumnKind
 }
 
 export interface TaskManagerConflictDetails {
@@ -63,59 +81,47 @@ export interface TaskManagerConflictDetails {
 export interface UseTaskManagerResult {
   settings: TaskManagerSettings
   snapshot: TaskManagerSnapshot
+  context: TaskManagerBackendContext | null
   isLoading: boolean
   isSyncing: boolean
   error: string | null
-  infoMessage: string | null
   publicationConflict: TaskManagerConflictDetails | null
-  taskDialog: TaskDialogState
-  taskCreateDefaults: {
-    parentTaskName?: string
-    group?: string
-  }
-  boardDialog: BoardDialogState
-  groupDialog: GroupDialogState
-  taskStates: readonly TaskState[]
-  taskPriorities: readonly TaskPriority[]
   setError: (value: string | null) => void
-  setInfoMessage: (value: string | null) => void
   clearPublicationConflict: () => void
   reloadPublicationConflict: () => Promise<void>
   setActiveTab: (tab: string) => void
   reload: () => Promise<void>
-  openTaskCreateDialog: (request?: TaskCreationRequest) => void
-  closeTaskDialog: () => void
-  submitTaskDialog: (formData: TaskFormData) => Promise<void>
-  updateTaskState: (task: TaskItem, nextState: string) => Promise<void>
-  updateTaskPriority: (task: TaskItem, nextPriority: TaskPriority) => Promise<void>
-  updateTaskDedicatedHours: (task: TaskItem, nextDedicatedHours: number) => Promise<void>
-  markTaskAsUrgent: (task: TaskItem) => Promise<void>
-  toggleSubtaskDone: (task: TaskItem, done: boolean) => Promise<void>
-  addTaskComment: (task: TaskItem, comment: string) => Promise<void>
+  /** Sends an intent and reloads; rejects (after showing the error) when the backend refuses it. */
+  executeIntent: (intent: TaskBoardIntent) => Promise<TaskBoardExecuteResult>
+  undoToast: TaskUndoToast | null
+  undo: () => Promise<void>
+  dismissUndo: () => void
+  /** Ticket id the board highlights after an action. */
+  flashTaskId: string | null
+  /** «Nueva tarea» in a column of the active board (the first one by default). */
+  createTask: (groupName?: string) => Promise<void>
+  addTaskComment: (taskPath: string, comment: string) => Promise<void>
   loadTaskSource: (taskPath: string) => Promise<string>
   saveTaskSource: (taskPath: string, content: string) => Promise<void>
-  deleteTaskItem: (task: TaskItem) => Promise<void>
+  boardDialog: BoardDialogState
   openBoardCreateDialog: () => void
   openBoardEditDialog: (board: Board) => void
   closeBoardDialog: () => void
-  submitBoardDialog: (payload: { name: string; color: string; activityHoursPerDay: number; contexto: string }) => Promise<void>
+  /** Rejects with the backend's message, which the dialog shows. */
+  saveBoard: (value: BoardSaveValue) => Promise<void>
   removeBoard: (boardName: string) => Promise<void>
+  groupDialog: GroupDialogState
   openGroupCreateDialog: () => void
   openGroupEditDialog: (group: Group) => void
   closeGroupDialog: () => void
-  submitGroupDialog: (payload: { name: string; color: string; board: string }) => Promise<void>
-  removeGroup: (groupName: string, board: string) => Promise<void>
-  reorderGroupsInBoard: (board: string, orderedGroupNames: string[]) => Promise<void>
-  placeTask: (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => Promise<void>
-  selectPomodoroTask: (taskPath: string | null) => void
-  startPomodoroCycle: () => Promise<void>
-  pausePomodoroCycle: () => void
-  resumePomodoroCycle: () => void
-  resetPomodoroCycle: () => void
-  enterPomodoroDeviationMode: () => void
-  exitPomodoroDeviationMode: () => Promise<void>
-  setPomodoroDurations: (durations: PomodoroDurations) => void
-  deletePomodoroLogEntry: (entryId: string) => Promise<void>
+  submitGroupDialog: (value: GroupSaveValue) => Promise<void>
+  removeGroup: (group: Group) => Promise<void>
+  peoplePanel: PeoplePanelState
+  openPeoplePanel: (tab: 'people' | 'projects') => void
+  closePeoplePanel: () => void
+  pomodoroPresets: PomodoroPreset[]
+  pomodoroToday: PomodoroToday | null
+  runPomodoro: (action: PomodoroAction) => Promise<void>
 }
 
 const TASK_MANAGER_CHANGED_EVENT = 'task-manager-changed'
@@ -123,6 +129,9 @@ const PUBLICATION_CHANGED_EVENT = 'task-manager-publication-changed'
 const FINISHED_TAB_ID = '__finished__'
 const CANCELLED_TAB_ID = '__cancelled__'
 const POMODORO_TAB_ID = '__pomodoro__'
+/** How long the toast offers «Deshacer», as the backend keeps the token. */
+export const UNDO_TOAST_MS = 5_000
+const FLASH_MS = 1_200
 
 /** Shown until the backend returns the user's timer. */
 const INITIAL_POMODORO: PomodoroState = {
@@ -136,7 +145,7 @@ const INITIAL_POMODORO: PomodoroState = {
   deviationStartedAt: null,
   deviationBaseRemainingSeconds: 0,
   phaseDeviationSeconds: 0,
-  durations: { workMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15 },
+  durations: { workMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15, cycles: 4 },
 }
 const NON_BOARD_TABS = new Set([FINISHED_TAB_ID, CANCELLED_TAB_ID, POMODORO_TAB_ID])
 
@@ -145,17 +154,6 @@ const viewCache = new Map<string, TaskManagerSnapshot>()
 
 function isPublishedTaskManager(): boolean {
   return typeof window !== 'undefined' && window.__NOTIA_PUBLISHED_TASK_MANAGER__ === true
-}
-
-/** What a change of state tells the person. */
-function stateNotice(state: string): string {
-  switch (state) {
-    case 'Finalizada': return 'Tarea finalizada'
-    case 'Cancelada': return 'Tarea desestimada'
-    case 'En progreso': return 'Tarea en progreso'
-    case 'Bloqueada': return 'Tarea bloqueada'
-    default: return 'Tarea pendiente'
-  }
 }
 
 function backendContextOf(libraryId?: string, libraryUserId?: string): TaskManagerBackendContext | null {
@@ -190,10 +188,10 @@ function conflictOf(error: unknown): TaskManagerConflictDetails | null {
 }
 
 /**
- * Task Manager board state for the interface. The board, its tasks and the
- * Pomodoro log come from the backend view; this hook keeps only what is
- * shown (dialogs, active tab, messages) and the device's Pomodoro timer,
- * and sends every change to the backend as an intent.
+ * Task Manager state for the interface. The boards, their tasks, the plan
+ * and the Pomodoro come from the backend; this hook keeps only what is
+ * shown (dialogs, active tab, toasts, highlight) and sends every change to
+ * the backend as an intent.
  */
 export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTaskManagerResult {
   const libraryId = vault?.libraryId
@@ -208,18 +206,21 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
   const snapshotRef = useRef(snapshot)
   const [activeTab, setActiveTabState] = useState(loadActiveTaskTab)
   const [pomodoro, setPomodoro] = useState<PomodoroState>(INITIAL_POMODORO)
+  const [pomodoroPresets, setPomodoroPresets] = useState<PomodoroPreset[]>([])
+  const [pomodoroToday, setPomodoroToday] = useState<PomodoroToday | null>(null)
   const pomodoroRef = useRef(pomodoro)
   const [isLoading, setIsLoading] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [publicationConflict, setPublicationConflict] = useState<TaskManagerConflictDetails | null>(null)
-  const [taskDialog, setTaskDialog] = useState<TaskDialogState>({ open: false })
-  const [taskCreateDefaults, setTaskCreateDefaults] = useState<{ parentTaskName?: string; group?: string }>({})
   const [boardDialog, setBoardDialog] = useState<BoardDialogState>({ open: false, mode: 'create', board: null })
   const [groupDialog, setGroupDialog] = useState<GroupDialogState>({ open: false, mode: 'create', group: null })
+  const [peoplePanel, setPeoplePanel] = useState<PeoplePanelState>({ open: false, tab: 'people' })
+  const [undoToast, setUndoToast] = useState<TaskUndoToast | null>(null)
+  const [flashTaskId, setFlashTaskId] = useState<string | null>(null)
   const taskSourceRevisionsRef = useRef(new Map<string, string>())
   const reloadStateRef = useRef<{ inFlight: Promise<void> | null; pending: boolean }>({ inFlight: null, pending: false })
+  const undoIdRef = useRef(0)
 
   const settings = useMemo<TaskManagerSettings>(() => ({
     activeVaultPath: vaultPath,
@@ -328,39 +329,67 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     }
   }, [context, reload, vaultPath])
 
-  const reportFailure = useCallback((failure: unknown, action: string) => {
+  const reportFailure = useCallback((failure: unknown, fallback: string) => {
     console.error(failure)
     const conflict = conflictOf(failure)
     if (conflict) {
       setPublicationConflict(conflict)
     }
-    const message = errorMessage(failure)
     setError(failure instanceof TaskManagerPublicationMutationError && failure.outcome === 'unknown'
       ? 'La operación no fue confirmada por la publicación. Actualizá el tablero antes de reintentar.'
-      : message ? `${action}: ${message}` : `${action}.`)
+      : errorMessage(failure) || fallback)
   }, [])
 
-  /** Sends an intent and renders the backend's resulting view. */
-  /** Runs an intent; `success`, when given, is the notice the person sees once it is done. */
-  const runIntent = useCallback(async (intent: TaskBoardIntent, failure: string, success?: string): Promise<boolean> => {
+  // The highlight fades by itself.
+  useEffect(() => {
+    if (!flashTaskId) return undefined
+    const timer = window.setTimeout(() => setFlashTaskId(null), FLASH_MS)
+    return () => window.clearTimeout(timer)
+  }, [flashTaskId])
+
+  const executeIntent = useCallback(async (intent: TaskBoardIntent): Promise<TaskBoardExecuteResult> => {
     if (!context) {
-      setError('El Task Manager necesita una biblioteca abierta.')
-      return false
+      const missing = new Error('El Task Manager necesita una biblioteca abierta.')
+      setError(missing.message)
+      throw missing
     }
     setIsSyncing(true)
     try {
-      await executeTaskBoardIntent(context, intent)
+      const result = await executeTaskBoardIntent(context, intent)
       await reload()
       setPublicationConflict(null)
-      if (success) setInfoMessage(success)
-      return true
+      if (result.undo) {
+        undoIdRef.current += 1
+        setUndoToast({ id: undoIdRef.current, ...result.undo })
+      }
+      if (result.focusTaskId) setFlashTaskId(result.focusTaskId)
+      return result
     } catch (intentError) {
-      reportFailure(intentError, failure)
-      return false
+      reportFailure(intentError, 'No se pudo completar la acción.')
+      throw intentError instanceof Error ? intentError : new Error('No se pudo completar la acción.')
     } finally {
       setIsSyncing(false)
     }
   }, [context, reload, reportFailure])
+
+  /** Runs an intent whose failure only needs the error message. */
+  const runQuietly = useCallback(async (intent: TaskBoardIntent): Promise<boolean> => {
+    try {
+      await executeIntent(intent)
+      return true
+    } catch {
+      return false
+    }
+  }, [executeIntent])
+
+  const dismissUndo = useCallback(() => setUndoToast(null), [])
+
+  const undo = useCallback(async () => {
+    const toast = undoToast
+    if (!toast) return
+    setUndoToast(null)
+    await runQuietly({ kind: 'undo', token: toast.token })
+  }, [runQuietly, undoToast])
 
   const setActiveTab = useCallback((tab: string) => setActiveTabState(tab), [])
 
@@ -371,75 +400,32 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     setPublicationConflict(null)
   }, [reload])
 
-  const openTaskCreateDialog = useCallback((request?: TaskCreationRequest) => {
-    setTaskCreateDefaults(request?.kind === 'subtask'
-      ? { parentTaskName: request.parentTaskName, group: request.group }
-      : { group: request?.group })
-    setTaskDialog({ open: true })
-  }, [])
+  const activeBoardName = settings.activeTab
 
-  const closeTaskDialog = useCallback(() => {
-    setTaskCreateDefaults({})
-    setTaskDialog({ open: false })
-  }, [])
-
-  const submitTaskDialog = useCallback(async (formData: TaskFormData) => {
-    const intent: TaskBoardIntent = {
+  const createTask = useCallback(async (groupName?: string) => {
+    const board = snapshotRef.current.boards.find((candidate) => candidate.name === activeBoardName)
+    if (!board) return
+    const group = groupName ?? snapshotRef.current.groups.find((candidate) => (candidate.board ?? 'default') === board.name)?.name ?? ''
+    await runQuietly({
       kind: 'create-task',
-      board: formData.board,
-      title: formData.title,
-      detail: formData.detail,
-      group: formData.group,
-      priority: formData.priority || null,
-      state: formData.state,
-      parentTaskName: formData.parentTaskName,
-      endDate: formData.endDate,
-      dynamicEndDate: formData.dynamicEndDate,
-      estimatedHours: formData.estimatedHours,
-      project: formData.project,
-      assignees: formData.assignees,
-    }
-    const notice = formData.parentTaskName.trim() ? 'Subtarea creada' : 'Tarea creada'
-    if (await runIntent(intent, 'No se pudo guardar la tarea', notice)) {
-      closeTaskDialog()
-    }
-  }, [closeTaskDialog, runIntent])
+      board: board.name,
+      title: 'Nueva tarea',
+      detail: '',
+      group,
+      priority: 'Media',
+      state: 'Pendiente',
+      parentTaskName: '',
+      endDate: '',
+      dynamicEndDate: true,
+      estimatedHours: 0,
+      project: '',
+      assignees: [],
+    })
+  }, [activeBoardName, runQuietly])
 
-  const updateTaskState = useCallback(async (task: TaskItem, nextState: string) => {
-    await runIntent(
-      { kind: 'change-state', taskPath: task.filePath, state: nextState as TaskState },
-      'No se pudo cambiar el estado de la tarea',
-      stateNotice(nextState),
-    )
-  }, [runIntent])
-
-  const updateTaskPriority = useCallback(async (task: TaskItem, nextPriority: TaskPriority) => {
-    await runIntent({ kind: 'change-priority', taskPath: task.filePath, priority: nextPriority }, 'No se pudo cambiar la prioridad de la tarea', `Prioridad: ${nextPriority}`)
-  }, [runIntent])
-
-  const updateTaskDedicatedHours = useCallback(async (task: TaskItem, nextDedicatedHours: number) => {
-    await runIntent({ kind: 'set-dedicated-hours', taskPath: task.filePath, hours: nextDedicatedHours }, 'No se pudo actualizar horas dedicadas')
-  }, [runIntent])
-
-  const markTaskAsUrgent = useCallback(async (task: TaskItem) => {
-    await runIntent({ kind: 'mark-urgent', taskPath: task.filePath }, 'No se pudo marcar la tarea como urgente')
-  }, [runIntent])
-
-  const deleteTaskItem = useCallback(async (task: TaskItem) => {
-    await runIntent({ kind: 'delete-task', taskPath: task.filePath }, 'No se pudo eliminar la tarea', 'Tarea eliminada')
-  }, [runIntent])
-
-  const toggleSubtaskDone = useCallback(async (task: TaskItem, done: boolean) => {
-    await runIntent(
-      { kind: 'change-state', taskPath: task.filePath, state: done ? 'Finalizada' : 'Pendiente' },
-      'No se pudo actualizar la subtarea',
-      done ? 'Subtarea finalizada' : 'Subtarea pendiente',
-    )
-  }, [runIntent])
-
-  const addTaskComment = useCallback(async (task: TaskItem, comment: string) => {
-    await runIntent({ kind: 'add-comment', taskPath: task.filePath, comment }, 'No se pudo agregar el comentario', 'Comentario agregado')
-  }, [runIntent])
+  const addTaskComment = useCallback(async (taskPath: string, comment: string) => {
+    await executeIntent({ kind: 'add-comment', taskPath, comment })
+  }, [executeIntent])
 
   const loadTaskSource = useCallback(async (taskPath: string): Promise<string> => {
     if (!context) {
@@ -482,27 +468,27 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     setBoardDialog({ open: false, mode: 'create', board: null })
   }, [])
 
-  const submitBoardDialog = useCallback(async (payload: { name: string; color: string; activityHoursPerDay: number; contexto: string }) => {
+  const saveBoard = useCallback(async (value: BoardSaveValue) => {
     const previousName = boardDialog.mode === 'edit' ? boardDialog.board?.name : undefined
-    const saved = await runIntent(previousName
-      ? { kind: 'update-board', previousName, ...payload }
-      : { kind: 'create-board', ...payload }, 'No se pudo guardar el tablero')
-    if (!saved) {
-      return
-    }
-    // The backend owns the resulting name; follow it with the view's tab.
-    const createdOrRenamed = snapshotRef.current.boards.find((board) => (
-      board.name.toLowerCase() === payload.name.trim().toLowerCase()
+    const activityHoursPerDay = (value.plan.dayEndMinutes - value.plan.dayStartMinutes) / 60
+    if (!context) throw new Error('El Task Manager necesita una biblioteca abierta.')
+    // The dialog shows the backend's refusal itself.
+    await executeTaskBoardIntent(context, previousName
+      ? { kind: 'update-board', previousName, activityHoursPerDay, ...value }
+      : { kind: 'create-board', activityHoursPerDay, ...value })
+    await reload()
+    // The backend owns the resulting name; the tab follows it.
+    const saved = snapshotRef.current.boards.find((board) => (
+      board.name.toLowerCase() === value.name.trim().toLowerCase()
     ))
-    if (createdOrRenamed && (!previousName || activeTab === previousName)) {
-      setActiveTabState(createdOrRenamed.name)
+    if (saved && (!previousName || activeTab === previousName)) {
+      setActiveTabState(saved.name)
     }
-    closeBoardDialog()
-  }, [activeTab, boardDialog.board, boardDialog.mode, closeBoardDialog, runIntent])
+  }, [activeTab, boardDialog.board, boardDialog.mode, context, reload])
 
   const removeBoard = useCallback(async (boardName: string) => {
-    await runIntent({ kind: 'delete-board', name: boardName }, 'No se pudo eliminar el tablero')
-  }, [runIntent])
+    await runQuietly({ kind: 'delete-board', name: boardName })
+  }, [runQuietly])
 
   const openGroupCreateDialog = useCallback(() => {
     setGroupDialog({ open: true, mode: 'create', group: null })
@@ -516,44 +502,33 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     setGroupDialog({ open: false, mode: 'create', group: null })
   }, [])
 
-  const submitGroupDialog = useCallback(async (payload: { name: string; color: string; board: string }) => {
+  const submitGroupDialog = useCallback(async (value: GroupSaveValue) => {
     const editedGroup = groupDialog.mode === 'edit' ? groupDialog.group : null
-    const saved = await runIntent(editedGroup
+    const saved = await runQuietly(editedGroup
       ? {
         kind: 'update-group',
-        previousBoard: editedGroup.board ?? payload.board,
+        previousBoard: editedGroup.board ?? value.board,
         previousName: editedGroup.name,
-        name: payload.name,
-        color: payload.color,
+        name: value.name,
+        color: value.color,
+        columnKind: value.columnKind,
       }
-      : { kind: 'create-group', board: payload.board, name: payload.name, color: payload.color }, 'No se pudo guardar el grupo')
-    if (saved) {
+      : { kind: 'create-group', board: value.board, name: value.name, color: value.color, columnKind: value.columnKind })
+    if (saved) closeGroupDialog()
+  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, runQuietly])
+
+  const removeGroup = useCallback(async (group: Group) => {
+    if (await runQuietly({ kind: 'delete-group', board: group.board ?? 'default', name: group.name })) {
       closeGroupDialog()
-      setInfoMessage('Grupo actualizado.')
     }
-  }, [closeGroupDialog, groupDialog.group, groupDialog.mode, runIntent])
+  }, [closeGroupDialog, runQuietly])
 
-  const removeGroup = useCallback(async (groupName: string, board: string) => {
-    if (await runIntent({ kind: 'delete-group', board, name: groupName }, 'No se pudo eliminar el grupo')) {
-      closeGroupDialog()
-      setInfoMessage('Grupo eliminado.')
-    }
-  }, [closeGroupDialog, runIntent])
-
-  const reorderGroupsInBoard = useCallback(async (board: string, orderedGroupNames: string[]) => {
-    await runIntent({ kind: 'reorder-groups', board, groupNames: orderedGroupNames }, 'No se pudo reordenar los grupos')
-  }, [runIntent])
-
-  const placeTask = useCallback(async (placement: { taskPath: string; orderedPaths: string[]; group: string; parentTaskName: string }) => {
-    // Changing group is news; reordering inside it is not.
-    const before = snapshotRef.current.tasks.find((task) => task.filePath === placement.taskPath)
-    const moved = before && before.group !== placement.group
-    await runIntent({ kind: 'place-task', ...placement }, 'No se pudo reordenar la tarea', moved ? `Tarea movida a «${placement.group || 'Sin grupo'}»` : undefined)
-  }, [runIntent])
+  const openPeoplePanel = useCallback((tab: 'people' | 'projects') => setPeoplePanel({ open: true, tab }), [])
+  const closePeoplePanel = useCallback(() => setPeoplePanel((current) => ({ ...current, open: false })), [])
 
   // --- Pomodoro -----------------------------------------------------------
   // The backend keeps the timer of each library user, advances its phases,
-  // logs each event and adds the hours to the selected task. The panel shows
+  // logs each event and adds the hours to the linked task. The panel shows
   // the countdown; this hook sends the actions.
 
   const pomodoroInFlightRef = useRef(false)
@@ -568,10 +543,12 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
       if (action.kind === 'read') clearLegacyPomodoroState()
       pomodoroRef.current = result.state
       setPomodoro(result.state)
-      if (result.recordError) reportFailure(new Error(result.recordError), 'No se pudo registrar el pomodoro')
+      setPomodoroPresets(result.presets ?? [])
+      setPomodoroToday(result.today ?? null)
+      if (result.recordError) reportFailure(new Error(result.recordError), 'No se pudo registrar el pomodoro.')
       if (result.changed) await reload()
     } catch (pomodoroError) {
-      reportFailure(pomodoroError, 'No se pudo actualizar el pomodoro')
+      reportFailure(pomodoroError, 'No se pudo actualizar el pomodoro.')
     } finally {
       pomodoroInFlightRef.current = false
     }
@@ -597,109 +574,45 @@ export function useTaskManager(vault: TaskManagerVaultRef | null = null): UseTas
     return () => window.clearInterval(interval)
   }, [context, runPomodoro])
 
-  const selectPomodoroTask = useCallback((taskPath: string | null) => {
-    void runPomodoro({ kind: 'select-task', taskPath })
-  }, [runPomodoro])
-
-  const startPomodoroCycle = useCallback(async () => {
-    await runPomodoro({ kind: 'start' })
-  }, [runPomodoro])
-
-  const pausePomodoroCycle = useCallback(() => {
-    void runPomodoro({ kind: 'pause' })
-  }, [runPomodoro])
-
-  const resumePomodoroCycle = useCallback(() => {
-    void runPomodoro({ kind: 'resume' })
-  }, [runPomodoro])
-
-  const resetPomodoroCycle = useCallback(() => {
-    void runPomodoro({ kind: 'reset' })
-  }, [runPomodoro])
-
-  const enterPomodoroDeviationMode = useCallback(() => {
-    void runPomodoro({ kind: 'enter-deviation' })
-  }, [runPomodoro])
-
-  const exitPomodoroDeviationMode = useCallback(async () => {
-    await runPomodoro({ kind: 'exit-deviation' })
-  }, [runPomodoro])
-
-  const setPomodoroDurations = useCallback((durations: PomodoroDurations) => {
-    void runPomodoro({ kind: 'set-durations', durations })
-  }, [runPomodoro])
-
-  const deletePomodoroLogEntry = useCallback(async (entryId: string) => {
-    if (!context || isPublishedTaskManager()) {
-      setError('No se pudo eliminar el registro de pomodoro.')
-      return
-    }
-    try {
-      if (!(await deletePomodoroEntry(context, entryId))) {
-        setError('No se pudo eliminar el registro de pomodoro.')
-        return
-      }
-      await reload()
-    } catch (deleteError) {
-      reportFailure(deleteError, 'No se pudo eliminar el registro de pomodoro')
-    }
-  }, [context, reload, reportFailure])
-
-  const taskStates = useMemo(() => TASK_STATES, [])
-  const taskPriorities = useMemo(() => TASK_PRIORITIES, [])
-
   return {
     settings,
     snapshot,
+    context,
     isLoading,
     isSyncing,
     error,
-    infoMessage,
     publicationConflict,
-    taskDialog,
-    taskCreateDefaults,
-    boardDialog,
-    groupDialog,
-    taskStates,
-    taskPriorities,
     setError,
-    setInfoMessage,
     clearPublicationConflict,
     reloadPublicationConflict,
     setActiveTab,
     reload,
-    openTaskCreateDialog,
-    closeTaskDialog,
-    submitTaskDialog,
-    updateTaskState,
-    updateTaskPriority,
-    updateTaskDedicatedHours,
-    markTaskAsUrgent,
-    toggleSubtaskDone,
+    executeIntent,
+    undoToast,
+    undo,
+    dismissUndo,
+    flashTaskId,
+    createTask,
     addTaskComment,
     loadTaskSource,
     saveTaskSource,
-    deleteTaskItem,
+    boardDialog,
     openBoardCreateDialog,
     openBoardEditDialog,
     closeBoardDialog,
-    submitBoardDialog,
+    saveBoard,
     removeBoard,
+    groupDialog,
     openGroupCreateDialog,
     openGroupEditDialog,
     closeGroupDialog,
     submitGroupDialog,
     removeGroup,
-    reorderGroupsInBoard,
-    placeTask,
-    selectPomodoroTask,
-    startPomodoroCycle,
-    pausePomodoroCycle,
-    resumePomodoroCycle,
-    resetPomodoroCycle,
-    enterPomodoroDeviationMode,
-    exitPomodoroDeviationMode,
-    setPomodoroDurations,
-    deletePomodoroLogEntry,
+    peoplePanel,
+    openPeoplePanel,
+    closePeoplePanel,
+    pomodoroPresets,
+    pomodoroToday,
+    runPomodoro,
   }
 }

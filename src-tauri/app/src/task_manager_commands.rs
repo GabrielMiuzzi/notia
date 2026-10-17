@@ -12,6 +12,8 @@ use crate::host::{AppHandle, Emitter, Manager, State};
 use crate::library_registry::LibraryBindingRegistry;
 use crate::library_users::authorize_task_manager_user;
 use crate::task_manager_store::MarkdownTaskManagerStore;
+use notia_backend_core::task_board_actions::{BoardUndoKind, BoardViewer, UNDO_WINDOW_MS};
+use notia_backend_core::task_board_plan::{TaskBoardPlanDto, TaskBoardPlanPreviewDto};
 
 #[derive(Default)]
 pub(crate) struct TaskManagerBackendState {
@@ -113,6 +115,34 @@ pub(crate) fn execute_backend_read_tool(
                 BackendError::new(BackendErrorCode::Internal, "No se pudo serializar el resumen del tablero.", true)
             })
         }
+        "get_task_board_settings" => {
+            let board = arguments.get("boardId").and_then(Value::as_str).unwrap_or_default();
+            let snapshot = manager.read_snapshot(&context)?;
+            let viewer = board_viewer(app, registry, &context);
+            notia_backend_core::task_board_tool_input::board_settings_for_agent(
+                &snapshot,
+                board,
+                viewer.owner_name.as_deref(),
+                local_now().date(),
+            )
+        }
+        "get_task_board_plan" => {
+            let reference = arguments.get("boardId").and_then(Value::as_str).unwrap_or_default();
+            let snapshot = manager.read_snapshot(&context)?;
+            let board = snapshot
+                .boards
+                .iter()
+                .find(|board| board.board_id == reference || board.name.eq_ignore_ascii_case(reference))
+                .ok_or_else(|| BackendError::invalid_input("El tablero no existe o no está a tu alcance; consultalo con get_task_manager_options."))?;
+            let viewer = board_viewer(app, registry, &context);
+            let input = notia_backend_core::task_board_actions::planner_input(&snapshot, &board.name, local_now(), unix_now_ms(), &viewer)?;
+            let request = notia_backend_core::task_management_view::ManagementRequest {
+                division_offset: arguments.get("divisionOffset").and_then(Value::as_i64).unwrap_or(0).clamp(-24, 24) as i32,
+                ..Default::default()
+            };
+            let view = notia_backend_core::task_management_view::management_view(&input, &request);
+            Ok(notia_backend_core::task_board_tool_input::board_plan_for_agent(&view, &snapshot))
+        }
         _ => Err(BackendError::new(
             BackendErrorCode::Unsupported,
             "La lectura de Task Manager no está disponible.",
@@ -157,7 +187,73 @@ pub(crate) fn execute_backend_mutation_tool(
         idempotency_key: preview.idempotency_key.clone(),
         confirmed: true,
     })?;
+    if receipt.changed {
+        announce_task_manager_change(app, library_id);
+    }
     Ok(json!({ "tool": name, "preview": preview, "receipt": receipt }))
+}
+
+/// What a board tool will do, in the words of its confirmation. It names
+/// the tickets by their title and fails before asking when the arguments
+/// do not hold (an unknown person, a missing ticket…).
+pub(crate) fn board_tool_summary(
+    app: &AppHandle,
+    state: &TaskManagerBackendState,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+    library_user_id: &str,
+    allowed_board_ids: Vec<String>,
+    name: &str,
+    arguments: &Value,
+) -> Result<String, BackendError> {
+    let manager = manager(app, state, registry, library_id, library_user_id)?;
+    let context = scoped_context(library_id, library_user_id, allowed_board_ids)?;
+    let snapshot = manager.read_snapshot(&context)?;
+    let viewer = board_viewer(app, registry, &context);
+    Ok(notia_backend_core::task_board_tool_input::board_tool_plan(name, arguments, &snapshot, viewer.owner_name.as_deref())?.summary)
+}
+
+/// Runs a board tool after the person confirmed it, through the same
+/// intents and rules as the board.
+pub(crate) fn execute_board_action_tool(
+    app: &AppHandle,
+    state: &TaskManagerBackendState,
+    registry: &LibraryBindingRegistry,
+    library_id: &str,
+    library_user_id: &str,
+    allowed_board_ids: Vec<String>,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, BackendError> {
+    let manager = manager(app, state, registry, library_id, library_user_id)?;
+    let context = scoped_context(library_id, library_user_id, allowed_board_ids)?;
+    let snapshot = manager.read_snapshot(&context)?;
+    let viewer = board_viewer(app, registry, &context);
+    let plan = notia_backend_core::task_board_tool_input::board_tool_plan(name, arguments, &snapshot, viewer.owner_name.as_deref())?;
+    let mut changed = false;
+    let mut focus = None;
+    for intent in &plan.intents {
+        let result = board_execute_in(app, state, registry, &context, intent)?;
+        changed |= result.changed;
+        focus = result.focus_task_id.or(focus);
+    }
+    // A duplicate with its own title: the copy is renamed once it exists.
+    if let (Some(title), Some(copy_id)) = (plan.rename_copy_to.as_ref(), focus.as_ref()) {
+        let copy = manager
+            .read_snapshot(&context)?
+            .tickets
+            .into_iter()
+            .find(|ticket| ticket.summary.ticket_id == *copy_id)
+            .map(|ticket| ticket.summary.logical_path);
+        if let Some(task_path) = copy {
+            let rename = TaskBoardIntent::RenameTask { task_path, title: title.clone() };
+            changed |= board_execute_in(app, state, registry, &context, &rename)?.changed;
+        }
+    }
+    if changed {
+        announce_task_manager_change(app, library_id);
+    }
+    Ok(json!({ "tool": name, "changed": changed, "done": plan.summary, "ticketId": focus }))
 }
 
 /// Library as the user may see it, for the confirmation of a Task Manager
@@ -286,6 +382,39 @@ pub(crate) fn task_manager_delete_pomodoro(
     Ok(deleted)
 }
 
+/// Local date and time of this device.
+pub(crate) fn local_now() -> jiff::civil::DateTime {
+    use chrono::{Datelike, Timelike};
+    let now = chrono::Local::now();
+    jiff::civil::DateTime::new(
+        now.year() as i16,
+        now.month() as i8,
+        now.day() as i8,
+        now.hour() as i8,
+        now.minute() as i8,
+        0,
+        0,
+    )
+    .unwrap_or(jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0))
+}
+
+/// The client's local `YYYY-MM-DDTHH:MM`, or this device's time.
+pub(crate) fn client_now(value: Option<&str>) -> jiff::civil::DateTime {
+    value
+        .and_then(|text| text.trim().parse::<jiff::civil::DateTime>().ok())
+        .unwrap_or_else(local_now)
+}
+
+/// Who looks at the board: their name and the Owner's, and today.
+fn board_viewer(app: &AppHandle, registry: &LibraryBindingRegistry, context: &TaskManagerContextDto) -> BoardViewer {
+    let names = crate::library_users::library_user_names(app, registry, &context.library_id);
+    BoardViewer {
+        name: names.get(&context.library_user_id).cloned(),
+        owner_name: names.get(LOCAL_OWNER).cloned().or_else(|| Some("Vos".to_string())),
+        today: Some(local_now().date()),
+    }
+}
+
 /// Board view of the library. Published sessions never read the Pomodoro
 /// history, which mixes every board.
 fn board_view_in(
@@ -302,7 +431,8 @@ fn board_view_in(
     } else {
         Vec::new()
     };
-    Ok(notia_backend_core::project_board_view(&snapshot, pomodoro_entries))
+    let viewer = board_viewer(app, registry, context);
+    Ok(notia_backend_core::task_manager_ui::project_board_view_for(&snapshot, pomodoro_entries, &viewer))
 }
 
 pub(crate) fn task_manager_board_view(
@@ -353,22 +483,101 @@ fn read_envelope(
     TaskManagerSnapshotReadDto::from_snapshot(context.clone(), manager.read_snapshot(context)?)
 }
 
+/// A finish, cancel or delete that can still be undone.
+struct UndoEntry {
+    library_id: String,
+    library_user_id: String,
+    mutations: Vec<TaskMutationDto>,
+    expires_at_ms: i64,
+}
+
+/// Undo tokens of this process; each lives a few seconds.
+static UNDO_TOKENS: std::sync::LazyLock<Mutex<HashMap<String, UndoEntry>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+const MAX_UNDO_TOKENS: usize = 128;
+/// The toast offers «Deshacer» for 5 s; the backend allows a little more
+/// for the round trip.
+const UNDO_GRACE_MS: i64 = 2_000;
+
+fn remember_undo(context: &TaskManagerContextDto, mutations: Vec<TaskMutationDto>) -> Option<String> {
+    let now = unix_now_ms();
+    let mut tokens = UNDO_TOKENS.lock().ok()?;
+    tokens.retain(|_, entry| entry.expires_at_ms > now);
+    if tokens.len() >= MAX_UNDO_TOKENS {
+        return None;
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    tokens.insert(
+        token.clone(),
+        UndoEntry {
+            library_id: context.library_id.clone(),
+            library_user_id: context.library_user_id.clone(),
+            mutations,
+            expires_at_ms: now + UNDO_WINDOW_MS + UNDO_GRACE_MS,
+        },
+    );
+    Some(token)
+}
+
+/// The mutations of an undo token of this user; it can be used once.
+fn take_undo(context: &TaskManagerContextDto, token: &str) -> Result<Vec<TaskMutationDto>, BackendError> {
+    let expired = || BackendError::new(BackendErrorCode::Conflict, "Ya no se puede deshacer.", false);
+    let mut tokens = UNDO_TOKENS.lock().map_err(|_| expired())?;
+    let entry = tokens.remove(token).ok_or_else(expired)?;
+    if entry.library_id != context.library_id || entry.library_user_id != context.library_user_id {
+        return Err(expired());
+    }
+    if entry.expires_at_ms <= unix_now_ms() {
+        return Err(expired());
+    }
+    Ok(entry.mutations)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskBoardUndoDto {
+    token: String,
+    kind: BoardUndoKind,
+    title: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskBoardExecuteDto {
+    changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    undo: Option<TaskBoardUndoDto>,
+    /// Ticket the board highlights after the change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focus_task_id: Option<String>,
+}
+
 fn board_execute_in(
     app: &AppHandle,
     state: &TaskManagerBackendState,
     registry: &LibraryBindingRegistry,
     context: &TaskManagerContextDto,
     intent: &TaskBoardIntent,
-) -> Result<bool, BackendError> {
+) -> Result<TaskBoardExecuteDto, BackendError> {
     let manager = manager(app, state, registry, &context.library_id, &context.library_user_id)?;
+    if let TaskBoardIntent::Undo { token } = intent {
+        let changed = apply_mutations(&manager, context, take_undo(context, token)?)?;
+        return Ok(TaskBoardExecuteDto { changed, undo: None, focus_task_id: None });
+    }
     let read = read_envelope(&manager, context)?;
-    let mutations = notia_backend_core::resolve_board_intent(
+    let viewer = board_viewer(app, registry, context);
+    let outcome = notia_backend_core::task_manager_ui::resolve_board_intent_outcome(
         &read,
         intent,
         &mut || uuid::Uuid::new_v4().to_string(),
         unix_now_ms(),
+        &viewer,
     )?;
-    apply_mutations(&manager, context, mutations)
+    let changed = apply_mutations(&manager, context, outcome.mutations)?;
+    let undo = outcome.undo.filter(|_| changed).and_then(|plan| {
+        remember_undo(context, plan.mutations).map(|token| TaskBoardUndoDto { token, kind: plan.kind, title: plan.title })
+    });
+    Ok(TaskBoardExecuteDto { changed, undo, focus_task_id: outcome.focus_ticket_id })
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,10 +587,74 @@ pub(crate) struct TaskBoardExecutePayload {
     pub intent: TaskBoardIntent,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TaskBoardExecuteDto {
-    changed: bool,
+pub(crate) struct BoardPlanPreviewPayload {
+    pub context: TaskManagerContextPayload,
+    pub board_name: String,
+    #[serde(default)]
+    pub contexto: String,
+    pub plan: TaskBoardPlanDto,
+    #[serde(default)]
+    pub local_now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagementViewPayload {
+    pub context: TaskManagerContextPayload,
+    pub board: String,
+    #[serde(default)]
+    pub request: notia_backend_core::task_management_view::ManagementRequest,
+    #[serde(default)]
+    pub local_now: Option<String>,
+}
+
+/// Plan of a board for Management: dates, slack, critical path, Gantt,
+/// network and table, all computed here.
+fn management_view_in(
+    app: &AppHandle,
+    state: &TaskManagerBackendState,
+    registry: &LibraryBindingRegistry,
+    context: &TaskManagerContextDto,
+    payload: &ManagementViewPayload,
+) -> Result<notia_backend_core::task_management_view::ManagementViewDto, BackendError> {
+    let manager = manager(app, state, registry, &context.library_id, &context.library_user_id)?;
+    let snapshot = manager.read_snapshot(context)?;
+    let viewer = board_viewer(app, registry, context);
+    let input = notia_backend_core::task_board_actions::planner_input(
+        &snapshot,
+        &payload.board,
+        client_now(payload.local_now.as_deref()),
+        unix_now_ms(),
+        &viewer,
+    )?;
+    Ok(notia_backend_core::task_management_view::management_view(&input, &payload.request))
+}
+
+pub(crate) async fn task_manager_management_view(
+    app: AppHandle,
+    payload: ManagementViewPayload,
+) -> Result<notia_backend_core::task_management_view::ManagementViewDto, BackendError> {
+    crate::host::async_runtime::spawn_blocking(move || {
+        let context = payload.context.clone().into_core()?;
+        let state = app.state::<TaskManagerBackendState>();
+        let registry = app.state::<LibraryBindingRegistry>();
+        management_view_in(&app, &state, &registry, &context, &payload)
+    })
+    .await
+    .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo calcular el plan del tablero.", true))?
+}
+
+/// What «Editar tablero» shows for the settings being edited.
+pub(crate) fn task_manager_board_plan_preview(payload: BoardPlanPreviewPayload) -> Result<TaskBoardPlanPreviewDto, BackendError> {
+    payload.context.into_core()?;
+    notia_backend_core::task_board_plan::plan_preview(
+        &payload.board_name,
+        &payload.contexto,
+        &payload.plan,
+        client_now(payload.local_now.as_deref()),
+    )
 }
 
 /// Runs what the person did on the board.
@@ -393,11 +666,11 @@ pub(crate) async fn task_manager_board_execute(
         let context = payload.context.into_core()?;
         let state = app.state::<TaskManagerBackendState>();
         let registry = app.state::<LibraryBindingRegistry>();
-        let changed = board_execute_in(&app, &state, &registry, &context, &payload.intent)?;
-        if changed {
+        let result = board_execute_in(&app, &state, &registry, &context, &payload.intent)?;
+        if result.changed {
             announce_task_manager_change(&app, &context.library_id);
         }
-        Ok(TaskBoardExecuteDto { changed })
+        Ok(result)
     })
     .await
     .map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo completar la operación de Task Manager.", true))?
@@ -425,6 +698,10 @@ pub(crate) struct PomodoroCommandDto {
     /// The timer moved but its event could not be logged.
     #[serde(skip_serializing_if = "Option::is_none")]
     record_error: Option<String>,
+    presets: Vec<notia_backend_core::pomodoro::PomodoroPresetDto>,
+    /// The day's pomodoros; a publication never reads the log, which mixes
+    /// every board.
+    today: Option<notia_backend_core::pomodoro_log::PomodoroDayDto>,
 }
 
 /// Serializes every timer read-modify-write of this process.
@@ -515,7 +792,15 @@ fn pomodoro_in(
             .and_then(|_| std::fs::rename(&temporary, &file))
             .map_err(|_| BackendError::new(BackendErrorCode::Storage, "No se pudo guardar el temporizador.", true))?;
     }
-    Ok(PomodoroCommandDto { state: next, changed, record_error })
+    let today = if context.allowed_board_ids.is_empty() {
+        let hour = payload.local_time.get(..2).and_then(|hour| hour.parse::<u32>().ok()).unwrap_or(0);
+        let entries = library_store(app, state, registry, &context.library_id)?.pomodoro_entries()?;
+        Some(notia_backend_core::pomodoro_log::day_summary(&entries, &payload.local_date, hour))
+    } else {
+        None
+    };
+    let presets = notia_backend_core::pomodoro::presets(&next.durations);
+    Ok(PomodoroCommandDto { state: next, changed, record_error, presets, today })
 }
 
 /// Runs an action of the Pomodoro timer of the user.
@@ -618,7 +903,7 @@ pub(crate) fn create_owner_tasks(
             project: String::new(),
             assignees: Vec::new(),
         };
-        if board_execute_in(app, &state, &registry, &context, &intent)? {
+        if board_execute_in(app, &state, &registry, &context, &intent)?.changed {
             created += 1;
         }
     }
@@ -818,8 +1103,21 @@ pub(crate) fn task_manager_execute_for_publication(
                 payload.get("intent").cloned().unwrap_or(Value::Null),
             )
             .map_err(|_| BackendError::invalid_input("La operación publicada no es válida."))?;
-            let changed = board_execute_in(app, state, registry, &context, &intent)?;
-            Ok((json!({ "changed": changed }), changed))
+            let result = board_execute_in(app, state, registry, &context, &intent)?;
+            let changed = result.changed;
+            Ok((json!(result), changed))
+        }
+        "task_manager_management_view" => {
+            let mut request = serde_json::from_value::<ManagementViewPayload>(payload.clone())
+                .map_err(|_| BackendError::invalid_input("El pedido del plan no es válido."))?;
+            // Identity and board scope come from the session, not the body.
+            request.context = TaskManagerContextPayload {
+                library_id: context.library_id.clone(),
+                library_user_id: context.library_user_id.clone(),
+                active_board_id: None,
+                allowed_board_ids: context.allowed_board_ids.clone(),
+            };
+            Ok((json!(management_view_in(app, state, registry, &context, &request)?), false))
         }
         // Page and pen preferences changed in the page: normalized and
         // derived, never stored on the host.

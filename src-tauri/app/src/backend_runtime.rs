@@ -1211,6 +1211,21 @@ impl TauriBackendToolExecutor {
             "search_task_context",
             "get_task_manager_options",
             "get_task_board_summary",
+            "get_task_board_settings",
+            "get_task_board_plan",
+            "set_task_time",
+            "set_task_people",
+            "set_task_project",
+            "start_task_timer",
+            "pause_task_timer",
+            "set_task_block_note",
+            "set_task_dependencies",
+            "toggle_task_subtask",
+            "add_task_board_member",
+            "remove_task_board_member",
+            "add_task_board_project",
+            "remove_task_board_project",
+            "update_task_board_calendar",
             "create_task_ticket",
             "replace_task_content",
             "add_task_comment",
@@ -3026,7 +3041,8 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
-        if call.name == "export_document" || notia_backend_core::is_task_mutation_tool(&call.name) {
+        let board_tool = notia_backend_core::task_board_tool_input::is_task_board_action_tool(&call.name);
+        if call.name == "export_document" || board_tool || notia_backend_core::is_task_mutation_tool(&call.name) {
             return Ok(Some(MutationPreview {
                 operation_id: call.id.clone(),
                 summary: if call.name == "export_document" {
@@ -3035,6 +3051,19 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         Self::text(&call.arguments, "path"),
                         Self::text(&call.arguments, "format").to_uppercase()
                     )
+                } else if board_tool {
+                    let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
+                    let registry = self.app.state::<LibraryBindingRegistry>();
+                    crate::task_manager_commands::board_tool_summary(
+                        &self.app,
+                        task_state.inner(),
+                        registry.inner(),
+                        &context.library_id,
+                        &context.actor.library_user_id,
+                        self.task_board_scope(context)?,
+                        &call.name,
+                        &call.arguments,
+                    )?
                 } else {
                     let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
                     let registry = self.app.state::<LibraryBindingRegistry>();
@@ -4341,10 +4370,26 @@ impl ToolExecutor for TauriBackendToolExecutor {
             | "read_all_task_tickets"
             | "search_task_context"
             | "get_task_manager_options"
-            | "get_task_board_summary" => {
+            | "get_task_board_summary"
+            | "get_task_board_settings"
+            | "get_task_board_plan" => {
                 let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 crate::task_manager_commands::execute_backend_read_tool(
+                    &self.app,
+                    task_state.inner(),
+                    registry.inner(),
+                    &context.library_id,
+                    &context.actor.library_user_id,
+                    self.task_board_scope(context)?,
+                    call.name.as_str(),
+                    &call.arguments,
+                )?
+            }
+            name if notia_backend_core::task_board_tool_input::is_task_board_action_tool(name) => {
+                let task_state = self.app.state::<crate::task_manager_commands::TaskManagerBackendState>();
+                let registry = self.app.state::<LibraryBindingRegistry>();
+                crate::task_manager_commands::execute_board_action_tool(
                     &self.app,
                     task_state.inner(),
                     registry.inner(),
@@ -4475,7 +4520,8 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "rename_finance_merchant"
                     | "merge_finance_products"
                     | "merge_finance_merchants"
-            ) || notia_backend_core::is_task_mutation_tool(&call.name)),
+            ) || notia_backend_core::is_task_mutation_tool(&call.name)
+                || notia_backend_core::task_board_tool_input::is_task_board_action_tool(&call.name)),
             data: Some(data),
             error: None,
             preview: None,
@@ -5603,6 +5649,7 @@ mod tests {
             color: "#10b981".into(),
             revision: 1,
             order: 0,
+            kind: None,
         };
         let groups = [group("legacy-group-1", "Backlog Q"), group("legacy-group-2", "Sprint Actual")];
         let summary = |mutation: TaskMutationDto| super::task_mutation_summary(&mutation, &groups, &[]);
@@ -5619,6 +5666,7 @@ mod tests {
                 group_id: "legacy-group-1".into(),
                 name: "Backlog Q actual".into(),
                 color: "#10b981".into(),
+                column_kind: None,
             }),
             "Cambiar el grupo «Backlog Q»: nombre «Backlog Q actual»."
         );

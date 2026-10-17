@@ -75,6 +75,7 @@
   --color-violet: #a78bfa;
   --color-gold: #d9b44a;
   --color-slate: #64748b;
+  --color-rosa: #f28cb1;
   height: 100vh;
   height: 100dvh;
   background: var(--color-app-bg);
@@ -154,6 +155,7 @@
   --color-violet: #7c3aed;
   --color-gold: #b08900;
   --color-slate: #64748b;
+  --color-rosa: #db2777;
 }
 
 .notia-theme-dark {

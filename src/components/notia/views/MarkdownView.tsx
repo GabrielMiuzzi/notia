@@ -172,6 +172,8 @@ interface MarkdownViewProps {
   onCreateLinkedNote?: (title: string) => Promise<string | null>
   /** Page mode: the note is drawn on sheets of this size. */
   pageLayout?: MarkdownPageLayout | null
+  /** What an empty line invites to write. */
+  placeholder?: string
 }
 
 /** Drop line of a dragged block, as thin as the design's. */
@@ -520,6 +522,7 @@ function MarkdownViewInner({
   contexts = NO_CONTEXTS,
   onCreateLinkedNote,
   pageLayout = null,
+  placeholder = 'Escribí acá…',
 }: MarkdownViewProps) {
   const parsedDocument = useMemo(() => parseFrontmatterDocument(source), [source])
   // The properties panel reads only the frontmatter: typing in the body keeps
@@ -594,6 +597,8 @@ function MarkdownViewInner({
   const isReadyRef = useRef(false)
   const isApplyingExternalUpdateRef = useRef(false)
   const initialBodyRef = useRef(parsedDocument.body)
+  // Read once, when the editor is built.
+  const placeholderRef = useRef(placeholder)
   const latestComposedSourceRef = useRef(source)
   const latestBodyRef = useRef(parsedDocument.body)
   const frontmatterRef = useRef(parsedDocument.frontmatter)
@@ -801,6 +806,7 @@ function MarkdownViewInner({
           previewToggleIcon: (previewOnly) => (previewOnly ? CODE_SHOW_ICON : CODE_HIDE_ICON),
           theme: codeHighlight,
         },
+        [Crepe.Feature.Placeholder]: { text: placeholderRef.current },
         // Teal dots, and the task boxes of the canvas.
         [Crepe.Feature.ListItem]: {
           bulletIcon: LIST_BULLET_ICON,

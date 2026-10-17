@@ -1,3 +1,4 @@
+import type { TaskArchiveRow } from '../types/taskBoardTypes'
 import type { TaskItem, TaskPriority, TaskState } from '../types/taskManagerTypes'
 
 /*
@@ -12,12 +13,14 @@ export interface TaskFilters {
   priority: TaskPriority | ''
   project: string
   person: string
+  /** Column of origin, in Completadas and Canceladas. */
+  group: string
 }
 
-export const NO_TASK_FILTERS: TaskFilters = { query: '', state: '', priority: '', project: '', person: '' }
+export const NO_TASK_FILTERS: TaskFilters = { query: '', state: '', priority: '', project: '', person: '', group: '' }
 
 export function hasTaskFilters(filters: TaskFilters): boolean {
-  return Boolean(filters.query.trim() || filters.state || filters.priority || filters.project || filters.person)
+  return Boolean(filters.query.trim() || filters.state || filters.priority || filters.project || filters.person || filters.group)
 }
 
 /** Text compared without case or accents. */
@@ -83,4 +86,27 @@ export function filterTasks(tasks: readonly TaskItem[], filters: TaskFilters): T
       .flatMap((task) => [parentKey(task.fileName), parentKey(task.title)]),
   )
   return tasks.filter((task) => kept.has(task.filePath) || (parentOf(task) !== null && keptParents.has(parentOf(task)!)))
+}
+
+/** Values the finished or cancelled rows use, for their filters. */
+export function archiveFilterOptions(rows: readonly TaskArchiveRow[]): { groups: string[]; projects: string[]; people: string[] } {
+  return {
+    groups: distinct(rows.map((row) => row.group)),
+    projects: distinct(rows.map((row) => row.project ?? '')),
+    people: distinct(rows.flatMap((row) => row.assignees)),
+  }
+}
+
+/** The finished or cancelled rows the search and filters keep. */
+export function filterArchiveRows(rows: readonly TaskArchiveRow[], filters: TaskFilters): TaskArchiveRow[] {
+  if (!hasTaskFilters(filters)) return rows as TaskArchiveRow[]
+  const words = folded(filters.query).split(/\s+/).filter(Boolean)
+  return rows.filter((row) => {
+    if (filters.priority && row.priority !== filters.priority) return false
+    if (filters.group && folded(row.group) !== folded(filters.group)) return false
+    if (filters.project && folded(row.project ?? '') !== folded(filters.project)) return false
+    if (filters.person && !row.assignees.some((person) => folded(person) === folded(filters.person))) return false
+    const text = folded([row.title, row.group, row.project ?? '', ...row.assignees].join(' '))
+    return words.every((word) => text.includes(word))
+  })
 }

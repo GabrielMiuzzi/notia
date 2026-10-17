@@ -8,6 +8,7 @@ import {
   TextField,
 } from '@mui/material'
 import type { Board, Group } from '../../types/taskManagerTypes'
+import type { TaskColumnKind, TaskColumnKindOption } from '../../types/taskBoardTypes'
 import { NotiaButton } from '../../../../components/common/NotiaButton'
 import { TaskManagerModal } from "../common/TaskManagerModal"
 
@@ -17,8 +18,10 @@ interface GroupDialogProps {
   group: Group | null
   boards: Board[]
   activeBoard: string
+  /** Kinds a column can have, with the labels Rust gives them. */
+  columnKinds: TaskColumnKindOption[]
   onClose: () => void
-  onSubmit: (payload: { name: string; color: string; board: string }) => Promise<void>
+  onSubmit: (payload: { name: string; color: string; board: string; columnKind: TaskColumnKind }) => Promise<void>
   onDelete: () => void
 }
 
@@ -28,6 +31,7 @@ export function GroupDialog({
   group,
   boards,
   activeBoard,
+  columnKinds,
   onClose,
   onSubmit,
   onDelete,
@@ -35,6 +39,7 @@ export function GroupDialog({
   const [name, setName] = useState('')
   const [color, setColor] = useState('#2e6db0')
   const [board, setBoard] = useState(activeBoard)
+  const [columnKind, setColumnKind] = useState<TaskColumnKind>('custom')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   useEffect(() => {
@@ -45,6 +50,7 @@ export function GroupDialog({
     setName(group?.name ?? '')
     setColor(group?.color ?? '#2e6db0')
     setBoard(group?.board ?? activeBoard)
+    setColumnKind(group?.kind ?? 'custom')
   }, [activeBoard, group, open])
 
   const handleSubmit = async () => {
@@ -54,7 +60,7 @@ export function GroupDialog({
 
     setIsSubmitting(true)
     try {
-      await onSubmit({ name, color, board })
+      await onSubmit({ name, color, board, columnKind })
     } finally {
       setIsSubmitting(false)
     }
@@ -63,7 +69,7 @@ export function GroupDialog({
   return (
     <TaskManagerModal open={open} onClose={onClose} size="sm" >
       <div className="tareas-dialog-header">
-        <h2>{mode === 'create' ? 'Nuevo grupo' : 'Editar grupo'}</h2>
+        <h2>{mode === 'create' ? 'Nueva columna' : 'Editar columna'}</h2>
       </div>
       <div className="tareas-dialog-body">
         <Stack spacing={2} sx={{ mt: 1 }}>
@@ -80,6 +86,21 @@ export function GroupDialog({
             value={color}
             onChange={(event) => setColor(event.target.value)}
           />
+
+          <FormControl>
+            <InputLabel>Tipo</InputLabel>
+            <Select
+              label="Tipo"
+              value={columnKind}
+              onChange={(event) => setColumnKind(event.target.value as TaskColumnKind)}
+            >
+              {columnKinds.map((option) => (
+                <MenuItem key={option.kind} value={option.kind}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
 
           <FormControl>
             <InputLabel>Tablero</InputLabel>
@@ -100,7 +121,7 @@ export function GroupDialog({
       <div className="tareas-dialog-actions">
         {mode === 'edit' && group ? (
           <NotiaButton variant="danger" onClick={onDelete} disabled={isSubmitting}>
-            Eliminar grupo
+            Eliminar columna
           </NotiaButton>
         ) : null}
         <NotiaButton onClick={onClose} disabled={isSubmitting}>

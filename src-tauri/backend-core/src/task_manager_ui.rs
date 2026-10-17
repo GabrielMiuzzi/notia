@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{BackendError, BackendErrorCode};
 use crate::pomodoro_log::{PomodoroEntryDto, PomodoroEntryInput};
+use crate::task_board_actions::{
+    apply_column_rule, board_members, board_plan, board_projects, initials, next_member_color, next_project_color,
+    resolve_board_actions, subtasks_to_column, BoardIntentOutcome, BoardViewer,
+};
+use crate::task_board_plan::{
+    date_range, day_month, division_title, division_with_offset, fold, hours_label, next_sprint, sprint_at,
+    sprint_label, TaskBoardPlanDto, TaskColumnKind, BOARD_PALETTE, BOARD_PALETTE_NAMES,
+};
 use crate::task_manager_tools::{
     TaskBoardDto, TaskManagerLibrarySnapshotDto, TaskManagerSnapshotReadDto, TaskMutationDto,
     TaskPriority, TaskState, TaskTicketDto, TaskUpdateFieldsDto, MAX_TASK_ORDER,
@@ -29,7 +37,7 @@ const UNARRANGED_ORDER: f64 = 999_999.0;
 const MAX_ACTIVITY_HOURS: f64 = 24.0;
 const MAX_ARRANGEMENT_UPDATES: usize = 2_000;
 /// Gap between consecutive task orders, so a move usually rewrites one task.
-const ORDER_STEP: f64 = 10.0;
+pub(crate) const ORDER_STEP: f64 = 10.0;
 
 // ---------------------------------------------------------------------------
 // View
@@ -42,6 +50,42 @@ pub struct TaskBoardSettingsDto {
     pub color: String,
     pub activity_hours_per_day: f64,
     pub contexto: String,
+    pub plan: TaskBoardPlanDto,
+    pub members: Vec<TaskBoardMemberViewDto>,
+    pub projects: Vec<TaskBoardProjectViewDto>,
+    pub counts: TaskBoardCountsDto,
+    pub next_member_color: String,
+    pub next_project_color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBoardMemberViewDto {
+    pub name: String,
+    pub color: String,
+    pub initials: String,
+    pub is_owner: bool,
+    pub is_me: bool,
+    pub task_count: usize,
+    /// «Vos · Propietario», «Propietario», «Vos · Miembro» or «Miembro».
+    pub role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBoardProjectViewDto {
+    pub name: String,
+    pub color: String,
+    pub task_count: usize,
+}
+
+/// Open root tasks of a board.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBoardCountsDto {
+    pub active: usize,
+    pub in_progress: usize,
+    pub pending: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,6 +94,60 @@ pub struct TaskGroupSettingsDto {
     pub name: String,
     pub color: String,
     pub board: String,
+    pub kind: TaskColumnKind,
+    /// «Sprint 21 · 12 oct – 25 oct» for the sprint and division columns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Open root tasks of the column.
+    pub task_count: usize,
+}
+
+/// A person on a task, with the board's color for them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPersonChipDto {
+    pub name: String,
+    pub initials: String,
+    pub color: String,
+    pub is_me: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPaletteColorDto {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskColumnKindOptionDto {
+    pub kind: TaskColumnKind,
+    pub label: String,
+}
+
+/// A row of Completadas or Canceladas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArchiveRowDto {
+    pub task_path: String,
+    pub path: String,
+    pub title: String,
+    pub board: String,
+    pub group: String,
+    pub group_color: Option<String>,
+    pub priority: TaskPriority,
+    pub project: Option<String>,
+    pub assignees: Vec<String>,
+    pub hours_label: Option<String>,
+    pub period: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArchiveDto {
+    pub finished: Vec<TaskArchiveRowDto>,
+    pub cancelled: Vec<TaskArchiveRowDto>,
 }
 
 /// One task card, named like the Markdown frontmatter names it.
@@ -84,6 +182,15 @@ pub struct TaskItemViewDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     pub assignees: Vec<String>,
+    pub project_color: Option<String>,
+    pub people: Vec<TaskPersonChipDto>,
+    /// Set while the task is running.
+    pub started_at_unix_ms: Option<i64>,
+    pub block_note: String,
+    /// Logical paths of the tasks it waits for.
+    pub dependencies: Vec<String>,
+    pub subtask_done: usize,
+    pub subtask_total: usize,
 }
 
 /// Everything the board renders, derived from one snapshot generation.
@@ -98,6 +205,11 @@ pub struct TaskBoardViewDto {
     /// Ticket paths of each panel (board name, finished or cancelled), as
     /// the explorer shows them; the chat scope of the visible panel.
     pub panel_paths: BTreeMap<String, Vec<String>>,
+    pub archive: TaskArchiveDto,
+    pub finished_count: usize,
+    pub cancelled_count: usize,
+    pub palette: Vec<TaskPaletteColorDto>,
+    pub column_kinds: Vec<TaskColumnKindOptionDto>,
 }
 
 /// Replaces the logical ticket paths meant for display with the paths the
@@ -111,6 +223,9 @@ pub fn show_board_paths(view: &mut TaskBoardViewDto, visible: impl Fn(&str) -> S
             *path = visible(path);
         }
     }
+    for row in view.archive.finished.iter_mut().chain(view.archive.cancelled.iter_mut()) {
+        row.path = visible(&row.task_path);
+    }
 }
 
 fn file_name_of(logical_path: &str) -> String {
@@ -121,7 +236,7 @@ fn file_name_of(logical_path: &str) -> String {
         .to_string()
 }
 
-fn activity_hours(snapshot: &TaskManagerLibrarySnapshotDto, board: &TaskBoardDto) -> f64 {
+pub(crate) fn activity_hours(snapshot: &TaskManagerLibrarySnapshotDto, board: &TaskBoardDto) -> f64 {
     let hours = &snapshot.config.activity_hours_per_day;
     hours
         .get(&board.board_id)
@@ -136,6 +251,37 @@ pub fn project_board_view(
     snapshot: &TaskManagerLibrarySnapshotDto,
     pomodoro_entries: Vec<PomodoroEntryDto>,
 ) -> TaskBoardViewDto {
+    project_board_view_for(snapshot, pomodoro_entries, &BoardViewer::default())
+}
+
+fn is_archived(state: TaskState) -> bool {
+    matches!(state, TaskState::Completed | TaskState::Cancelled)
+}
+
+/// Board view for a person: their name marks «vos» and today's date names
+/// the sprint and division columns.
+pub fn project_board_view_for(
+    snapshot: &TaskManagerLibrarySnapshotDto,
+    pomodoro_entries: Vec<PomodoroEntryDto>,
+    viewer: &BoardViewer,
+) -> TaskBoardViewDto {
+    let is_me = |name: &str| viewer.name.as_deref().is_some_and(|me| fold(me) == fold(name));
+    let members_by_board = snapshot
+        .boards
+        .iter()
+        .map(|board| (board.board_id.clone(), board_members(snapshot, &board.board_id, viewer.owner_name.as_deref())))
+        .collect::<HashMap<_, _>>();
+    let projects_by_board = snapshot
+        .boards
+        .iter()
+        .map(|board| (board.board_id.clone(), board_projects(snapshot, &board.board_id)))
+        .collect::<HashMap<_, _>>();
+    let open = |ticket: &&TaskTicketDto| !is_archived(ticket.summary.state);
+    let path_by_id = snapshot
+        .tickets
+        .iter()
+        .map(|ticket| (ticket.summary.ticket_id.as_str(), ticket.summary.logical_path.as_str()))
+        .collect::<HashMap<_, _>>();
     let board_names = snapshot
         .boards
         .iter()
@@ -160,14 +306,73 @@ pub fn project_board_view(
     let mut boards = snapshot
         .boards
         .iter()
-        .map(|board| TaskBoardSettingsDto {
-            name: board.name.clone(),
-            color: board.color.clone(),
-            activity_hours_per_day: activity_hours(snapshot, board),
-            contexto: board
-                .context
-                .clone()
-                .unwrap_or_else(|| DEFAULT_CONTEXT_TAG.to_string()),
+        .map(|board| {
+            let board_tickets = snapshot
+                .tickets
+                .iter()
+                .filter(|ticket| ticket.summary.board_id == board.board_id)
+                .filter(open)
+                .collect::<Vec<_>>();
+            let roots = board_tickets.iter().filter(|ticket| ticket.summary.parent_ticket_id.is_none());
+            let counts = roots.fold(TaskBoardCountsDto::default(), |mut counts, ticket| {
+                counts.active += 1;
+                match ticket.summary.state {
+                    TaskState::InProgress => counts.in_progress += 1,
+                    TaskState::Pending => counts.pending += 1,
+                    _ => {}
+                }
+                counts
+            });
+            let members = &members_by_board[&board.board_id];
+            let projects = &projects_by_board[&board.board_id];
+            TaskBoardSettingsDto {
+                name: board.name.clone(),
+                color: board.color.clone(),
+                activity_hours_per_day: activity_hours(snapshot, board),
+                contexto: board
+                    .context
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CONTEXT_TAG.to_string()),
+                plan: board_plan(snapshot, &board.board_id),
+                members: members
+                    .iter()
+                    .map(|member| {
+                        let me = is_me(&member.name);
+                        TaskBoardMemberViewDto {
+                            name: member.name.clone(),
+                            color: member.color.clone(),
+                            initials: initials(&member.name),
+                            is_owner: member.is_owner,
+                            is_me: me,
+                            task_count: board_tickets
+                                .iter()
+                                .filter(|ticket| ticket.assignees.iter().any(|name| fold(name) == fold(&member.name)))
+                                .count(),
+                            role: match (me, member.is_owner) {
+                                (true, true) => "Vos · Propietario",
+                                (false, true) => "Propietario",
+                                (true, false) => "Vos · Miembro",
+                                (false, false) => "Miembro",
+                            }
+                            .to_string(),
+                        }
+                    })
+                    .collect(),
+                projects: projects
+                    .iter()
+                    .map(|project| TaskBoardProjectViewDto {
+                        name: project.name.clone(),
+                        color: project.color.clone(),
+                        task_count: board_tickets
+                            .iter()
+                            .filter(|ticket| ticket.project.as_deref().is_some_and(|name| fold(name) == fold(&project.name)))
+                            .count(),
+                    })
+                    .collect(),
+                counts,
+                next_member_color: next_member_color(members),
+                next_project_color: next_project_color(projects),
+            }
         })
         .collect::<Vec<_>>();
     boards.sort_by_key(|board| board.name != DEFAULT_BOARD_NAME);
@@ -175,13 +380,43 @@ pub fn project_board_view(
     let groups = snapshot
         .groups
         .iter()
-        .map(|group| TaskGroupSettingsDto {
-            name: group.name.clone(),
-            color: group.color.clone(),
-            board: board_names
-                .get(group.board_id.as_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| group.board_id.clone()),
+        .map(|group| {
+            let kind = group.column_kind();
+            let plan = board_plan(snapshot, &group.board_id);
+            let hint = viewer.today.and_then(|today| match kind {
+                TaskColumnKind::CurrentSprint => {
+                    let sprint = sprint_at(&plan, today);
+                    Some(format!("{} · {}", sprint_label(&sprint), date_range(sprint.start, sprint.end)))
+                }
+                TaskColumnKind::NextSprint => {
+                    let sprint = next_sprint(&plan, today);
+                    Some(format!("{} · {}", sprint_label(&sprint), date_range(sprint.start, sprint.end)))
+                }
+                TaskColumnKind::NextDivision => {
+                    let division = division_with_offset(&plan, today, 1);
+                    Some(format!("{} · {}", division_title(&plan, &division), date_range(division.start, division.end)))
+                }
+                _ => None,
+            });
+            TaskGroupSettingsDto {
+                name: group.name.clone(),
+                color: group.color.clone(),
+                board: board_names
+                    .get(group.board_id.as_str())
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| group.board_id.clone()),
+                kind,
+                hint,
+                task_count: snapshot
+                    .tickets
+                    .iter()
+                    .filter(open)
+                    .filter(|ticket| {
+                        ticket.summary.parent_ticket_id.is_none()
+                            && ticket.summary.group_id.as_deref() == Some(group.group_id.as_str())
+                    })
+                    .count(),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -204,7 +439,47 @@ pub fn project_board_view(
                 .entry(panel)
                 .or_default()
                 .push(summary.logical_path.clone());
+            let members = members_by_board.get(&summary.board_id);
+            let member_color = |name: &str| {
+                members
+                    .and_then(|members| members.iter().find(|member| fold(&member.name) == fold(name)))
+                    .map(|member| member.color.clone())
+                    .unwrap_or_else(|| BOARD_PALETTE[7].to_string())
+            };
+            let project_color = ticket.project.as_deref().map(|project| {
+                projects_by_board
+                    .get(&summary.board_id)
+                    .and_then(|projects| projects.iter().find(|candidate| fold(&candidate.name) == fold(project)))
+                    .map(|candidate| candidate.color.clone())
+                    .unwrap_or_else(|| BOARD_PALETTE[7].to_string())
+            });
+            let children = snapshot
+                .tickets
+                .iter()
+                .filter(|child| child.summary.parent_ticket_id.as_deref() == Some(summary.ticket_id.as_str()))
+                .filter(|child| child.summary.state != TaskState::Cancelled)
+                .collect::<Vec<_>>();
             TaskItemViewDto {
+                project_color,
+                people: ticket
+                    .assignees
+                    .iter()
+                    .map(|name| TaskPersonChipDto {
+                        name: name.clone(),
+                        initials: initials(name),
+                        color: member_color(name),
+                        is_me: is_me(name),
+                    })
+                    .collect(),
+                started_at_unix_ms: ticket.started_at_unix_ms.filter(|_| summary.state == TaskState::InProgress),
+                block_note: ticket.block_note.clone().unwrap_or_default(),
+                dependencies: ticket
+                    .dependencies
+                    .iter()
+                    .filter_map(|id| path_by_id.get(id.as_str()).map(|path| path.to_string()))
+                    .collect(),
+                subtask_done: children.iter().filter(|child| child.summary.state == TaskState::Completed).count(),
+                subtask_total: children.len(),
                 id: summary.ticket_id.clone(),
                 file_path: summary.logical_path.clone(),
                 path: summary.logical_path.clone(),
@@ -248,6 +523,7 @@ pub fn project_board_view(
     for paths in panel_paths.values_mut() {
         paths.sort();
     }
+    let archive = archive_rows(snapshot, &board_names);
 
     TaskBoardViewDto {
         generation: snapshot.generation,
@@ -256,7 +532,87 @@ pub fn project_board_view(
         tasks,
         pomodoro_entries,
         panel_paths,
+        finished_count: archive.finished.len(),
+        cancelled_count: archive.cancelled.len(),
+        archive,
+        palette: BOARD_PALETTE
+            .iter()
+            .zip(BOARD_PALETTE_NAMES)
+            .map(|(color, name)| TaskPaletteColorDto { name: name.to_string(), color: color.to_string() })
+            .collect(),
+        column_kinds: TaskColumnKind::ALL
+            .iter()
+            .map(|kind| TaskColumnKindOptionDto { kind: *kind, label: kind.label("Q") })
+            .collect(),
     }
+}
+
+/// `YYYY-MM-DD` at the start of a frontmatter date.
+fn leading_date(value: &str) -> Option<jiff::civil::Date> {
+    value.get(..10).and_then(|text| text.parse::<jiff::civil::Date>().ok())
+}
+
+/// Finished and cancelled tasks, newest first. A subtask shows only when
+/// its task is gone; otherwise it is part of its task's checklist.
+fn archive_rows(snapshot: &TaskManagerLibrarySnapshotDto, board_names: &HashMap<&str, &str>) -> TaskArchiveDto {
+    let ids = snapshot.tickets.iter().map(|ticket| ticket.summary.ticket_id.as_str()).collect::<HashSet<_>>();
+    let groups = snapshot
+        .groups
+        .iter()
+        .map(|group| (group.group_id.as_str(), group))
+        .collect::<HashMap<_, _>>();
+    let mut rows = snapshot
+        .tickets
+        .iter()
+        .filter(|ticket| is_archived(ticket.summary.state))
+        .filter(|ticket| ticket.summary.parent_ticket_id.as_deref().is_none_or(|parent| !ids.contains(parent)))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .closed_at_unix_ms
+            .unwrap_or(0)
+            .cmp(&left.closed_at_unix_ms.unwrap_or(0))
+            .then_with(|| right.end_date.cmp(&left.end_date))
+            .then_with(|| left.summary.title.cmp(&right.summary.title))
+    });
+    let mut archive = TaskArchiveDto::default();
+    for ticket in rows {
+        let group = ticket.summary.group_id.as_deref().and_then(|id| groups.get(id));
+        let hours_label = match (ticket.dedicated_hours > 0.0, ticket.estimated_hours > 0.0) {
+            (_, true) => Some(format!("{} / {} h", hours_label(ticket.dedicated_hours), hours_label(ticket.estimated_hours))),
+            (true, false) => Some(format!("{} h", hours_label(ticket.dedicated_hours))),
+            (false, false) => None,
+        };
+        let start = leading_date(&ticket.start_date);
+        let end = leading_date(&ticket.end_date);
+        let period = match (start, end) {
+            (Some(start), Some(end)) if start <= end => Some(date_range(start, end)),
+            (Some(date), _) | (None, Some(date)) => Some(day_month(date)),
+            _ => None,
+        };
+        let row = TaskArchiveRowDto {
+            task_path: ticket.summary.logical_path.clone(),
+            path: ticket.summary.logical_path.clone(),
+            title: ticket.summary.title.clone(),
+            board: board_names
+                .get(ticket.summary.board_id.as_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| ticket.summary.board_id.clone()),
+            group: group.map(|group| group.name.clone()).unwrap_or_default(),
+            group_color: group.map(|group| group.color.clone()),
+            priority: ticket.summary.priority,
+            project: ticket.project.clone(),
+            assignees: ticket.assignees.clone(),
+            hours_label,
+            period,
+        };
+        if ticket.summary.state == TaskState::Completed {
+            archive.finished.push(row);
+        } else {
+            archive.cancelled.push(row);
+        }
+    }
+    archive
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +727,9 @@ pub enum TaskBoardIntent {
         activity_hours_per_day: f64,
         #[serde(default)]
         contexto: String,
+        /// Workday, sprints and divisions; the workday sets the activity hours.
+        #[serde(default)]
+        plan: Option<TaskBoardPlanDto>,
     },
     UpdateBoard {
         previous_name: String,
@@ -380,6 +739,8 @@ pub enum TaskBoardIntent {
         activity_hours_per_day: f64,
         #[serde(default)]
         contexto: String,
+        #[serde(default)]
+        plan: Option<TaskBoardPlanDto>,
     },
     DeleteBoard {
         name: String,
@@ -389,6 +750,8 @@ pub enum TaskBoardIntent {
         name: String,
         #[serde(default)]
         color: String,
+        #[serde(default)]
+        column_kind: Option<TaskColumnKind>,
     },
     UpdateGroup {
         previous_board: String,
@@ -396,6 +759,8 @@ pub enum TaskBoardIntent {
         name: String,
         #[serde(default)]
         color: String,
+        #[serde(default)]
+        column_kind: Option<TaskColumnKind>,
     },
     DeleteGroup {
         board: String,
@@ -405,17 +770,113 @@ pub enum TaskBoardIntent {
         board: String,
         group_names: Vec<String>,
     },
+    StartTask {
+        task_path: String,
+    },
+    PauseTask {
+        task_path: String,
+    },
+    FinishTask {
+        task_path: String,
+    },
+    CancelTask {
+        task_path: String,
+    },
+    UnblockTask {
+        task_path: String,
+    },
+    RenameTask {
+        task_path: String,
+        title: String,
+    },
+    /// Appends the task to the end of a column of its board.
+    MoveTask {
+        task_path: String,
+        group: String,
+    },
+    DuplicateTask {
+        task_path: String,
+    },
+    /// An empty project takes it out; an unknown one is added to the board.
+    SetTaskProject {
+        task_path: String,
+        project: String,
+    },
+    /// People of the board only.
+    SetTaskPeople {
+        task_path: String,
+        people: Vec<String>,
+    },
+    SetTaskTime {
+        task_path: String,
+        #[serde(default)]
+        estimated_hours: Option<f64>,
+        #[serde(default)]
+        dedicated_hours: Option<f64>,
+    },
+    SetBlockNote {
+        task_path: String,
+        note: String,
+    },
+    AddSubtask {
+        task_path: String,
+        title: String,
+    },
+    /// Checks or unchecks a subtask (Finalizada / Pendiente).
+    ToggleSubtask {
+        task_path: String,
+    },
+    /// Tasks it waits for; a cycle is rejected.
+    SetDependencies {
+        task_path: String,
+        dependency_paths: Vec<String>,
+    },
+    /// Finished or cancelled tasks back to their column as Pendiente.
+    RestoreTasks {
+        task_paths: Vec<String>,
+    },
+    DeleteTasks {
+        task_paths: Vec<String>,
+    },
+    /// Undoes a finish, cancel or delete; the adapter keeps the tokens.
+    Undo {
+        token: String,
+    },
+    AddBoardMember {
+        board: String,
+        name: String,
+    },
+    RemoveBoardMember {
+        board: String,
+        name: String,
+    },
+    AddBoardProject {
+        board: String,
+        name: String,
+        #[serde(default)]
+        color: String,
+    },
+    RemoveBoardProject {
+        board: String,
+        name: String,
+    },
+    /// Moves a column one place to the `left` or `right`.
+    MoveGroup {
+        board: String,
+        name: String,
+        direction: String,
+    },
 }
 
-fn invalid(message: impl Into<String>) -> BackendError {
+pub(crate) fn invalid(message: impl Into<String>) -> BackendError {
     BackendError::invalid_input(message)
 }
 
-fn conflict(message: impl Into<String>) -> BackendError {
+pub(crate) fn conflict(message: impl Into<String>) -> BackendError {
     BackendError::new(BackendErrorCode::Conflict, message, false)
 }
 
-fn not_found(message: impl Into<String>) -> BackendError {
+pub(crate) fn not_found(message: impl Into<String>) -> BackendError {
     BackendError::new(BackendErrorCode::NotFound, message, false)
 }
 
@@ -484,16 +945,16 @@ fn normalize_activity_hours(value: f64) -> f64 {
     round_hours(value).clamp(0.0, MAX_ACTIVITY_HOURS)
 }
 
-struct BoardResolver<'a> {
+pub(crate) struct BoardResolver<'a> {
     read: &'a TaskManagerSnapshotReadDto,
 }
 
 impl<'a> BoardResolver<'a> {
-    fn library(&self) -> &'a TaskManagerLibrarySnapshotDto {
+    pub(crate) fn library(&self) -> &'a TaskManagerLibrarySnapshotDto {
         &self.read.snapshot
     }
 
-    fn board(&self, name: &str) -> Result<&'a TaskBoardDto, BackendError> {
+    pub(crate) fn board(&self, name: &str) -> Result<&'a TaskBoardDto, BackendError> {
         let requested = name.trim();
         let boards = &self.library().boards;
         boards
@@ -518,7 +979,7 @@ impl<'a> BoardResolver<'a> {
     }
 
     /// Group id by name inside a board; an empty name means "no group".
-    fn group(&self, board_id: &str, name: &str) -> Result<Option<String>, BackendError> {
+    pub(crate) fn group(&self, board_id: &str, name: &str) -> Result<Option<String>, BackendError> {
         let requested = name.trim();
         if requested.is_empty() {
             return Ok(None);
@@ -541,7 +1002,7 @@ impl<'a> BoardResolver<'a> {
             })
     }
 
-    fn ticket(&self, task_path: &str) -> Result<&'a TaskTicketDto, BackendError> {
+    pub(crate) fn ticket(&self, task_path: &str) -> Result<&'a TaskTicketDto, BackendError> {
         let requested = normalize_path(task_path);
         if requested.is_empty() {
             return Err(invalid("Falta la ruta de la tarea."));
@@ -645,7 +1106,36 @@ pub fn resolve_board_intent(
     new_id: &mut dyn FnMut() -> String,
     now_unix_ms: i64,
 ) -> Result<Vec<TaskMutationDto>, BackendError> {
+    Ok(resolve_board_intent_outcome(read, intent, new_id, now_unix_ms, &BoardViewer::default())?.mutations)
+}
+
+/// Like [`resolve_board_intent`], with how to undo it and the task the
+/// board highlights. `viewer` names the board's owner for its people.
+pub fn resolve_board_intent_outcome(
+    read: &TaskManagerSnapshotReadDto,
+    intent: &TaskBoardIntent,
+    new_id: &mut dyn FnMut() -> String,
+    now_unix_ms: i64,
+    viewer: &BoardViewer,
+) -> Result<BoardIntentOutcome, BackendError> {
     let resolver = BoardResolver { read };
+    if let Some(outcome) = resolve_board_actions(&resolver, intent, new_id, now_unix_ms, viewer) {
+        return outcome;
+    }
+    let mutations = resolve_basic_intent(BoardResolver { read }, intent, new_id, now_unix_ms)?;
+    let focus_ticket_id = mutations.iter().find_map(|mutation| match mutation {
+        TaskMutationDto::CreateTicket { ticket_id, .. } => Some(ticket_id.clone()),
+        _ => None,
+    });
+    Ok(BoardIntentOutcome { mutations, undo: None, focus_ticket_id })
+}
+
+fn resolve_basic_intent(
+    resolver: BoardResolver<'_>,
+    intent: &TaskBoardIntent,
+    new_id: &mut dyn FnMut() -> String,
+    now_unix_ms: i64,
+) -> Result<Vec<TaskMutationDto>, BackendError> {
     let mutations = match intent {
         TaskBoardIntent::CreateTask {
             board,
@@ -775,12 +1265,32 @@ pub fn resolve_board_intent(
             ordered_paths,
             group,
             parent_task_name,
-        } => place_task(&resolver, task_path, ordered_paths, group, parent_task_name)?,
+        } => {
+            let mut mutations = place_task(&resolver, task_path, ordered_paths, group, parent_task_name)?;
+            // A task dropped in «Bloqueado» is blocked; out of it, pending.
+            let moved = resolver.ticket(task_path)?;
+            let mut followers = Vec::new();
+            for mutation in &mut mutations {
+                if let TaskMutationDto::UpdateTicket { ticket_id, fields } = mutation {
+                    if *ticket_id == moved.summary.ticket_id && fields.group_id.is_some() && fields.group_id != moved.summary.group_id {
+                        let target = fields.group_id.clone();
+                        apply_column_rule(resolver.library(), moved, target.as_deref(), fields, now_unix_ms);
+                        // Its subtasks go with it.
+                        if moved.summary.parent_ticket_id.is_none() {
+                            followers = subtasks_to_column(resolver.library(), &moved.summary.ticket_id, target.as_deref());
+                        }
+                    }
+                }
+            }
+            mutations.extend(followers);
+            mutations
+        }
         TaskBoardIntent::CreateBoard {
             name,
             color,
             activity_hours_per_day,
             contexto,
+            plan,
         } => {
             let name = sanitize_board_name(name);
             if name.is_empty() {
@@ -797,7 +1307,8 @@ pub fn resolve_board_intent(
                     normalize_context_tag(contexto)
                         .unwrap_or_else(|| DEFAULT_CONTEXT_TAG.to_string()),
                 ),
-                activity_hours_per_day: Some(normalize_activity_hours(*activity_hours_per_day)),
+                activity_hours_per_day: Some(plan_activity_hours(plan.as_ref(), *activity_hours_per_day)),
+                plan: plan.clone(),
             }]
         }
         TaskBoardIntent::UpdateBoard {
@@ -806,6 +1317,7 @@ pub fn resolve_board_intent(
             color,
             activity_hours_per_day,
             contexto,
+            plan,
         } => {
             let board = resolver.board(previous_name)?;
             let requested_name = sanitize_board_name(name);
@@ -837,7 +1349,8 @@ pub fn resolve_board_intent(
                     normalize_context_tag(contexto)
                         .unwrap_or_else(|| DEFAULT_CONTEXT_TAG.to_string()),
                 ),
-                activity_hours_per_day: Some(normalize_activity_hours(*activity_hours_per_day)),
+                activity_hours_per_day: Some(plan_activity_hours(plan.as_ref(), *activity_hours_per_day)),
+                plan: plan.clone(),
             }]
         }
         TaskBoardIntent::DeleteBoard { name } => {
@@ -849,7 +1362,7 @@ pub fn resolve_board_intent(
                 board_id: board.board_id.clone(),
             }]
         }
-        TaskBoardIntent::CreateGroup { board, name, color } => {
+        TaskBoardIntent::CreateGroup { board, name, color, column_kind } => {
             let name = name.trim();
             if name.is_empty() {
                 return Err(invalid("El grupo necesita un nombre válido."));
@@ -870,6 +1383,7 @@ pub fn resolve_board_intent(
                 group_id: new_id(),
                 name: name.to_string(),
                 color: board_color(color),
+                column_kind: *column_kind,
             }]
         }
         TaskBoardIntent::UpdateGroup {
@@ -877,6 +1391,7 @@ pub fn resolve_board_intent(
             previous_name,
             name,
             color,
+            column_kind,
         } => {
             let name = name.trim();
             if name.is_empty() {
@@ -897,6 +1412,7 @@ pub fn resolve_board_intent(
                 group_id,
                 name: name.to_string(),
                 color: board_color(color),
+                column_kind: *column_kind,
             }]
         }
         TaskBoardIntent::DeleteGroup { board, name } => {
@@ -946,8 +1462,19 @@ pub fn resolve_board_intent(
                 group_ids,
             }]
         }
+        TaskBoardIntent::Undo { .. } => {
+            return Err(invalid("Deshacer lo resuelve el adaptador de Task Manager."));
+        }
+        // Card and board actions resolve in `task_board_actions`.
+        _ => Vec::new(),
     };
     Ok(mutations)
+}
+
+/// Activity hours of a board: its workday when it has one.
+fn plan_activity_hours(plan: Option<&TaskBoardPlanDto>, activity_hours_per_day: f64) -> f64 {
+    plan.map(TaskBoardPlanDto::hours_per_day)
+        .unwrap_or_else(|| normalize_activity_hours(activity_hours_per_day))
 }
 
 /// New order of the moved task between its neighbours, or a renumbering of
@@ -1118,6 +1645,13 @@ pub struct PomodoroDurationsDto {
     pub work_minutes: f64,
     pub short_break_minutes: f64,
     pub long_break_minutes: f64,
+    /// Work phases before a long break.
+    #[serde(default = "default_pomodoro_cycles")]
+    pub cycles: u32,
+}
+
+fn default_pomodoro_cycles() -> u32 {
+    crate::pomodoro::WORK_CYCLES_BEFORE_LONG_BREAK
 }
 
 impl PomodoroDurationsDto {
@@ -1371,6 +1905,9 @@ mod tests {
             related_tasks: Vec::new(),
             project: None,
             assignees: Vec::new(),
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         }
     }
 
@@ -1411,6 +1948,7 @@ mod tests {
                     color: "#654321".into(),
                     revision: 1,
                     order: 0,
+                    kind: None,
                 }],
                 tickets: vec![
                     ticket("t1", "Madre", "task-mannager/work/Madre.md", "work"),
@@ -1421,6 +1959,7 @@ mod tests {
                 generation: 7,
                 config: TaskManagerConfigDto {
                     activity_hours_per_day: BTreeMap::from([("work".to_string(), 6.0)]),
+                    boards: std::collections::BTreeMap::new(),
                 },
             },
             routes: vec![TaskDocumentRouteDto {
@@ -1477,6 +2016,7 @@ mod tests {
                 color: "#654321".into(),
                 revision: 1,
                 order,
+                kind: None,
             });
         }
         let reorder = |names: &[&str]| {
@@ -1586,6 +2126,7 @@ mod tests {
             color: String::new(),
             activity_hours_per_day: 30.0,
             contexto: "Laboral".into(),
+            plan: None,
         })
         .unwrap();
         assert_eq!(
@@ -1596,6 +2137,7 @@ mod tests {
                 color: DEFAULT_BOARD_COLOR.into(),
                 context: Some("#Laboral".into()),
                 activity_hours_per_day: Some(24.0),
+                plan: None,
             }
         );
         assert_eq!(
@@ -1604,6 +2146,7 @@ mod tests {
                 color: String::new(),
                 activity_hours_per_day: 8.0,
                 contexto: String::new(),
+                plan: None,
             })
             .unwrap_err()
             .code,
@@ -1615,6 +2158,7 @@ mod tests {
             color: "#000000".into(),
             activity_hours_per_day: 8.0,
             contexto: String::new(),
+            plan: None,
         })
         .unwrap();
         let TaskMutationDto::UpdateBoard { name, color, .. } = &mutations[0] else {
@@ -1705,6 +2249,7 @@ mod tests {
             work_minutes: 25.0,
             short_break_minutes: 5.0,
             long_break_minutes: 15.0,
+            cycles: 4,
         };
         let plan = plan_pomodoro_record(
             &PomodoroEvent::PhasesCompleted {

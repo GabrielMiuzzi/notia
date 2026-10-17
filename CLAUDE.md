@@ -73,6 +73,7 @@ Chips de prioridad de las tarjetas (fondo del chip con el mismo color al ~18% en
 
 | Prioridad | Tema oscuro | Tema claro |
 |---|---|---|
+| Atrasado | `#F28CB1` (rosa) | `#DB2777` |
 | Urgente | `#FF6B6B` (coral) | `#DC2626` |
 | Alta | `#FFB86B` (ámbar) | `#D97706` |
 | Media | `#6C8EFF` (periwinkle) | `#3B5FE0` |
@@ -89,6 +90,7 @@ Acentos de columna de Task Manager (franja superior de 3px):
 | Sprint siguiente | `#D9B44A` (oro) | `#B08900` |
 | En revisión | `#A78BFA` (violeta) | `#7C3AED` |
 | Bloqueado | `#FF6B6B` | `#DC2626` |
+| Atrasado | `#F28CB1` (rosa) | `#DB2777` |
 
 ### Tablero publicado del Task Manager
 

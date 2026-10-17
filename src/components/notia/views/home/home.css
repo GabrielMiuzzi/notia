@@ -16,6 +16,7 @@
   --home-teal-line: color-mix(in srgb, var(--home-teal) 28%, transparent);
   --home-hover: var(--color-row-hover);
   --home-urgent: var(--color-coral);
+  --home-overdue: var(--color-rosa);
   --home-high: var(--color-amber);
   --home-medium: var(--color-periwinkle);
   --home-low: var(--color-sage);
@@ -256,6 +257,7 @@ button.home-wx-chip--quiet { cursor: pointer; }
   background: color-mix(in srgb, var(--home-chip) var(--home-tint), transparent);
 }
 .home-chip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.home-chip[data-chip="overdue"] { --home-chip: var(--home-overdue); }
 .home-chip[data-chip="urgent"] { --home-chip: var(--home-urgent); }
 .home-chip[data-chip="high"] { --home-chip: var(--home-high); }
 .home-chip[data-chip="medium"] { --home-chip: var(--home-medium); }

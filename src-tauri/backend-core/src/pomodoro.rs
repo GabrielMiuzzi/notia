@@ -10,10 +10,12 @@ use crate::task_manager_ui::{PomodoroDurationsDto, PomodoroEvent, PomodoroPhase}
 pub const DEFAULT_WORK_MINUTES: f64 = 25.0;
 pub const DEFAULT_SHORT_BREAK_MINUTES: f64 = 5.0;
 pub const DEFAULT_LONG_BREAK_MINUTES: f64 = 15.0;
-/// Work phases before a long break.
+/// Work phases before a long break, unless the person picks 2 to 8.
 pub const WORK_CYCLES_BEFORE_LONG_BREAK: u32 = 4;
-const MIN_DURATION_MINUTES: f64 = 1.0;
-const MAX_DURATION_MINUTES: f64 = 180.0;
+const WORK_MINUTES: (f64, f64) = (5.0, 90.0);
+const SHORT_BREAK_MINUTES: (f64, f64) = (1.0, 30.0);
+const LONG_BREAK_MINUTES: (f64, f64) = (5.0, 60.0);
+const CYCLES: (u32, u32) = (2, 8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -59,6 +61,49 @@ pub enum PomodoroAction {
     ExitDeviation,
     /// The countdown reached zero; completed phases are advanced.
     Tick,
+    /// Ends the phase now and leaves the next one ready.
+    Skip,
+    /// Picks a mode: the timer stops and that mode starts from the top.
+    SelectPhase { phase: PomodoroPhase },
+}
+
+/// A set of durations the Pomodoro offers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PomodoroPresetDto {
+    pub name: String,
+    /// «Estándar · 25/5».
+    pub label: String,
+    pub description: String,
+    pub durations: PomodoroDurationsDto,
+    pub active: bool,
+}
+
+/// The presets, marking the one the durations match.
+pub fn presets(current: &PomodoroDurationsDto) -> Vec<PomodoroPresetDto> {
+    [
+        ("Estándar", 25.0, 5.0, 15.0, "Para tareas moderadas, programación y estudio: mantener un ritmo constante sin quemarse."),
+        ("Sprint", 50.0, 10.0, 20.0, "Para trabajo profundo, con bloques largos y pausas más amplias."),
+        ("Ligero", 15.0, 3.0, 10.0, "Para el inicio de la jornada, tareas livianas o cuando cuesta arrancar."),
+        ("Intenso", 45.0, 7.0, 20.0, "Para foco sostenido, con pausas cortas de recuperación."),
+    ]
+    .into_iter()
+    .map(|(name, work, short, long, description)| {
+        let durations = PomodoroDurationsDto {
+            work_minutes: work,
+            short_break_minutes: short,
+            long_break_minutes: long,
+            cycles: current.cycles,
+        };
+        PomodoroPresetDto {
+            name: name.to_string(),
+            label: format!("{name} · {work}/{short}"),
+            description: description.to_string(),
+            active: current.work_minutes == work && current.short_break_minutes == short && current.long_break_minutes == long,
+            durations,
+        }
+    })
+    .collect()
 }
 
 /// Result of an action: the new state and the event to log, with the
@@ -74,6 +119,7 @@ pub fn default_durations() -> PomodoroDurationsDto {
         work_minutes: DEFAULT_WORK_MINUTES,
         short_break_minutes: DEFAULT_SHORT_BREAK_MINUTES,
         long_break_minutes: DEFAULT_LONG_BREAK_MINUTES,
+        cycles: WORK_CYCLES_BEFORE_LONG_BREAK,
     }
 }
 
@@ -94,15 +140,17 @@ pub fn default_state() -> PomodoroState {
     }
 }
 
-/// Whole minutes between 1 and 180.
+/// Whole minutes: work 5–90, short break 1–30, long break 5–60; 2 to 8
+/// cycles.
 pub fn clamp_durations(durations: &PomodoroDurationsDto) -> PomodoroDurationsDto {
-    let clamp = |value: f64, fallback: f64| {
-        if value.is_finite() { value.round().clamp(MIN_DURATION_MINUTES, MAX_DURATION_MINUTES) } else { fallback }
+    let clamp = |value: f64, (min, max): (f64, f64), fallback: f64| {
+        if value.is_finite() { value.round().clamp(min, max) } else { fallback }
     };
     PomodoroDurationsDto {
-        work_minutes: clamp(durations.work_minutes, DEFAULT_WORK_MINUTES),
-        short_break_minutes: clamp(durations.short_break_minutes, DEFAULT_SHORT_BREAK_MINUTES),
-        long_break_minutes: clamp(durations.long_break_minutes, DEFAULT_LONG_BREAK_MINUTES),
+        work_minutes: clamp(durations.work_minutes, WORK_MINUTES, DEFAULT_WORK_MINUTES),
+        short_break_minutes: clamp(durations.short_break_minutes, SHORT_BREAK_MINUTES, DEFAULT_SHORT_BREAK_MINUTES),
+        long_break_minutes: clamp(durations.long_break_minutes, LONG_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES),
+        cycles: durations.cycles.clamp(CYCLES.0, CYCLES.1),
     }
 }
 
@@ -131,6 +179,7 @@ pub fn normalize_state(value: &Value) -> PomodoroState {
                 work_minutes: minutes("workMinutes", DEFAULT_WORK_MINUTES),
                 short_break_minutes: minutes("shortBreakMinutes", DEFAULT_SHORT_BREAK_MINUTES),
                 long_break_minutes: minutes("longBreakMinutes", DEFAULT_LONG_BREAK_MINUTES),
+                cycles: minutes("cycles", f64::from(WORK_CYCLES_BEFORE_LONG_BREAK)).max(0.0) as u32,
             })
         })
         .unwrap_or(fallback.durations);
@@ -174,8 +223,8 @@ fn deviation_elapsed_seconds(state: &PomodoroState, now_ms: i64) -> u64 {
     }
 }
 
-fn break_after(completed_work_cycles: u32) -> PomodoroPhase {
-    if completed_work_cycles % WORK_CYCLES_BEFORE_LONG_BREAK == 0 {
+fn break_after(completed_work_cycles: u32, cycles: u32) -> PomodoroPhase {
+    if completed_work_cycles % cycles.max(1) == 0 {
         PomodoroPhase::LongBreak
     } else {
         PomodoroPhase::ShortBreak
@@ -200,7 +249,7 @@ fn advance(state: &PomodoroState, now_ms: i64) -> (PomodoroState, Vec<PomodoroPh
         completed.push(next.phase);
         let phase = if next.phase == PomodoroPhase::Work {
             next.completed_work_cycles += 1;
-            break_after(next.completed_work_cycles)
+            break_after(next.completed_work_cycles, next.durations.cycles)
         } else {
             PomodoroPhase::Work
         };
@@ -211,6 +260,32 @@ fn advance(state: &PomodoroState, now_ms: i64) -> (PomodoroState, Vec<PomodoroPh
     }
     next.remaining_seconds = remaining_seconds(&next, now_ms);
     (next, completed)
+}
+
+/// The timer stopped, without the phase's deviation.
+fn stopped(state: &PomodoroState) -> PomodoroState {
+    let mut next = state.clone();
+    next.run_state = RunState::Idle;
+    next.end_timestamp = None;
+    next.phase_deviation_seconds = 0;
+    next
+}
+
+/// The part of the phase that ran before the person left it, to log it.
+fn elapsed_event(state: &PomodoroState, now_ms: i64) -> Option<(PomodoroEvent, PomodoroState)> {
+    if state.run_state == RunState::Idle {
+        return None;
+    }
+    let elapsed = phase_seconds(&state.durations, state.phase).saturating_sub(remaining_seconds(state, now_ms));
+    (elapsed > 0).then(|| {
+        let event = PomodoroEvent::Reset {
+            phase: state.phase,
+            elapsed_seconds: elapsed as f64,
+            deviation_seconds: state.phase_deviation_seconds as f64,
+            in_deviation: false,
+        };
+        (event, state.clone())
+    })
 }
 
 /// Applies an action at `now_ms`.
@@ -313,7 +388,7 @@ pub fn apply(state: &PomodoroState, action: PomodoroAction, now_ms: i64) -> Pomo
                 // to the overtime.
                 let overtime = elapsed - base;
                 next.completed_work_cycles += 1;
-                next.phase = break_after(next.completed_work_cycles);
+                next.phase = break_after(next.completed_work_cycles, next.durations.cycles);
                 let base_break = phase_seconds(&next.durations, next.phase);
                 let work = phase_seconds(&next.durations, PomodoroPhase::Work).max(1);
                 let extra = ((overtime * base_break) as f64 / work as f64).round() as u64;
@@ -323,6 +398,29 @@ pub fn apply(state: &PomodoroState, action: PomodoroAction, now_ms: i64) -> Pomo
             };
             let event = PomodoroEvent::DeviationEnded { elapsed_seconds: elapsed as f64, completed_work };
             PomodoroTransition { state: next, event: Some((event, state.clone())) }
+        }
+        PomodoroAction::Skip => {
+            if state.is_deviation_active {
+                return unchanged();
+            }
+            let mut next = stopped(state);
+            if state.phase == PomodoroPhase::Work {
+                next.completed_work_cycles += 1;
+                next.phase = break_after(next.completed_work_cycles, next.durations.cycles);
+            } else {
+                next.phase = PomodoroPhase::Work;
+            }
+            next.remaining_seconds = phase_seconds(&next.durations, next.phase);
+            PomodoroTransition { state: next, event: elapsed_event(state, now_ms) }
+        }
+        PomodoroAction::SelectPhase { phase } => {
+            if state.is_deviation_active || (state.phase == phase && state.run_state == RunState::Idle) {
+                return unchanged();
+            }
+            let mut next = stopped(state);
+            next.phase = phase;
+            next.remaining_seconds = phase_seconds(&next.durations, phase);
+            PomodoroTransition { state: next, event: elapsed_event(state, now_ms) }
         }
         PomodoroAction::Tick => {
             let (next, completed) = advance(state, now_ms);
@@ -389,7 +487,27 @@ mod tests {
         assert!(matches!(reset.event, Some((PomodoroEvent::Reset { elapsed_seconds, .. }, _)) if elapsed_seconds == 600.0));
         let stored = normalize_state(&json!({ "phase": "x", "durations": { "workMinutes": 500 }, "selectedTaskPath": " " }));
         assert_eq!(stored.phase, PomodoroPhase::Work);
-        assert_eq!(stored.durations.work_minutes, 180.0);
+        assert_eq!(stored.durations.work_minutes, 90.0);
+        assert_eq!(stored.durations.cycles, 4);
         assert_eq!(stored.selected_task_path, None);
+    }
+
+    #[test]
+    fn skipping_and_picking_a_mode_stop_the_timer_and_log_what_ran() {
+        let started = apply(&default_state(), PomodoroAction::Start, 0).state;
+        let skipped = apply(&started, PomodoroAction::Skip, 10 * MINUTE);
+        assert_eq!((skipped.state.phase, skipped.state.run_state), (PomodoroPhase::ShortBreak, RunState::Idle));
+        assert_eq!(skipped.state.completed_work_cycles, 1);
+        assert!(matches!(skipped.event, Some((PomodoroEvent::Reset { elapsed_seconds, .. }, _)) if elapsed_seconds == 600.0));
+        let long = apply(&skipped.state, PomodoroAction::SelectPhase { phase: PomodoroPhase::LongBreak }, 11 * MINUTE);
+        assert_eq!((long.state.phase, long.state.remaining_seconds), (PomodoroPhase::LongBreak, 15 * 60));
+        assert!(long.event.is_none());
+        // Two cycles: the second work phase leads to the long break.
+        let mut two = default_state();
+        two.durations.cycles = 2;
+        two.completed_work_cycles = 1;
+        assert_eq!(apply(&two, PomodoroAction::Skip, 0).state.phase, PomodoroPhase::LongBreak);
+        assert!(presets(&default_durations())[0].active);
+        assert_eq!(presets(&default_durations())[0].label, "Estándar · 25/5");
     }
 }

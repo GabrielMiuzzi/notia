@@ -9,28 +9,25 @@ use serde_json::Value;
 
 use crate::error::BackendError;
 use crate::task_manager_tools::{
-    TaskGroupDto, TaskMutationDto, TaskPriority, TaskState, TaskUpdateFieldsDto,
+    TaskColumnKind, TaskGroupDto, TaskMutationDto, TaskPriority, TaskState, TaskUpdateFieldsDto,
 };
 
 /// Maximum tickets read by one `read_task_tickets` call.
 pub const MAX_TASK_TOOL_READ_TICKETS: usize = 20;
 
 /// Task Manager tools that change data; each one maps to one store mutation.
-pub const TASK_MUTATION_TOOLS: [&str; 18] = [
+/// The tools that follow the board's own rules (state, moves, time, people,
+/// projects…) are in `task_board_tool_input`.
+pub const TASK_MUTATION_TOOLS: [&str; 13] = [
     "create_task_ticket",
     "replace_task_content",
     "add_task_comment",
     "update_task_comment",
     "delete_task_comment",
     "add_task_subtask",
-    "move_task_group",
-    "change_task_state",
     "change_task_priority",
     "update_task_fields",
     "bulk_update_tasks",
-    "duplicate_task",
-    "archive_task",
-    "restore_task",
     "create_task_group",
     "update_task_group",
     "reorder_task_groups",
@@ -181,14 +178,6 @@ pub fn task_mutation_from_tool(
             content: text(arguments, "content"),
             priority: parse_enum(arguments, "priority")?.unwrap_or(TaskPriority::Medium),
         },
-        "move_task_group" => TaskMutationDto::MoveTicket {
-            ticket_id: required(arguments, "ticketId")?,
-            group_id: optional(arguments, "groupId"),
-        },
-        "change_task_state" => TaskMutationDto::ChangeState {
-            ticket_id: required(arguments, "ticketId")?,
-            state: required_enum(arguments, "state")?,
-        },
         "change_task_priority" => TaskMutationDto::ChangePriority {
             ticket_id: required(arguments, "ticketId")?,
             priority: required_enum(arguments, "priority")?,
@@ -207,31 +196,22 @@ pub fn task_mutation_from_tool(
                 fields: fields(arguments)?,
             }
         }
-        "duplicate_task" => TaskMutationDto::DuplicateTicket {
-            ticket_id: required(arguments, "ticketId")?,
-            new_ticket_id: new_id(),
-            title: optional(arguments, "title"),
-        },
-        "archive_task" => TaskMutationDto::ArchiveTicket {
-            ticket_id: required(arguments, "ticketId")?,
-        },
-        "restore_task" => TaskMutationDto::RestoreTicket {
-            ticket_id: required(arguments, "ticketId")?,
-        },
         "create_task_group" => TaskMutationDto::CreateGroup {
             board_id: required(arguments, "boardId")?,
             group_id: new_id(),
             name: required(arguments, "name")?,
             color: required(arguments, "color")?,
+            column_kind: parse_enum::<TaskColumnKind>(arguments, "kind")?,
         },
         "update_task_group" => {
             let board_id = required(arguments, "boardId")?;
             let group_id = required(arguments, "groupId")?;
             let name = optional(arguments, "name");
             let color = optional(arguments, "color");
-            if name.is_none() && color.is_none() {
+            let column_kind = parse_enum::<TaskColumnKind>(arguments, "kind")?;
+            if name.is_none() && color.is_none() && column_kind.is_none() {
                 return Err(BackendError::invalid_input(
-                    "update_task_group necesita name, color o ambos.",
+                    "update_task_group necesita name, color o kind.",
                 ));
             }
             let current = current_group(groups, &board_id, &group_id)?;
@@ -240,6 +220,7 @@ pub fn task_mutation_from_tool(
                 color: color.unwrap_or_else(|| current.color.clone()),
                 board_id,
                 group_id,
+                column_kind,
             }
         }
         "reorder_task_groups" => {
@@ -331,8 +312,6 @@ mod tests {
 
     #[test]
     fn rejects_missing_ids_and_unknown_enum_values() {
-        assert!(task_mutation_from_tool("change_task_state", &json!({"state": "Pendiente"}), &[], &mut ids(), 0).is_err());
-        assert!(task_mutation_from_tool("change_task_state", &json!({"ticketId": "t", "state": "Hecha"}), &[], &mut ids(), 0).is_err());
         assert!(task_mutation_from_tool("update_task_fields", &json!({"ticketId": "t", "fields": {}}), &[], &mut ids(), 0).is_err());
         assert!(task_mutation_from_tool("delete_board", &json!({}), &[], &mut ids(), 0).is_err());
     }
@@ -393,6 +372,7 @@ mod tests {
             color: color.into(),
             revision: 1,
             order: 0,
+            kind: None,
         }
     }
 
@@ -414,6 +394,7 @@ mod tests {
                 group_id: "g-1".into(),
                 name: "Backlog Q actual".into(),
                 color: "#10b981".into(),
+                column_kind: None,
             }
         );
         let recolored = task_mutation_from_tool(
@@ -459,7 +440,7 @@ mod tests {
     #[test]
     fn every_mutation_tool_has_a_mapping_and_a_contract() {
         let contracts = crate::task_manager_tools::task_manager_mutation_tool_contracts();
-        assert_eq!(contracts.len(), TASK_MUTATION_TOOLS.len());
+        assert_eq!(contracts.len(), TASK_MUTATION_TOOLS.len() + crate::task_board_tool_input::TASK_BOARD_ACTION_TOOLS.len());
         for name in TASK_MUTATION_TOOLS {
             assert!(contracts.iter().any(|tool| tool.name == name), "{name} sin contrato");
             let unsupported = task_mutation_from_tool(name, &json!({}), &[], &mut ids(), 0)

@@ -9,6 +9,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use notia_backend_core::task_manager_tools::{
+    TaskBoardConfigDto, TaskBoardMemberDto, TaskBoardPlanDto, TaskBoardProjectDto, TaskColumnKind,
+    MAX_TASK_BLOCK_NOTE_CHARS,
+};
 use notia_backend_core::{
     BackendError, BackendErrorCode, TaskBoardDto, TaskCommentDto, TaskDocumentRouteDto,
     TaskEntityRevisionDto, TaskGroupDto, TaskManagerConfigDto, TaskManagerLibrarySnapshotDto,
@@ -94,6 +98,9 @@ struct RawTicket {
     related_tasks: Vec<String>,
     project: Option<String>,
     assignees: Vec<String>,
+    started_at_unix_ms: Option<i64>,
+    closed_at_unix_ms: Option<i64>,
+    block_note: Option<String>,
     comments: Vec<TaskCommentDto>,
 }
 
@@ -792,6 +799,11 @@ fn hydrate_snapshot(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             assignees: frontmatter_assignees(&document.frontmatter),
+            started_at_unix_ms: frontmatter_timestamp(&document.frontmatter, "inicioProgreso"),
+            closed_at_unix_ms: frontmatter_timestamp(&document.frontmatter, "cerradaEn"),
+            block_note: field_string(&document.frontmatter, "bloqueo")
+                .map(|value| value.trim().chars().take(MAX_TASK_BLOCK_NOTE_CHARS).collect::<String>())
+                .filter(|value| !value.is_empty()),
             comments,
             document: document.clone(),
         };
@@ -856,6 +868,9 @@ fn hydrate_snapshot(
             related_tasks: raw.related_tasks,
             project: raw.project,
             assignees: raw.assignees,
+            started_at_unix_ms: raw.started_at_unix_ms,
+            closed_at_unix_ms: raw.closed_at_unix_ms,
+            block_note: raw.block_note,
         });
         comments.extend(raw.comments);
     }
@@ -874,6 +889,7 @@ fn hydrate_snapshot(
     let mut boards = Vec::new();
     let mut groups = Vec::new();
     let mut activity_hours_per_day = BTreeMap::new();
+    let mut board_configs = BTreeMap::new();
     for board_id in board_names {
         let value = metadata.get(&board_id);
         let board_revision = value
@@ -893,6 +909,9 @@ fn hydrate_snapshot(
             revision: board_revision,
         });
         activity_hours_per_day.insert(board_id.clone(), activity);
+        if let Some(config) = value.map(|item| item.config.clone()).filter(|config| *config != TaskBoardConfigDto::default()) {
+            board_configs.insert(board_id.clone(), config);
+        }
         if let Some(value) = value {
             for group in &value.groups {
                 groups.push(TaskGroupDto {
@@ -903,6 +922,7 @@ fn hydrate_snapshot(
                     color: group.color.clone(),
                     revision: group.revision,
                     order: group.order,
+                    kind: group.kind,
                 });
             }
         }
@@ -938,6 +958,7 @@ fn hydrate_snapshot(
         generation,
         config: TaskManagerConfigDto {
             activity_hours_per_day,
+            boards: board_configs,
         },
     })
 }
@@ -949,6 +970,8 @@ struct BoardMetadata {
     activity_hours: f64,
     revision: u64,
     groups: Vec<GroupMetadata>,
+    /// Calendar, people and projects (only in the shared metadata file).
+    config: TaskBoardConfigDto,
 }
 
 #[derive(Debug, Clone)]
@@ -958,6 +981,7 @@ struct GroupMetadata {
     color: String,
     revision: u64,
     order: u32,
+    kind: Option<TaskColumnKind>,
 }
 
 fn read_board_metadata(
@@ -998,6 +1022,7 @@ fn read_board_metadata(
                 color: color.to_string(),
                 revision,
                 order: order as u32,
+                kind: parts.get(4).and_then(|value| TaskColumnKind::from_key(value)),
             });
         }
         result.insert(
@@ -1012,6 +1037,7 @@ fn read_board_metadata(
                 revision: field_u64(&document.frontmatter, "revision")
                     .unwrap_or_else(|| stable_revision("board", &board)),
                 groups,
+                config: TaskBoardConfigDto::default(),
             },
         );
     }
@@ -1050,6 +1076,7 @@ fn merge_shared_metadata(
             {
                 entry.activity_hours = activity.clamp(0.0, 24.0);
             }
+            entry.config = shared_board_config(board);
         }
     }
     let Some(groups) = value.get("groups").and_then(serde_json::Value::as_array) else {
@@ -1073,11 +1100,16 @@ fn merge_shared_metadata(
         let entry = metadata
             .entry(board_id.clone())
             .or_insert_with(default_board_metadata);
-        if entry
+        let kind = group
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .and_then(TaskColumnKind::from_key);
+        if let Some(existing) = entry
             .groups
-            .iter()
-            .any(|candidate| normalize_name(&candidate.name) == normalize_name(name))
+            .iter_mut()
+            .find(|candidate| normalize_name(&candidate.name) == normalize_name(name))
         {
+            existing.kind = existing.kind.or(kind);
             continue;
         }
         let color = group
@@ -1091,8 +1123,31 @@ fn merge_shared_metadata(
             color: color.to_string(),
             revision: stable_revision("group", &format!("{board_id}:{name}")),
             order,
+            kind,
         });
     }
+}
+
+/// Calendar, people and projects a board keeps in the shared metadata
+/// file. A value that does not validate is left out (the board falls back
+/// to its defaults) instead of hiding the workspace.
+fn shared_board_config(board: &serde_json::Value) -> TaskBoardConfigDto {
+    let plan = board
+        .get("plan")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<TaskBoardPlanDto>(value).ok())
+        .filter(|plan| plan.validate().is_ok());
+    let members = board
+        .get("members")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<TaskBoardMemberDto>>(value).ok())
+        .filter(|members| notia_backend_core::task_board_plan::validate_members(members).is_ok());
+    let projects = board
+        .get("projects")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<TaskBoardProjectDto>>(value).ok())
+        .filter(|projects| notia_backend_core::task_board_plan::validate_projects(projects).is_ok());
+    TaskBoardConfigDto { plan, members, projects }
 }
 
 fn resolve_group_reference(
@@ -1120,6 +1175,7 @@ fn default_board_metadata() -> BoardMetadata {
         activity_hours: 24.0,
         revision: 1,
         groups: Vec::new(),
+        config: TaskBoardConfigDto::default(),
     }
 }
 
@@ -1536,6 +1592,17 @@ fn render_shared_metadata(snapshot: &TaskManagerLibrarySnapshotDto) -> Result<St
             if let Some(context) = board.context.as_deref().filter(|context| !context.is_empty()) {
                 value["contexto"] = serde_json::Value::String(context.to_string());
             }
+            if let Some(config) = snapshot.config.boards.get(&board.board_id) {
+                if let Some(plan) = &config.plan {
+                    value["plan"] = serde_json::json!(plan);
+                }
+                if let Some(members) = &config.members {
+                    value["members"] = serde_json::json!(members);
+                }
+                if let Some(projects) = &config.projects {
+                    value["projects"] = serde_json::json!(projects);
+                }
+            }
             value
         })
         .collect::<Vec<_>>();
@@ -1549,11 +1616,15 @@ fn render_shared_metadata(snapshot: &TaskManagerLibrarySnapshotDto) -> Result<St
     let groups = groups
         .into_iter()
         .map(|group| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "name": group.name,
                 "color": group.color,
                 "board": board_names.get(group.board_id.as_str()).copied().unwrap_or("default"),
-            })
+            });
+            if let Some(kind) = group.kind {
+                value["kind"] = serde_json::Value::String(kind.key().to_string());
+            }
+            value
         })
         .collect::<Vec<_>>();
     let text = serde_json::to_string_pretty(&serde_json::json!({
@@ -1749,6 +1820,19 @@ fn render_ticket(
     if !ticket.assignees.is_empty() {
         set_array(&mut fields, "asignados", &ticket.assignees);
     }
+    // Running time, closing date and block note: only while they apply.
+    fields.retain(|key, _| {
+        !["inicioProgreso", "cerradaEn", "bloqueo"].iter().any(|name| key.eq_ignore_ascii_case(name))
+    });
+    if let Some(started_at) = ticket.started_at_unix_ms.and_then(local_timestamp) {
+        set_string(&mut fields, "inicioProgreso", &started_at);
+    }
+    if let Some(closed_at) = ticket.closed_at_unix_ms.and_then(local_timestamp) {
+        set_string(&mut fields, "cerradaEn", &closed_at);
+    }
+    if let Some(note) = &ticket.block_note {
+        set_string(&mut fields, "bloqueo", note);
+    }
     set_string(
         &mut fields,
         "revision",
@@ -1826,10 +1910,15 @@ fn render_board_index(
             .iter()
             .filter(|group| group.board_id == board)
             .map(|group| {
-                format!(
+                let mut encoded = format!(
                     "{}|{}|{}|{}",
                     group.name, group.color, group.revision, group.group_id
-                )
+                );
+                if let Some(kind) = group.kind {
+                    encoded.push('|');
+                    encoded.push_str(kind.key());
+                }
+                encoded
             })
             .collect::<Vec<_>>();
         set_array(&mut fields, "groups", &groups);
@@ -2514,6 +2603,23 @@ fn field_u64(fields: &BTreeMap<String, YamlValue>, key: &str) -> Option<u64> {
         })
         .map(|value| value as u64)
 }
+/// ISO 8601 date and time with the device's offset (`2026-10-17T10:15:00-03:00`).
+fn local_timestamp(unix_ms: i64) -> Option<String> {
+    chrono::Local
+        .timestamp_millis_opt(unix_ms)
+        .single()
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+}
+
+/// Milliseconds since the epoch of an ISO 8601 date and time with offset.
+fn frontmatter_timestamp(fields: &BTreeMap<String, YamlValue>, key: &str) -> Option<i64> {
+    let value = field_string(fields, key)?;
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|value| value.timestamp_millis())
+        .filter(|value| (0..=MAX_JS_SAFE_INTEGER as i64).contains(value))
+}
+
 /// The people of a ticket: a list, or names written one after the other
 /// with commas.
 fn frontmatter_assignees(fields: &BTreeMap<String, YamlValue>) -> Vec<String> {
@@ -2552,6 +2658,7 @@ fn parse_priority(value: Option<&str>) -> TaskPriority {
         "baja" | "low" => TaskPriority::Low,
         "alta" | "high" => TaskPriority::High,
         "urgente" | "urgent" => TaskPriority::Urgent,
+        "atrasado" | "atrasada" | "overdue" => TaskPriority::Overdue,
         _ => TaskPriority::Medium,
     }
 }
@@ -2570,6 +2677,7 @@ fn priority_string(value: TaskPriority) -> &'static str {
         TaskPriority::Medium => "Media",
         TaskPriority::High => "Alta",
         TaskPriority::Urgent => "Urgente",
+        TaskPriority::Overdue => "Atrasado",
     }
 }
 fn normalize_name(value: &str) -> String {
@@ -2871,6 +2979,9 @@ mod tests {
             related_tasks: vec!["ticket-other".into()],
             project: Some("Remesas".into()),
             assignees: vec!["Ana".into(), "Luis Pérez".into()],
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         };
         let snapshot = TaskManagerLibrarySnapshotDto {
             library_id: "library".into(),
@@ -2884,6 +2995,7 @@ mod tests {
                 color: "#2e6db0".into(),
                 revision: 1,
                 order: 0,
+                kind: None,
             }],
             tickets: vec![ticket.clone()],
             comments: vec![],
@@ -3013,6 +3125,9 @@ mod tests {
             related_tasks: vec![],
             project: None,
             assignees: Vec::new(),
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         };
         let comment = |id: &str, minute: i64, body: &str| TaskCommentDto {
             library_id: "library".into(),
@@ -3147,6 +3262,9 @@ mod tests {
             related_tasks: vec![],
             project: None,
             assignees: Vec::new(),
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         }
     }
 
@@ -3217,6 +3335,9 @@ mod tests {
             related_tasks: vec![],
             project: None,
             assignees: Vec::new(),
+            started_at_unix_ms: None,
+            closed_at_unix_ms: None,
+            block_note: None,
         };
         let comment = TaskCommentDto {
             library_id: "library".into(),
@@ -3402,6 +3523,111 @@ parent: \"[[borrada]]\"
         assert!(written.contains("Estado según ServiceNow del 28/9"), "{written}");
         assert!(!written.contains("Bloqueada por BPC") && !written.contains("12/09/2026"), "{written}");
         assert!(written.contains("Detalle"), "{written}");
+        let _ = std::fs::remove_dir_all(library_root);
+    }
+
+    #[test]
+    fn the_overdue_priority_is_read_and_written_as_atrasado() {
+        assert_eq!(parse_priority(Some("Atrasado")), TaskPriority::Overdue);
+        assert_eq!(parse_priority(Some("atrasada")), TaskPriority::Overdue);
+        assert_eq!(priority_string(TaskPriority::Overdue), "Atrasado");
+        assert!(TaskPriority::Overdue > TaskPriority::Urgent);
+    }
+
+    #[test]
+    fn the_running_time_block_note_column_kind_and_board_calendar_survive_a_reload() {
+        use notia_backend_core::task_manager_tools::{TaskBoardMemberDto, TaskBoardPlanDto, TaskBoardProjectDto, TaskColumnKind};
+        use notia_backend_core::{
+            TaskManagerContextDto, TaskManagerMutationPort, TaskMutationApplyRequestDto, TaskMutationDto,
+            TaskMutationRequestDto, TaskUpdateFieldsDto,
+        };
+        let library_root = std::env::temp_dir().join(format!("notia-task-plan-{}", uuid::Uuid::new_v4()));
+        let root = library_root.join(PRIMARY_ROOT);
+        std::fs::create_dir_all(root.join("work")).expect("board");
+        std::fs::write(
+            root.join(SHARED_METADATA_FILE),
+            r##"{"version":1,"boards":[{"name":"work","color":"#2e6db0"}],"groups":[{"name":"Espera","color":"#FF6B6B","board":"work"}]}"##,
+        )
+        .expect("metadata");
+        std::fs::write(
+            root.join("work").join("Informe.md"),
+            "---\ntarea: Informe\ntablero: work\nequipo: Espera\nestado: Pendiente\nasignados: [Doris]\n---\nDetalle\n\n## Comentario - 12/09/2026 13:11\nNota\n",
+        )
+        .expect("ticket");
+        let registry = LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-plan", &library_root).expect("binding");
+        let store = Arc::new(MarkdownTaskManagerStore::new("library-plan".to_string(), registry, Arc::new(Mutex::new(()))));
+        let manager = notia_backend_core::PersistentTaskManager::open("library-plan", store.clone()).expect("manager");
+        let context = TaskManagerContextDto::new("library-plan", OWNER_USER_ID).expect("context");
+        let initial = manager.read_snapshot(&context).expect("snapshot");
+        let ticket_id = initial.tickets[0].summary.ticket_id.clone();
+        let group = initial.groups[0].clone();
+        let apply = |key: &str, mutation: TaskMutationDto| {
+            manager
+                .preview_mutation(&TaskMutationRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    mutation,
+                })
+                .expect("preview");
+            manager
+                .apply_mutation(&TaskMutationApplyRequestDto {
+                    context: context.clone(),
+                    operation_id: format!("op-{key}"),
+                    idempotency_key: format!("idem-{key}"),
+                    confirmed: true,
+                })
+                .expect("apply");
+        };
+        apply("ticket", TaskMutationDto::UpdateTicket {
+            ticket_id: ticket_id.clone(),
+            fields: TaskUpdateFieldsDto {
+                state: Some(TaskState::InProgress),
+                started_at_unix_ms: Some(Some(1_792_000_000_000)),
+                block_note: Some("Esperando la librería".into()),
+                ..TaskUpdateFieldsDto::default()
+            },
+        });
+        apply("group", TaskMutationDto::UpdateGroup {
+            board_id: "work".into(),
+            group_id: group.group_id.clone(),
+            name: group.name.clone(),
+            color: group.color.clone(),
+            column_kind: Some(TaskColumnKind::Blocked),
+        });
+        let mut plan = TaskBoardPlanDto::default();
+        plan.sprint_weeks = 3;
+        plan.day_end_minutes = 17 * 60;
+        apply("plan", TaskMutationDto::UpdateBoard {
+            board_id: "work".into(),
+            name: None,
+            color: None,
+            context: None,
+            activity_hours_per_day: None,
+            plan: Some(plan.clone()),
+        });
+        apply("people", TaskMutationDto::UpdateBoardPeople {
+            board_id: "work".into(),
+            members: Some(vec![TaskBoardMemberDto { name: "Doris".into(), color: "#A78BFA".into(), is_owner: false }]),
+            projects: Some(vec![TaskBoardProjectDto { name: "Remesas".into(), color: "#4FD1C5".into() }]),
+            removed_members: Vec::new(),
+            removed_projects: Vec::new(),
+        });
+
+        let ticket_file = std::fs::read_to_string(root.join("work").join("Informe.md")).expect("ticket file");
+        assert!(ticket_file.contains("inicioProgreso:"), "{ticket_file}");
+        assert!(ticket_file.contains("bloqueo: \"Esperando la librería\""), "{ticket_file}");
+        let snapshot = store.load("library-plan").expect("workspace loads").expect("snapshot");
+        let ticket = &snapshot.tickets[0];
+        assert_eq!(ticket.started_at_unix_ms, Some(1_792_000_000_000));
+        assert_eq!(ticket.block_note.as_deref(), Some("Esperando la librería"));
+        assert_eq!(snapshot.groups[0].kind, Some(TaskColumnKind::Blocked));
+        let config = &snapshot.config.boards["work"];
+        assert_eq!(config.plan.as_ref(), Some(&plan));
+        assert_eq!(config.members.as_ref().map(Vec::len), Some(1));
+        assert_eq!(config.projects.as_ref().map(|projects| projects[0].name.as_str()), Some("Remesas"));
+        assert_eq!(snapshot.config.activity_hours_per_day["work"], 8.0);
         let _ = std::fs::remove_dir_all(library_root);
     }
 

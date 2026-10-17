@@ -70,6 +70,7 @@ export function TaskCommentDialog({ task, onClose, onSubmit }: TaskCommentDialog
               externalSourceUpdate={null}
               zoom={zoom}
               onZoomChange={setZoom}
+              placeholder="Escribí el comentario…"
             />
           </Suspense>
         ) : null}

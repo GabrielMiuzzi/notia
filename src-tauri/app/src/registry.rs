@@ -299,6 +299,8 @@ fn route(command: &str) -> Option<Route> {
         "library_list_folders" => library_list_folders,
         "task_manager_board_view" => task_manager_board_view,
         "task_manager_board_execute" => task_manager_board_execute,
+        "task_manager_board_plan_preview" => task_manager_board_plan_preview,
+        "task_manager_management_view" => task_manager_management_view,
         "task_manager_pomodoro" => task_manager_pomodoro,
         "task_manager_delete_pomodoro" => task_manager_delete_pomodoro,
         "task_manager_read_ticket_source" => task_manager_read_ticket_source,
@@ -571,6 +573,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "library_list_folders",
     "task_manager_board_view",
     "task_manager_board_execute",
+    "task_manager_board_plan_preview",
+    "task_manager_management_view",
     "task_manager_pomodoro",
     "task_manager_delete_pomodoro",
     "task_manager_read_ticket_source",
@@ -721,6 +725,7 @@ pub struct PublishedScope {
 pub const PUBLISHED_COMMANDS: &[&str] = &[
     "task_manager_board_view",
     "task_manager_board_execute",
+    "task_manager_management_view",
     "task_manager_read_ticket_source",
     "task_manager_write_ticket_source",
     "task_manager_pomodoro",
@@ -2100,6 +2105,16 @@ fn task_manager_board_execute(app: &AppHandle, _window_label: &str, command: &st
     let arg0 = app.clone();
     let arg1 = arg(command, args, "payload")?;
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::task_manager_commands::task_manager_board_execute(arg0, arg1).await) })))
+}
+
+fn task_manager_board_plan_preview(_app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::task_manager_commands::task_manager_board_plan_preview(arg(command, args, "payload")?))))
+}
+
+fn task_manager_management_view(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let arg0 = app.clone();
+    let arg1 = arg(command, args, "payload")?;
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::task_manager_commands::task_manager_management_view(arg0, arg1).await) })))
 }
 
 fn task_manager_pomodoro(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
