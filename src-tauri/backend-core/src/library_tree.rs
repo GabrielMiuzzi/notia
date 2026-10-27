@@ -2,9 +2,9 @@
 //!
 //! Desktop and Android adapters read folders in their own shape; this module
 //! turns their nodes into one contract and applies the explorer order:
-//! folders first, then notes chained by `previousPage` / `nextPage` (each
-//! chain placed by the creation date of its head), then the notes without
-//! links by creation date and name.
+//! folders first, then the notes: those chained by `previousPage` /
+//! `nextPage` stay together, and chains and single notes are placed by the
+//! creation date of their first note, then by name.
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,6 +37,9 @@ pub struct LibraryTreeNodeDto {
     pub next_page: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_page: Option<String>,
+    /// Context assigned to a folder (`.notia/folderContexts.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,20 +286,18 @@ fn sort_siblings(nodes: Vec<LibraryTreeNodeDto>) -> Vec<LibraryTreeNodeDto> {
         }
     }
 
-    chains.sort_by(|left, right| {
+    // A note whose neighbors live in other folders is a chain of one here:
+    // it keeps its place among the chains instead of going to the end.
+    let mut blocks = chains;
+    blocks.extend(loose.into_iter().map(|index| vec![index]));
+    blocks.sort_by(|left, right| {
         let (left_head, right_head) = (&files[left[0]], &files[right[0]]);
         created_at(left_head)
             .cmp(&created_at(right_head))
             .then_with(|| compare_names(&left_head.name, &right_head.name))
     });
-    loose.sort_by(|left, right| {
-        let (left, right) = (&files[*left], &files[*right]);
-        created_at(left)
-            .cmp(&created_at(right))
-            .then_with(|| compare_names(&left.name, &right.name))
-    });
 
-    let order = chains.into_iter().flatten().chain(loose).collect::<Vec<_>>();
+    let order = blocks.into_iter().flatten().collect::<Vec<_>>();
     let mut slots = files.into_iter().map(Some).collect::<Vec<_>>();
     folders
         .into_iter()
@@ -321,6 +322,7 @@ mod tests {
             modified_at: None,
             next_page: None,
             previous_page: None,
+            context: None,
         }
     }
 
@@ -345,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn folders_first_then_page_chains_then_loose_notes() {
+    fn folders_first_then_chains_and_single_notes_by_date() {
         let mut first = file("a.md", 30);
         first.next_page = Some("[[b]]".into());
         let mut second = file("b.md", 10);
@@ -357,12 +359,34 @@ mod tests {
             first,
             file("z.md", 99),
         ]);
-        assert_eq!(names(&nodes), vec!["docs", "a.md", "b.md", "z.md"]);
+        assert_eq!(names(&nodes), vec!["docs", "z.md", "a.md", "b.md"]);
         let docs = nodes[0].children.as_ref().unwrap();
         assert_eq!(names(docs), vec!["x.md", "y.md"]);
         assert_eq!(nodes[0].expanded, Some(false));
         assert_eq!(nodes[0].has_children, Some(true));
-        assert_eq!(nodes[3].path.as_deref(), Some("C:/lib/z.md"));
+        assert_eq!(nodes[1].path.as_deref(), Some("C:/lib/z.md"));
+    }
+
+    #[test]
+    fn a_course_chained_across_folders_keeps_its_order_in_each_folder() {
+        // Operadores → (asignacion/…) → spoiler-if → relacionales → (bits/…) → ternarios:
+        // the cover and the last note link only to other folders.
+        let mut cover = file("Operadores.md", 10);
+        cover.next_page = Some("[[Cursos/programacion/operadores/asignacion/Asignacion.md]]".into());
+        cover.previous_page = Some("[[Cursos/programacion/tablas-de-verdad/nand.md]]".into());
+        let mut spoiler = file("spoiler-if.md", 20);
+        spoiler.previous_page = Some("[[Cursos/programacion/operadores/aritmeticos/operador-4.md]]".into());
+        spoiler.next_page = Some("[[relacionales.md]]".into());
+        let mut relational = file("relacionales.md", 21);
+        relational.previous_page = Some("[[spoiler-if.md]]".into());
+        relational.next_page = Some("[[Cursos/programacion/operadores/bits-bitwise/Bits (Bitwise).md]]".into());
+        let mut ternary = file("condicionales-ternarios.md", 40);
+        ternary.previous_page = Some("[[Cursos/programacion/operadores/bits-bitwise/desplazamiento-derecha.md]]".into());
+        let nodes = normalize_tree(vec![ternary, relational, folder("asignacion", Vec::new()), cover, spoiler]);
+        assert_eq!(
+            names(&nodes),
+            vec!["asignacion", "Operadores.md", "spoiler-if.md", "relacionales.md", "condicionales-ternarios.md"]
+        );
     }
 
     #[test]

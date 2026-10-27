@@ -541,6 +541,243 @@
       }
     ]
   },
+  "steps": {
+    "todayLabel": "4.310",
+    "todayCaption": "Hoy",
+    "summary": "Promedio de la semana: 7.890 pasos. Meta orientativa: 8.000 pasos.",
+    "ranges": [
+      {
+        "value": "30",
+        "label": "30 días",
+        "selected": false
+      },
+      {
+        "value": "90",
+        "label": "90 días",
+        "selected": true
+      },
+      {
+        "value": "365",
+        "label": "1 año",
+        "selected": false
+      },
+      {
+        "value": "all",
+        "label": "Todo",
+        "selected": false
+      }
+    ],
+    "chart": {
+      "points": [
+        {
+          "x": 0.0,
+          "y": 0.496,
+          "label": "24 sept 2026",
+          "valueLabel": "6.200 pasos"
+        },
+        {
+          "x": 0.3333333333333333,
+          "y": 0.784,
+          "label": "26 sept 2026",
+          "valueLabel": "9.800 pasos"
+        },
+        {
+          "x": 0.6666666666666666,
+          "y": 0.9,
+          "label": "27 sept 2026",
+          "valueLabel": "11.250 pasos"
+        },
+        {
+          "x": 1.0,
+          "y": 0.3448,
+          "label": "28 sept 2026",
+          "valueLabel": "4.310 pasos"
+        }
+      ],
+      "yTicks": [
+        {
+          "at": 0.0,
+          "label": "0"
+        },
+        {
+          "at": 0.2,
+          "label": "2.500"
+        },
+        {
+          "at": 0.4,
+          "label": "5.000"
+        },
+        {
+          "at": 0.6,
+          "label": "7.500"
+        },
+        {
+          "at": 0.8,
+          "label": "10.000"
+        },
+        {
+          "at": 1.0,
+          "label": "12.500"
+        }
+      ],
+      "xTicks": [
+        {
+          "at": 0.0,
+          "label": "24/09"
+        },
+        {
+          "at": 0.3333333333333333,
+          "label": "26/09"
+        },
+        {
+          "at": 0.6666666666666666,
+          "label": "27/09"
+        },
+        {
+          "at": 1.0,
+          "label": "28/09"
+        }
+      ],
+      "goal": {
+        "at": 0.64,
+        "label": "Meta 8.000"
+      }
+    },
+    "emptyText": "Cargá los pasos de al menos dos días para ver tu evolución.",
+    "entries": [
+      {
+        "date": "2026-09-28",
+        "dateLabel": "28 sept 2026",
+        "valueLabel": "4.310 pasos"
+      },
+      {
+        "date": "2026-09-27",
+        "dateLabel": "27 sept 2026",
+        "valueLabel": "11.250 pasos"
+      },
+      {
+        "date": "2026-09-26",
+        "dateLabel": "26 sept 2026",
+        "valueLabel": "9.800 pasos"
+      },
+      {
+        "date": "2026-09-24",
+        "dateLabel": "24 sept 2026",
+        "valueLabel": "6.200 pasos"
+      }
+    ]
+  },
+  "sleep": {
+    "todayLabel": "6 h 30 min",
+    "todayCaption": "Anoche",
+    "summary": "Promedio de la semana: 6 h 58 min, menos de lo recomendado. Recomendado: 7 a 9 h.",
+    "ranges": [
+      {
+        "value": "30",
+        "label": "30 días",
+        "selected": false
+      },
+      {
+        "value": "90",
+        "label": "90 días",
+        "selected": true
+      },
+      {
+        "value": "365",
+        "label": "1 año",
+        "selected": false
+      },
+      {
+        "value": "all",
+        "label": "Todo",
+        "selected": false
+      }
+    ],
+    "chart": {
+      "points": [
+        {
+          "x": 0.0,
+          "y": 0.6666666666666667,
+          "label": "26 sept 2026",
+          "valueLabel": "6 h 40 min"
+        },
+        {
+          "x": 0.5,
+          "y": 0.775,
+          "label": "27 sept 2026",
+          "valueLabel": "7 h 45 min"
+        },
+        {
+          "x": 1.0,
+          "y": 0.65,
+          "label": "28 sept 2026",
+          "valueLabel": "6 h 30 min"
+        }
+      ],
+      "yTicks": [
+        {
+          "at": 0.0,
+          "label": "0 h"
+        },
+        {
+          "at": 0.2,
+          "label": "2 h"
+        },
+        {
+          "at": 0.4,
+          "label": "4 h"
+        },
+        {
+          "at": 0.6,
+          "label": "6 h"
+        },
+        {
+          "at": 0.8,
+          "label": "8 h"
+        },
+        {
+          "at": 1.0,
+          "label": "10 h"
+        }
+      ],
+      "xTicks": [
+        {
+          "at": 0.0,
+          "label": "26/09"
+        },
+        {
+          "at": 0.5,
+          "label": "27/09"
+        },
+        {
+          "at": 1.0,
+          "label": "28/09"
+        }
+      ],
+      "goal": {
+        "at": 0.7,
+        "label": "Mínimo recomendado 7 h"
+      }
+    },
+    "emptyText": "Cargá el sueño de al menos dos noches para ver tu evolución.",
+    "entries": [
+      {
+        "date": "2026-09-28",
+        "dateLabel": "28 sept 2026",
+        "valueLabel": "6 h 30 min"
+      },
+      {
+        "date": "2026-09-27",
+        "dateLabel": "27 sept 2026",
+        "valueLabel": "7 h 45 min"
+      },
+      {
+        "date": "2026-09-26",
+        "dateLabel": "26 sept 2026",
+        "valueLabel": "6 h 40 min"
+      }
+    ]
+  },
   "composition": {
     "date": "2026-09-28",
     "subtitle": "Medición del 28 de septiembre de 2026, comparada con la anterior",

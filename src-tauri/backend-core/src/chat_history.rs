@@ -513,6 +513,11 @@ fn chat_body(document: &StoredChatDocument, messages: &[StoredChatMessage]) -> S
 }
 
 pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
+    format!("{}\n{}", chat_header(document), chat_body(document, &document.messages))
+}
+
+/// The frontmatter of a chat file, closing line included.
+fn chat_header(document: &StoredChatDocument) -> String {
     let mut lines = vec![
         format!("title: {}", serialize_text(&document.title)),
         format!("contexto: {}", serialize_text(CONFIDENTIAL_CONTEXT)),
@@ -551,11 +556,11 @@ pub fn serialize_chat_document(document: &StoredChatDocument) -> String {
     if document.pinned {
         lines.push("pinned: true".to_string());
     }
-    format!("---\n{}\n---\n\n{}", lines.join("\n"), chat_body(document, &document.messages))
+    format!("---\n{}\n---\n", lines.join("\n"))
 }
 
 /// Appends the last turn (the last two messages, or the only one) to an
-/// existing chat file when its header matches, so a long history is not
+/// existing chat file when its title matches, so a long history is not
 /// rewritten on every message. `None` asks for a full rewrite.
 pub fn append_chat_messages(source: &str, document: &StoredChatDocument) -> Option<String> {
     let count = if document.messages.len() > 2 { 2 } else { document.messages.len().min(1) };
@@ -571,6 +576,16 @@ pub fn append_last_messages(source: &str, document: &StoredChatDocument, count: 
         .and_then(|rest| rest.find("\n---\n").map(|index| index + 4 + 5))
         .unwrap_or(0);
     let (header, body) = normalized.split_at(body_start);
+    // The header keeps what the file has (the context panel may have changed
+    // it during the turn) plus the context the turn used: the files, folders,
+    // mode and library search stay as the person left them in the composer.
+    let mut stored = parse_chat_document(header, &document.title);
+    stored.context_scope_key = document.context_scope_key.clone();
+    stored.selected_context_mode = document.selected_context_mode;
+    stored.selected_context_files = document.selected_context_files.clone();
+    stored.selected_context_folders = document.selected_context_folders.clone();
+    stored.library_rag_enabled = document.library_rag_enabled;
+    let header = chat_header(&stored);
     let trimmed_body = body.trim_end();
     let mut lines = trimmed_body.lines().map(str::trim).filter(|line| !line.is_empty());
     if lines.next() != Some(format!("# {}", document.title).as_str()) {
@@ -743,6 +758,30 @@ Hola"));
         let appended = append_last_messages(&appended, &current, 2).expect("append agents");
         assert_eq!(parse_chat_document(&appended, "x"), current);
         assert_eq!(append_chat_messages("---\ntitle: x\n---\n\n# Otro\n", &current), None);
+    }
+
+    #[test]
+    fn an_appended_turn_keeps_the_library_search_and_context_of_the_composer() {
+        let mut current = document();
+        let mut panel = current.clone();
+        // The context panel turned the tools off while the turn ran.
+        panel.tools_enabled = true;
+        panel.permanent_context = "Desde el panel".into();
+        let source = serialize_chat_document(&panel);
+        current.library_rag_enabled = true;
+        current.selected_context_files = vec!["notas/b.md".into()];
+        current.selected_context_folders = Vec::new();
+        current.selected_context_mode = ChatContextMode::Index;
+        current.messages.push(StoredChatMessage { role: ChatRole::User, content: "Otra".into(), attachments: vec![], agent: None });
+        current.messages.push(StoredChatMessage { role: ChatRole::Assistant, content: "Respuesta".into(), attachments: vec![], agent: None });
+        let parsed = parse_chat_document(&append_chat_messages(&source, &current).expect("append"), "x");
+        assert!(parsed.library_rag_enabled);
+        assert_eq!(parsed.selected_context_files, vec!["notas/b.md".to_string()]);
+        assert!(parsed.selected_context_folders.is_empty());
+        assert_eq!(parsed.selected_context_mode, ChatContextMode::Index);
+        assert!(parsed.tools_enabled);
+        assert_eq!(parsed.permanent_context, "Desde el panel");
+        assert_eq!(parsed.messages, current.messages);
     }
 
     #[test]

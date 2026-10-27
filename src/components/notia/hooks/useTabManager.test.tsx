@@ -12,11 +12,12 @@ const { activateSpecialTab, addOpenTab, GYM_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE
 const { registerPendingEditorChanges } = await import('../../../services/markdown/pendingEditorChanges')
 const { useTabManager } = await import('./useTabManager')
 
-function openNote(path: string, source: string) {
+function openNote(path: string, source: string, revision?: string) {
   store.dispatch(addOpenTab({
     document: { path, name: path, extension: 'md', viewKind: 'markdown', source },
     saveStatus: 'idle',
     latestSavedSource: source,
+    ...(revision ? { latestSavedRevision: revision } : {}),
   }))
 }
 
@@ -25,13 +26,16 @@ function sourceOf(path: string): string | undefined {
   return tab && 'source' in tab.document ? tab.document.source : undefined
 }
 
-function renderTabManager() {
+function renderTabManager(overrides: Partial<Parameters<typeof useTabManager>[0]> = {}) {
   const wrapper = ({ children }: { children: ReactNode }) => createElement(Provider, { store, children })
   return renderHook(() => useTabManager({
     clearPendingTextSaveByPath: () => {},
     bumpLibraryIndexRevision: () => {},
     resetColdPassSession: () => {},
     activeLibraryId: 'lib',
+    onMergedSource: () => {},
+    confirmDiscard: async () => false,
+    ...overrides,
   }), { wrapper })
 }
 
@@ -108,5 +112,39 @@ describe('useTabManager and the module tabs', () => {
 
     expect(store.getState().documents.specialTabs.gym).toBe(false)
     expect(store.getState().documents.specialTabs.health).toBe(false)
+  })
+
+  it('sends the text it started from and shows what the backend merged', async () => {
+    openNote('A.md', 'Uno\nDos\n', 'r1')
+    store.dispatch(updateTabSource({ path: 'A.md', source: 'Uno editado\nDos\n' }))
+    // The agent changed «Dos» meanwhile: the backend merged both.
+    documents.writeLibraryDocument.mockResolvedValue({ ok: true, revision: 'r3', content: 'Uno editado\nDos del agente\n', mergeConflicts: 0 })
+    const onMergedSource = vi.fn()
+    const { result } = renderTabManager({ onMergedSource })
+
+    await act(async () => {
+      await result.current.persistTextDocumentSource('A.md', 'Uno editado\nDos\n')
+    })
+
+    expect(documents.writeLibraryDocument).toHaveBeenCalledWith('lib', 'A.md', 'Uno editado\nDos\n', { expectedRevision: 'r1', baseContent: 'Uno\nDos\n' })
+    expect(onMergedSource).toHaveBeenCalledWith('A.md', 'Uno editado\nDos del agente\n', 'r3')
+    expect(store.getState().documents.dialogState).toBeNull()
+  })
+
+  it('never traps a tab whose note cannot be saved', async () => {
+    openNote('A.md', 'Hola', 'r1')
+    store.dispatch(updateTabSource({ path: 'A.md', source: 'Hola mundo' }))
+    documents.writeLibraryDocument.mockResolvedValue({ ok: false, error: 'Disco lleno.' })
+    const confirmDiscard = vi.fn(async () => false)
+    const { result, rerender } = renderTabManager({ confirmDiscard })
+
+    await act(async () => { await result.current.closeTabByPath('A.md') })
+    expect(confirmDiscard).toHaveBeenCalledWith('A.md', expect.stringContaining('No se pudieron guardar'))
+    expect(sourceOf('A.md')).toBe('Hola mundo')
+
+    confirmDiscard.mockResolvedValue(true)
+    rerender()
+    await act(async () => { await result.current.closeTabByPath('A.md') })
+    expect(sourceOf('A.md')).toBeUndefined()
   })
 })

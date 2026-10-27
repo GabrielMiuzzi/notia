@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { asHealthError } from '../services/healthService'
-import type { BmiPanel, ObjectivePanel, WaterPanel, WeightPanel } from '../types/healthTypes'
+import type { BmiPanel, DailyPanel, ObjectivePanel, WaterPanel, WeightPanel } from '../types/healthTypes'
 import { RangeBarView, WeightChartView } from './HealthCharts'
-import { toNumber } from './healthUi'
+import { toNumber, type DailyPanelCopy } from './healthUi'
 
 export function BmiPanelView({ panel }: { panel: BmiPanel }) {
   return (
@@ -87,6 +87,79 @@ export function WeightPanelView({ panel, today, onRange, onAdd, onDelete }: Weig
               <span className="hl-records__value">
                 <span>{entry.kgLabel}</span>
                 <button type="button" className="hl-link" onClick={() => onDelete(entry.date)} aria-label={`Eliminar peso del ${entry.dateLabel}`}>Eliminar</button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+
+interface DailyPanelProps {
+  panel: DailyPanel
+  copy: DailyPanelCopy
+  today: string
+  onRange: (range: string) => void
+  /** El valor como se escribió («8.432», «7:30»); Rust lo lee y lo valida. */
+  onAdd: (date: string, value: string) => Promise<boolean>
+  onDelete: (date: string) => void
+}
+
+/** Pasos o sueño: el valor del día, el promedio, el gráfico, la carga y los registros. */
+export function DailyPanelView({ panel, copy, today, onRange, onAdd, onDelete }: DailyPanelProps) {
+  const [date, setDate] = useState(today)
+  const [value, setValue] = useState('')
+  const [showList, setShowList] = useState(false)
+  const titleId = `hl-${copy.id}-title`
+  const save = async () => {
+    if (!value.trim()) return
+    if (await onAdd(date, value.trim())) setValue('')
+  }
+  return (
+    <section className={`hl-panel hl-daily hl-daily--${copy.id}`} aria-labelledby={titleId}>
+      <div className="hl-panel__top">
+        <div>
+          <h2 id={titleId} className="hl-h2">{copy.title}</h2>
+          <div className="hl-figure">
+            <span className="hl-big">{panel.todayLabel}</span>
+            {copy.unit && panel.todayLabel !== '—' && <span className="hl-muted">{copy.unit}</span>}
+            <span className="hl-small hl-muted">{panel.todayCaption}</span>
+          </div>
+          {panel.summary && <p className="hl-small hl-muted">{panel.summary}</p>}
+        </div>
+        <div className="hl-seg" role="group" aria-label={`Período del gráfico de ${copy.title.toLowerCase()}`}>
+          {panel.ranges.map((range) => (
+            <button key={range.value} type="button" aria-pressed={range.selected} onClick={() => onRange(range.value)}>{range.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="hl-weight__chart">
+        {panel.chart ? <WeightChartView chart={panel.chart} /> : <div className="hl-well hl-empty-chart">{panel.emptyText}</div>}
+      </div>
+      <form className="hl-weight__form" onSubmit={(event) => { event.preventDefault(); void save() }}>
+        <label className="hl-field">
+          <span>Fecha</span>
+          <input type="date" className="hl-input" value={date} max={today} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <label className="hl-field hl-field--narrow">
+          <span>{copy.inputLabel}</span>
+          <input className="hl-input" inputMode={copy.id === 'steps' ? 'numeric' : 'text'} placeholder={copy.placeholder} value={value} onChange={(event) => setValue(event.target.value)} />
+        </label>
+        <button type="submit" className="hl-button hl-button--primary" disabled={!value.trim()}>{copy.addLabel}</button>
+        <button type="button" className="hl-button hl-weight__toggle" aria-expanded={showList} onClick={() => setShowList(!showList)}>
+          {showList ? 'Ocultar registros' : `Ver registros (${panel.entries.length})`}
+        </button>
+      </form>
+      {showList && (
+        <ul className="hl-well hl-records">
+          {panel.entries.map((entry) => (
+            <li key={entry.date}>
+              <span className="hl-muted">{entry.dateLabel}</span>
+              <span className="hl-records__value">
+                <span>{entry.valueLabel}</span>
+                <button type="button" className="hl-link" onClick={() => onDelete(entry.date)} aria-label={`Eliminar ${copy.recordName} del ${entry.dateLabel}`}>Eliminar</button>
               </span>
             </li>
           ))}

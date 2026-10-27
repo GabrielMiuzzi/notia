@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use notia_backend_core::pomodoro::{PomodoroAction, PomodoroState};
 use notia_backend_core::{
-    BackendError, BackendErrorCode, PersistentTaskManager, PomodoroEvent, TaskBoardIntent, TaskBoardViewDto, TaskContextSearchRequest, TaskManagerContextDto, TaskManagerMutationPort, TaskManagerReadPort, TaskManagerSnapshotReadDto, TaskManagerSnapshotStore, TaskMutationApplyRequestDto, TaskMutationDto, TaskMutationRequestDto, TaskTicketListRequest, TaskTicketReadRequest,
+    BackendError, BackendErrorCode, PersistentTaskManager, PomodoroEvent, TaskBoardIntent, TaskBoardViewDto, TaskContextSearchRequest, TaskManagerContextDto, TaskManagerMutationPort, TaskManagerReadPort, TaskManagerSnapshotReadDto, TaskManagerSnapshotStore, TaskMutationApplyRequestDto, TaskMutationDto, TaskMutationRequestDto, TaskTicketListRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -70,29 +70,7 @@ pub(crate) fn execute_backend_read_tool(
                 BackendError::new(BackendErrorCode::Internal, "No se pudo serializar la lectura de Task Manager.", true)
             })
         }
-        "read_task_tickets" => {
-            let include_archived = arguments
-                .get("includeArchived")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let tickets = notia_backend_core::ticket_ids_to_read(arguments)?
-                .into_iter()
-                .map(|ticket_id| {
-                    manager.read_ticket(&TaskTicketReadRequest {
-                        context: context.clone(),
-                        ticket_id,
-                        include_archived,
-                        subtask_offset: 0,
-                        subtask_limit: notia_backend_core::MAX_TASK_RESULTS,
-                        comment_offset: 0,
-                        comment_limit: notia_backend_core::MAX_TASK_RESULTS,
-                    })
-                })
-                .collect::<Result<Vec<_>, BackendError>>()?;
-            serde_json::to_value(json!({ "tickets": tickets })).map_err(|_| {
-                BackendError::new(BackendErrorCode::Internal, "No se pudo serializar el ticket.", true)
-            })
-        }
+        "read_task_tickets" => notia_backend_core::read_tickets_by_id(manager.as_ref(), &context, arguments),
         "search_task_context" => {
             let request = serde_json::from_value::<TaskContextSearchRequest>(payload).map_err(|_| {
                 BackendError::invalid_input("Los parámetros de búsqueda de Task Manager no son válidos.")
@@ -983,6 +961,49 @@ fn authorized_ticket_path(
     }
 }
 
+/// Local time of an instant (ms since the epoch) on this device.
+fn local_time_of(unix_ms: i64) -> jiff::civil::DateTime {
+    use chrono::{Datelike, TimeZone, Timelike};
+    let Some(moment) = chrono::Local.timestamp_millis_opt(unix_ms).single() else {
+        return jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0);
+    };
+    jiff::civil::DateTime::new(
+        moment.year() as i16,
+        moment.month() as i8,
+        moment.day() as i8,
+        moment.hour() as i8,
+        moment.minute() as i8,
+        0,
+        0,
+    )
+    .unwrap_or(jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0))
+}
+
+/// «Detalle de tarea» of the phone: the ticket's description and comments.
+fn task_detail_in(
+    app: &AppHandle,
+    state: &TaskManagerBackendState,
+    registry: &LibraryBindingRegistry,
+    context: &TaskManagerContextDto,
+    logical_path: &str,
+) -> Result<notia_backend_core::task_detail_view::TaskDetailDto, BackendError> {
+    let manager = manager(app, state, registry, &context.library_id, &context.library_user_id)?;
+    let snapshot = manager.read_snapshot(context)?;
+    let names = crate::library_users::library_user_names(app, registry, &context.library_id);
+    let owner = names.get(LOCAL_OWNER).cloned().or_else(|| Some("Vos".to_string()));
+    notia_backend_core::task_detail_view::project_task_detail(&snapshot, logical_path, &names, owner.as_deref(), local_now(), local_time_of)
+}
+
+pub(crate) fn task_manager_task_detail(
+    app: AppHandle,
+    payload: TicketSourcePayload,
+    state: State<'_, TaskManagerBackendState>,
+    registry: State<'_, LibraryBindingRegistry>,
+) -> Result<notia_backend_core::task_detail_view::TaskDetailDto, BackendError> {
+    let context = payload.context.into_core()?;
+    task_detail_in(&app, &state, &registry, &context, &payload.logical_path)
+}
+
 pub(crate) fn task_manager_read_ticket_source(
     app: AppHandle,
     payload: TicketSourcePayload,
@@ -1080,6 +1101,10 @@ pub(crate) fn task_manager_execute_for_publication(
             let source = read_ticket_source_in(app, state, registry, &context, &text("logicalPath")?)?;
             Ok((json!(source), false))
         }
+        "task_manager_task_detail" => {
+            let detail = task_detail_in(app, state, registry, &context, &text("logicalPath")?)?;
+            Ok((json!(detail), false))
+        }
         "task_manager_write_ticket_source" => {
             let source = write_ticket_source_in(
                 app,
@@ -1107,6 +1132,67 @@ pub(crate) fn task_manager_execute_for_publication(
             let changed = result.changed;
             Ok((json!(result), changed))
         }
+        // The library of the published boards' contexts: the explorer, the
+        // notes and the graph. Identity and scope come from the session.
+        "library_read_directory"
+        | "library_read_document"
+        | "library_write_document"
+        | "library_mutate_entry"
+        | "backend_library_graph"
+        | "backend_library_graph_search" => {
+            let active_board = payload.get("activeBoard").and_then(Value::as_str);
+            let scope = crate::published_library::scope(
+                app,
+                state,
+                registry,
+                library_id,
+                library_user_id,
+                context.allowed_board_ids.clone(),
+                active_board,
+            )?;
+            fn serialize<T: Serialize>(value: &T) -> Result<Value, BackendError> {
+                serde_json::to_value(value).map_err(|_| BackendError::new(BackendErrorCode::Internal, "No se pudo serializar la biblioteca publicada.", true))
+            }
+            match command {
+                "library_read_directory" => {
+                    let nodes = crate::published_library::read_directory(app, &scope, &text("path").unwrap_or_default())?;
+                    Ok((serialize(&nodes)?, false))
+                }
+                "library_read_document" => {
+                    let markdown_defaults = payload.get("markdownDefaults").and_then(Value::as_bool).unwrap_or(false);
+                    let document = crate::published_library::read_document(app, &scope, &text("path")?, markdown_defaults)?;
+                    Ok((serialize(&document)?, false))
+                }
+                "library_write_document" => {
+                    let result = crate::published_library::write_document(
+                        app,
+                        &scope,
+                        &text("path")?,
+                        text("content")?,
+                        payload.get("expectedRevision").and_then(Value::as_str).map(str::to_string),
+                        payload.get("createIfMissing").and_then(Value::as_bool).unwrap_or(false),
+                    )?;
+                    let changed = result.ok;
+                    Ok((serialize(&result)?, changed))
+                }
+                "library_mutate_entry" => {
+                    let entry = serde_json::from_value::<crate::published_library::PublishedEntryPayload>(payload.clone())
+                        .map_err(|_| BackendError::invalid_input("La operación publicada no es válida."))?;
+                    let result = crate::published_library::mutate_entry(app, &scope, entry)?;
+                    let changed = result.ok;
+                    Ok((serialize(&result)?, changed))
+                }
+                "backend_library_graph" => {
+                    let revision = payload.get("revision").and_then(Value::as_u64).unwrap_or(0);
+                    Ok((serialize(&crate::published_library::graph(app, &scope, revision)?)?, false))
+                }
+                _ => {
+                    let revision = payload.get("revision").and_then(Value::as_u64).unwrap_or(0);
+                    let max_results = payload.get("maxResults").and_then(Value::as_u64).unwrap_or(40) as usize;
+                    Ok((crate::published_library::graph_search(app, &scope, revision, &text("query")?, max_results)?, false))
+                }
+            }
+        }
         "task_manager_management_view" => {
             let mut request = serde_json::from_value::<ManagementViewPayload>(payload.clone())
                 .map_err(|_| BackendError::invalid_input("El pedido del plan no es válido."))?;
@@ -1131,8 +1217,27 @@ pub(crate) fn task_manager_execute_for_publication(
                 .map_err(|_| BackendError::invalid_input("El modo página pedido no es válido."))?;
             Ok((json!(crate::note_page_mode::markdown_set_page_mode(payload)?), false))
         }
-        // The strokes over one of the published tickets.
+        // The strokes over one of the published tickets, or over a note of
+        // the published library (sent as `published-vault/...`).
         command if crate::note_ink::PUBLISHED_INK_COMMANDS.contains(&command) => {
+            let identity = payload.get("path").and_then(Value::as_str).unwrap_or_default();
+            if crate::published_library::is_alias_path(identity) {
+                let scope = crate::published_library::scope(
+                    app,
+                    state,
+                    registry,
+                    library_id,
+                    library_user_id,
+                    context.allowed_board_ids.clone(),
+                    None,
+                )?;
+                let logical = crate::published_library::authorized_note(app, &scope, identity)?;
+                let mut payload = payload.clone();
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("path".to_string(), Value::String(logical));
+                }
+                return crate::note_ink::execute_for_publication(app, &context.library_id, command, &payload, |_| Ok(()));
+            }
             crate::note_ink::execute_for_publication(app, &context.library_id, command, payload, |path| {
                 authorized_ticket_path(app, state, registry, &context, path)
             })

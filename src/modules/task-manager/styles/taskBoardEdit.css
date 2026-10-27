@@ -1185,6 +1185,13 @@
   }
 }
 
+/* Phone pieces: hidden in the dialog, shown by the narrow screen below. */
+.tbe-header-save,
+.tbe-label-narrow,
+.tbe-delete {
+  display: none;
+}
+
 /* Narrow dialog: one column per row. */
 @container tbe (max-width: 560px) {
   .tbe-header {
@@ -1236,6 +1243,88 @@
 
   .tbe-year-months {
     font-size: 9.5px;
+  }
+
+  /* «Mobile · Editar tablero»: close, title and save on top; the sections as cards. */
+  .tbe-header {
+    gap: 6px;
+    padding: 10px 12px 10px 6px;
+    border-bottom-color: var(--tm-raised);
+    background: color-mix(in srgb, var(--tm-ink) 95%, transparent);
+  }
+
+  .tbe-header .tbe-tile {
+    display: none;
+  }
+
+  .tbe-close {
+    order: -1;
+    width: 44px;
+    height: 44px;
+    color: var(--tm-text);
+  }
+
+  .tbe-header .tbe-title {
+    font-size: 17px;
+  }
+
+  .tbe-header-save {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 11px;
+  }
+
+  .tbe-body {
+    gap: 14px;
+    padding: 16px;
+    background: var(--tm-ink);
+  }
+
+  .tbe-section,
+  .tbe-section--last {
+    padding: 16px;
+    border: 1px solid var(--tm-hairline);
+    border-radius: 16px;
+    background: var(--tm-panel);
+  }
+
+  .tbe-delete {
+    display: inline-flex;
+    min-height: 48px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid color-mix(in srgb, var(--tm-coral) 35%, transparent);
+    border-radius: 14px;
+    background: transparent;
+    color: var(--tm-coral);
+    font: inherit;
+    font-size: 14.5px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .tbe-footer .tbe-status {
+    display: none;
+  }
+
+  .tbe-footer .tbe-button {
+    min-height: 50px;
+    border-radius: 14px;
+    font-size: 15px;
+  }
+
+  .tbe-label-wide {
+    display: none;
+  }
+
+  .tbe-label-narrow {
+    display: inline;
   }
 }
 

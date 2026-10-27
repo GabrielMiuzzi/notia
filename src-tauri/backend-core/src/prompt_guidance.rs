@@ -69,7 +69,19 @@ pub fn scope_guidance(
     health_tools(&mut guidance, today);
     gym_tools(&mut guidance);
     ai_action_tools(&mut guidance, today);
+    ai_task_tools(&mut guidance);
     guidance.lines.join("\n")
+}
+
+/// Tareas IA: what is too long for one turn becomes a task the agent works
+/// out of the turn (plan, steps, review).
+fn ai_task_tools(guidance: &mut Guidance) {
+    if !guidance.has("create_ai_task") {
+        return;
+    }
+    guidance.push("Tareas IA: cuando el pedido es complejo o de muchos pasos (cambiar o revisar muchos documentos, investigar y después escribir, ordenar mucha información, un trabajo de varias etapas), no lo hagas en este turno: creá una Tarea IA con create_ai_task. Un Planificador arma el plan, un Ejecutor hace cada paso y un Review lo revisa y pide rehacer lo que falte. Los pedidos simples o de uno o dos pasos se hacen directamente, sin tarea.");
+    guidance.push("El goal de una Tarea IA lo leen agentes que no ven esta conversación: escribilo completo, con qué lograr, sobre qué (rutas, nombres, ids), cómo saber que está terminado y todo lo que la persona dijo que importa. Después de crearla, respondé en una o dos oraciones que la tarea quedó creada y que la puede seguir en Tareas IA (y que, si la pidió por Telegram, las aprobaciones y el resultado le llegan por ahí). No empieces a hacer la tarea vos.");
+    guidance.push_if(&["list_ai_tasks"], "Para seguir, leer, cancelar, reanudar, volver a revisar o borrar una tarea, buscala con list_ai_tasks (get_ai_task para su detalle, pasos e informes) y usá su id. Las tareas se guardan una semana.");
 }
 
 /// Gimnasio: the user's routines, training session and workouts, and the
@@ -91,10 +103,10 @@ fn health_tools(guidance: &mut Guidance, today: &str) {
     if !guidance.has("log_meal") {
         return;
     }
-    guidance.push("Salud guarda, para cada usuario, su perfil (nacimiento, sexo biológico, altura, actividad), sus pesos, las mediciones de su balanza, su peso objetivo y su plan de calorías, el agua y las comidas de cada día. Consultalo con get_health_summary y list_health_records y cambialo solo con sus herramientas.");
+    guidance.push("Salud guarda, para cada usuario, su perfil (nacimiento, sexo biológico, altura, actividad), sus pesos, las mediciones de su balanza, su peso objetivo y su plan de calorías, el agua, los pasos, las horas de sueño y las comidas de cada día. Consultalo con get_health_summary y list_health_records y cambialo solo con sus herramientas.");
     guidance.push(format!("Cuando el usuario cuenta lo que comió («almorcé…», «me comí…», «cené…») o manda la foto de una comida, con o sin texto, usá log_meal: con una sola llamada Notia busca la receta en Recetas, la crea si no existe (con la foto si la hay) y carga la comida en Salud. Pasá name con el plato sin cantidades, recipe si sabés cuál es del recetario, category (desayuno, snack, almuerzo, merienda o cena), date si no fue hoy ({today}) y photoFromMessage con el número de la imagen. Si la foto no trae explicación, reconstruí vos qué es: name, description e ingredients con pesos estimados en gramos."));
     guidance.push("Decí en log_meal cuánto comió: servings (porciones de la receta), grams (peso total) o portionNote si cambió algo respecto de la receta («con 200 g de papas en vez de 100», «sin pan»); Notia ajusta las calorías y los macros a esa cantidad. No inventes calorías ni macros: pasalos solo si el usuario los dijo.");
-    guidance.push("«Peso 82,4» o «me pesé…» es log_weight. Los datos de la balanza (grasa, músculo, agua, grasa visceral, metabolismo…) van juntos con save_body_measurement, que también registra el peso. «Tomé un vaso de agua» es log_water con 250 ml (una botella, 500 ml). Para un plan de calorías fijá antes el objetivo con set_weight_goal y usá set_health_plan (mode ai con IA, calculated sin IA, none para volver a mantenimiento).");
+    guidance.push("«Peso 82,4» o «me pesé…» es log_weight. Los datos de la balanza (grasa, músculo, agua, grasa visceral, metabolismo…) van juntos con save_body_measurement, que también registra el peso. «Tomé un vaso de agua» es log_water con 250 ml (una botella, 500 ml). «Hoy caminé 9.000 pasos» es log_steps. «Dormí 7 horas y media» es log_sleep (hours 7.5): lo de anoche va con la fecha de hoy, el día en que se despertó. Para un plan de calorías fijá antes el objetivo con set_weight_goal y usá set_health_plan (mode ai con IA, calculated sin IA, none para volver a mantenimiento).");
     guidance.push("Los rangos de Salud son referencias generales, no un diagnóstico: ante valores fuera de rango o un objetivo con IMC bajo, sugerí consultarlo con un profesional.");
 }
 
@@ -326,8 +338,9 @@ fn document(guidance: &mut Guidance, snapshot: Option<&BackendSnapshot>) {
         _ => guidance.push("No hay una selección de bloques activa en el editor."),
     }
     guidance.push_if(&["read_active_markdown_document"], "Leé el archivo activo con read_active_markdown_document una vez antes de responder sobre su contenido o de modificarlo, y reutilizá ese resultado. Si pide resolver un ejercicio o inciso, verificá los cálculos sobre lo leído.");
-    guidance.push_if(&["preview_multi_document_markdown_edit", "apply_multi_document_markdown_edit"], "Para el mismo cambio semántico en varios documentos usá preview_multi_document_markdown_edit y después apply_multi_document_markdown_edit con el preview exacto; se aplica todo o nada.");
-    guidance.push_if(&["preview_markdown_edit", "apply_markdown_edit"], "Para cambios semánticos (frontmatter, tags, wikilinks, hechos, plantillas o bloques) o para corregir una frase o un párrafo de una nota (replaceText con find copiado tal cual de la lectura) usá preview_markdown_edit con la ruta y la operación, y después apply_markdown_edit con el preview exacto devuelto; ante un conflicto de revisión, releé y generá otro preview. No reescribas la nota entera con replace_library_document para cambiar una parte.");
+    guidance.push_if(&["preview_multi_document_markdown_edit", "apply_multi_document_markdown_edit"], "Para cambios semánticos en varios documentos usá apply_multi_document_markdown_edit con edits [{path, operation}] (hasta 20 documentos y 60 operaciones por llamada; un documento puede repetirse y sus operaciones se aplican en orden, por ejemplo nextPage y previousPage); se aplica todo o nada y la confirmación muestra el diff. preview_multi_document_markdown_edit, con las mismas edits, solo hace falta para ver el cambio antes; el apply no recibe el preview. Si un documento de la tanda falla, el error los nombra a todos y no se escribe nada: corregilos o sacalos y volvé a mandarla. El resultado dice el frontmatter que quedó en cada documento y cuál fue el último. Si hay más documentos, seguí en tandas hasta terminar.");
+    guidance.push_if(&["inspect_page_chain"], "Para revisar o reordenar una cadena de nextPage/previousPage (un curso, una wiki) usá inspect_page_chain con la carpeta: devuelve las páginas en orden con todo su frontmatter y los enlaces rotos, no recíprocos, cortos, repetidos, ciclos y páginas sueltas. Usala antes de cambiar la cadena y otra vez al terminar, en lugar de leer las páginas una por una.");
+    guidance.push_if(&["preview_markdown_edit", "apply_markdown_edit"], "Para cambios semánticos (frontmatter, tags, wikilinks, hechos, plantillas o bloques) o para corregir una frase o un párrafo de una nota (replaceText con find copiado tal cual de la lectura) usá apply_markdown_edit con la ruta y la operación (la confirmación muestra el diff); preview_markdown_edit, con los mismos argumentos, solo hace falta para ver el cambio antes, y el apply no recibe el preview. Ante un conflicto de revisión, releé y volvé a pedir el cambio. No reescribas la nota entera con replace_library_document para cambiar una parte.");
     guidance.push_if(&["replace_library_document"], "Para reescribir el cuerpo del archivo usá replace_library_document con el contenido completo y la expectedRevision leída; la herramienta muestra la confirmación visible. No pidas confirmación en texto.");
     guidance.push("Los adjuntos enviados por el usuario ya están autorizados. Si piden insertar o transcribir un adjunto, conservá el orden completo, usá tablas y encabezados cuando correspondan y cada fórmula en un bloque $$...$$; no inventes partes ilegibles.");
 }

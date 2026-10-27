@@ -242,6 +242,8 @@ enum PublicationMutationCommand {
     TaskManagerWriteTicketSource,
     TaskManagerBoardExecute,
     TaskManagerPomodoro,
+    LibraryWriteDocument,
+    LibraryMutateEntry,
     BeginBatch,
     EndBatch,
 }
@@ -253,6 +255,8 @@ impl PublicationMutationCommand {
             "task_manager_write_ticket_source" => Some(Self::TaskManagerWriteTicketSource),
             "task_manager_board_execute" => Some(Self::TaskManagerBoardExecute),
             "task_manager_pomodoro" => Some(Self::TaskManagerPomodoro),
+            "library_write_document" => Some(Self::LibraryWriteDocument),
+            "library_mutate_entry" => Some(Self::LibraryMutateEntry),
             "begin_task_manager_publication_batch" => Some(Self::BeginBatch),
             "end_task_manager_publication_batch" => Some(Self::EndBatch),
             _ => None,
@@ -368,14 +372,23 @@ pub(crate) fn published_board_ids(app: &crate::host::AppHandle, library_id: &str
     }
 }
 
+/// Third field of a session «Recordar sesión» opened: it outlives this run
+/// of Notia (see `store_remembered_sessions`).
 #[cfg(target_os = "windows")]
-fn encode_authenticated_session(user_id: &str, ttl: Duration) -> String {
+const REMEMBERED_SESSION_MARK: &str = "remembered";
+
+#[cfg(target_os = "windows")]
+fn encode_authenticated_session(user_id: &str, ttl: Duration, remembered: bool) -> String {
     let expires_at = SystemTime::now()
         .checked_add(ttl)
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .map(|value| value.as_secs())
         .unwrap_or(u64::MAX);
-    format!("{user_id}\0{expires_at}")
+    if remembered {
+        format!("{user_id}\0{expires_at}\0{REMEMBERED_SESSION_MARK}")
+    } else {
+        format!("{user_id}\0{expires_at}")
+    }
 }
 
 fn authenticated_session_user(value: &str) -> &str {
@@ -387,7 +400,7 @@ fn authenticated_session_user(value: &str) -> &str {
 
 #[cfg(target_os = "windows")]
 fn authenticated_session_expired(value: &str) -> bool {
-    let Some((_, expires_at)) = value.split_once('\0') else {
+    let Some(expires_at) = value.split('\0').nth(1) else {
         // Test fixtures and sessions created by older in-memory versions have
         // no timestamp. They remain valid until the normal revocation path.
         return false;
@@ -397,6 +410,116 @@ fn authenticated_session_expired(value: &str) -> bool {
             .duration_since(UNIX_EPOCH)
             .map_or(true, |now| now.as_secs() >= seconds)
     })
+}
+
+#[cfg(target_os = "windows")]
+fn authenticated_session_remembered(value: &str) -> bool {
+    value.split('\0').nth(2) == Some(REMEMBERED_SESSION_MARK)
+}
+
+// ---------- Sessions «Recordar sesión» keeps across runs of Notia ----------
+
+/// Sessions opened with «Recordar sesión» are kept on this computer, sealed
+/// for the Windows account (`device_secret`), so publishing the same library
+/// again (Notia restarts, the Owner changes the boards) finds them and the
+/// browser's 30-day cookie keeps working. They go away when they expire,
+/// when the user's access is revoked, when the password changes and when
+/// the Owner stops the publication.
+#[cfg(target_os = "windows")]
+#[derive(Serialize, Deserialize)]
+struct RememberedSessionsFile {
+    library_id: String,
+    sessions: HashMap<String, String>,
+}
+
+#[cfg(target_os = "windows")]
+fn remembered_sessions_path(app: &crate::host::AppHandle, library_id: &str) -> Option<std::path::PathBuf> {
+    let key = library_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect::<String>();
+    if key.is_empty() {
+        return None;
+    }
+    app.path().app_data_dir().ok().map(|directory| directory.join("task-manager-publication").join(format!("sessions-{key}.bin")))
+}
+
+#[cfg(target_os = "windows")]
+fn remembered_sessions_target(guard: &PublicationRuntime) -> Option<(crate::host::AppHandle, String)> {
+    let app = guard.app_handle.clone()?;
+    let library_id = guard.payload.as_ref()?.library_id.clone()?;
+    Some((app, library_id))
+}
+
+/// Writes the remembered sessions still valid; without any, the file goes.
+#[cfg(target_os = "windows")]
+fn store_remembered_sessions(guard: &PublicationRuntime) {
+    let Some((app, library_id)) = remembered_sessions_target(guard) else {
+        return;
+    };
+    let Some(path) = remembered_sessions_path(&app, &library_id) else {
+        return;
+    };
+    let sessions: HashMap<String, String> = guard
+        .authenticated_sessions
+        .iter()
+        .filter(|(_, value)| authenticated_session_remembered(value) && !authenticated_session_expired(value))
+        .map(|(token, value)| (token.clone(), value.clone()))
+        .collect();
+    if sessions.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let file = RememberedSessionsFile { library_id, sessions };
+    let Ok(text) = serde_json::to_vec(&file) else {
+        return;
+    };
+    let Ok(sealed) = crate::device_secret::protect(&text) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let temporary = path.with_extension("bin.tmp");
+    if std::fs::write(&temporary, sealed).is_ok() {
+        let _ = std::fs::rename(&temporary, &path);
+    }
+}
+
+/// Brings back the remembered sessions of the library being published, up
+/// to the publication's client limit.
+#[cfg(target_os = "windows")]
+fn restore_remembered_sessions(guard: &mut PublicationRuntime) {
+    let Some((app, library_id)) = remembered_sessions_target(guard) else {
+        return;
+    };
+    let Some(path) = remembered_sessions_path(&app, &library_id) else {
+        return;
+    };
+    let Some(file) = std::fs::read(&path)
+        .ok()
+        .and_then(|sealed| crate::device_secret::unprotect(&sealed))
+        .and_then(|text| serde_json::from_slice::<RememberedSessionsFile>(&text).ok())
+        .filter(|file| file.library_id == library_id)
+    else {
+        return;
+    };
+    let limit = guard.payload.as_ref().map(publication_client_limit).unwrap_or(0);
+    for (token, value) in file.sessions {
+        if guard.authenticated_sessions.len() >= limit {
+            break;
+        }
+        if authenticated_session_remembered(&value) && !authenticated_session_expired(&value) {
+            guard.authenticated_sessions.insert(token, value);
+        }
+    }
+}
+
+/// The Owner stopped the publication: the remembered sessions end too.
+#[cfg(target_os = "windows")]
+fn forget_remembered_sessions(guard: &PublicationRuntime) {
+    if let Some((app, library_id)) = remembered_sessions_target(guard) {
+        if let Some(path) = remembered_sessions_path(&app, &library_id) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -427,6 +550,7 @@ fn prune_expired_authenticated_sessions(runtime_state: &Arc<Mutex<PublicationRun
             cancel_published_ai_host_requests_for_user(&mut runtime, &user_id);
             close_websocket_subscribers_for_device(&mut runtime, &user_id, "session-expired");
         }
+        store_remembered_sessions(&runtime);
     }
 }
 
@@ -440,6 +564,7 @@ pub fn revoke_library_user_sessions(state: &TaskManagerPublicationState, user_id
             cancel_publication_ai_streams_for_device(&mut runtime, user_id);
             cancel_published_ai_host_requests_for_user(&mut runtime, user_id);
             close_websocket_subscribers_for_device(&mut runtime, user_id, "session-revoked");
+            store_remembered_sessions(&runtime);
         }
     }
 }
@@ -628,6 +753,9 @@ pub fn publish_task_manager_boards(
             guard.recovery_required = false;
             guard.mutation_batches.clear();
             guard.app_handle = Some(app.clone());
+            // «Recordar sesión» outlives this run: the sessions of this
+            // library come back.
+            restore_remembered_sessions(&mut guard);
             let should_start = !guard.server_started;
             guard.server_started = true;
             should_start
@@ -808,6 +936,7 @@ pub fn stop_task_manager_publication(
             .lock()
             .map_err(|_| "No se pudo detener la publicación.")?;
         close_publication_websocket_subscribers(&mut guard, "publication-stopped", true);
+        forget_remembered_sessions(&guard);
         guard.payload = None;
         guard.host_mutation_active = false;
         guard.host_mutation_batch = PublicationMutationBatch::default();
@@ -1480,6 +1609,8 @@ fn serve_request<S: Read + Write + Send + 'static>(
             "200 OK",
             build_publication_bootstrap(&publication, &runtime, request_session_token(&request)),
         )
+    } else if method == "POST" && path == format!("{base}/logout") {
+        serve_publication_logout(&runtime, request_session_token(&request), base)
     } else if method == "POST" && path == format!("{base}/invoke") {
         serve_invoke(
             http_body(&request),
@@ -1593,6 +1724,44 @@ fn publication_contexts(publication: &TaskManagerPublicationPayload, runtime: &A
     config.get("contexts").filter(|value| value.is_array()).cloned().unwrap_or_else(|| Value::Array(Vec::new()))
 }
 
+/// «Cerrar sesión» of the published page: the session ends here (and, when
+/// it was remembered, on this computer too), its streams close and the
+/// browser drops the cookie.
+#[cfg(target_os = "windows")]
+fn serve_publication_logout(runtime: &Arc<Mutex<PublicationRuntime>>, session_id: Option<&str>, publication_path: &str) -> Vec<u8> {
+    if let (Some(session_id), Ok(mut guard)) = (session_id, runtime.lock()) {
+        if let Some(value) = guard.authenticated_sessions.remove(session_id) {
+            let user_id = authenticated_session_user(&value).to_string();
+            // Other sessions of the same person (another browser) stay open.
+            if !guard.authenticated_sessions.values().any(|other| authenticated_session_user(other) == user_id) {
+                cancel_publication_ai_streams_for_device(&mut guard, &user_id);
+                cancel_published_ai_host_requests_for_user(&mut guard, &user_id);
+                close_websocket_subscribers_for_device(&mut guard, &user_id, "session-revoked");
+            }
+            store_remembered_sessions(&guard);
+        }
+    }
+    let cookie = format!("Set-Cookie: notia_task_session=; Secure; HttpOnly; SameSite=Lax; Path={publication_path}; Max-Age=0");
+    json_response_with_headers("200 OK", serde_json::json!({ "ok": true }), &[cookie.as_str()])
+}
+
+/// Name and role of the person signed in, for the page's account menu.
+#[cfg(target_os = "windows")]
+fn publication_user_view(runtime: &Arc<Mutex<PublicationRuntime>>, publication: &TaskManagerPublicationPayload, user_id: &str) -> (String, &'static str) {
+    let role = if user_id == "user-owner" { "Propietario" } else { "Invitado" };
+    let name = runtime
+        .lock()
+        .ok()
+        .and_then(|guard| guard.app_handle.clone())
+        .zip(publication.library_id.clone())
+        .and_then(|(app, library_id)| {
+            let registry = app.state::<crate::library_registry::LibraryBindingRegistry>();
+            crate::library_users::library_user_names(&app, &registry, &library_id).remove(user_id)
+        })
+        .unwrap_or_else(|| if user_id == "user-owner" { "Owner".to_string() } else { "Invitado".to_string() });
+    (name, role)
+}
+
 #[cfg(target_os = "windows")]
 fn build_publication_bootstrap(
     publication: &TaskManagerPublicationPayload,
@@ -1618,9 +1787,15 @@ fn build_publication_bootstrap(
                 .map(|value| authenticated_session_user(value).to_string())
         })
     });
+    let (user_name, user_role) = library_user_id
+        .as_deref()
+        .map(|user_id| publication_user_view(runtime, publication, user_id))
+        .unwrap_or_else(|| (String::new(), "Invitado"));
     serde_json::json!({
         "libraryId": publication.library_id,
         "libraryUserId": library_user_id,
+        "userName": user_name,
+        "userRole": user_role,
         "vaultPath": PUBLISHED_VAULT_ALIAS,
         "taskRootAtVault": publication.task_root_at_vault,
         "taskRootFolder": publication_task_root_folder(publication),
@@ -1767,17 +1942,24 @@ fn serve_library_user_login(
                 encode_authenticated_session(
                     &user_id,
                     if remember { PUBLICATION_REMEMBERED_SESSION_TTL } else { PUBLICATION_SESSION_TTL },
+                    remember,
                 ),
             );
+        if remember {
+            store_remembered_sessions(&guard);
+        }
         true
     });
     if !inserted {
         return json_error("La publicación cambió. Volvé a intentarlo.");
     }
-    // Remembered, the browser keeps the session for 30 days; otherwise it
-    // ends with the browser (and after 12 hours on this side).
+    // Remembered, the browser keeps the session for 30 days (and this side
+    // keeps it across runs of Notia); otherwise it ends with the browser
+    // (and after 12 hours on this side). `Lax`: the cookie also travels when
+    // the page is opened from a link in another app; writes still need the
+    // page's own origin.
     let max_age = if remember { format!("; Max-Age={}", PUBLICATION_REMEMBERED_SESSION_TTL.as_secs()) } else { String::new() };
-    let cookie = format!("Set-Cookie: notia_task_session={session}; Secure; HttpOnly; SameSite=Strict; Path={publication_path}{max_age}");
+    let cookie = format!("Set-Cookie: notia_task_session={session}; Secure; HttpOnly; SameSite=Lax; Path={publication_path}{max_age}");
     json_response_with_headers(
         "200 OK",
         serde_json::json!({ "ok": true }),
@@ -1866,6 +2048,7 @@ fn serve_change_password(body: &[u8], runtime: &Arc<Mutex<PublicationRuntime>>, 
         Ok(user_id) => {
             if let Ok(mut guard) = runtime.lock() {
                 guard.authenticated_sessions.retain(|_, value| authenticated_session_user(value) != user_id);
+                store_remembered_sessions(&guard);
             }
             json_response("200 OK", serde_json::json!({ "ok": true }))
         }
@@ -2005,6 +2188,7 @@ fn ensure_publication_session_user_authorized(
     {
         if let Ok(mut guard) = runtime.lock() {
             guard.authenticated_sessions.remove(session_id);
+            store_remembered_sessions(&guard);
         }
         return Err("La sesión ya no está autorizada.".to_string());
     }
@@ -2173,6 +2357,26 @@ fn validate_publication_mutation_args(
                 .filter(|intent| intent.is_object())
                 .map(|_| ())
                 .ok_or_else(|| "La operación publicada no es válida.".to_string())
+        }
+        PublicationMutationCommand::LibraryWriteDocument => {
+            let payload = required_publication_mutation_payload(args)?;
+            require_publication_string(payload, "path", 2_048)?;
+            require_publication_text(payload, "content", MAX_PUBLICATION_WS_MESSAGE_BYTES)?;
+            if payload.get("expectedRevision").is_some_and(|value| !value.is_null()) {
+                require_publication_string(payload, "expectedRevision", 128)?;
+            }
+            Ok(())
+        }
+        PublicationMutationCommand::LibraryMutateEntry => {
+            let payload = required_publication_mutation_payload(args)?;
+            require_publication_string(payload, "action", 16)?;
+            require_publication_string(payload, "path", 2_048)?;
+            for key in ["name", "kind", "sourcePath", "mode", "contexto", "activeBoard"] {
+                if payload.get(key).is_some_and(|value| !value.is_null()) {
+                    require_publication_string(payload, key, 2_048)?;
+                }
+            }
+            Ok(())
         }
         PublicationMutationCommand::TaskManagerPomodoro => {
             let payload = required_publication_mutation_payload(args)?;
@@ -5593,9 +5797,15 @@ mod tests {
 
     #[test]
     fn library_user_sessions_have_server_side_expiration_and_stable_identity() {
-        let encoded = encode_authenticated_session("user-1", PUBLICATION_SESSION_TTL);
+        let encoded = encode_authenticated_session("user-1", PUBLICATION_SESSION_TTL, false);
         assert_eq!(authenticated_session_user(&encoded), "user-1");
         assert!(!authenticated_session_expired(&encoded));
+        assert!(!authenticated_session_remembered(&encoded));
+
+        let remembered = encode_authenticated_session("user-1", PUBLICATION_REMEMBERED_SESSION_TTL, true);
+        assert_eq!(authenticated_session_user(&remembered), "user-1");
+        assert!(!authenticated_session_expired(&remembered));
+        assert!(authenticated_session_remembered(&remembered));
 
         let expired = format!(
             "user-1\0{}",
@@ -5603,5 +5813,55 @@ mod tests {
         );
         assert_eq!(authenticated_session_user(&expired), "user-1");
         assert!(authenticated_session_expired(&expired));
+        assert!(authenticated_session_expired(&format!("{expired}\0{REMEMBERED_SESSION_MARK}")));
+    }
+
+    #[test]
+    fn remembered_sessions_come_back_when_the_library_is_published_again() {
+        use crate::host::{AppPaths, HostPorts};
+        let root = std::env::temp_dir().join(format!("notia-remembered-sessions-{}", uuid::Uuid::new_v4()));
+        let app = crate::create_app(AppPaths::new(Some(root.clone()), None), HostPorts::default());
+        let mut runtime = PublicationRuntime {
+            payload: Some(publication()),
+            app_handle: Some(app.clone()),
+            ..PublicationRuntime::default()
+        };
+        let remembered = encode_authenticated_session("user-1", PUBLICATION_REMEMBERED_SESSION_TTL, true);
+        let plain = encode_authenticated_session("user-2", PUBLICATION_SESSION_TTL, false);
+        let expired = format!("user-3\0{}\0{REMEMBERED_SESSION_MARK}", UNIX_EPOCH.elapsed().unwrap().as_secs().saturating_sub(1));
+        runtime.authenticated_sessions.insert("token-remembered".into(), remembered.clone());
+        runtime.authenticated_sessions.insert("token-plain".into(), plain);
+        runtime.authenticated_sessions.insert("token-expired".into(), expired);
+        store_remembered_sessions(&runtime);
+        let path = remembered_sessions_path(&app, "library-1").expect("path");
+        assert!(path.exists());
+        // Sealed: the tokens are not readable in the file.
+        assert!(!std::fs::read(&path).expect("file").windows(16).any(|window| window == b"token-remembered"));
+
+        // Notia starts again and publishes the same library: only the
+        // remembered session that is still valid comes back.
+        runtime.authenticated_sessions.clear();
+        restore_remembered_sessions(&mut runtime);
+        assert_eq!(runtime.authenticated_sessions.len(), 1);
+        assert_eq!(runtime.authenticated_sessions.get("token-remembered"), Some(&remembered));
+
+        // Another library finds nothing of it.
+        let mut other = PublicationRuntime {
+            payload: Some(TaskManagerPublicationPayload { library_id: Some("library-2".into()), ..publication() }),
+            app_handle: Some(app.clone()),
+            ..PublicationRuntime::default()
+        };
+        restore_remembered_sessions(&mut other);
+        assert!(other.authenticated_sessions.is_empty());
+
+        // Revoking the user, or stopping the publication, ends it for good.
+        runtime.authenticated_sessions.clear();
+        store_remembered_sessions(&runtime);
+        assert!(!path.exists());
+        runtime.authenticated_sessions.insert("token-remembered".into(), remembered);
+        store_remembered_sessions(&runtime);
+        forget_remembered_sessions(&runtime);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

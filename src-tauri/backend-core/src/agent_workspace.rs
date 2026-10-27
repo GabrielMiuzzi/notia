@@ -232,6 +232,30 @@ const IA_RULES_END: &str = "<!-- NOTIA_IA_RULES_END -->";
 const MEMORY_VERSION_MARKER: &str = "<!-- NOTIA_AGENT_MEMORY_VERSION:1 -->";
 const THOUGHTS_VERSION_MARKER: &str = "<!-- NOTIA_AGENT_THOUGHTS_VERSION:1 -->";
 const CONFIDENTIAL_CONTEXT_LINE: &str = "contexto: \"#Confidencial\"";
+const SYSTEM_CONTEXT_LINE: &str = "contexto: \"#System\"";
+
+/// The files of `.agent/memory` only the AI writes (through its tools, the
+/// reflection after each turn and the organization of its files): their
+/// context is `#System` and the person reads them but never edits,
+/// renames, moves or deletes them by hand.
+pub const SYSTEM_FILES: [&str; 7] = [RULES_PATH, MEMORY_PATH, THOUGHTS_PATH, BIOGRAPHY_PATH, TALK_PATH, PEOPLE_PATH, IMPROVE_PATH];
+
+/// Whether `path` (a logical path of the library) is one of `SYSTEM_FILES`.
+pub fn is_system_file(path: &str) -> bool {
+    let path = path.trim().trim_matches('/');
+    SYSTEM_FILES.iter().any(|file| file.eq_ignore_ascii_case(path))
+}
+
+/// Whether `entry` is a system file or a folder that holds one, such as
+/// `.agent` or `.agent/memory`.
+pub fn holds_system_files(entry: &str) -> bool {
+    let entry = entry.trim().trim_matches('/').to_lowercase();
+    !entry.is_empty()
+        && SYSTEM_FILES.iter().any(|file| {
+            let file = file.to_lowercase();
+            file == entry || file.starts_with(&format!("{entry}/"))
+        })
+}
 
 /// How many list items, and how many characters in total, a list may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,6 +488,97 @@ pub fn render_memories(memories: &[String]) -> String {
     render_list(MEMORY_VERSION_MARKER, memories)
 }
 
+/// Errors, missing tools and improvements the agent finds while it works,
+/// for the person who develops Notia. The agent writes it and never reads
+/// it: it is not part of any prompt nor of the organization of the agent
+/// files.
+pub const IMPROVE_PATH: &str = ".agent/memory/improve.md";
+const IMPROVE_MARKER: &str = "<!-- NOTIA_AGENT_IMPROVE_VERSION:1 -->";
+const IMPROVE_HEADER: &str = "# Mejoras para Notia\n\nLas anota el asistente cuando una herramienta falla, le falta una herramienta o algo de Notia podría funcionar mejor. No forma parte de su contexto.";
+/// Longest description of one improvement.
+pub const MAX_IMPROVEMENT_CHARS: usize = 800;
+/// The file keeps the newest entries within this budget; older ones go.
+pub const IMPROVE_LIMIT: ItemBudget = ItemBudget { items: 300, chars: 150_000 };
+const IMPROVEMENT_SEPARATOR: &str = " · ";
+
+/// What kind of improvement an entry of `improve.md` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImprovementKind {
+    /// A tool failed or answered wrong through no fault of the request.
+    Error,
+    /// A tool the agent needed and does not have.
+    Tool,
+    /// Something that could work better.
+    Improvement,
+}
+
+impl ImprovementKind {
+    /// The kind a tool argument or a reflection names; anything else is an
+    /// improvement.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "error" | "errores" | "fallo" | "bug" => Self::Error,
+            "herramienta" | "herramientas" | "tool" | "falta" | "herramienta faltante" => Self::Tool,
+            _ => Self::Improvement,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Tool => "herramienta",
+            Self::Improvement => "mejora",
+        }
+    }
+}
+
+/// The `fecha · tipo · descripción` line of an improvement, with
+/// whitespace collapsed. `None` when the description is empty or too long.
+pub fn improvement_entry(now_label: &str, kind: ImprovementKind, text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let length = text.chars().count();
+    (length > 0 && length <= MAX_IMPROVEMENT_CHARS)
+        .then(|| format!("{now_label}{IMPROVEMENT_SEPARATOR}{}{IMPROVEMENT_SEPARATOR}{text}", kind.label()))
+}
+
+/// The kind and description of an entry, without its date.
+fn improvement_identity(entry: &str) -> &str {
+    entry.split_once(IMPROVEMENT_SEPARATOR).map_or(entry, |(_, rest)| rest).trim()
+}
+
+/// The entries of an `improve.md` body: its `- ` lines.
+pub fn parse_improvements(body: &str) -> Vec<String> {
+    body.lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The entries with one more, dropping the oldest ones that no longer fit.
+/// `None` when the same kind and description is already there.
+pub fn with_improvement(entries: &[String], entry: String) -> Option<Vec<String>> {
+    let identity = improvement_identity(&entry);
+    if entries.iter().any(|known| improvement_identity(known).eq_ignore_ascii_case(identity)) {
+        return None;
+    }
+    let mut next = entries.to_vec();
+    next.push(entry);
+    while !IMPROVE_LIMIT.fits(&next) && next.len() > 1 {
+        next.remove(0);
+    }
+    Some(next)
+}
+
+/// `improve.md` body for `entries`, oldest first.
+pub fn render_improvements(entries: &[String]) -> String {
+    let mut lines = vec![IMPROVE_MARKER.to_string(), IMPROVE_HEADER.to_string(), String::new()];
+    lines.extend(entries.iter().map(|entry| format!("- {entry}")));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 /// Thoughts file body for `thoughts`, without duplicates.
 pub fn render_thoughts(thoughts: &[String]) -> String {
     render_list(THOUGHTS_VERSION_MARKER, &dedupe_items(thoughts.iter().cloned()))
@@ -501,6 +616,21 @@ pub fn with_thought(thoughts: &[String], stamped: String) -> Vec<String> {
 
 /// Document whose frontmatter marks it as confidential; the body is kept.
 pub fn with_confidential_context(source: &str) -> String {
+    with_context_line(source, CONFIDENTIAL_CONTEXT_LINE)
+}
+
+/// Document whose frontmatter marks it as `#System`; the body is kept.
+pub fn with_system_context(source: &str) -> String {
+    with_context_line(source, SYSTEM_CONTEXT_LINE)
+}
+
+/// An agent document with its context: `#System` for the files only the AI
+/// writes, `#Confidencial` for the rest (prompts, skills, dynamics).
+pub fn with_agent_context(path: &str, source: &str) -> String {
+    if is_system_file(path) { with_system_context(source) } else { with_confidential_context(source) }
+}
+
+fn with_context_line(source: &str, context_line: &str) -> String {
     let normalized = source.replace("\r\n", "\n");
     let normalized = normalized.strip_prefix('\u{feff}').unwrap_or(&normalized);
     if let Some(rest) = normalized.strip_prefix("---\n") {
@@ -516,12 +646,12 @@ pub fn with_confidential_context(source: &str) -> String {
                 })
                 .map(str::to_string)
                 .collect::<Vec<_>>();
-            lines.push(CONFIDENTIAL_CONTEXT_LINE.to_string());
+            lines.push(context_line.to_string());
             let body = rest[end + 4..].trim_start_matches('\n');
             return compose(&lines.join("\n"), body);
         }
     }
-    compose(CONFIDENTIAL_CONTEXT_LINE, normalized)
+    compose(context_line, normalized)
 }
 
 fn compose(frontmatter: &str, body: &str) -> String {
@@ -735,11 +865,56 @@ mod tests {
     }
 
     #[test]
+    fn the_files_only_the_ai_writes_are_system_files() {
+        for path in SYSTEM_FILES {
+            assert!(is_system_file(path) && holds_system_files(path), "{path}");
+        }
+        assert!(is_system_file(" .agent/Memory/memory.md "));
+        assert!(!is_system_file(".agent/promps/default.md") && !is_system_file(".agent/skills/x.md") && !is_system_file("memory.md"));
+        assert!(holds_system_files(".agent") && holds_system_files(".agent/memory/") && holds_system_files(".AGENT/memory"));
+        assert!(!holds_system_files(".agent/promps") && !holds_system_files(".agen") && !holds_system_files(""));
+
+        let memory = with_agent_context(MEMORY_PATH, "---\ncontexto: \"#Confidencial\"\n---\n\n- Usa voseo.");
+        assert_eq!(memory, "---\ncontexto: \"#System\"\n---\n\n- Usa voseo.");
+        assert_eq!(with_agent_context(".agent/skills/x.md", "hola"), "---\ncontexto: \"#Confidencial\"\n---\n\nhola");
+    }
+
+    #[test]
     fn prompt_names_are_validated_and_sorted() {
         assert_eq!(normalize_prompt_file_name("../x.md"), DEFAULT_PROMPT_FILE);
         assert_eq!(
             prompt_file_names(["Zeta.md".into(), "alfa.md".into(), "notas.txt".into()]),
             vec!["default.md".to_string(), "alfa.md".to_string(), "Zeta.md".to_string()]
         );
+    }
+
+    #[test]
+    fn improvements_are_dated_typed_unique_and_bounded() {
+        let entry = |text: &str| improvement_entry("2026-10-25 21:40", ImprovementKind::parse("herramienta"), text).expect("entry");
+        let first = entry("Falta  una herramienta para
+renombrar carpetas.");
+        assert_eq!(first, "2026-10-25 21:40 · herramienta · Falta una herramienta para renombrar carpetas.");
+        assert_eq!(ImprovementKind::parse("Error"), ImprovementKind::Error);
+        assert_eq!(ImprovementKind::parse("cualquier cosa"), ImprovementKind::Improvement);
+        assert!(improvement_entry("x", ImprovementKind::Error, " ").is_none());
+        assert!(improvement_entry("x", ImprovementKind::Error, &"a".repeat(MAX_IMPROVEMENT_CHARS + 1)).is_none());
+
+        let entries = with_improvement(&[], first.clone()).expect("added");
+        // The same improvement another day is not repeated.
+        let again = improvement_entry("2026-10-26 09:00", ImprovementKind::Tool, "falta una herramienta para renombrar carpetas.").expect("entry");
+        assert_eq!(with_improvement(&entries, again), None);
+        // The same text of another kind is another entry.
+        let error = improvement_entry("2026-10-26 09:00", ImprovementKind::Error, "Falta una herramienta para renombrar carpetas.").expect("entry");
+        assert_eq!(with_improvement(&entries, error).map(|next| next.len()), Some(2));
+
+        let body = render_improvements(&entries);
+        assert!(body.starts_with(IMPROVE_MARKER) && body.contains("# Mejoras para Notia"));
+        assert_eq!(parse_improvements(&body), entries);
+
+        let full = (0..IMPROVE_LIMIT.items).map(|index| format!("2026-01-01 00:00 · mejora · punto {index}")).collect::<Vec<_>>();
+        let next = with_improvement(&full, entry("Una nueva.")).expect("added");
+        assert_eq!(next.len(), IMPROVE_LIMIT.items);
+        assert_eq!(next.first().map(String::as_str), Some("2026-01-01 00:00 · mejora · punto 1"));
+        assert!(next.last().is_some_and(|last| last.ends_with("Una nueva.")));
     }
 }

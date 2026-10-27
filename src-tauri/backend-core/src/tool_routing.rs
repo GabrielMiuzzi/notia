@@ -11,7 +11,10 @@
 //! The same call decides whether the turn needs thinking
 //! (`RouterDecision::thinking`): a greeting or a short reply goes without
 //! it, so it is answered right away; the settings still decide whether the
-//! model ever thinks.
+//! model ever thinks. In a Telegram turn it also picks the default prompt
+//! (`with_prompt_choice`, `RouterDecision::conversational`): the assistant's,
+//! or the conversational one when the person shares something of their
+//! life or just wants to chat.
 //!
 //! The areas are not fixed for the turn: when the agent finds that the
 //! request needs another module, it calls `change_tool_areas` and the same
@@ -106,7 +109,7 @@ impl ToolArea {
             Self::Agenda => "la Agenda de Notia (no Google Calendar): ver, agendar y borrar eventos con día y hora, y el anotador de pendientes del día",
             Self::Mail => "Gmail y Google Calendar: buscar, leer, borrar, mover, marcar y enviar correos; ver y crear eventos",
             Self::Recipes => "Recetas y comidas: cargar un plato (también desde la foto de una comida), buscar recetas, ver sus calorías, vitaminas y minerales, editarlas o borrarlas",
-            Self::Health => "Salud: registrar lo que comió la persona (también desde la foto de su plato), calorías y macros del día, peso, agua, mediciones de la balanza, perfil, peso objetivo y plan de calorías",
+            Self::Health => "Salud: registrar lo que comió la persona (también desde la foto de su plato), calorías y macros del día, peso, agua, pasos diarios, horas de sueño, mediciones de la balanza, perfil, peso objetivo y plan de calorías",
             Self::Gym => "Gimnasio: rutinas de entrenamiento (días, ejercicios, series, peso, descanso), entrenar ahora (empezar, marcar series, pausar, terminar), historial de entrenamientos, músculos trabajados, equipamiento disponible y las fichas de los ejercicios",
             Self::Images => "Imágenes: generar una imagen nueva a partir de una descripción (foto, ilustración, dibujo, logo, cartel, ícono) o editar una imagen de la conversación (cambiarle algo, agregarle o quitarle elementos o texto, sacarle el fondo)",
             Self::Actions => "Acciones IA: lo que la IA hace sola en un horario y te responde por Telegram (recordatorios, tareas a una hora o que se repiten, la revisión de cada hora): ver, crear, cambiar, pausar, borrar, ejecutar ahora o reintentar",
@@ -125,7 +128,8 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         return None;
     }
     match tool_policy(name) {
-        ToolPolicy::Public | ToolPolicy::Memory => None,
+        // A task can be created from any request, whatever its areas.
+        ToolPolicy::Public | ToolPolicy::Memory | ToolPolicy::AiTaskRead | ToolPolicy::AiTaskWrite => None,
         ToolPolicy::Mail => Some(ToolArea::Mail),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite => Some(ToolArea::Finance),
         ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Some(ToolArea::Routine),
@@ -186,15 +190,85 @@ pub fn area_ids(areas: &[ToolArea]) -> Vec<String> {
     areas.iter().map(|area| area.id().to_string()).collect()
 }
 
+/// How much of each asked area a round carries: all its tools, only those
+/// that read, or none because not even those fit with the other areas.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AreaCoverage {
+    pub full: Vec<ToolArea>,
+    pub read_only: Vec<ToolArea>,
+    pub missing: Vec<ToolArea>,
+}
+
+impl AreaCoverage {
+    /// What the agent reads after changing areas: what it has and, when an
+    /// area did not fit whole, how to reach the rest.
+    pub fn note(&self) -> String {
+        let mut note = if self.read_only.is_empty() && self.missing.is_empty() {
+            "Ya tenés las herramientas de estas áreas: seguí con el pedido.".to_string()
+        } else if self.full.is_empty() && self.read_only.is_empty() {
+            "No tenés herramientas de ninguna de esas áreas.".to_string()
+        } else {
+            "Todas juntas no entran en una ronda.".to_string()
+        };
+        if !self.read_only.is_empty() {
+            note.push_str(&format!(
+                " De {} tenés solo las herramientas de lectura: para modificar algo ahí, llamá change_tool_areas con esa área primero o con menos áreas.",
+                area_ids(&self.read_only).join(", ")
+            ));
+        }
+        if !self.missing.is_empty() {
+            note.push_str(&format!(
+                " {} no entró en esta ronda: terminá con lo que tenés y llamá change_tool_areas con esa área sola o con menos áreas.",
+                area_ids(&self.missing).join(", ")
+            ));
+        }
+        note
+    }
+}
+
+/// What `round` carries of each of `areas`, measured against `pool`.
+pub fn area_coverage(pool: &[ToolDefinition], round: &[ToolDefinition], areas: &[ToolArea]) -> AreaCoverage {
+    let mut coverage = AreaCoverage::default();
+    for area in dedup_areas(areas) {
+        let count = |tools: &[ToolDefinition], read_only: bool| {
+            tools.iter().filter(|tool| tool_area(&tool.name) == Some(area) && (!read_only || tool.read_only)).count()
+        };
+        let carried = count(round, false);
+        if carried > 0 && carried == count(pool, false) {
+            coverage.full.push(area);
+        } else if carried > 0 {
+            coverage.read_only.push(area);
+        } else {
+            coverage.missing.push(area);
+        }
+    }
+    coverage
+}
+
+fn dedup_areas(areas: &[ToolArea]) -> Vec<ToolArea> {
+    let mut unique = Vec::new();
+    for area in areas {
+        if !unique.contains(area) {
+            unique.push(*area);
+        }
+    }
+    unique
+}
+
 /// The tool that changes the areas of the run: it lists the areas the actor
-/// may use and says which ones the run has now.
-pub fn switch_area_tool(offered: &[ToolArea], current: &[ToolArea]) -> ToolDefinition {
+/// may use and says what the run has now of the ones it asked for.
+pub fn switch_area_tool(offered: &[ToolArea], current: &AreaCoverage) -> ToolDefinition {
     let listed = offered.iter().map(|area| format!("- {}: {}", area.id(), area.description())).collect::<Vec<_>>().join("\n");
-    let now = if current.is_empty() { "ninguna".to_string() } else { area_ids(current).join(", ") };
+    let mut now = current.full.iter().map(|area| area.id().to_string()).collect::<Vec<_>>();
+    now.extend(current.read_only.iter().map(|area| format!("{} (solo lectura)", area.id())));
+    let mut now = if now.is_empty() { "ninguna".to_string() } else { now.join(", ") };
+    if !current.missing.is_empty() {
+        now.push_str(&format!("; no entraron con las demás: {}", area_ids(&current.missing).join(", ")));
+    }
     ToolDefinition {
         name: SWITCH_AREA_TOOL.to_string(),
         description: format!(
-            "Cambia las áreas de herramientas de este pedido. Usala cuando necesites herramientas de un módulo que no tenés (el pedido resultó ser de otra área o también necesita otra): las herramientas nuevas llegan en la ronda siguiente y seguís trabajando con ellas. Mandá todas las áreas que necesitás ahora, incluidas las actuales que sigas usando. Áreas actuales: {now}.\nÁreas disponibles:\n{listed}"
+            "Cambia las áreas de herramientas de este pedido. Usala cuando necesites herramientas de un módulo que no tenés (el pedido resultó ser de otra área o también necesita otra): las herramientas nuevas llegan en la ronda siguiente y seguís trabajando con ellas. Mandá todas las áreas que necesitás ahora, incluidas las actuales que sigas usando, de la más a la menos necesaria: si no entran todas juntas, la primera llega completa y las siguientes pueden llegar solo con sus herramientas de lectura. Áreas actuales: {now}.\nÁreas disponibles:\n{listed}"
         ),
         input_schema: serde_json::json!({
             "type": "object",
@@ -242,30 +316,43 @@ pub fn turn_tools(pool: &[ToolDefinition], areas: &[ToolArea], max_tools: usize)
         return tools_for_areas(pool.to_vec(), areas, max_tools);
     }
     let mut tools = tools_for_areas(pool.to_vec(), areas, max_tools.saturating_sub(1));
-    let kept = offered.iter().copied().filter(|area| tools.iter().any(|tool| tool_area(&tool.name) == Some(*area))).collect::<Vec<_>>();
-    tools.push(switch_area_tool(&offered, &kept));
+    let coverage = area_coverage(pool, &tools, areas);
+    tools.push(switch_area_tool(&offered, &coverage));
     tools
 }
 
-/// The tools every turn keeps plus those of `areas`, added in order while
-/// they fit in `max_tools`. The catalog order is kept.
+/// The tools every turn keeps plus those of `areas`, within `max_tools`.
+/// When they do not all fit, the first area comes whole and each of the
+/// next ones whole only if the read tools of those after it still fit;
+/// otherwise it brings only its read tools, so a review that asked for
+/// five areas can still read all of them. An area whose read tools do not
+/// fit either is left out. The catalog order is kept.
 pub fn tools_for_areas(tools: Vec<ToolDefinition>, areas: &[ToolArea], max_tools: usize) -> Vec<ToolDefinition> {
-    let count = |area: Option<ToolArea>| tools.iter().filter(|tool| tool_area(&tool.name) == area).count();
-    let mut total = count(None);
-    let mut kept = Vec::new();
-    for area in areas {
-        if kept.contains(area) {
-            continue;
-        }
-        let size = count(Some(*area));
-        if total + size <= max_tools {
-            total += size;
-            kept.push(*area);
+    let size = |area: Option<ToolArea>, read_only: bool| {
+        tools.iter().filter(|tool| tool_area(&tool.name) == area && (!read_only || tool.read_only)).count()
+    };
+    let areas = dedup_areas(areas);
+    let mut budget = max_tools.saturating_sub(size(None, false));
+    let mut full = Vec::new();
+    let mut read_only = Vec::new();
+    for (index, area) in areas.iter().enumerate() {
+        let whole = size(Some(*area), false);
+        let reads = size(Some(*area), true);
+        let reserve = areas[index + 1..].iter().map(|next| size(Some(*next), true)).sum::<usize>();
+        if whole <= budget && (index == 0 || whole + reserve <= budget) {
+            budget -= whole;
+            full.push(*area);
+        } else if reads > 0 && reads <= budget {
+            budget -= reads;
+            read_only.push(*area);
         }
     }
     tools
         .into_iter()
-        .filter(|tool| tool_area(&tool.name).is_none_or(|area| kept.contains(&area)))
+        .filter(|tool| match tool_area(&tool.name) {
+            None => true,
+            Some(area) => full.contains(&area) || (tool.read_only && read_only.contains(&area)),
+        })
         .take(max_tools)
         .collect()
 }
@@ -337,6 +424,21 @@ pub fn router_prompt(areas: &[ToolArea], conversation: &[RouterMessage<'_>], hom
     (system, user)
 }
 
+/// Adds to the routing call the choice of the default prompt: the
+/// assistant's, or the conversational one (see `prompt::CONVERSATION_AGENT_PROMPT`).
+pub fn with_prompt_choice(system: String) -> String {
+    format!(
+        "{system}\n\n\
+         Agregá al JSON la clave \"prompt\" con el modo de respuesta: \"asistente\" o \"conversacion\". \
+         \"conversacion\" cuando la persona cuenta algo de su vida, comparte una emoción o una noticia (una alegría, un logro, una preocupación, un mal día), \
+         se desahoga, saluda para charlar o quiere conversar, y no pide una tarea: ahí conviene un amigo cercano que se alegre, acompañe y pregunte, no un asistente. \
+         \"asistente\" cuando pide algo concreto: buscar, crear, cargar, modificar, calcular, organizar, explicar, responder una pregunta de datos \
+         o una pregunta para saber o aprender algo (\"¿qué es un puntero?\"), \
+         aunque lo diga con emoción. Si cuenta algo y además pide una acción (\"me llegó la heladera, cargala en finanzas\"), es \"asistente\". \
+         Ejemplo: {{\"areas\": [], \"thinking\": false, \"prompt\": \"conversacion\"}}."
+    )
+}
+
 /// What the routing call decided for the turn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouterDecision {
@@ -345,15 +447,24 @@ pub struct RouterDecision {
     pub areas: Option<Vec<ToolArea>>,
     /// Whether the turn needs thinking; `None` keeps the settings.
     pub thinking: Option<bool>,
+    /// Whether the turn answers with the conversational prompt, when the
+    /// call was offered the choice; `None` when the answer does not say.
+    pub conversational: Option<bool>,
+}
+
+/// The JSON object of a routing answer. Some models write their reasoning
+/// in the answer, braces included, and close it with `</think>`: what comes
+/// after it counts, and else the last object that reads.
+fn router_json(answer: &str) -> Option<Value> {
+    let answer = answer.rsplit_once("</think>").map_or(answer, |(_, after)| after);
+    let end = answer.rfind('}')?;
+    let read = |start: usize| answer.get(start..=end).and_then(|json| serde_json::from_str::<Value>(json).ok()).filter(Value::is_object);
+    let first = answer.find('{')?;
+    read(first).or_else(|| answer[..end].rmatch_indices('{').find_map(|(start, _)| read(start)))
 }
 
 pub fn parse_router_answer(answer: &str, offered: &[ToolArea]) -> RouterDecision {
-    let value = answer
-        .find('{')
-        .zip(answer.rfind('}'))
-        .and_then(|(start, end)| answer.get(start..=end))
-        .and_then(|json| serde_json::from_str::<Value>(json).ok());
-    let Some(value) = value else {
+    let Some(value) = router_json(answer) else {
         return RouterDecision::default();
     };
     let mut areas = Vec::new();
@@ -363,7 +474,12 @@ pub fn parse_router_answer(answer: &str, offered: &[ToolArea]) -> RouterDecision
             areas.push(area);
         }
     }
-    RouterDecision { areas: (!areas.is_empty()).then_some(areas), thinking: value.get("thinking").and_then(Value::as_bool) }
+    let conversational = match value.get("prompt").and_then(Value::as_str).map(|mode| mode.trim().to_lowercase()) {
+        Some(mode) if mode.starts_with("conversaci") => Some(true),
+        Some(mode) if mode == "asistente" => Some(false),
+        _ => None,
+    };
+    RouterDecision { areas: (!areas.is_empty()).then_some(areas), thinking: value.get("thinking").and_then(Value::as_bool), conversational }
 }
 
 /// Whether a message asks to draw or change an image.
@@ -450,6 +566,39 @@ mod tests {
     }
 
     #[test]
+    fn areas_that_do_not_fit_whole_bring_their_read_tools_or_are_said_missing() {
+        let writer = |name: &str| ToolDefinition { read_only: false, ..tool(name) };
+        let pool = vec![
+            tool("search_web"),
+            writer("create_task_ticket"),
+            tool("search_task_tickets"),
+            tool("get_finance_dashboard"),
+            writer("create_finance_transaction"),
+            tool("list_finance_accounts"),
+            writer("trash_gmail_messages"),
+            tool("list_gmail_messages"),
+        ];
+        let names = |tools: &[ToolDefinition]| tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>();
+        let areas = [ToolArea::Tasks, ToolArea::Finance, ToolArea::Mail];
+        // The first area comes whole; Finanzas only reads; Correo does not fit.
+        let round = tools_for_areas(pool.clone(), &areas, 5);
+        assert_eq!(names(&round), ["search_web", "create_task_ticket", "search_task_tickets", "get_finance_dashboard", "list_finance_accounts"]);
+        let coverage = area_coverage(&pool, &round, &areas);
+        assert_eq!(coverage, AreaCoverage { full: vec![ToolArea::Tasks], read_only: vec![ToolArea::Finance], missing: vec![ToolArea::Mail] });
+        let note = coverage.note();
+        assert!(note.contains("De finanzas tenés solo las herramientas de lectura") && note.contains("correo no entró en esta ronda"), "{note}");
+        // With room for the read tools of the next areas, the second one comes whole too.
+        let round = tools_for_areas(pool.clone(), &areas, 7);
+        assert_eq!(area_coverage(&pool, &round, &areas), AreaCoverage { full: vec![ToolArea::Tasks, ToolArea::Finance], read_only: vec![ToolArea::Mail], missing: vec![] });
+        // Everything fits: the usual note, and the switch says what the round has.
+        let round = turn_tools(&pool, &areas, 9);
+        assert_eq!(area_coverage(&pool, &round, &areas).note(), "Ya tenés las herramientas de estas áreas: seguí con el pedido.");
+        let round = turn_tools(&pool, &areas, 6);
+        let switch = round.last().expect("switch");
+        assert!(switch.description.contains("Áreas actuales: tareas, finanzas (solo lectura); no entraron con las demás: correo."), "{}", switch.description);
+    }
+
+    #[test]
     fn the_router_reads_the_conversation_and_answers_areas() {
         let conversation = [
             RouterMessage { from_user: true, content: "¿Tengo correos de Tienda Vapor?", attachments: 0 },
@@ -462,13 +611,48 @@ mod tests {
         let offered = [ToolArea::Library, ToolArea::Mail];
         assert_eq!(
             parse_router_answer("```json\n{\"areas\": [\"correo\", \"finanzas\", \"correo\"], \"thinking\": true}\n```", &offered),
-            RouterDecision { areas: Some(vec![ToolArea::Mail]), thinking: Some(true) }
+            RouterDecision { areas: Some(vec![ToolArea::Mail]), thinking: Some(true), conversational: None }
         );
         // A greeting needs no area and no thinking.
-        assert_eq!(parse_router_answer("{\"areas\": [], \"thinking\": false}", &offered), RouterDecision { areas: None, thinking: Some(false) });
+        assert_eq!(
+            parse_router_answer("{\"areas\": [], \"thinking\": false}", &offered),
+            RouterDecision { areas: None, thinking: Some(false), conversational: None }
+        );
         assert_eq!(parse_router_answer("{\"areas\": [\"correo\"]}", &offered).thinking, None);
         assert_eq!(parse_router_answer("no sé", &offered), RouterDecision::default());
         assert!(system.contains("\"thinking\": true") && system.contains("un aviso de lo que va a mandar después"));
+    }
+
+    #[test]
+    fn a_telegram_turn_also_picks_the_default_prompt() {
+        let conversation = [RouterMessage {
+            from_user: true,
+            content: "Me llegó la heladera 😭😭 estoy muy feliz, al fin voy a tener paz y tranquilidad",
+            attachments: 0,
+        }];
+        let (system, _) = router_prompt(&[ToolArea::Library, ToolArea::Health], &conversation, None);
+        assert!(!system.contains("\"prompt\""));
+        let system = with_prompt_choice(system);
+        assert!(system.contains("\"prompt\" con el modo de respuesta") && system.contains("\"conversacion\" cuando la persona cuenta algo de su vida"));
+        let offered = [ToolArea::Library, ToolArea::Health];
+        assert_eq!(
+            parse_router_answer("{\"areas\": [], \"thinking\": false, \"prompt\": \"conversacion\"}", &offered),
+            RouterDecision { areas: None, thinking: Some(false), conversational: Some(true) }
+        );
+        assert_eq!(parse_router_answer("{\"areas\": [\"salud\"], \"prompt\": \"Conversación\"}", &offered).conversational, Some(true));
+        assert_eq!(parse_router_answer("{\"areas\": [\"salud\"], \"prompt\": \"asistente\"}", &offered).conversational, Some(false));
+        assert_eq!(parse_router_answer("{\"areas\": [\"salud\"], \"prompt\": \"amigo\"}", &offered).conversational, None);
+    }
+
+    #[test]
+    fn an_answer_with_the_reasoning_written_before_it_still_reads() {
+        let offered = [ToolArea::Library, ToolArea::Finance];
+        let decided = RouterDecision { areas: None, thinking: Some(false), conversational: Some(true) };
+        let closed = "Comparte una alegría. Opción: {\"areas\": [\"finanzas\"]}? No.\n{\"areas\": [], \"thinking\": false, \"prompt\": \"conversacion\"}</think>{\"areas\": [], \"thinking\": false, \"prompt\": \"conversacion\"}";
+        assert_eq!(parse_router_answer(closed, &offered), decided);
+        let open = "Lo pienso: {no es json} y al final\n{\"areas\": [], \"thinking\": false, \"prompt\": \"conversacion\"}";
+        assert_eq!(parse_router_answer(open, &offered), decided);
+        assert_eq!(parse_router_answer("{\"areas\": [\"finanzas\"]} y nada más", &offered).areas, Some(vec![ToolArea::Finance]));
     }
 
     #[test]

@@ -555,20 +555,30 @@ async fn request_json(
 }
 
 /// A request of the signed-in Owner: a session the host no longer knows
-/// (it restarted) is opened again with the credentials of this run.
+/// (it restarted, or the session expired while the device slept) is opened
+/// again with the credentials this device keeps. The session ends only when
+/// the host refuses them; a host that cannot be asked keeps it for the next
+/// try, so a lost signal never sends the person back to the sign-in window.
 async fn authenticated(app: &AppHandle, method: Method, path: &str, body: Option<&Value>, timeout: Duration) -> Result<HostReply, BackendError> {
     let reply = request_json(app, method.clone(), path, body, timeout).await?;
     if reply.status != 401 {
         return Ok(reply);
     }
-    if renew_session(app).await {
-        let reply = request_json(app, method, path, body, timeout).await?;
-        if reply.status != 401 {
-            return Ok(reply);
+    match renew_session(app).await {
+        Ok(()) => {
+            let reply = request_json(app, method, path, body, timeout).await?;
+            if reply.status != 401 {
+                return Ok(reply);
+            }
+            end_session(app);
+            Err(signed_out_error())
         }
+        Err(error) if host_refused(&error) => {
+            end_session(app);
+            Err(signed_out_error())
+        }
+        Err(error) => Err(error),
     }
-    end_session(app);
-    Err(signed_out_error())
 }
 
 fn end_session(app: &AppHandle) {
@@ -581,11 +591,52 @@ fn end_session(app: &AppHandle) {
     }
 }
 
-async fn renew_session(app: &AppHandle) -> bool {
-    let Some((username, password)) = with_link(app, |link| link.credentials.clone()).flatten() else {
-        return false;
+/// Whether the host answered and refused the credentials (the password
+/// changed, or there are none), as opposed to not answering at all.
+fn host_refused(error: &BackendError) -> bool {
+    matches!(error.code, BackendErrorCode::Unauthorized | BackendErrorCode::Forbidden)
+}
+
+/// The Owner's credentials «Recordar sesión» kept on this device for the
+/// library the host serves.
+fn remembered_session_credentials(app: &AppHandle) -> Option<(String, String)> {
+    let library_id = with_link(app, |link| link.library_id.clone()).flatten()?;
+    crate::config_vault::remembered_credentials(app, &session_key(&library_id))
+}
+
+/// Opens a session again with the credentials of this run or, after this
+/// app restarted, the ones «Recordar sesión» kept. `Unauthorized` when
+/// there are none or the host refused them; otherwise the host could not
+/// be asked.
+async fn renew_session(app: &AppHandle) -> Result<(), BackendError> {
+    let credentials = with_link(app, |link| link.credentials.clone()).flatten().or_else(|| remembered_session_credentials(app));
+    let Some((username, password)) = credentials else {
+        return Err(signed_out_error());
     };
-    open_session(app, &username, &password).await.is_ok()
+    open_session(app, &username, &password).await
+}
+
+/// Whether this device has a session the host accepts, opening one again
+/// when needed. `Ok(false)` only when the host refused: a refused remembered
+/// session is forgotten, so a changed password is not tried again and again.
+async fn ensure_session(app: &AppHandle) -> Result<bool, BackendError> {
+    if with_link(app, |link| link.session.is_some()).unwrap_or(false) {
+        let reply = request_json(app, Method::GET, "/api/session", None, SHORT_TIMEOUT).await?;
+        if reply.body.get("authenticated").and_then(Value::as_bool) == Some(true) {
+            return Ok(true);
+        }
+    }
+    match renew_session(app).await {
+        Ok(()) => Ok(true),
+        Err(error) if host_refused(&error) => {
+            if let Some(library_id) = with_link(app, |link| link.library_id.clone()).flatten() {
+                crate::config_vault::forget_credentials(app, &session_key(&library_id));
+            }
+            end_session(app);
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn open_session(app: &AppHandle, username: &str, password: &str) -> Result<(), BackendError> {
@@ -593,7 +644,12 @@ async fn open_session(app: &AppHandle, username: &str, password: &str) -> Result
     let reply = request_json(app, Method::POST, "/api/auth/login", Some(&body), SHORT_TIMEOUT).await?;
     let token = match (reply.status, reply.session) {
         (200, Some(token)) => token,
-        _ => return Err(host_error(&reply.body, "El host no aceptó el inicio de sesión.")),
+        (401 | 403, _) => return Err(host_error(&reply.body, "El host no aceptó el inicio de sesión.")),
+        // Too many attempts, or a host in trouble: not a refusal of the password.
+        _ => {
+            let message = host_error(&reply.body, "El host no pudo abrir la sesión.").message;
+            return Err(BackendError::new(BackendErrorCode::ProviderUnavailable, message, true));
+        }
     };
     with_link(app, |link| {
         link.session = Some(token);
@@ -709,12 +765,9 @@ pub(crate) async fn auth_status(app: &AppHandle) -> Result<Value, BackendError> 
     remember_library(app, &status, "libraryId", "libraryName");
     set_state(app, LinkState::Online, None, None);
 
-    let mut signed_in = has_session(app).await;
-    if !signed_in && host_state != "setup" {
-        if let Some((username, password)) = crate::config_vault::remembered_credentials(app, &session_key(&library_id)) {
-            signed_in = open_session(app, &username, &password).await.is_ok();
-        }
-    }
+    // A host that stops answering here is an error, never «locked»: the
+    // window keeps waiting for it instead of asking for the password again.
+    let signed_in = if host_state == "setup" { false } else { ensure_session(app).await? };
     status["state"] = json!(match (signed_in, host_state.as_str()) {
         (true, _) => "unlocked",
         (false, "setup") => "setup",
@@ -725,17 +778,6 @@ pub(crate) async fn auth_status(app: &AppHandle) -> Result<Value, BackendError> 
         .unwrap_or(Value::Null);
     status["sessionRemembered"] = json!(crate::config_vault::remembered_credentials(app, &session_key(&library_id)).is_some());
     Ok(status)
-}
-
-async fn has_session(app: &AppHandle) -> bool {
-    if with_link(app, |link| link.session.is_none()).unwrap_or(true) {
-        return false;
-    }
-    match request_json(app, Method::GET, "/api/session", None, SHORT_TIMEOUT).await {
-        Ok(reply) if reply.body.get("authenticated").and_then(Value::as_bool) == Some(true) => true,
-        Ok(_) => renew_session(app).await,
-        Err(_) => false,
-    }
 }
 
 pub(crate) async fn auth_login(
@@ -930,12 +972,15 @@ fn relay_events(app: &AppHandle, generation: u64) {
         };
         match open_events(&address, pin, &session, since) {
             Ok(mut socket) => read_events(app, generation, &session, &mut socket, &mut since),
-            Err(EventsError::SignedOut) => {
-                if !crate::host::async_runtime::block_on(renew_session(app)) {
+            Err(EventsError::SignedOut) => match crate::host::async_runtime::block_on(renew_session(app)) {
+                Ok(()) => {}
+                Err(error) if host_refused(&error) => {
                     end_session(app);
                     return;
                 }
-            }
+                // The host went away between the two requests: try again later.
+                Err(_) => std::thread::sleep(EVENTS_RETRY),
+            },
             Err(EventsError::Failed) => std::thread::sleep(EVENTS_RETRY),
         }
     }

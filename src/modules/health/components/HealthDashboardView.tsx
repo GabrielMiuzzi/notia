@@ -7,7 +7,8 @@ import { asHealthError, estimateMeal } from '../services/healthService'
 import type { HealthMutation, WeightRange } from '../types/healthTypes'
 import { CompositionPanelView, FoodPanelView } from './FoodAndBodyPanels'
 import { MealFormView, MeasurementFormView, ProfileFormView, type MealTarget } from './HealthForms'
-import { BmiPanelView, ObjectivePanelView, WaterPanelView, WeightPanelView } from './HealthPanels'
+import { BmiPanelView, DailyPanelView, ObjectivePanelView, WaterPanelView, WeightPanelView } from './HealthPanels'
+import { SLEEP_COPY, STEPS_COPY } from './healthUi'
 import { HEALTH_PHONE_MAX_WIDTH, HealthPhone, type HealthPanels } from './HealthPhone'
 import '../styles/health.css'
 
@@ -103,6 +104,26 @@ export function HealthDashboardView({ library }: { library: NotiaLibrary }) {
       />
     ),
     water: dashboard.water && <WaterPanelView panel={dashboard.water} onAdd={(deltaMl) => { void run({ kind: 'addWater', date: today, deltaMl }) }} />,
+    steps: (
+      <DailyPanelView
+        panel={dashboard.steps}
+        copy={STEPS_COPY}
+        today={today}
+        onRange={(range) => updateQuery({ stepsRange: range as WeightRange })}
+        onAdd={(date, steps) => run({ kind: 'setSteps', date, steps })}
+        onDelete={(date) => { void run({ kind: 'deleteSteps', date }) }}
+      />
+    ),
+    sleep: (
+      <DailyPanelView
+        panel={dashboard.sleep}
+        copy={SLEEP_COPY}
+        today={today}
+        onRange={(range) => updateQuery({ sleepRange: range as WeightRange })}
+        onAdd={(date, duration) => run({ kind: 'setSleep', date, duration })}
+        onDelete={(date) => { void run({ kind: 'deleteSleep', date }) }}
+      />
+    ),
     composition: (
       <CompositionPanelView
         panel={dashboard.composition}
@@ -144,6 +165,7 @@ export function HealthDashboardView({ library }: { library: NotiaLibrary }) {
               {panels.objective}
               {panels.food && <div className="hl-grid__wide">{panels.food}</div>}
               {panels.water && <div className="hl-grid__side">{panels.water}</div>}
+              <div className="hl-grid__full hl-daily-pair">{panels.steps}{panels.sleep}</div>
               <div className="hl-grid__full">{panels.composition}</div>
             </div>
           )}

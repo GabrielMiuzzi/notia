@@ -7,6 +7,7 @@ import {
   Lock,
   MessageSquare,
   ListChecks,
+  Workflow,
   PencilLine,
   Network,
   X,
@@ -46,6 +47,7 @@ export const LEFT_RAIL_GROUPS: NotiaIconAction[][] = [
     { id: 'health', label: 'Salud', icon: HeartPulse },
     { id: 'gym', label: 'Gimnasio', icon: Dumbbell },
     { id: 'ai-actions', label: 'Acciones IA', icon: MuninIcon },
+    { id: 'ai-tasks', label: 'Tareas IA', icon: Workflow },
   ],
 ]
 

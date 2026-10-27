@@ -37,6 +37,7 @@ const FinanceView = lazy(async () => ({ default: (await import('./views/FinanceV
 const AgendaView = lazy(async () => ({ default: (await import('./views/AgendaView')).AgendaView }))
 const RoutineView = lazy(async () => ({ default: (await import('./views/RoutineView')).RoutineView }))
 const AiActionsView = lazy(async () => ({ default: (await import('./views/AiActionsView')).AiActionsView }))
+const AiTasksView = lazy(async () => ({ default: (await import('./views/AiTasksView')).AiTasksView }))
 const RecipesView = lazy(async () => ({ default: (await import('./views/RecipesView')).RecipesView }))
 const HealthView = lazy(async () => ({ default: (await import('./views/HealthView')).HealthView }))
 const GymView = lazy(async () => ({ default: (await import('./views/GymView')).GymView }))
@@ -264,6 +265,9 @@ function NotiaWorkspaceComponent({
   }
   if (activeWorkspaceView === 'ai-actions') {
     return <ModuleView><AiActionsView library={activeLibrary} /></ModuleView>
+  }
+  if (activeWorkspaceView === 'ai-tasks') {
+    return <ModuleView><AiTasksView library={activeLibrary} /></ModuleView>
   }
   if (activeWorkspaceView === 'recipes') {
     return <ModuleView><RecipesView library={activeLibrary} /></ModuleView>

@@ -268,6 +268,18 @@ pub(crate) fn backend_write_library_config(payload: LibraryConfigPayload, app: &
         if !config.is_object() {
             return Err(BackendError::invalid_input("La configuración debe ser un objeto."));
         }
+        let names_system = config
+            .get("contexts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|context| context.get("tag").and_then(Value::as_str))
+            .any(crate::backend::library_config::is_system_context);
+        if names_system {
+            return Err(BackendError::invalid_input(
+                "#System es un contexto reservado de Notia para los archivos que escribe la IA: elegí otro nombre.",
+            ));
+        }
         let store = LibraryConfigStore::open(app, &payload.library_id)?;
         // Sections the client does not edit (for example the LlamaCloud
         // credential) keep their stored value instead of being erased.

@@ -27,6 +27,13 @@ pub const MIN_WEIGHT_KG: f64 = 20.0;
 pub const MAX_WEIGHT_KG: f64 = 400.0;
 const MAX_MEAL_NAME_CHARS: usize = 120;
 const MAX_WATER_ML: i64 = 20_000;
+/// Pasos de un día como máximo.
+pub const MAX_STEPS: i64 = 150_000;
+/// Meta orientativa de pasos por día.
+pub const STEPS_GOAL: i64 = 8_000;
+/// Sueño recomendado para adultos, en minutos (7 a 9 h).
+pub const SLEEP_RANGE_MINUTES: (i64, i64) = (7 * 60, 9 * 60);
+const MAX_SLEEP_MINUTES: i64 = 24 * 60;
 
 /// Factores de actividad (Harris-Benedict) con su descripción.
 pub const ACTIVITIES: [(f64, &str); 5] = [
@@ -314,6 +321,10 @@ pub struct HealthData {
     pub plan: Option<Plan>,
     /// Mililitros por fecha.
     pub water: BTreeMap<String, i64>,
+    /// Pasos por fecha.
+    pub steps: BTreeMap<String, i64>,
+    /// Minutos de sueño por fecha: la del día en que se despertó.
+    pub sleep: BTreeMap<String, i64>,
     pub meals: Vec<Meal>,
 }
 
@@ -875,6 +886,94 @@ pub fn validate_water(date: &str, ml: i64, today: Date) -> Result<(String, i64),
     }
 }
 
+/// Los pasos de un día, escritos como los escribe es-AR («8.432»).
+pub fn validate_steps(date: &str, steps: &str, today: Date) -> Result<(String, i64), Vec<FieldError>> {
+    let mut errors = Vec::new();
+    let date = check_date("date", date, today, &mut errors);
+    let steps = parse_number(steps).map(|steps| steps.round() as i64);
+    match steps {
+        None => errors.push(field_error("steps", "Escribí la cantidad de pasos.")),
+        Some(steps) if !(0..=MAX_STEPS).contains(&steps) => {
+            errors.push(field_error("steps", format!("Los pasos de un día van de 0 a {}.", fmt(MAX_STEPS as f64, 0))))
+        }
+        Some(_) => {}
+    }
+    match (date, steps) {
+        (Some(date), Some(steps)) if errors.is_empty() => Ok((date.to_string(), steps)),
+        _ => Err(errors),
+    }
+}
+
+/// Los minutos de una duración de sueño: «7,5» (horas), «7:30», «7 h 30»,
+/// «7 horas y media», «450 min». `None` cuando no es una duración.
+pub fn parse_sleep_minutes(text: &str) -> Option<i64> {
+    let text = fold(text.trim());
+    if let Some((hours, minutes)) = text.split_once(':') {
+        let hours = hours.trim().parse::<i64>().ok()?;
+        let minutes = minutes.trim().trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<i64>().ok()?;
+        return (minutes < 60).then_some(hours * 60 + minutes);
+    }
+    // Cada número con la unidad que lo sigue (h, hora, m, min…).
+    let mut parts: Vec<(f64, Option<char>)> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&character) = chars.peek() {
+        if character.is_ascii_digit() {
+            let mut number = String::new();
+            while let Some(&digit) = chars.peek().filter(|c| c.is_ascii_digit() || **c == ',' || **c == '.') {
+                number.push(digit);
+                chars.next();
+            }
+            while chars.peek().is_some_and(|c| *c == ' ') {
+                chars.next();
+            }
+            let unit = chars.peek().copied().filter(|c| *c == 'h' || *c == 'm');
+            parts.push((number.replace(',', ".").trim_end_matches('.').parse::<f64>().ok()?, unit));
+        } else {
+            chars.next();
+        }
+    }
+    let half = text.contains("media") || text.contains("medio");
+    let minutes = match parts.as_slice() {
+        [] => return None,
+        [(minutes, Some('m'))] => *minutes,
+        [(hours, _)] => hours * 60.0 + if half { 30.0 } else { 0.0 },
+        [(hours, _), (minutes, _), ..] => hours * 60.0 + minutes,
+    };
+    minutes.is_finite().then(|| minutes.round() as i64)
+}
+
+/// La duración de sueño de un día.
+pub fn validate_sleep(date: &str, duration: &str, today: Date) -> Result<(String, i64), Vec<FieldError>> {
+    let mut errors = Vec::new();
+    let date = check_date("date", date, today, &mut errors);
+    let minutes = parse_sleep_minutes(duration);
+    match minutes {
+        None => errors.push(field_error("duration", "Escribí cuánto dormiste: 7,5 o 7:30.")),
+        Some(minutes) if !(1..=MAX_SLEEP_MINUTES).contains(&minutes) => {
+            errors.push(field_error("duration", "El sueño de un día va de 1 minuto a 24 horas."))
+        }
+        Some(_) => {}
+    }
+    match (date, minutes) {
+        (Some(date), Some(minutes)) if errors.is_empty() => Ok((date.to_string(), minutes)),
+        _ => Err(errors),
+    }
+}
+
+/// «7 h 30 min», «8 h», «45 min».
+pub fn sleep_label(minutes: i64) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+/// «8.432 pasos», «1 paso».
+pub fn steps_label(steps: i64) -> String {
+    format!("{} {}", fmt(steps as f64, 0), if steps == 1 { "paso" } else { "pasos" })
+}
+
 /// Una comida tal como se carga. Sin calorías, salen de los macros.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1006,6 +1105,25 @@ pub fn eaten_factor(recipe: &crate::recipes::Recipe, portion: &Portion, photo_of
     portion_factor(recipe, portion)
 }
 
+/// Cómo salieron los valores de una comida, para la confirmación y el
+/// resultado: el mismo cálculo da siempre lo mismo; lo que estima la IA (una
+/// nota, gramos sin el peso de la porción, la foto de una receta que ya
+/// existía) puede variar de una vez a otra.
+pub fn meal_basis(recipe_name: &str, serving_kcal: f64, factor: Option<f64>, eaten: &str) -> String {
+    let per_serving = format!("{} kcal por porción", fmt(serving_kcal, 0));
+    match factor {
+        Some(factor) => {
+            let servings = if (factor - 1.0).abs() < 1e-6 { "1 porción".to_string() } else { format!("{} porciones", fmt(factor, 2)) };
+            format!("Calculado: {servings} de «{}» ({per_serving}).", recipe_name.trim())
+        }
+        None => format!(
+            "Estimado por la IA para «{}» sobre «{}» ({per_serving}); otra estimación puede dar distinto.",
+            eaten.trim(),
+            recipe_name.trim()
+        ),
+    }
+}
+
 /// El nombre de la comida en Salud: el de la receta y, si no fue una
 /// porción, cuánto: «Guiso de lentejas · 500 g», «… · 1,5 porciones».
 pub fn portion_name(recipe_name: &str, portion: &Portion) -> String {
@@ -1050,6 +1168,12 @@ pub enum HealthMutation {
     ClearPlan,
     AddWater { date: String, delta_ml: i64 },
     SetWater { date: String, ml: i64 },
+    /// Los pasos de un día, como se escribieron («8.432»).
+    SetSteps { date: String, steps: String },
+    DeleteSteps { date: String },
+    /// El sueño de un día, como se escribió («7,5», «7:30»).
+    SetSleep { date: String, duration: String },
+    DeleteSleep { date: String },
     SaveMeal { id: Option<String>, input: MealInput },
     DeleteMeal { id: String },
 }

@@ -70,9 +70,9 @@ function makeView(overrides: Partial<ManagementView> = {}): ManagementView {
       title: 'Sprint 21', heading: 'Gantt · Sprint 21 · Q4 2026',
       subtitle: '12 oct – 25 oct · ajustado a los sprints con tareas', wholeDivision: false, days: 14,
       modes: [
-        { mode: 'auto', label: 'Auto · 1 sprint', tooltip: 'Elige solo entre los sprints con tareas y el Q completo', selected: true },
-        { mode: 'sprints', label: 'Sprints', tooltip: 'Solo los sprints que ocupan las tareas', selected: false },
-        { mode: 'division', label: 'Q completo', tooltip: 'Toda la división', selected: false },
+        { mode: 'auto', label: 'Auto · 1 sprint', shortLabel: 'Auto', tooltip: 'Elige solo entre los sprints con tareas y el Q completo', selected: true },
+        { mode: 'sprints', label: 'Sprints', shortLabel: 'Sprints', tooltip: 'Solo los sprints que ocupan las tareas', selected: false },
+        { mode: 'division', label: 'Q completo', shortLabel: 'Q completo', tooltip: 'Toda la división', selected: false },
       ],
     },
     gantt: {
@@ -112,6 +112,7 @@ function makeView(overrides: Partial<ManagementView> = {}): ManagementView {
       rows: LETTERS.map((letter, index) => tableRow(letter, index)),
     },
     criticalPath: 'A → B',
+    criticalChain: [],
     ...overrides,
   }
 }

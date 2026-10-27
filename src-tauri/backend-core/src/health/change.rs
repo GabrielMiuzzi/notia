@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::{
     calculate_plan, field_errors_message, fmt, parse_date, short_date, signed, validate_meal, validate_measurement, validate_objective,
-    validate_profile, validate_water, validate_weight, vitals, FieldError, HealthData, HealthMutation, Meal, Measurement, Objective, Plan,
+    validate_profile, validate_sleep, validate_steps, validate_water, validate_weight, vitals, sleep_label, steps_label, FieldError, HealthData, HealthMutation, Meal, Measurement, Objective, Plan,
     PlanInput, Profile, WeightEntry,
 };
 
@@ -22,6 +22,10 @@ pub enum StoreOp {
     PutObjective(Objective),
     PutPlan(Option<Plan>),
     PutWater { date: String, ml: i64 },
+    PutSteps { date: String, steps: i64 },
+    DeleteSteps(String),
+    PutSleep { date: String, minutes: i64 },
+    DeleteSleep(String),
     PutMeal(Meal),
     DeleteMeal(String),
 }
@@ -177,6 +181,32 @@ pub fn plan_change(data: &HealthData, mutation: &HealthMutation, today: Date, id
             let (date, ml) = validate_water(date, *ml, today).map_err(HealthError::fields)?;
             let summary = format!("Dejar el agua del {} en {} ml.", date_label(&date), ml);
             Ok(change(vec![StoreOp::PutWater { date, ml }], summary))
+        }
+        HealthMutation::SetSteps { date, steps } => {
+            let (date, steps) = validate_steps(date, steps, today).map_err(HealthError::fields)?;
+            let summary = match data.steps.get(&date) {
+                Some(before) => format!("Cambiar los pasos del {}: {} → {}.", date_label(&date), steps_label(*before), steps_label(steps)),
+                None => format!("Registrar {} el {}.", steps_label(steps), date_label(&date)),
+            };
+            Ok(change(vec![StoreOp::PutSteps { date, steps }], summary))
+        }
+        HealthMutation::DeleteSteps { date } => {
+            let steps = data.steps.get(date.trim()).ok_or_else(|| HealthError::not_found(format!("No hay pasos registrados el {}.", date_label(date))))?;
+            let summary = format!("Eliminar los pasos del {} ({}).", date_label(date), steps_label(*steps));
+            Ok(change(vec![StoreOp::DeleteSteps(date.trim().to_string())], summary))
+        }
+        HealthMutation::SetSleep { date, duration } => {
+            let (date, minutes) = validate_sleep(date, duration, today).map_err(HealthError::fields)?;
+            let summary = match data.sleep.get(&date) {
+                Some(before) => format!("Cambiar el sueño del {}: {} → {}.", date_label(&date), sleep_label(*before), sleep_label(minutes)),
+                None => format!("Registrar {} de sueño el {}.", sleep_label(minutes), date_label(&date)),
+            };
+            Ok(change(vec![StoreOp::PutSleep { date, minutes }], summary))
+        }
+        HealthMutation::DeleteSleep { date } => {
+            let minutes = data.sleep.get(date.trim()).ok_or_else(|| HealthError::not_found(format!("No hay sueño registrado el {}.", date_label(date))))?;
+            let summary = format!("Eliminar el sueño del {} ({}).", date_label(date), sleep_label(*minutes));
+            Ok(change(vec![StoreOp::DeleteSleep(date.trim().to_string())], summary))
         }
         HealthMutation::SaveMeal { id, input } => {
             let (date, category, name, nutrition) = validate_meal(input, today).map_err(HealthError::fields)?;

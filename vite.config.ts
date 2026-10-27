@@ -70,10 +70,15 @@ export default defineConfig(() => ({
       input: {
         main: resolve(__dirname, 'index.html'),
         'public-task-manager': resolve(__dirname, 'public-task-manager.html'),
+        'public-space': resolve(__dirname, 'public-space.html'),
+        // The frame a public page draws each XGraph board in.
+        'public-space-xgraph': resolve(__dirname, 'public-space-xgraph.html'),
       },
       output: {
         manualChunks(id: string | undefined) {
           if (!id) return undefined
+          // React on its own: the public site needs it without MUI or the icons.
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'vendor-react'
           if (id.includes('node_modules/@mui/material')) return 'vendor-mui'
           if (id.includes('node_modules/lucide-react/')) return 'vendor-lucide'
           if (id.includes('node_modules/@iconify-json/')) return 'vendor-iconify-packs'

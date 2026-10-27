@@ -23,6 +23,7 @@ import { NotiaButton } from '../common/NotiaButton'
 import type { TelegramPreferences } from '../../services/preferences/telegramSettingsStorage'
 import { checkTelegramBot } from '../../services/telegram/telegramRuntime'
 import { MailAccountsSection } from './settings/MailAccountsSection'
+import { PublicSpacesSection } from './settings/PublicSpacesSection'
 import { WeatherSection } from './settings/WeatherSection'
 import { ImageModelsSection } from './settings/ImageModelsSection'
 import { RunModeSection } from './settings/RunModeSection'
@@ -46,7 +47,7 @@ import { readTaskBoardView } from '../../modules/task-manager/services/taskManag
 import { TASK_MANAGER_LOCAL_LIBRARY_USER_ID, type Board } from '../../modules/task-manager/types/taskManagerTypes'
 import { getTaskManagerPublicationStatus, getTaskManagerPublicationUrl, openTaskManagerPublication, publishTaskManagerBoards, stopTaskManagerPublication, type TaskManagerPublicationStatusSnapshot } from '../../modules/task-manager/services/taskManagerPublicationRuntime'
 import { loadTaskManagerPublicationTelemetry, recordTaskManagerPublicationTelemetry } from '../../modules/task-manager/services/taskManagerPublicationTelemetry'
-import { normalizeContextTag, type LibraryContext } from '../../services/contexts/libraryContexts'
+import { isProtectedContext, normalizeContextTag, type LibraryContext } from '../../services/contexts/libraryContexts'
 import { backendPlatform, backendSupports } from '../../services/transport'
 import {
   createLibraryRole,
@@ -859,7 +860,10 @@ export function SettingsModal({
                     </form>
                     {contexts.map((context, index) => {
                       const isUsedByBoard = taskManagerBoards.some((board) => board.contexto?.toLowerCase() === context.tag.toLowerCase())
-                      const blockedReason = isUsedByBoard ? 'Usado por un tablero' : contexts.length <= 1 ? 'Único contexto' : null
+                      const isProtected = isProtectedContext(context.tag)
+                      const blockedReason = isProtected
+                        ? 'Predeterminado'
+                        : isUsedByBoard ? 'Usado por un tablero' : contexts.length <= 1 ? 'Único contexto' : null
                       return (
                         // Keyed by position: renaming changes the tag and must not remount the input being typed in.
                         <div key={index} className="notia-settings-list-row">
@@ -874,6 +878,8 @@ export function SettingsModal({
                             className="notia-settings-inline-input"
                             aria-label={`Nombre del contexto ${context.tag}`}
                             value={context.tag}
+                            readOnly={isProtected}
+                            title={isProtected ? 'Contexto predeterminado: no se renombra ni se elimina' : undefined}
                             onChange={(event) => {
                               const nextTag = normalizeContextTag(event.target.value)
                               if (!nextTag || contexts.some((item) => item !== context && item.tag.toLowerCase() === nextTag.toLowerCase())) return
@@ -1677,6 +1683,7 @@ export function SettingsModal({
                       </NotiaButton>
                     </SettingsFooter>
                   </SettingsCard>
+                  <PublicSpacesSection libraryId={activeLibrary?.id ?? null} />
                   {publicationMetrics ? (
                     <SettingsCard title="Estado del servidor">
                       {publicationMetrics.active ? (

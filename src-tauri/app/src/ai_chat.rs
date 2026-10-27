@@ -837,6 +837,8 @@ impl TurnSetup {
             scheduled_action: None,
             tool_areas: None,
             thinking: None,
+            conversational: false,
+            ai_task: None,
         })
     }
 }

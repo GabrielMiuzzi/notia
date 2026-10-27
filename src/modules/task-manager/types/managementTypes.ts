@@ -55,6 +55,8 @@ export interface RangeModeOption {
   mode: ManagementRangeMode
   /** «Auto · Q», «Auto · 3 sprints», «Sprints», «Q completo». */
   label: string
+  /** «Auto», «Sprints», «Q completo»: the phone's segmented control. */
+  shortLabel: string
   tooltip: string
   selected: boolean
 }
@@ -337,4 +339,17 @@ export interface ManagementView {
   table: CpmTable
   /** «B → E → F  ·  C», or «—». */
   criticalPath: string
+  /** The main critical chain, step by step («Ruta crítica» of the phone). */
+  criticalChain: CriticalStep[]
+}
+
+export interface CriticalStep {
+  taskPath: string
+  letter: string
+  title: string
+  /** «lun 19 oct · 09:00 → mar 20 oct · 15:00 · 9 h». */
+  when: string
+  /** «C depende de B» or «Misma persona: Gabriel sigue con C»; null on the last step. */
+  link: string | null
+  linkKind: 'dependency' | 'resource' | null
 }

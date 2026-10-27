@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useAppDispatch } from '../../../store/hooks'
 import { store } from '../../../store/index'
 import { setSearchMenuOpen, setSidebarOpen } from '../../../features/ui/uiSlice'
-import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
+import { setActiveTabPath, activateSpecialTab, setContextMenu, setRenamingPath, setPendingCreation, GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, AI_TASKS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from '../../../features/documents/documentsSlice'
 
 interface UseToolbarActionsParams {
   activeLibrary: { path: string } | null
@@ -65,6 +65,11 @@ export function useToolbarActions({
     if (actionId === 'routine') {
       if (!specialTabs.routine) { dispatch(activateSpecialTab('routine')) }
       dispatch(setActiveTabPath(ROUTINE_WORKSPACE_TAB_PATH))
+      return
+    }
+    if (actionId === 'ai-tasks') {
+      if (!specialTabs.aiTasks) { dispatch(activateSpecialTab('aiTasks')) }
+      dispatch(setActiveTabPath(AI_TASKS_WORKSPACE_TAB_PATH))
       return
     }
     if (actionId === 'ai-actions') {

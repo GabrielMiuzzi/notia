@@ -33,6 +33,8 @@ import { BoardPeopleDrawer } from './people/BoardPeopleDrawer'
 import { GroupDialog } from './dialogs/GroupDialog'
 import { TaskCommentDialog } from './dialogs/TaskCommentDialog'
 import { TaskSourceDialog, type TaskSourceDialogState } from './dialogs/TaskSourceDialog'
+import { TaskManagerPhone } from './phone/TaskManagerPhone'
+import { useNarrowContainer } from '../../../hooks/useNarrowContainer'
 import '../styles/taskManagerTokens.css'
 import '../styles/taskManager.css'
 import '../styles/taskShell.css'
@@ -68,6 +70,8 @@ interface TaskManagerAppProps {
 }
 
 const STATE_OPTIONS = ['Pendiente', 'En progreso', 'Bloqueada']
+/** Below this view width the Task Manager shows the phone boards of the canvas. */
+const PHONE_MAX_WIDTH = 600
 const PRIORITY_OPTIONS = ['Atrasado', 'Urgente', 'Alta', 'Media', 'Baja']
 
 /** «C:/Users/…/gaia» without the `//?/` prefix of extended Windows paths. */
@@ -118,6 +122,8 @@ function TaskManagerAppComponent({
 
   const manager = useTaskManager(vault)
   const { confirm } = useConfirmationEngine()
+  const [rootElement, setRootElement] = useState<HTMLDivElement | null>(null)
+  const isPhone = useNarrowContainer(rootElement, PHONE_MAX_WIDTH)
   const { snapshot, settings } = manager
   const activeTab = settings.activeTab
   const searchRef = useRef<HTMLInputElement>(null)
@@ -242,6 +248,19 @@ function TaskManagerAppComponent({
       ? filteredArchiveRows.length
       : filteredBoardTasks.filter((task) => !task.parentTaskName.trim()).length
 
+  // The phone searches by words only: the desktop filters have no controls there.
+  const phoneTasks = useMemo(
+    () => (isPhone ? filterTasks(boardTasks, { ...NO_TASK_FILTERS, query: filters.query }) : boardTasks),
+    [boardTasks, filters.query, isPhone],
+  )
+  const phoneResultCount = filters.query.trim() ? phoneTasks.filter((task) => !task.parentTaskName.trim()).length : null
+  // The phone has its own Archivo and Pomodoro sections: it always shows a board.
+  const firstBoardName = settings.boards[0]?.name ?? null
+  const { setActiveTab } = manager
+  useEffect(() => {
+    if (isPhone && !activeBoard && firstBoardName) setActiveTab(firstBoardName)
+  }, [activeBoard, firstBoardName, isPhone, setActiveTab])
+
   // --- Management --------------------------------------------------------
   const [managementRequest, setManagementRequest] = useState<ManagementRequest>(DEFAULT_MANAGEMENT_REQUEST)
   const management = useManagementView(
@@ -303,17 +322,21 @@ function TaskManagerAppComponent({
   }, [manager])
 
   // --- Board and column actions -------------------------------------------
-  const removeActiveBoard = useCallback(async () => {
-    if (!activeBoard) return
+  const removeBoard = useCallback(async (boardName: string) => {
     const accepted = await confirm({
       title: 'Eliminar tablero',
-      message: `¿Eliminar el tablero «${activeBoard.name}»? Solo se puede eliminar un tablero sin tareas ni columnas.`,
+      message: `¿Eliminar el tablero «${boardName}»? Solo se puede eliminar un tablero sin tareas ni columnas.`,
       confirmLabel: 'Eliminar',
       cancelLabel: 'Cancelar',
       tone: 'danger',
     })
-    if (accepted) await manager.removeBoard(activeBoard.name)
-  }, [activeBoard, confirm, manager])
+    if (!accepted) return false
+    await manager.removeBoard(boardName)
+    return true
+  }, [confirm, manager])
+  const removeActiveBoard = useCallback(async () => {
+    if (activeBoard) await removeBoard(activeBoard.name)
+  }, [activeBoard, removeBoard])
 
   const removeGroup = useCallback(async (group: Group) => {
     const accepted = await confirm({
@@ -336,6 +359,30 @@ function TaskManagerAppComponent({
   }, [manager])
 
   const canCreateTask = Boolean(activeBoard) && !isArchiveTab && activeTab !== POMODORO_TAB_ID
+
+  // «Eliminar definitivamente» of the phone's Archivo: there is no undo.
+  const deleteArchived = useCallback(async (taskPath: string) => {
+    const accepted = await confirm({
+      title: 'Eliminar definitivamente',
+      message: 'La tarea se borra de la biblioteca y no se puede recuperar.',
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    })
+    if (accepted) await quietIntent({ kind: 'delete-tasks', taskPaths: [taskPath] })
+  }, [confirm, quietIntent])
+
+  const pomodoroPanel = (
+    <PomodoroPanel
+      state={settings.pomodoro}
+      presets={manager.pomodoroPresets}
+      today={manager.pomodoroToday}
+      boards={settings.boards.filter((board) => !publishedBoardNameSet || publishedBoardNameSet.has(board.name.toLowerCase()))}
+      tasks={openTasks}
+      onAction={manager.runPomodoro}
+      onNotify={setNotice}
+    />
+  )
 
   // N: new task; /: search. Never while typing or with modifiers.
   useEffect(() => {
@@ -379,7 +426,41 @@ function TaskManagerAppComponent({
 
   return (
     <ThemeProvider theme={theme}>
-      <div className={`tareas-root tm-shell${embedded ? ' is-embedded' : ''}`}>
+      <div ref={setRootElement} className={`tareas-root tm-shell${embedded ? ' is-embedded' : ''}${isPhone ? ' is-phone' : ''}`}>
+        {isPhone && activeBoard ? (
+          <TaskManagerPhone
+            {...boardActions}
+            boards={settings.boards.filter((board) => !publishedBoardNameSet || publishedBoardNameSet.has(board.name.trim().toLowerCase()))}
+            board={activeBoard}
+            groups={boardGroups}
+            tasks={phoneTasks}
+            allTasks={boardTasks}
+            query={filters.query}
+            onQueryChange={(query) => setFilters((current) => ({ ...current, query }))}
+            resultCount={phoneResultCount}
+            viewMode={viewMode}
+            onViewModeChange={changeViewMode}
+            flashTaskId={manager.flashTaskId}
+            archive={snapshot.archive}
+            finishedCount={snapshot.finishedCount}
+            pomodoroRunning={settings.pomodoro.runState === 'running'}
+            pomodoro={pomodoroPanel}
+            management={management}
+            managementRequest={managementRequest}
+            onManagementRequestChange={setManagementRequest}
+            context={manager.context}
+            generation={snapshot.generation}
+            canManageBoards={canManageBoards}
+            onSelectBoard={manager.setActiveTab}
+            onEditBoard={() => manager.openBoardEditDialog(activeBoard)}
+            onNewBoard={manager.openBoardCreateDialog}
+            onCreateTask={(groupName) => void manager.createTask(groupName)}
+            onUndo={() => void manager.undo()}
+            onRestore={(taskPath) => void quietIntent({ kind: 'restore-tasks', taskPaths: [taskPath] })}
+            onDeleteArchived={(taskPath) => void deleteArchived(taskPath)}
+          />
+        ) : null}
+        {isPhone && activeBoard ? null : (<>
         <TaskManagerHeader
           library={libraryLabel(settings.activeVaultPath)}
           board={activeBoard}
@@ -464,21 +545,12 @@ function TaskManagerAppComponent({
               canEdit
             />
           ) : null}
-          {activeTab === POMODORO_TAB_ID ? (
-            <PomodoroPanel
-              state={settings.pomodoro}
-              presets={manager.pomodoroPresets}
-              today={manager.pomodoroToday}
-              boards={settings.boards.filter((board) => !publishedBoardNameSet || publishedBoardNameSet.has(board.name.toLowerCase()))}
-              tasks={openTasks}
-              onAction={manager.runPomodoro}
-              onNotify={setNotice}
-            />
-          ) : null}
+          {activeTab === POMODORO_TAB_ID ? pomodoroPanel : null}
           {!activeBoard && !isArchiveTab && activeTab !== POMODORO_TAB_ID && !manager.isLoading ? (
             <p className="tm-empty">{settings.activeVaultPath ? 'No hay tableros todavía.' : 'Abrí una biblioteca para usar Task Manager.'}</p>
           ) : null}
         </div>
+        </>)}
 
         <BoardEditDialog
           open={manager.boardDialog.open}
@@ -490,6 +562,12 @@ function TaskManagerAppComponent({
           lockNameAndColor={manager.boardDialog.board?.name === 'default'}
           onClose={manager.closeBoardDialog}
           onSave={manager.saveBoard}
+          onDelete={canManageBoards && manager.boardDialog.board && manager.boardDialog.board.name !== 'default'
+            ? () => {
+              const name = manager.boardDialog.board?.name
+              if (name) void removeBoard(name).then((removed) => { if (removed) manager.closeBoardDialog() })
+            }
+            : undefined}
         />
 
         <BoardPeopleDrawer

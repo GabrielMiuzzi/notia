@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use super::reference::{bmi_range, bmi_state, range_for, state, Range, Tone};
 use super::{
     active_plan, activity_label, day_label, day_month, days_ago, fmt, long_date, meals_of, parse_date, shift_days, short_date,
-    signed, total, vitals, weekday_narrow, HealthData, MacroKey, MealCategory, MetricGroup, Nutrition, Plan, PlanSource, Sex,
-    Vitals, ACTIVITIES, METRICS, PACES,
+    signed, sleep_label, steps_label, total, vitals, weekday_narrow, HealthData, MacroKey, MealCategory, MetricGroup, Nutrition, Plan, PlanSource, Sex,
+    Vitals, ACTIVITIES, METRICS, PACES, SLEEP_RANGE_MINUTES, STEPS_GOAL,
 };
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,10 @@ pub struct DashboardQuery {
     pub weight_range: WeightRange,
     /// Medición elegida; la última si falta.
     pub measurement_date: Option<String>,
+    #[serde(default)]
+    pub steps_range: WeightRange,
+    #[serde(default)]
+    pub sleep_range: WeightRange,
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +207,30 @@ pub struct WeightPanel {
     pub chart: Option<WeightChart>,
     pub empty_text: String,
     pub entries: Vec<WeightRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyRow {
+    pub date: String,
+    pub date_label: String,
+    pub value_label: String,
+}
+
+/// Un registro diario con su histórico, como el peso: los pasos o el sueño.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyPanel {
+    /// Los pasos de hoy o el sueño de anoche; «—» sin registro.
+    pub today_label: String,
+    /// «Hoy», «Anoche».
+    pub today_caption: String,
+    /// El promedio de la última semana y la meta.
+    pub summary: String,
+    pub ranges: Vec<Choice>,
+    pub chart: Option<WeightChart>,
+    pub empty_text: String,
+    pub entries: Vec<DailyRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -451,6 +479,8 @@ pub struct HealthDashboard {
     pub today_calories: Option<CaloriesSummary>,
     pub weight_trend: WeightTrend,
     pub water: Option<WaterPanel>,
+    pub steps: DailyPanel,
+    pub sleep: DailyPanel,
     pub composition: Option<CompositionPanel>,
     pub profile_form: ProfileForm,
     pub meal_form: MealForm,
@@ -475,6 +505,8 @@ pub fn build_dashboard(data: &HealthData, query: &DashboardQuery, today: Date, h
         today_calories: active_plan(data, &vitals).map(|plan| calories_summary(&total(&meals_of(data, &today.to_string())), plan)),
         weight_trend: weight_trend(data, &vitals, today),
         water: water_panel(data, &vitals, today),
+        steps: steps_panel(data, query.steps_range, today),
+        sleep: sleep_panel(data, query.sleep_range, today),
         composition: composition_panel(data, &vitals, sex, query.measurement_date.as_deref()),
         profile_form: profile_form(data, &vitals),
         meal_form: meal_form(data, hour),
@@ -659,6 +691,130 @@ fn weight_panel(data: &HealthData, vitals: &Vitals, range: WeightRange, today: D
                 kg_label: format!("{} kg", fmt(entry.kg, 1)),
             })
             .collect(),
+    }
+}
+
+/// Un paso de eje redondo (1, 2, 2,5 o 5 por potencia de 10) con hasta seis
+/// marcas en `span`.
+fn nice_step(span: f64) -> f64 {
+    let magnitude = 10f64.powf((span / 6.0).max(1e-9).log10().floor());
+    [1.0, 2.0, 2.5, 5.0, 10.0].into_iter().map(|factor| factor * magnitude).find(|step| span / step <= 6.0).unwrap_or(10.0 * magnitude)
+}
+
+/// El gráfico de una serie diaria (pasos, sueño) con el eje desde cero y la
+/// meta como línea; necesita dos registros o más.
+fn daily_chart(
+    points: &[(Date, f64)],
+    goal: Option<(f64, String)>,
+    tick_label: impl Fn(f64) -> String,
+    value_label: impl Fn(f64) -> String,
+) -> Option<WeightChart> {
+    if points.len() < 2 {
+        return None;
+    }
+    let high = points.iter().map(|(_, value)| *value).chain(goal.as_ref().map(|(value, _)| *value)).fold(0.0, f64::max).max(1.0);
+    let step = nice_step(high * 1.1);
+    let top = ((high * 1.1) / step).ceil() * step;
+    let y = |value: f64| value / top;
+    let last = (points.len() - 1) as f64;
+    let y_ticks = (0..=((top / step).round() as usize)).map(|index| index as f64 * step).map(|tick| ChartTick { at: y(tick), label: tick_label(tick) }).collect();
+    let tick_count = points.len().min(6);
+    let mut x_ticks = (0..tick_count)
+        .map(|index| (index as f64 * last / (tick_count - 1) as f64).round() as usize)
+        .map(|point| ChartTick { at: point as f64 / last, label: day_month(points[point].0) })
+        .collect::<Vec<_>>();
+    x_ticks.dedup_by(|a, b| a.at == b.at);
+    Some(WeightChart {
+        points: points
+            .iter()
+            .enumerate()
+            .map(|(index, (date, value))| ChartPoint { x: index as f64 / last, y: y(*value), label: short_date(*date), value_label: value_label(*value) })
+            .collect(),
+        y_ticks,
+        x_ticks,
+        goal: goal.map(|(value, label)| ChartTick { at: y(value), label }),
+    })
+}
+
+/// Los registros de una serie diaria dentro del período, en orden.
+fn daily_series(values: &std::collections::BTreeMap<String, i64>, range: WeightRange, today: Date) -> Vec<(Date, i64)> {
+    let from = range.days().map(|days| days_ago(today, days));
+    values
+        .iter()
+        .filter_map(|(date, value)| parse_date(date).map(|date| (date, *value)))
+        .filter(|(date, _)| from.map_or(true, |from| *date >= from))
+        .collect()
+}
+
+/// El promedio de los días con registro de la última semana.
+fn week_average(values: &std::collections::BTreeMap<String, i64>, today: Date) -> Option<f64> {
+    let week = daily_series(values, WeightRange::Days30, today).into_iter().filter(|(date, _)| *date > days_ago(today, 7)).map(|(_, value)| value).collect::<Vec<_>>();
+    (!week.is_empty()).then(|| week.iter().sum::<i64>() as f64 / week.len() as f64)
+}
+
+fn range_choices(range: WeightRange) -> Vec<Choice> {
+    WeightRange::ALL.iter().map(|option| Choice { value: option.id().to_string(), label: option.label().to_string(), selected: *option == range }).collect()
+}
+
+fn daily_rows(values: &std::collections::BTreeMap<String, i64>, label: impl Fn(i64) -> String) -> Vec<DailyRow> {
+    values
+        .iter()
+        .rev()
+        .map(|(date, value)| DailyRow {
+            date: date.clone(),
+            date_label: parse_date(date).map(short_date).unwrap_or_else(|| date.clone()),
+            value_label: label(*value),
+        })
+        .collect()
+}
+
+fn steps_panel(data: &HealthData, range: WeightRange, today: Date) -> DailyPanel {
+    let series = daily_series(&data.steps, range, today).into_iter().map(|(date, steps)| (date, steps as f64)).collect::<Vec<_>>();
+    let mut summary = Vec::new();
+    if let Some(average) = week_average(&data.steps, today) {
+        summary.push(format!("Promedio de la semana: {}.", steps_label(average.round() as i64)));
+    }
+    summary.push(format!("Meta orientativa: {}.", steps_label(STEPS_GOAL)));
+    DailyPanel {
+        today_label: data.steps.get(&today.to_string()).map(|steps| fmt(*steps as f64, 0)).unwrap_or_else(|| "—".to_string()),
+        today_caption: "Hoy".to_string(),
+        summary: summary.join(" "),
+        ranges: range_choices(range),
+        chart: daily_chart(
+            &series,
+            Some((STEPS_GOAL as f64, format!("Meta {}", fmt(STEPS_GOAL as f64, 0)))),
+            |tick| fmt(tick, 0),
+            |steps| steps_label(steps.round() as i64),
+        ),
+        empty_text: "Cargá los pasos de al menos dos días para ver tu evolución.".to_string(),
+        entries: daily_rows(&data.steps, steps_label),
+    }
+}
+
+fn sleep_panel(data: &HealthData, range: WeightRange, today: Date) -> DailyPanel {
+    let series = daily_series(&data.sleep, range, today).into_iter().map(|(date, minutes)| (date, minutes as f64 / 60.0)).collect::<Vec<_>>();
+    let (low, high) = SLEEP_RANGE_MINUTES;
+    let mut summary = Vec::new();
+    if let Some(average) = week_average(&data.sleep, today) {
+        let average = average.round() as i64;
+        let note = if average < low { ", menos de lo recomendado" } else if average > high { ", más de lo recomendado" } else { "" };
+        summary.push(format!("Promedio de la semana: {}{note}.", sleep_label(average)));
+    }
+    // «h» no queda sola en la línea siguiente.
+    summary.push(format!("Recomendado: {} a {}\u{a0}h.", low / 60, high / 60));
+    DailyPanel {
+        today_label: data.sleep.get(&today.to_string()).map(|minutes| sleep_label(*minutes)).unwrap_or_else(|| "—".to_string()),
+        today_caption: "Anoche".to_string(),
+        summary: summary.join(" "),
+        ranges: range_choices(range),
+        chart: daily_chart(
+            &series,
+            Some((low as f64 / 60.0, format!("Mínimo recomendado {} h", low / 60))),
+            |tick| format!("{} h", fmt(tick, 1)),
+            |hours| sleep_label((hours * 60.0).round() as i64),
+        ),
+        empty_text: "Cargá el sueño de al menos dos noches para ver tu evolución.".to_string(),
+        entries: daily_rows(&data.sleep, sleep_label),
     }
 }
 

@@ -32,6 +32,15 @@ pub(crate) struct AgentWorkspaceState {
     lock: Mutex<()>,
 }
 
+impl AgentWorkspaceState {
+    /// A state whose library counts as prepared, for tests without a
+    /// library database.
+    #[cfg(test)]
+    pub(crate) fn prepared_for(library_id: &str) -> Self {
+        Self { prepared: Mutex::new(HashSet::from([library_id.to_string()])), lock: Mutex::new(()) }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AgentLibraryPayload {
@@ -105,22 +114,30 @@ fn prepare_workspace(app: &AppHandle, library_id: &str) -> Result<(), BackendErr
         documents.write(
             workspace::RULES_PATH,
             rules.as_deref(),
-            &workspace::with_confidential_context(&rules_body),
+            &workspace::with_system_context(&rules_body),
         )?;
 
         let memory = documents.read(workspace::MEMORY_PATH)?;
         let mut memories = workspace::parse_memory_items(memory.as_deref().map(workspace::document_body).unwrap_or(""));
         memories.extend(misclassified);
-        let memory_content = workspace::with_confidential_context(&workspace::render_memories(&workspace::merge_memories(memories)));
+        let memory_content = workspace::with_system_context(&workspace::render_memories(&workspace::merge_memories(memories)));
         let unchanged_memory = memory.as_deref().is_some_and(|current| {
             workspace::parse_memory_items(workspace::document_body(current))
                 == workspace::parse_memory_items(workspace::document_body(&memory_content))
-                && workspace::with_confidential_context(current) == *current
+                && workspace::with_system_context(current) == *current
         });
         if !unchanged_memory {
             documents.write(workspace::MEMORY_PATH, memory.as_deref(), &memory_content)?;
         }
         write_missing_lists(documents)?;
+        // The agents of the AI tasks start with their default prompts; the
+        // person may edit them, so they are only written when missing.
+        for phase in crate::backend::ai_tasks::AiTaskPhase::ALL {
+            let path = format!("{}/{}", workspace::PROMPTS_DIRECTORY, phase.prompt_file());
+            if documents.read(&path)?.is_none() {
+                documents.write(&path, None, &workspace::with_confidential_context(phase.default_prompt()))?;
+            }
+        }
 
         let default_prompt = documents.read(workspace::DEFAULT_PROMPT_PATH)?;
         documents.write(
@@ -137,7 +154,7 @@ fn prepare_workspace(app: &AppHandle, library_id: &str) -> Result<(), BackendErr
                 continue;
             }
             if let Some(current) = documents.read(path)? {
-                documents.write(path, Some(&current), &workspace::with_confidential_context(&current))?;
+                documents.write(path, Some(&current), &workspace::with_agent_context(path, &current))?;
             }
         }
         Ok(())
@@ -271,7 +288,7 @@ pub(crate) fn save_memories(app: &AppHandle, library_id: &str, items: Vec<String
             documents.write(
                 workspace::MEMORY_PATH,
                 current.as_deref(),
-                &workspace::with_confidential_context(&workspace::render_memories(&memories)),
+                &workspace::with_system_context(&workspace::render_memories(&memories)),
             )
         })
     })?;
@@ -298,27 +315,75 @@ fn read_items(documents: &Documents<'_>, path: &str) -> Result<(Option<String>, 
     Ok((current, items))
 }
 
-/// Writes the empty thoughts, biography, talk and people files that are
-/// missing. Returns the paths it wrote.
+/// Writes the empty thoughts, biography, talk, people and improvements
+/// files that are missing. Returns the paths it wrote.
 fn write_missing_lists(documents: &Documents<'_>) -> Result<Vec<&'static str>, BackendError> {
     let empty = [
         (workspace::THOUGHTS_PATH, workspace::render_thoughts(&[])),
         (workspace::BIOGRAPHY_PATH, workspace::Biography::default().render()),
         (workspace::TALK.path, workspace::TALK.render(&[])),
         (workspace::PEOPLE.path, workspace::PEOPLE.render(&[])),
+        (workspace::IMPROVE_PATH, workspace::render_improvements(&[])),
     ];
     let mut written = Vec::new();
     for (path, body) in empty {
         if documents.read(path)?.is_none() {
-            documents.write(path, None, &workspace::with_confidential_context(&body))?;
+            documents.write(path, None, &workspace::with_system_context(&body))?;
             written.push(path);
         }
     }
     Ok(written)
 }
 
-/// Creates `thoughts.md`, `biography.md`, `talk.md` and `people.md` again
-/// when they are missing (deleted or never made). Unlike the session
+fn read_improvements(documents: &Documents<'_>) -> Result<(Option<String>, Vec<String>), BackendError> {
+    let current = documents.read(workspace::IMPROVE_PATH)?;
+    let entries = current
+        .as_deref()
+        .map(|content| workspace::parse_improvements(workspace::document_body(content)))
+        .unwrap_or_default();
+    Ok((current, entries))
+}
+
+/// Adds an error, missing tool or improvement to `improve.md`, dated with
+/// the local time. The same kind and description is not added twice, and
+/// the oldest entries go when the file is full. Nothing reads it into a
+/// prompt, so it is not organized with the other agent files. Returns
+/// whether the file changed.
+pub(crate) fn append_improvement(
+    app: &AppHandle,
+    library_id: &str,
+    kind: workspace::ImprovementKind,
+    text: &str,
+) -> Result<bool, BackendError> {
+    let entry = workspace::improvement_entry(&crate::local_time::thought_stamp(), kind, text).ok_or_else(|| {
+        BackendError::invalid_input(format!(
+            "Describí la mejora en una o dos oraciones, de hasta {} caracteres.",
+            workspace::MAX_IMPROVEMENT_CHARS
+        ))
+    })?;
+    ensure_workspace(app, library_id)?;
+    with_workspace_lock(app, || {
+        with_documents(app, library_id, |documents| {
+            let (current, entries) = read_improvements(documents)?;
+            let Some(next) = workspace::with_improvement(&entries, entry.clone()) else {
+                return Ok(false);
+            };
+            let body = workspace::with_system_context(&workspace::render_improvements(&next));
+            documents.write(workspace::IMPROVE_PATH, current.as_deref(), &body)?;
+            Ok(true)
+        })
+    })
+}
+
+/// The entries of `improve.md`, oldest first: only the reflection reads
+/// them, so it does not note one again.
+pub(crate) fn improvements(app: &AppHandle, library_id: &str) -> Result<Vec<String>, BackendError> {
+    ensure_workspace(app, library_id)?;
+    with_documents(app, library_id, |documents| read_improvements(documents).map(|(_, entries)| entries))
+}
+
+/// Creates `thoughts.md`, `biography.md`, `talk.md`, `people.md` and
+/// `improve.md` again when they are missing (deleted or never made). Unlike the session
 /// preparation, it looks at the files every time. Returns the paths it
 /// wrote.
 pub(crate) fn ensure_agent_list_files(app: &AppHandle, library_id: &str) -> Result<Vec<&'static str>, BackendError> {
@@ -339,7 +404,7 @@ fn append_biography_locked(app: &AppHandle, library_id: &str, fact: &str) -> Res
             workspace::BiographyAppend::Unchanged => return Ok(Appended::Changed(false)),
             workspace::BiographyAppend::Full => return Ok(Appended::Full),
         };
-        documents.write(workspace::BIOGRAPHY_PATH, current.as_deref(), &workspace::with_confidential_context(&next.render()))?;
+        documents.write(workspace::BIOGRAPHY_PATH, current.as_deref(), &workspace::with_system_context(&next.render()))?;
         Ok(Appended::Changed(true))
     })
 }
@@ -401,7 +466,7 @@ pub(crate) fn replace_agent_files_if_unchanged(
             }
             let mut wrote = false;
             let mut write = |path: &str, current: &Option<String>, body: String| -> Result<(), BackendError> {
-                let next = workspace::with_confidential_context(&body);
+                let next = workspace::with_system_context(&body);
                 if current.as_deref() != Some(next.as_str()) {
                     documents.write(path, current.as_deref(), &next)?;
                     wrote = true;
@@ -470,7 +535,7 @@ pub(crate) fn normalize_agent_files(app: &AppHandle, library_id: &str) -> Result
                 workspace::PEOPLE.path,
             ] {
                 let Some(current) = documents.read(path)? else { continue };
-                let next = workspace::with_confidential_context(&canonical(path, workspace::document_body(&current)));
+                let next = workspace::with_system_context(&canonical(path, workspace::document_body(&current)));
                 if comparable(&next) != comparable(&current) {
                     documents.write(path, Some(&current), &next)?;
                     rewritten += 1;
@@ -501,7 +566,7 @@ fn append_memory_locked(app: &AppHandle, library_id: &str, value: &str) -> Resul
         documents.write(
             workspace::MEMORY_PATH,
             current.as_deref(),
-            &workspace::with_confidential_context(&workspace::render_memories(&memories)),
+            &workspace::with_system_context(&workspace::render_memories(&memories)),
         )?;
         Ok(Appended::Changed(true))
     })
@@ -517,7 +582,7 @@ fn append_thought_locked(app: &AppHandle, library_id: &str, stamped: &str) -> Re
         documents.write(
             workspace::THOUGHTS_PATH,
             current.as_deref(),
-            &workspace::with_confidential_context(&workspace::render_thoughts(&next)),
+            &workspace::with_system_context(&workspace::render_thoughts(&next)),
         )?;
         Ok(Appended::Changed(true))
     })
@@ -560,7 +625,7 @@ fn append_list_locked(
             return Ok(Appended::Full);
         }
         items.push(value.to_string());
-        documents.write(file.path, current.as_deref(), &workspace::with_confidential_context(&file.render(&items)))?;
+        documents.write(file.path, current.as_deref(), &workspace::with_system_context(&file.render(&items)))?;
         Ok(Appended::Changed(true))
     })
 }
@@ -573,7 +638,7 @@ fn append_rule_locked(app: &AppHandle, library_id: &str, rule: &str) -> Result<A
             workspace::RuleAppend::Unchanged => return Ok(Appended::Changed(false)),
             workspace::RuleAppend::Full => return Ok(Appended::Full),
         };
-        documents.write(workspace::RULES_PATH, current.as_deref(), &workspace::with_confidential_context(&body))?;
+        documents.write(workspace::RULES_PATH, current.as_deref(), &workspace::with_system_context(&body))?;
         Ok(Appended::Changed(true))
     })
 }

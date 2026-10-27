@@ -51,6 +51,8 @@ interface FileViewHostProps {
   contexts?: readonly LibraryContext[]
 }
 
+function ignoreSourceChange() {}
+
 function FileViewHostComponent({
   document,
   onTextSourceChange,
@@ -96,8 +98,10 @@ function FileViewHostComponent({
   }
 
   if (document.viewKind === 'markdown') {
+    // A read-only note never sends a save; the backend refuses it anyway.
+    const onMarkdownSourceChange = document.readOnly ? ignoreSourceChange : onTextSourceChange
     if (shouldUseLargeMarkdownView(document.source)) {
-      return <LargeMarkdownView source={document.source} onSourceChange={onTextSourceChange} />
+      return <LargeMarkdownView source={document.source} onSourceChange={onMarkdownSourceChange} />
     }
 
     return (
@@ -107,8 +111,10 @@ function FileViewHostComponent({
           source={document.source}
           documentPath={document.path}
           lockedContextTag={document.lockedContext}
+          lockedContextSource={document.lockedContextSource}
+          readOnly={document.readOnly}
           libraryId={libraryId}
-          onSourceChange={onTextSourceChange}
+          onSourceChange={onMarkdownSourceChange}
           onSharedSourceChange={handleSharedSourceChange}
           wikiLinkTargets={wikiLinkTargets}
           onOpenLinkedFile={onOpenLinkedFile}

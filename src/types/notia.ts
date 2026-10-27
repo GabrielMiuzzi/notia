@@ -18,6 +18,8 @@ export interface NotiaFileNode {
   children?: NotiaFileNode[]
   createdAt?: number
   modifiedAt?: number
+  /** Context assigned to a folder; the notes inside always take it. */
+  context?: string
 }
 
 export interface NotiaLibrary {

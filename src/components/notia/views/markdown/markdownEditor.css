@@ -631,6 +631,26 @@
 /* ---------- Properties ---------- */
 
 /* Only its menus are inside, and they are absolute, so the panel can be a container. */
+/* A note only the AI writes (#System): why it cannot be edited. */
+.notia-markdown-readonly {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+  color: var(--color-muted-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notia-markdown-readonly svg {
+  flex: none;
+  margin-top: 2px;
+}
+
 .notia-properties {
   container: notia-properties / inline-size;
   margin-bottom: 36px;

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store/hooks'
 import { selectIsSettingsOpen, selectIsLibraryManagerOpen } from '../../features/ui/uiSelectors'
@@ -13,9 +13,10 @@ import { SettingsModal } from './SettingsModal'
 import { LibraryManagerModal } from './LibraryManagerModal'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { AppDialogModal } from './AppDialogModal'
+import { FolderContextDialog } from './FolderContextDialog'
 import { ColdPassOwnerPasswordModal } from './ColdPassOwnerPasswordModal'
 import { ColdPassCredentialModal } from './ColdPassCredentialModal'
-import { mutateLibraryEntry } from '../../services/libraries/libraryRuntime'
+import { mutateLibraryEntry, setFolderContext } from '../../services/libraries/libraryRuntime'
 import { setFolderExpandedByPath } from '../../utils/tree/setFolderExpandedByPath'
 import { store } from '../../store/index'
 import { selectActiveLibrary } from '../../features/library/librarySelectors'
@@ -130,6 +131,30 @@ function NotiaModalsComponent({
   const dialogState = useAppSelector(selectDialogState, shallowEqual)
   const clipboardEntry = useAppSelector(selectClipboardEntry, shallowEqual)
   const activeLibrary = useAppSelector(selectActiveLibrary)
+  const [folderContextTarget, setFolderContextTarget] = useState<{ path: string; name: string; context: string | null } | null>(null)
+  const [folderContextSaving, setFolderContextSaving] = useState(false)
+  const [folderContextError, setFolderContextError] = useState<string | null>(null)
+
+  const handleCloseFolderContext = useCallback(() => {
+    setFolderContextTarget(null)
+    setFolderContextError(null)
+  }, [])
+
+  const handleSaveFolderContext = useCallback(async (context: string | null) => {
+    if (!activeLibrary || !folderContextTarget) {
+      return
+    }
+    setFolderContextSaving(true)
+    setFolderContextError(null)
+    const result = await setFolderContext(activeLibrary.id, folderContextTarget.path, context)
+    setFolderContextSaving(false)
+    if (!result.ok) {
+      setFolderContextError(result.error ?? 'No se pudo cambiar el contexto de la carpeta.')
+      return
+    }
+    setFolderContextTarget(null)
+    chatWorkspaceTreeChanged(folderContextTarget.path)
+  }, [activeLibrary, chatWorkspaceTreeChanged, folderContextTarget])
 
   // --- Context menu action handler (self-contained, no longer passed from NotiaMenu) ---
 
@@ -212,6 +237,12 @@ function NotiaModalsComponent({
       chatWorkspaceTreeChanged(targetPath)
       return
     }
+    if (actionId === 'folder-context' && targetNode.type === 'folder') {
+      setFolderContextError(null)
+      setFolderContextTarget({ path: targetPath, name: targetNode.name, context: targetNode.context ?? null })
+      dispatch(setContextMenu(null))
+      return
+    }
     if (actionId === 'rename') {
       dispatch(setRenamingPath(targetPath))
       dispatch(setContextMenu(null))
@@ -285,6 +316,7 @@ function NotiaModalsComponent({
                 { id: 'new-subfolder', label: 'Crear subcarpeta' },
                 { id: 'new-note', label: 'Crear nota' },
                 { id: 'new-mermaid', label: 'Crear diagrama' },
+                { id: 'folder-context', label: 'Contexto de la carpeta…' },
               ]
             : []),
         ]
@@ -322,6 +354,15 @@ function NotiaModalsComponent({
         items={contextMenuItems}
         onAction={handleContextMenuActionWrapped}
         onClose={handleContextMenuClose}
+      />
+      <FolderContextDialog
+        folderName={folderContextTarget?.name ?? null}
+        current={folderContextTarget?.context ?? null}
+        contexts={contexts}
+        saving={folderContextSaving}
+        error={folderContextError}
+        onSave={(context) => { void handleSaveFolderContext(context) }}
+        onClose={handleCloseFolderContext}
       />
       <AppDialogModal
         open={Boolean(dialogState)}

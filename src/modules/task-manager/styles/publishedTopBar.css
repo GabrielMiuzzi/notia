@@ -1,0 +1,656 @@
+/*
+ * Top bar of the published Task Manager («Web publicada · barra superior»
+ * of the canvas). Colors come from the app tokens of `.notia-app-shell`
+ * and `.notia-theme-light`.
+ */
+.notia-published-task-manager {
+  --pub-hairline-strong: color-mix(in srgb, var(--color-border-strong) 70%, var(--color-heading-text) 14%);
+  --pub-font-display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  --pub-font-text: 'Public Sans', 'Segoe UI', system-ui, sans-serif;
+}
+
+.pub-topbar {
+  position: relative;
+  z-index: 20;
+  height: 56px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px 0 10px;
+  background: color-mix(in srgb, var(--color-app-bg) 92%, transparent);
+  border-bottom: 1px solid var(--color-border-strong);
+  backdrop-filter: blur(10px);
+  color: var(--color-heading-text);
+  font-family: var(--pub-font-text);
+  font-size: 14px;
+}
+
+:where(.pub-topbar) button {
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.pub-topbar button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.pub-topbar-start,
+.pub-topbar-end {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.pub-topbar-start {
+  flex-shrink: 1;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.pub-topbar-end {
+  gap: 8px;
+}
+
+/* The open documents fill the space between the path and the actions. */
+.pub-topbar-tabs {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.pub-topbar-tabs .notia-titlebar-tabs {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pub-topbar-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-muted-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.pub-topbar-icon:hover,
+.pub-topbar-icon.is-on {
+  background: var(--color-card-bg);
+  color: var(--color-heading-text);
+}
+
+.pub-topbar-theme {
+  width: 34px;
+  height: 34px;
+}
+
+.pub-topbar-brand {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 6px;
+  border-radius: 9px;
+  color: var(--color-heading-text);
+}
+
+.pub-topbar-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pub-topbar-brand-name {
+  font-family: var(--pub-font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pub-topbar-slash {
+  color: var(--pub-hairline-strong);
+  font-size: 18px;
+  font-weight: 300;
+}
+
+.pub-topbar-crumb {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted-text);
+  font-size: 13.5px;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+.pub-topbar-crumb:hover {
+  color: var(--color-heading-text);
+}
+
+.pub-topbar-here {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 280px;
+  padding: 0 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pub-topbar-here svg {
+  flex-shrink: 0;
+  color: var(--color-accent-text);
+}
+
+.pub-topbar-here span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sync: the state of the publication's connection; a tap reads it again. */
+.pub-topbar-sync {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition: background-color 150ms ease;
+}
+
+.pub-topbar-sync:hover:not(:disabled) {
+  background: var(--color-card-bg);
+}
+
+.pub-topbar-sync:disabled {
+  cursor: default;
+}
+
+.pub-topbar-sync-label {
+  font-weight: 500;
+}
+
+.pub-topbar-sync-when {
+  color: var(--color-muted-text);
+}
+
+.pub-topbar-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-sage);
+}
+
+.pub-topbar-sync.is-ok .pub-topbar-dot {
+  animation: pub-pulse-dot 2.4s ease-out infinite;
+}
+
+.pub-topbar-sync.is-warn .pub-topbar-dot {
+  background: var(--color-amber);
+}
+
+.pub-topbar-sync.is-error .pub-topbar-dot {
+  background: var(--color-coral);
+}
+
+.pub-topbar-spinner {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border: 2.6px solid var(--color-accent-text);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: pub-spin 0.8s linear infinite;
+}
+
+@keyframes pub-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pub-pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-sage) 55%, transparent);
+  }
+
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.pub-topbar-published {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-accent-text) 10%, transparent);
+  color: var(--color-accent-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pub-topbar-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 2px;
+  background: var(--color-border-strong);
+}
+
+.pub-topbar-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  background: var(--color-sidebar-bg);
+  color: var(--color-heading-text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.pub-topbar-button:hover {
+  background: var(--color-card-bg);
+}
+
+.pub-topbar-assistant {
+  padding: 0 12px 0 10px;
+  font-weight: 600;
+}
+
+.pub-topbar-assistant:hover {
+  border-color: var(--color-accent-text);
+  background: var(--color-sidebar-bg);
+}
+
+.pub-topbar-assistant.is-on {
+  border-color: color-mix(in srgb, var(--color-accent-text) 45%, transparent);
+  background: var(--color-active-item-bg);
+  color: var(--color-accent-text);
+}
+
+/* Account */
+.pub-topbar-account {
+  position: relative;
+}
+
+.pub-topbar-avatar-button {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--color-muted-text);
+  transition: background-color 150ms ease;
+}
+
+.pub-topbar-avatar-button:hover {
+  background: var(--color-card-bg);
+}
+
+.pub-topbar-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-accent-text) 18%, transparent);
+  color: var(--color-accent-text);
+  font-size: 11.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pub-topbar-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 240px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--color-card-bg);
+  border: 1px solid var(--pub-hairline-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px -12px var(--color-menu-shadow);
+  animation: pub-pop 0.18s ease-out backwards;
+}
+
+@keyframes pub-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+.pub-topbar-menu-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+.pub-topbar-menu-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.pub-topbar-menu-role {
+  color: var(--color-muted-text);
+  font-size: 12px;
+}
+
+.pub-topbar-menu-item {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-heading-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.pub-topbar-menu-item:hover {
+  background: var(--color-sidebar-bg);
+}
+
+.pub-topbar-menu-item.is-danger {
+  color: var(--color-coral);
+}
+
+/* Rail and explorer of the canvas: 52 px rail, 248 px explorer. */
+.notia-published-workspace .pub-rail {
+  width: 52px;
+  gap: 4px;
+  padding: 10px 0;
+  border-right-color: var(--color-card-bg);
+}
+
+.notia-published-workspace .pub-rail .notia-rail-button {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+}
+
+.notia-published-workspace .pub-rail .notia-rail-button--active::before {
+  left: -7px;
+  top: 10px;
+  bottom: 10px;
+}
+
+.notia-published-workspace .notia-panel {
+  width: 248px;
+  border-right-color: var(--color-card-bg);
+}
+
+.notia-published-workspace .notia-panel-header {
+  height: auto;
+  padding: 12px 12px 4px 16px;
+  border-bottom: 0;
+}
+
+.notia-published-workspace .notia-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-text);
+}
+
+.pub-sidebar-scrim {
+  display: none;
+}
+
+/* Its own stack: nothing of the board covers the bar's menus. */
+.notia-published-workspace {
+  isolation: isolate;
+}
+
+.pub-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(28px + var(--safe-area-bottom));
+  z-index: 60;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  padding: 10px 14px;
+  transform: translateX(-50%);
+  background: var(--color-card-bg);
+  border: 1px solid var(--pub-hairline-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px -16px var(--color-menu-shadow);
+  color: var(--color-heading-text);
+  font-size: 13px;
+  animation: pub-toast-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes pub-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 14px);
+  }
+}
+
+/* The canvas's widths: less detail first, then labels. */
+@media (max-width: 1100px) {
+  .pub-hide-lg {
+    display: none !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .pub-hide-md {
+    display: none !important;
+  }
+
+  /* Icon buttons: the labels went away. */
+  .pub-topbar-button {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* The explorer floats over the content instead of squeezing it. */
+  .notia-published-workspace .notia-sidebar--open .notia-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 52px;
+    z-index: 40;
+    box-shadow: 12px 0 28px color-mix(in srgb, black 22%, transparent);
+  }
+
+  .notia-published-workspace .pub-sidebar-scrim {
+    display: block;
+    position: absolute;
+    inset: 0 0 0 52px;
+    z-index: 39;
+    border: 0;
+    background: color-mix(in srgb, var(--color-app-bg) 45%, transparent);
+    cursor: default;
+  }
+}
+
+@media (max-width: 600px) {
+  .pub-hide-sm {
+    display: none !important;
+  }
+
+  .pub-topbar {
+    gap: 4px;
+    padding: 0 6px 0 4px;
+  }
+
+  .pub-topbar-end {
+    gap: 2px;
+  }
+
+  .notia-published-workspace .pub-sidebar-scrim {
+    left: 0;
+  }
+
+  .pub-topbar-brand-name,
+  .pub-topbar-sync-label,
+  .pub-topbar-divider {
+    display: none;
+  }
+
+  .pub-topbar-brand {
+    padding: 0 4px;
+  }
+
+  .pub-topbar-sync {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .pub-topbar-button {
+    width: 44px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  /* No room for the documents in the bar: they get a row of their own. */
+  .pub-topbar:has(.pub-topbar-tabs:not(:empty)) {
+    height: auto;
+    flex-wrap: wrap;
+    padding-top: 10px;
+    padding-bottom: 6px;
+  }
+
+  .pub-topbar-tabs {
+    order: 10;
+    flex-basis: 100%;
+  }
+
+  .pub-topbar-tabs:empty {
+    display: none;
+  }
+
+  /* The rail goes with the explorer: both float when the toggle opens them. */
+  .notia-published-workspace .notia-sidebar--closed {
+    display: none;
+  }
+
+  .notia-published-workspace .notia-sidebar--open {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    display: flex;
+  }
+
+  .notia-published-workspace .notia-sidebar--open .notia-panel {
+    position: static;
+    width: min(248px, calc(100vw - 52px - 24px));
+  }
+}
+
+/* Fingers: 44 px targets inside the same bar. */
+@media (hover: none) and (pointer: coarse) {
+  .pub-topbar-icon,
+  .pub-topbar-theme,
+  .pub-topbar-avatar-button {
+    min-width: 44px;
+    height: 44px;
+    justify-content: center;
+  }
+
+  .pub-topbar-sync,
+  .pub-topbar-button,
+  .pub-topbar-crumb {
+    height: 44px;
+  }
+
+  .pub-topbar-sync {
+    border-radius: 22px;
+  }
+
+  .pub-topbar-menu-item {
+    height: 48px;
+  }
+
+  .notia-published-workspace .pub-rail .notia-rail-button {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pub-topbar *,
+  .pub-toast {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) and (max-width: 600px) {
+  .pub-topbar-sync {
+    width: 44px;
+    border-radius: 50%;
+  }
+}
+
+/* An open document keeps a readable tab; the path gives way first. */
+.pub-topbar-tabs:not(:empty) {
+  min-width: 140px;
+}

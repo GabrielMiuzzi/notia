@@ -12,6 +12,7 @@ pub const THOUGHTS_FILE: &str = "thoughts.md";
 pub const BIOGRAPHY_FILE: &str = "biography.md";
 pub const TALK_FILE: &str = "talk.md";
 pub const PEOPLE_FILE: &str = "people.md";
+pub const IMPROVE_FILE: &str = "improve.md";
 
 const MAX_LOGICAL_PATH_CHARS: usize = 4096;
 const MAX_PATH_SEGMENT_CHARS: usize = 255;
@@ -42,6 +43,9 @@ pub enum AgentPathKind {
     Talk,
     /// Who is who among the people the person mentions: as private as the memory.
     People,
+    /// Errors, missing tools and improvements the agent noted: as private as
+    /// the memory, and never read into a prompt.
+    Improvements,
     Skill,
 }
 
@@ -145,6 +149,7 @@ pub fn validate_agent_path(path: &str) -> Result<AgentPath, BackendError> {
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, BIOGRAPHY_FILE] => (AgentPathKind::Biography, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, TALK_FILE] => (AgentPathKind::Talk, true),
         [AGENT_DIRECTORY, MEMORY_DIRECTORY, PEOPLE_FILE] => (AgentPathKind::People, true),
+        [AGENT_DIRECTORY, MEMORY_DIRECTORY, IMPROVE_FILE] => (AgentPathKind::Improvements, true),
         [AGENT_DIRECTORY, SKILLS_DIRECTORY, skill, rest @ ..]
             if !skill.is_empty()
                 && (rest.is_empty() || !rest.iter().any(|value| value.is_empty())) =>
@@ -221,6 +226,7 @@ pub fn authorize_agent_path_for(
             | AgentPathKind::Biography
             | AgentPathKind::Talk
             | AgentPathKind::People
+            | AgentPathKind::Improvements
     )
         && (!context.persistence_policy.allows_memory()
             || !context.actor.is_library_owner())
@@ -362,6 +368,7 @@ mod tests {
             (".agent/memory/biography.md", AgentPathKind::Biography),
             (".agent/memory/talk.md", AgentPathKind::Talk),
             (".agent/memory/people.md", AgentPathKind::People),
+            (".agent/memory/improve.md", AgentPathKind::Improvements),
         ] {
             assert_eq!(validate_agent_path(path).ok().map(|path| path.kind()), Some(kind));
             assert!(authorize_agent_path(&context(PersistencePolicy::Persistent, "user-owner"), path).is_ok());

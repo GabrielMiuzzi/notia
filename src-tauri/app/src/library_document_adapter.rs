@@ -762,14 +762,21 @@ fn line_number_at(content: &str, byte_offset: usize) -> usize {
         + 1
 }
 
+/// The logical path of a `documentId`: `library:path` from a search, or the
+/// bare path a Markdown preview names (a logical path never has `:`). The
+/// caller still finds it in this library's inventory.
 fn path_from_document_id(library_id: &str, id: &str) -> Result<String, BackendError> {
-    let path = id.strip_prefix(&format!("{library_id}:")).ok_or_else(|| {
-        BackendError::new(
-            BackendErrorCode::Forbidden,
-            "El documento no pertenece a la biblioteca autorizada.",
-            false,
-        )
-    })?;
+    let path = match id.strip_prefix(&format!("{library_id}:")) {
+        Some(path) => path,
+        None if !id.contains(':') => id,
+        None => {
+            return Err(BackendError::new(
+                BackendErrorCode::Forbidden,
+                "El documento no pertenece a la biblioteca autorizada.",
+                false,
+            ))
+        }
+    };
     LogicalPathDto::new(path).map(|path| path.as_str().to_string())
 }
 
@@ -1119,5 +1126,16 @@ mod tests {
             .expect_err("library isolation");
         assert_eq!(error.code, BackendErrorCode::Forbidden);
         std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_document_id_is_a_prefixed_or_bare_path_of_the_library() {
+        let library = "//?/C:/Users/ana/notia";
+        let path = |id: &str| super::path_from_document_id(library, id);
+        assert_eq!(path("//?/C:/Users/ana/notia:Cursos/a.md").expect("prefixed"), "Cursos/a.md");
+        // A Markdown preview names the document by its bare path.
+        assert_eq!(path("Cursos/a.md").expect("bare"), "Cursos/a.md");
+        assert_eq!(path("other-library:Cursos/a.md").expect_err("other library").code, BackendErrorCode::Forbidden);
+        assert!(path("../secret.md").is_err());
     }
 }

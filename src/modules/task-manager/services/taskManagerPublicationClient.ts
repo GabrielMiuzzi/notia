@@ -20,6 +20,8 @@ const MUTATING_COMMAND_NAMES = [
   'task_manager_board_execute',
   'task_manager_pomodoro',
   'task_manager_write_ticket_source',
+  'library_write_document',
+  'library_mutate_entry',
   'begin_task_manager_publication_batch',
   'end_task_manager_publication_batch',
 ] as const
@@ -53,6 +55,31 @@ export interface TaskManagerPublicationMutationArgs {
       logicalPath: string
       content: string
       expectedRevision: string
+    }
+  }
+  /** A note of the published boards' contexts; Rust keeps its context. */
+  library_write_document: {
+    payload: {
+      libraryId: string
+      path: string
+      content: string
+      expectedRevision?: string
+      createIfMissing?: boolean
+    }
+  }
+  /** An explorer operation on the published notes and folders. */
+  library_mutate_entry: {
+    payload: {
+      libraryId: string
+      action: 'create' | 'delete' | 'rename' | 'paste'
+      path: string
+      name?: string
+      kind?: 'note' | 'folder'
+      sourcePath?: string
+      mode?: 'move' | 'copy'
+      /** Context a new note takes: one of the published boards'. */
+      contexto?: string
+      activeBoard?: string
     }
   }
   begin_task_manager_publication_batch: Record<string, never>
@@ -266,6 +293,16 @@ export class TaskManagerPublicationClient {
 
   getStatus(): TaskManagerPublicationStatus {
     return this.status
+  }
+
+  /** «Sincronizar ahora»: reads the publication again, as after a gap. */
+  requestResync(): void {
+    if (this.terminalStatus) return
+    if (!this.welcomed) {
+      this.connect()
+      return
+    }
+    this.beginResync('manual')
   }
 
   setActiveBatchOperation(operationId: string | null): void {
@@ -926,6 +963,10 @@ export function subscribeTaskManagerPublicationStatus(listener: PublicationStatu
 
 export function getTaskManagerPublicationStatus(): TaskManagerPublicationStatus | 'uninitialized' {
   return activePublicationClient?.getStatus() ?? 'uninitialized'
+}
+
+export function requestTaskManagerPublicationResync(): void {
+  activePublicationClient?.requestResync()
 }
 
 export function invokePublishedTaskManagerMutation(

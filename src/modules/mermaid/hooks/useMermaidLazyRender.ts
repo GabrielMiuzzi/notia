@@ -27,7 +27,8 @@ export function useMermaidLazyRender({ code, theme, config, containerRef }: UseM
 
   const abortRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
-  const hasRenderedRef = useRef(false)
+  /** Code, theme and config of the last render asked for; a change renders again. */
+  const renderedKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     isMountedRef.current = true
@@ -44,7 +45,7 @@ export function useMermaidLazyRender({ code, theme, config, containerRef }: UseM
     const container = containerRef.current
     if (!container || isEmpty) return
 
-    hasRenderedRef.current = false
+    renderedKeyRef.current = null
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -64,9 +65,12 @@ export function useMermaidLazyRender({ code, theme, config, containerRef }: UseM
   }, [containerRef, isEmpty])
 
   useEffect(() => {
-    if (!isIntersecting || hasRenderedRef.current || isEmpty) return
+    if (!isIntersecting || isEmpty) return
+    const renderKey = JSON.stringify([theme, config ?? '', trimmedCode])
+    if (renderedKeyRef.current === renderKey) return
 
-    hasRenderedRef.current = true
+    renderedKeyRef.current = renderKey
+    abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
 

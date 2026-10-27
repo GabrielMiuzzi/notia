@@ -30,6 +30,8 @@ export interface BoardEditDialogProps {
   onClose: () => void
   /** Parent sends the create/update intent; reject → show the error in the footer and stay open. */
   onSave: (value: { name: string; color: string; contexto: string; plan: TaskBoardPlan }) => Promise<void>
+  /** «Eliminar tablero» at the end of the phone screen; none hides it. */
+  onDelete?: () => void
 }
 
 interface BoardEditValue {
@@ -184,6 +186,7 @@ const CHECK_PATH = 'M5 12.5l4.5 4.5L19 7.5'
 const MINUS_PATH = 'M5 12h14'
 const PLUS_PATH = 'M12 5v14M5 12h14'
 const CLOSE_PATH = 'M6 6l12 12M18 6L6 18'
+const TRASH_PATH = 'M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3'
 const CHEVRON_PATH = 'M6 9l6 6 6-6'
 
 export function BoardEditDialog(props: BoardEditDialogProps) {
@@ -200,6 +203,7 @@ function BoardEditDialogBody({
   lockNameAndColor,
   onClose,
   onSave,
+  onDelete,
 }: BoardEditDialogProps) {
   const ids = useId()
   const [initial, setInitial] = useState<BoardEditValue>(() => initialValue(mode, board, palette, contexts))
@@ -420,8 +424,18 @@ function BoardEditDialogBody({
               <h1 id={titleId} className="tbe-title">{isCreate ? 'Nuevo tablero' : 'Editar tablero'}</h1>
               <span className="tbe-summary">{preview?.summary ?? ' '}</span>
             </div>
-            <button type="button" className="tbe-icon-button" aria-label="Cerrar y volver al tablero" onClick={onClose}>
+            <button type="button" className="tbe-icon-button tbe-close" aria-label="Cerrar y volver al tablero" onClick={onClose}>
               <Icon path={CLOSE_PATH} strokeWidth={2.2} />
+            </button>
+            {/* The phone screen saves from its header too (canvas «Mobile · Editar tablero»). */}
+            <button
+              type="button"
+              className="tbe-button tbe-button--primary tbe-header-save"
+              disabled={!canSave}
+              aria-busy={saving}
+              onClick={() => void handleSave()}
+            >
+              {isCreate ? 'Crear' : 'Guardar'}
             </button>
           </header>
 
@@ -799,6 +813,12 @@ function BoardEditDialogBody({
                 </div>
               </div>
             </section>
+            {onDelete && !isCreate ? (
+              <button type="button" className="tbe-delete" onClick={onDelete}>
+                <Icon path={TRASH_PATH} size={16} />
+                Eliminar tablero
+              </button>
+            ) : null}
           </div>
 
           {previewError ? (
@@ -822,7 +842,10 @@ function BoardEditDialogBody({
               ) : null}
             </div>
             <div className="tbe-actions">
-              <button type="button" className="tbe-button tbe-button--ghost" onClick={onClose}>Cancelar</button>
+              <button type="button" className="tbe-button tbe-button--ghost" onClick={onClose}>
+                <span className="tbe-label-wide">Cancelar</span>
+                <span className="tbe-label-narrow">Descartar</span>
+              </button>
               <button
                 type="button"
                 className="tbe-button tbe-button--primary"

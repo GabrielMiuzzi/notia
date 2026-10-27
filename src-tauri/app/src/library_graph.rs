@@ -32,8 +32,8 @@ pub(crate) struct LibraryGraphState {
 
 /// Model plus the Markdown sources it was built from (for content search).
 pub(crate) struct BuiltGraph {
-    model: GraphModelDto,
-    sources: BTreeMap<String, String>,
+    pub(crate) model: GraphModelDto,
+    pub(crate) sources: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +68,7 @@ fn context_catalog(app: &AppHandle, library_id: &str) -> Vec<GraphContext> {
 }
 
 /// Board context tags by lower-case board name; tickets inherit them.
-fn board_contexts(app: &AppHandle, library_id: &str) -> HashMap<String, String> {
+pub(crate) fn board_contexts(app: &AppHandle, library_id: &str) -> HashMap<String, String> {
     let registry = app.state::<LibraryBindingRegistry>();
     let store = crate::task_manager_store::MarkdownTaskManagerStore::new(
         library_id.to_string(),
@@ -229,7 +229,7 @@ pub(crate) fn context_tags(app: &AppHandle, library_id: &str) -> Vec<(String, St
 }
 
 /// Cached graph for the inventory generation and client revision.
-fn cached_graph(app: &AppHandle, library_id: &str, revision: u64) -> Result<Arc<BuiltGraph>, BackendError> {
+pub(crate) fn cached_graph(app: &AppHandle, library_id: &str, revision: u64) -> Result<Arc<BuiltGraph>, BackendError> {
     let state = app.state::<LibraryGraphState>();
     let (_, generation) = crate::library_inventory::inventory_files(app, library_id)?;
     if let Some((cached_generation, cached_revision, graph)) =

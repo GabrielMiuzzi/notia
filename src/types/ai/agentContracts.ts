@@ -13,6 +13,7 @@ export type WorkspaceAiView =
   | 'agenda'
   | 'routine'
   | 'ai-actions'
+  | 'ai-tasks'
   | 'recipes'
   | 'health'
   | 'gym'

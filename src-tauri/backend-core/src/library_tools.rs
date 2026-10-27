@@ -1593,6 +1593,11 @@ pub fn library_tool_contracts() -> Vec<ToolDefinition> {
             json_object(),
         ),
         tool(
+            "inspect_page_chain",
+            "Devuelve las cadenas nextPage/previousPage de una carpeta y sus enlaces rotos.",
+            json_object(),
+        ),
+        tool(
             "find_document_references",
             "Devuelve referencias entrantes y salientes.",
             json_object(),
@@ -1696,7 +1701,7 @@ fn page<T>(items: Vec<T>, offset: usize, limit: usize) -> BoundedPage<T> {
     }
 }
 
-fn parse_frontmatter(content: &str) -> (BTreeMap<String, String>, Vec<String>) {
+pub(crate) fn parse_frontmatter(content: &str) -> (BTreeMap<String, String>, Vec<String>) {
     let mut values = BTreeMap::new();
     let mut lines = content.lines();
     if lines.next() != Some("---") {

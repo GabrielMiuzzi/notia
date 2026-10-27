@@ -289,6 +289,15 @@ pub struct AgentRequest {
     /// off. `None` keeps the settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<bool>,
+    /// The routing call of a Telegram turn chose the conversational default
+    /// prompt (see `prompt::base_agent_prompt`): the person shares something
+    /// of their life or wants to chat. A resumed run keeps it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conversational: bool,
+    /// A phase of an AI task (see `ai_tasks`): the run gets the phase's
+    /// prompt section and tools, and never creates other tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_task: Option<crate::ai_tasks::AiTaskTurn>,
 }
 
 fn library_search_default() -> bool {
@@ -820,6 +829,8 @@ mod tests {
             scheduled_action: None,
             tool_areas: None,
             thinking: None,
+            conversational: false,
+            ai_task: None,
         }
     }
 

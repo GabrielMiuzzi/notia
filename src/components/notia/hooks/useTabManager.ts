@@ -22,6 +22,7 @@ import {
   AGENDA_WORKSPACE_TAB_PATH,
   ROUTINE_WORKSPACE_TAB_PATH,
   AI_ACTIONS_WORKSPACE_TAB_PATH,
+  AI_TASKS_WORKSPACE_TAB_PATH,
   RECIPES_WORKSPACE_TAB_PATH,
   HEALTH_WORKSPACE_TAB_PATH,
   GYM_WORKSPACE_TAB_PATH,
@@ -57,6 +58,7 @@ interface OpenWorkspaceSpecialTabs {
   agenda: boolean
   routine: boolean
   aiActions: boolean
+  aiTasks: boolean
   recipes: boolean
   health: boolean
   gym: boolean
@@ -117,6 +119,7 @@ export function buildWorkspaceTitleTabs(
   if (specialTabs.agenda) { tabs.push({ path: AGENDA_WORKSPACE_TAB_PATH, title: 'Agenda' }) }
   if (specialTabs.routine) { tabs.push({ path: ROUTINE_WORKSPACE_TAB_PATH, title: 'Rutina' }) }
   if (specialTabs.aiActions) { tabs.push({ path: AI_ACTIONS_WORKSPACE_TAB_PATH, title: 'Acciones IA' }) }
+  if (specialTabs.aiTasks) { tabs.push({ path: AI_TASKS_WORKSPACE_TAB_PATH, title: 'Tareas IA' }) }
   if (specialTabs.recipes) { tabs.push({ path: RECIPES_WORKSPACE_TAB_PATH, title: 'Recetas' }) }
   if (specialTabs.health) { tabs.push({ path: HEALTH_WORKSPACE_TAB_PATH, title: 'Salud' }) }
   if (specialTabs.gym) { tabs.push({ path: GYM_WORKSPACE_TAB_PATH, title: 'Gimnasio' }) }
@@ -155,6 +158,10 @@ interface UseTabManagerParams {
   bumpLibraryIndexRevision: () => void
   resetColdPassSession: () => void
   activeLibraryId: string | null
+  /** Shows in the open editor the text the backend wrote after merging. */
+  onMergedSource: (path: string, source: string, revision?: string) => void
+  /** Whether to close a note whose changes could not be saved. */
+  confirmDiscard: (name: string, reason: string) => Promise<boolean>
 }
 
 export function useTabManager({
@@ -162,6 +169,8 @@ export function useTabManager({
   bumpLibraryIndexRevision,
   resetColdPassSession,
   activeLibraryId,
+  onMergedSource,
+  confirmDiscard,
 }: UseTabManagerParams) {
   const dispatch = useAppDispatch()
 
@@ -176,15 +185,34 @@ export function useTabManager({
       }
       dispatch(updateTabSaveStatus({ path: targetPath, status: 'saving' }))
       const result = await writeLibraryDocument(activeLibraryId, targetPath, targetSource, {
-        // Only the version the editor loaded or saved may be overwritten.
-        ...(currentTab.latestSavedRevision ? { expectedRevision: currentTab.latestSavedRevision } : {}),
+        // Only the version the editor loaded or saved is overwritten; if the
+        // file changed since, the backend merges both from that text.
+        ...(currentTab.latestSavedRevision
+          ? { expectedRevision: currentTab.latestSavedRevision, baseContent: currentTab.latestSavedSource }
+          : {}),
       })
+      // Keystrokes still in the editor count before deciding what it shows.
+      if (result.ok && result.content !== undefined) flushPendingEditorChanges()
       const latestTab = store.getState().documents.openTabs.find((tab) => tab.document.path === targetPath)
       if (!latestTab || !isTextFileDocument(latestTab.document) || latestTab.document.source !== targetSource) {
+        // The person kept typing: the next save merges again from the same base.
         return true
       }
       if (result.ok) {
-        dispatch(updateTabSavedSource({ path: targetPath, source: targetSource, revision: result.revision }))
+        if (result.content !== undefined && result.content !== targetSource) {
+          onMergedSource(targetPath, result.content, result.revision)
+          if (result.mergeConflicts) {
+            dispatch(setDialogState({
+              type: 'info',
+              title: 'Cambios combinados',
+              message: result.mergeConflicts === 1
+                ? 'Mientras escribías, la nota cambió en el mismo lugar que editabas. Quedaron las dos versiones, una debajo de la otra: revisalas y borrá la que sobre.'
+                : `Mientras escribías, la nota cambió en ${result.mergeConflicts} lugares que editabas. Quedaron las dos versiones de cada uno, una debajo de la otra: revisalas y borrá las que sobren.`,
+            }))
+          }
+        } else {
+          dispatch(updateTabSavedSource({ path: targetPath, source: targetSource, revision: result.revision }))
+        }
         bumpLibraryIndexRevision()
         return true
       }
@@ -192,13 +220,11 @@ export function useTabManager({
       dispatch(setDialogState({
         type: 'info',
         title: 'No se pudo guardar',
-        message: result.conflict
-          ? 'La nota cambió fuera del editor (por ejemplo, por el agente) desde que la abriste. Cerrala y volvé a abrirla para no perder esos cambios; tu texto sigue en el editor.'
-          : result.error ?? 'No se pudo guardar el archivo.',
+        message: result.error ?? 'No se pudo guardar el archivo. Tu texto sigue en el editor y se vuelve a intentar con el próximo cambio.',
       }))
       return false
     },
-    [activeLibraryId, bumpLibraryIndexRevision, dispatch],
+    [activeLibraryId, bumpLibraryIndexRevision, dispatch, onMergedSource],
   )
 
   const persistOpenTabBeforeClose = useCallback(
@@ -233,6 +259,7 @@ export function useTabManager({
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
       || tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH
+      || tabPath === AI_TASKS_WORKSPACE_TAB_PATH
       || tabPath === RECIPES_WORKSPACE_TAB_PATH
       || tabPath === HEALTH_WORKSPACE_TAB_PATH
       || tabPath === GYM_WORKSPACE_TAB_PATH
@@ -249,6 +276,7 @@ export function useTabManager({
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !currentSpecialTabs.agenda)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !currentSpecialTabs.routine)
         || (tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH && !currentSpecialTabs.aiActions)
+        || (tabPath === AI_TASKS_WORKSPACE_TAB_PATH && !currentSpecialTabs.aiTasks)
         || (tabPath === RECIPES_WORKSPACE_TAB_PATH && !currentSpecialTabs.recipes)
         || (tabPath === HEALTH_WORKSPACE_TAB_PATH && !currentSpecialTabs.health)
         || (tabPath === GYM_WORKSPACE_TAB_PATH && !currentSpecialTabs.gym)
@@ -269,6 +297,7 @@ export function useTabManager({
         agenda: tabPath === AGENDA_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.agenda,
         routine: tabPath === ROUTINE_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.routine,
         aiActions: tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.aiActions,
+        aiTasks: tabPath === AI_TASKS_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.aiTasks,
         recipes: tabPath === RECIPES_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.recipes,
         health: tabPath === HEALTH_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.health,
         gym: tabPath === GYM_WORKSPACE_TAB_PATH ? false : currentSpecialTabs.gym,
@@ -298,7 +327,8 @@ export function useTabManager({
     const tabToClose = store.getState().documents.openTabs.find((tab) => tab.document.path === tabPath)
     if (!tabToClose) { return }
     const canClose = await persistOpenTabBeforeClose(tabPath)
-    if (!canClose) { return }
+    // A note that cannot be saved never traps its tab: the person decides.
+    if (!canClose && !(await confirmDiscard(tabToClose.document.name, 'No se pudieron guardar los últimos cambios de esta nota.'))) { return }
 
     const currentTabs = store.getState().documents.openTabs
     const closingIndex = currentTabs.findIndex((tab) => tab.document.path === tabPath)
@@ -325,7 +355,7 @@ export function useTabManager({
     }
     dispatch(setOpenTabs(remainingDocumentTabs))
     dispatch(setActiveTabPath(nextActiveTabPath))
-  }, [dispatch, persistOpenTabBeforeClose, resetColdPassSession])
+  }, [confirmDiscard, dispatch, persistOpenTabBeforeClose, resetColdPassSession])
 
   const handleCloseTab = useCallback((tabPath: string) => { void closeTabByPath(tabPath) }, [closeTabByPath])
 
@@ -413,6 +443,7 @@ export function useTabManager({
       || tabPath === AGENDA_WORKSPACE_TAB_PATH
       || tabPath === ROUTINE_WORKSPACE_TAB_PATH
       || tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH
+      || tabPath === AI_TASKS_WORKSPACE_TAB_PATH
       || tabPath === RECIPES_WORKSPACE_TAB_PATH
       || tabPath === HEALTH_WORKSPACE_TAB_PATH
       || tabPath === GYM_WORKSPACE_TAB_PATH
@@ -429,6 +460,7 @@ export function useTabManager({
         || (tabPath === AGENDA_WORKSPACE_TAB_PATH && !specialTabs.agenda)
         || (tabPath === ROUTINE_WORKSPACE_TAB_PATH && !specialTabs.routine)
         || (tabPath === AI_ACTIONS_WORKSPACE_TAB_PATH && !specialTabs.aiActions)
+        || (tabPath === AI_TASKS_WORKSPACE_TAB_PATH && !specialTabs.aiTasks)
         || (tabPath === RECIPES_WORKSPACE_TAB_PATH && !specialTabs.recipes)
         || (tabPath === HEALTH_WORKSPACE_TAB_PATH && !specialTabs.health)
         || (tabPath === GYM_WORKSPACE_TAB_PATH && !specialTabs.gym)

@@ -13,9 +13,11 @@ use super::{
 };
 
 pub const HEALTH_READ_TOOLS: [&str; 2] = ["get_health_summary", "list_health_records"];
-pub const HEALTH_WRITE_TOOLS: [&str; 9] = [
+pub const HEALTH_WRITE_TOOLS: [&str; 11] = [
     "save_health_profile",
     "log_weight",
+    "log_steps",
+    "log_sleep",
     "save_body_measurement",
     "set_weight_goal",
     "set_health_plan",
@@ -126,25 +128,67 @@ fn meal_nutrition(arguments: &Value, input: &mut MealInput) -> Result<(), Health
 
 /// La comida que nombra una llamada: por id, o por descripción exacta (y
 /// fecha si la da).
+/// Candidates an error lists, so the next call names the meal by its id.
+const MAX_MEAL_CANDIDATES: usize = 8;
+
+fn meal_candidates(meals: &[&super::Meal]) -> String {
+    meals
+        .iter()
+        .take(MAX_MEAL_CANDIDATES)
+        .map(|meal| format!("{} ({}, {}) {} — {} kcal", meal.id, meal.date, meal.category.id(), meal.name, super::fmt(meal.nutrition.kcal, 0)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The meal of an edit or a deletion: by id; by description, exact or the
+/// only one that contains it (or is contained, without the portion that
+/// follows the dish); without `meal`, the last one logged (that day, with
+/// `date`). Without a single match, the error lists candidates with their
+/// id instead of leaving the agent to search.
 fn resolve_meal<'a>(data: &'a HealthData, arguments: &Value) -> Result<&'a super::Meal, HealthError> {
-    let reference = text(arguments, "meal").ok_or_else(|| invalid("Falta meal: el id de la comida (de list_health_records)."))?;
+    let date = text(arguments, "date");
+    let on_date = |meal: &&super::Meal| date.as_deref().is_none_or(|date| meal.date == date);
+    let Some(reference) = text(arguments, "meal") else {
+        return data
+            .meals
+            .iter()
+            .filter(on_date)
+            .max_by_key(|meal| meal.created_at_ms)
+            .ok_or_else(|| HealthError::not_found("No hay comidas cargadas para ese día."));
+    };
     if let Some(meal) = data.meals.iter().find(|meal| meal.id == reference) {
         return Ok(meal);
     }
-    let date = text(arguments, "date");
     let wanted = fold(&reference);
-    let matches = data
-        .meals
-        .iter()
-        .filter(|meal| fold(&meal.name) == wanted && date.as_deref().map_or(true, |date| meal.date == date))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
+    let exact = data.meals.iter().filter(on_date).filter(|meal| fold(&meal.name) == wanted).collect::<Vec<_>>();
+    let found = if exact.is_empty() {
+        data.meals
+            .iter()
+            .filter(on_date)
+            .filter(|meal| {
+                let name = fold(&meal.name);
+                name.contains(&wanted) || wanted.contains(&name)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        exact
+    };
+    match found.as_slice() {
         [meal] => Ok(meal),
-        [] => Err(HealthError::not_found("No hay una comida con ese id o descripción; buscala con list_health_records.")),
+        [] => {
+            let mut recent = data.meals.iter().filter(on_date).collect::<Vec<_>>();
+            recent.sort_by_key(|meal| std::cmp::Reverse(meal.created_at_ms));
+            let day = date.as_deref().map(|date| format!(" el {date}")).unwrap_or_default();
+            Err(HealthError::not_found(if recent.is_empty() {
+                format!("No hay comidas cargadas{day}.")
+            } else {
+                format!("No hay una comida «{reference}»{day}. Las últimas cargadas: {}. Repetí el pedido con meal = el id que corresponda.", meal_candidates(&recent))
+            }))
+        }
         several => Err(invalid(format!(
-            "Hay {} comidas así; usá su id: {}.",
+            "Hay {} comidas que coinciden con «{reference}»: {}. Repetí el pedido con meal = el id que corresponda.",
             several.len(),
-            several.iter().map(|meal| format!("{} ({})", meal.id, meal.date)).collect::<Vec<_>>().join(", ")
+            meal_candidates(several)
         ))),
     }
 }
@@ -164,6 +208,20 @@ pub fn tool_action(name: &str, arguments: &Value, data: &HealthData, today: Date
             change(HealthMutation::SaveProfile { input })
         }
         "log_weight" => change(HealthMutation::AddWeight { date: date_or_today(arguments, today), kg: number(arguments, "kg")? }),
+        "log_steps" => {
+            let steps = text(arguments, "steps").ok_or_else(|| invalid("Falta steps: la cantidad de pasos del día."))?;
+            change(HealthMutation::SetSteps { date: date_or_today(arguments, today), steps })
+        }
+        "log_sleep" => {
+            // Horas (7,5), minutos o una duración escrita («7:30», «7 h 30»).
+            let duration = match (number(arguments, "hours")?, number(arguments, "minutes")?, text(arguments, "duration")) {
+                (Some(hours), _, _) => format!("{} min", (hours * 60.0).round()),
+                (None, Some(minutes), _) => format!("{} min", minutes.round()),
+                (None, None, Some(duration)) => duration,
+                (None, None, None) => return Err(invalid("Falta hours (o minutes, o duration como «7:30»): cuánto durmió.")),
+            };
+            change(HealthMutation::SetSleep { date: date_or_today(arguments, today), duration })
+        }
         "save_body_measurement" => {
             let mut values = std::collections::BTreeMap::new();
             let nested = arguments.get("values").and_then(Value::as_object);
@@ -268,7 +326,13 @@ pub fn tool_action(name: &str, arguments: &Value, data: &HealthData, today: Date
                 date: text(arguments, "date").ok_or_else(|| invalid("Falta date de la medición a eliminar."))?,
             }),
             Some("meal") | Some("comida") => change(HealthMutation::DeleteMeal { id: resolve_meal(data, arguments)?.id.clone() }),
-            _ => Err(invalid("kind tiene que ser weight, measurement o meal.")),
+            Some("steps") | Some("pasos") => {
+                change(HealthMutation::DeleteSteps { date: text(arguments, "date").ok_or_else(|| invalid("Falta date de los pasos a eliminar."))? })
+            }
+            Some("sleep") | Some("sueno") => {
+                change(HealthMutation::DeleteSleep { date: text(arguments, "date").ok_or_else(|| invalid("Falta date del sueño a eliminar."))? })
+            }
+            _ => Err(invalid("kind tiene que ser weight, measurement, meal, steps o sleep.")),
         },
         _ => Err(invalid(format!("{name} no es una herramienta de Salud."))),
     }
@@ -328,6 +392,15 @@ pub fn summary_view(data: &HealthData, today: Date) -> Value {
             "meals": meals.iter().map(|meal| json!({ "id": meal.id, "category": meal.category.id(), "name": meal.name, "kcal": meal.nutrition.kcal })).collect::<Vec<_>>(),
         },
         "waterTodayMl": data.water.get(&key).copied().unwrap_or_default(),
+        "stepsToday": data.steps.get(&key),
+        "stepsGoal": super::STEPS_GOAL,
+        "sleepLastNightMinutes": data.sleep.get(&key),
+        "sleepRecommendedHours": [super::SLEEP_RANGE_MINUTES.0 / 60, super::SLEEP_RANGE_MINUTES.1 / 60],
+        "last7Days": (0..7).rev().map(|back| days_ago(today, back).to_string()).map(|date| json!({
+            "date": date,
+            "steps": data.steps.get(&date),
+            "sleepMinutes": data.sleep.get(&date),
+        })).collect::<Vec<_>>(),
         "waterGoalMl": vitals.water_goal_ml,
         "lastMeasurement": last.map(|measurement| json!({
             "date": measurement.date,
@@ -376,7 +449,14 @@ pub fn records_view(data: &HealthData, arguments: &Value, today: Date) -> Result
             })
             .collect(),
         Some("water") | Some("agua") => data.water.iter().filter(|(date, _)| within(date)).map(|(date, ml)| json!({ "date": date, "ml": ml })).collect(),
-        _ => return Err(invalid("kind tiene que ser weights, measurements, meals o water.")),
+        Some("steps") | Some("pasos") => data.steps.iter().filter(|(date, _)| within(date)).map(|(date, steps)| json!({ "date": date, "steps": steps })).collect(),
+        Some("sleep") | Some("sueno") => data
+            .sleep
+            .iter()
+            .filter(|(date, _)| within(date))
+            .map(|(date, minutes)| json!({ "date": date, "minutes": minutes, "label": super::sleep_label(*minutes) }))
+            .collect(),
+        _ => return Err(invalid("kind tiene que ser weights, measurements, meals, water, steps o sleep.")),
     };
     let truncated = records.len() > MAX_LISTED;
     Ok(json!({

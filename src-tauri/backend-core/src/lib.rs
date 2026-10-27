@@ -10,6 +10,7 @@ pub mod agent_autonomy;
 pub mod agent_knowledge;
 pub mod agent_workspace;
 pub mod ai_actions;
+pub mod ai_tasks;
 pub mod ai_settings;
 pub mod audio_devices;
 pub mod audio_resample;
@@ -35,6 +36,7 @@ pub mod events;
 pub mod export;
 pub mod export_render;
 pub mod finance_answer;
+pub mod folder_contexts;
 pub mod finance_insights;
 pub mod formatting;
 pub mod gitbook_blocks;
@@ -63,6 +65,7 @@ pub mod page_setup;
 pub mod paths;
 pub mod ports;
 pub mod prompt;
+pub mod public_spaces;
 pub mod prompt_guidance;
 pub mod gym;
 pub mod image_generation;
@@ -75,12 +78,14 @@ pub mod speech_text;
 pub mod task_board_actions;
 pub mod task_board_plan;
 pub mod task_board_tool_input;
+pub mod task_detail_view;
 pub mod task_management_view;
 pub mod task_planner;
 pub mod task_manager_tool_input;
 pub mod task_manager_tools;
 pub mod task_manager_ui;
 pub mod telegram_bot;
+pub mod text_merge;
 pub mod tool_call_recovery;
 pub mod tool_routing;
 pub mod turn_interrupts;
@@ -104,7 +109,7 @@ pub use paths::{
     normalize_prompt_file_name, validate_agent_path, validate_logical_library_path, AgentPath,
     AgentPathKind, LogicalLibraryPath, ScopedAgentPath, ScopedLibraryPath, AGENT_DIRECTORY,
     DEFAULT_PROMPT_FILE, MEMORY_DIRECTORY, MEMORY_FILE, PROMPTS_DIRECTORY, RULES_FILE,
-    SKILLS_DIRECTORY, THOUGHTS_FILE, BIOGRAPHY_FILE, TALK_FILE, PEOPLE_FILE,
+    SKILLS_DIRECTORY, THOUGHTS_FILE, BIOGRAPHY_FILE, TALK_FILE, PEOPLE_FILE, IMPROVE_FILE,
 };
 pub use ports::{
     load_biography_for_context, load_memory_for_context, load_people_for_context, load_prompt_for_context, load_rules_for_context,
@@ -115,7 +120,7 @@ pub use ports::{
 pub use prompt::{
     compose_system_prompt, load_prompt_parts, load_prompt_parts_with_request,
     resolve_rules_for_format, response_format_for_channel, strip_frontmatter, PromptLoadRequest,
-    PromptParts, DEFAULT_AGENT_PROMPT, DEFAULT_AGENT_RULES,
+    PromptParts, base_agent_prompt, CONVERSATION_AGENT_PROMPT, DEFAULT_AGENT_PROMPT, DEFAULT_AGENT_RULES,
 };
 pub use web_search::{
     normalize_http_url, sanitize_web_search_request, validate_citations, web_search_key,
@@ -175,7 +180,7 @@ pub use markdown_editing::{
     MarkdownDocumentEdit, MarkdownEditPreview, MarkdownEditRequest, MarkdownFormatValidation,
     MarkdownHunk, MarkdownOperation, MarkdownPreviewDocument, MultiDocumentMarkdownApplyResult,
     MultiDocumentMarkdownEditRequest, MultiDocumentMarkdownPreview, SemanticMarkdownPreview,
-    MAX_MARKDOWN_HUNKS, MAX_MARKDOWN_TAG_CHARS, MAX_MULTI_DOCUMENT_EDITS,
+    MAX_MARKDOWN_HUNKS, MAX_MARKDOWN_TAG_CHARS, MAX_MULTI_DOCUMENT_DOCUMENTS, MAX_MULTI_DOCUMENT_EDITS,
 };
 pub use prompt_guidance::{scope_guidance, XGRAPH_AGENT_GUIDE};
 pub use protocol::{
@@ -191,7 +196,7 @@ pub use protocol::{
 };
 pub use runtime::InteractionRuntime;
 pub use task_manager_tool_input::{
-    is_task_mutation_tool, task_mutation_from_tool, ticket_ids_to_read, MAX_TASK_TOOL_READ_TICKETS,
+    is_task_mutation_tool, read_tickets_by_id, task_mutation_from_tool, ticket_ids_to_read, MAX_TASK_TOOL_READ_TICKETS,
     TASK_MUTATION_TOOLS,
 };
 pub use task_manager_ui::{

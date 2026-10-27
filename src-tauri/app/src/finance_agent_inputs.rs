@@ -356,11 +356,24 @@ pub(crate) fn build_purchase(
     let discount_amount = decimal("discountAmount").unwrap_or_else(|| "0".to_string());
     let tax_amount = decimal("taxAmount").unwrap_or_else(|| "0".to_string());
     let total_amount = decimal("totalAmount");
+    // A product removed at the till is marked `voided`: it is neither added
+    // nor saved, and its negative line is not sent.
     let raw_items = args
         .get("items")
         .and_then(Value::as_array)
-        .map(|items| items.iter().take(MAX_PURCHASE_ITEMS).collect::<Vec<_>>())
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_PURCHASE_ITEMS)
+                .filter(|item| item.get("voided").and_then(Value::as_bool) != Some(true))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
+    let item_problems = raw_items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| purchase_item_problem(index, item))
+        .collect::<Vec<_>>();
     let items = raw_items
         .iter()
         .filter_map(|item| {
@@ -410,7 +423,11 @@ pub(crate) fn build_purchase(
         invalid.push("itemAmounts");
     }
     if !invalid.is_empty() {
-        return Err(AgentInputError::fields("invalid-finance-purchase", invalid));
+        let mut error = AgentInputError::fields("invalid-finance-purchase", invalid);
+        if !item_problems.is_empty() {
+            error.instruction.push_str(&format!(" Líneas a corregir: {}.", item_problems.join("; ")));
+        }
+        return Err(error);
     }
     let currency_value = currency_value.unwrap_or_default();
     let account = resolve_account(accounts, &account_value)
@@ -474,6 +491,35 @@ pub(crate) fn build_purchase(
             })
             .collect(),
     })
+}
+
+/// What is wrong with a line of a ticket, so the agent fixes that line
+/// instead of guessing what `itemAmounts` means.
+fn purchase_item_problem(index: usize, item: &Value) -> Option<String> {
+    let description = text(item, "originalDescription");
+    let mut problems = Vec::new();
+    if description.is_empty() {
+        problems.push("falta originalDescription".to_string());
+    }
+    for (field, digits) in [("quantity", 6), ("unitPrice", 2), ("lineTotal", 2)] {
+        match item.get(field) {
+            None | Some(Value::Null) => problems.push(format!("falta {field}")),
+            Some(value) if normalize_decimal(value, digits).is_some() => {}
+            Some(value) => {
+                let shown = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+                problems.push(if shown.trim().starts_with('-') {
+                    format!("{field} es negativo («{shown}»): si es la anulación de un producto, marcá ese producto con voided: true y no mandes la línea negativa")
+                } else {
+                    format!("{field} «{shown}» no es un número positivo con hasta {digits} decimales (por ejemplo «1234.56» o «1.234,56»)")
+                });
+            }
+        }
+    }
+    if problems.is_empty() {
+        return None;
+    }
+    let name = if description.is_empty() { String::new() } else { format!(" («{description}»)") };
+    Some(format!("items[{index}]{name}: {}", problems.join(", ")))
 }
 
 pub(crate) fn build_salary(
@@ -1041,6 +1087,38 @@ mod tests {
         for field in ["accountId", "merchantName", "currency", "totalAmount", "itemAmounts"] {
             assert!(error.invalid_fields.iter().any(|value| value == field), "{field}");
         }
+    }
+
+    #[test]
+    fn purchase_names_the_line_to_fix_and_skips_voided_products() {
+        let accounts = vec![account("acc-1", "Caja", "ARS", "cash")];
+        let line = |description: &str, total: &str| json!({"originalDescription": description, "quantity": "1", "unitPrice": total, "lineTotal": total});
+        let error = build_purchase(
+            &json!({"accountId": "acc-1", "merchantName": "Coto", "currency": "ARS", "totalAmount": "1000",
+                    "items": [line("Arroz", "1000"), line("ANULACION LECHE", "-1200"), {"originalDescription": "Pan", "quantity": "1"}]}),
+            &accounts,
+            &[],
+            &[],
+            "ref",
+            "2026-09-22",
+        )
+        .expect_err("invalid lines");
+        assert!(error.instruction.contains("items[1] («ANULACION LECHE»): unitPrice es negativo"), "{}", error.instruction);
+        assert!(error.instruction.contains("voided: true"), "{}", error.instruction);
+        assert!(error.instruction.contains("items[2] («Pan»): falta unitPrice, falta lineTotal"), "{}", error.instruction);
+        let mut voided = line("Leche", "1200");
+        voided["voided"] = json!(true);
+        let purchase = build_purchase(
+            &json!({"accountId": "acc-1", "merchantName": "Coto", "currency": "ARS", "totalAmount": "1000",
+                    "items": [line("Arroz", "1000"), voided]}),
+            &accounts,
+            &[],
+            &[],
+            "ref",
+            "2026-09-22",
+        )
+        .expect("voided product left out");
+        assert_eq!((purchase.items.len(), purchase.subtotal_amount.as_str()), (1, "1000"));
     }
 
     #[test]

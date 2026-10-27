@@ -47,6 +47,7 @@ mod config_vault;
 mod device_secret;
 mod agent_autonomy;
 mod ai_actions;
+mod ai_task_runner;
 mod recipes;
 mod gym;
 mod health;
@@ -60,6 +61,8 @@ mod ai_tasks;
 mod chat_history;
 mod device_preferences;
 mod telegram_worker;
+mod folder_contexts;
+mod public_spaces;
 mod library_documents;
 mod library_catalog;
 mod library_config;
@@ -73,6 +76,7 @@ mod gitbook_blocks;
 mod library_graph;
 mod library_inventory;
 mod library_session;
+mod published_library;
 mod chat_agents;
 mod library_document_adapter;
 mod library_registry;
@@ -190,6 +194,7 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(collab::CollabState::default());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     app.manage(host_server::HostServerState::default());
+    app.manage(public_spaces::PublicSpacesState::default());
     app
 }
 
@@ -216,8 +221,10 @@ pub fn startup_hooks() -> Vec<TauriPlugin> {
         telegram_worker::init(),
         agent_autonomy::init(),
         ai_actions::init(),
+        ai_task_runner::init(),
         agenda_sync::init(),
         task_manager_publication_source::init(),
+        public_spaces::init(),
         database::init(),
         mobile_ai_bridge::init(),
         mobile_continuity::init(),

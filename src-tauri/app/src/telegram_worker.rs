@@ -106,6 +106,21 @@ pub(crate) fn bot_runs_for(app: &AppHandle, library_id: &str) -> bool {
     running_worker(app, library_id).is_some()
 }
 
+/// Sends a message of an AI task (Markdown) to `chat_id`, the Owner's chat
+/// of `library_id`, with `buttons` on its last part; that part's id.
+/// `None` when no bot runs for the library here.
+pub(crate) fn send_task_message(app: &AppHandle, library_id: &str, chat_id: i64, markdown: &str, buttons: Vec<(String, String)>) -> Option<i64> {
+    let worker = running_worker(app, library_id)?;
+    worker.send_parts(chat_id, bot::telegram_html_parts(markdown), buttons).map(|(id, _)| id)
+}
+
+/// Rewrites a message of an AI task (HTML), which loses its buttons.
+pub(crate) fn mark_task_message(app: &AppHandle, library_id: &str, chat_id: i64, message_id: i64, html: &str) {
+    if let Some(worker) = running_worker(app, library_id) {
+        worker.edit_html(chat_id, message_id, html);
+    }
+}
+
 /// Queues a run of the autonomous agent in the Owner's Telegram chat of
 /// `library_id`, with `trigger` as its request.
 pub(crate) fn enqueue_autonomous(app: &AppHandle, library_id: &str, kind: AutonomousKind, trigger: String) -> AutonomousEnqueue {
@@ -699,6 +714,13 @@ impl Worker {
             let _ = block_on(telegram::answer_callback(&self.token, callback_id));
         }
         if let Some(data) = update.callback_data.as_deref() {
+            // The approval of an AI task: only the Owner answers it.
+            if data.starts_with(crate::ai_task_runner::TELEGRAM_CALLBACK_PREFIX) {
+                if library_user_id == OWNER {
+                    crate::ai_task_runner::answer_from_telegram(data);
+                }
+                return;
+            }
             self.handle_callback(update.chat_id, data);
             return;
         }
@@ -1811,6 +1833,8 @@ impl Worker {
             scheduled_action: job.action.as_ref().map(|action| action.prompt.clone()),
             tool_areas: None,
             thinking: None,
+            conversational: false,
+            ai_task: None,
         });
         (ActiveRun { context, idempotency_key, cancelled }, request)
     }

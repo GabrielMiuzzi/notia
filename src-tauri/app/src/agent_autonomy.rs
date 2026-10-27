@@ -1,6 +1,6 @@
 //! The autonomous agent's clock. Every minute, for the selected library,
-//! `thoughts.md`, `biography.md`, `talk.md` and `people.md` are created
-//! again when they are missing (a new `people.md` is filled with the people
+//! `thoughts.md`, `biography.md`, `talk.md`, `people.md` and `improve.md`
+//! are created again when they are missing (a new `people.md` is filled with the people
 //! the memory and the biography name), and once a day the agent files are reviewed (format
 //! repaired, duplicates merged, sizes kept; see
 //! `agent_knowledge::review_agent_files`). When the library's Telegram bot

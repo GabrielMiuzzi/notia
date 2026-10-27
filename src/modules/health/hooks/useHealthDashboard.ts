@@ -5,7 +5,7 @@ import type { DashboardQuery, HealthDashboard, HealthMutation } from '../types/h
 
 type Status = 'loading' | 'ready' | 'error'
 
-const INITIAL_QUERY: DashboardQuery = { foodDate: null, weightRange: '90', measurementDate: null }
+const INITIAL_QUERY: DashboardQuery = { foodDate: null, weightRange: '90', measurementDate: null, stepsRange: '30', sleepRange: '30' }
 
 /** El tablero de Salud y los pedidos a Rust; el estado es solo de pantalla. */
 export function useHealthDashboard(library: NotiaLibrary) {

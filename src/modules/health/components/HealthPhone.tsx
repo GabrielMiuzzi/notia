@@ -5,7 +5,8 @@ import { HealthModal } from './HealthForms'
 
 /*
  * La versión celular de Salud (canvas «SaludDashboard», `SaludMovil`): barra
- * de arriba con «Más opciones», pestañas Hoy / Comidas / Peso / Cuerpo, el
+ * de arriba con «Más opciones», pestañas Hoy / Comidas / Peso / Actividad /
+ * Cuerpo (Actividad: pasos y sueño), el
  * botón flotante de cada pestaña y las tarjetas de resumen de Hoy. Los paneles
  * son los mismos del escritorio; Rust arma todos los textos y la línea.
  */
@@ -13,12 +14,13 @@ import { HealthModal } from './HealthForms'
 /** Ancho de la vista de Salud (no de la ventana) por debajo del cual se usa el celular. */
 export const HEALTH_PHONE_MAX_WIDTH = 700
 
-type PhoneTab = 'hoy' | 'comidas' | 'peso' | 'cuerpo'
+type PhoneTab = 'hoy' | 'comidas' | 'peso' | 'actividad' | 'cuerpo'
 
 const TABS: Array<{ id: PhoneTab; label: string }> = [
   { id: 'hoy', label: 'Hoy' },
   { id: 'comidas', label: 'Comidas' },
   { id: 'peso', label: 'Peso' },
+  { id: 'actividad', label: 'Actividad' },
   { id: 'cuerpo', label: 'Cuerpo' },
 ]
 
@@ -31,6 +33,8 @@ export interface HealthPanels {
   objective: ReactNode
   food: ReactNode
   water: ReactNode
+  steps: ReactNode
+  sleep: ReactNode
   composition: ReactNode
 }
 
@@ -99,11 +103,13 @@ export function HealthPhone({ dashboard, panels, onProfile, onMeasurement, onMea
                 {dashboard.todayCalories && <CaloriesCard summary={dashboard.todayCalories} onOpen={() => showTab('comidas')} />}
                 {panels.water}
                 <WeightCard currentLabel={dashboard.weight.currentLabel} trend={dashboard.weightTrend} onOpen={() => showTab('peso')} />
+                <ActivityCard dashboard={dashboard} onOpen={() => showTab('actividad')} />
                 {panels.bmi}
               </>
             )
             : tab === 'comidas' ? panels.food
             : tab === 'peso' ? <>{panels.weight}{panels.objective}</>
+            : tab === 'actividad' ? <>{panels.steps}{panels.sleep}</>
             : panels.composition}
         </div>
       </div>
@@ -153,6 +159,30 @@ function CaloriesCard({ summary, onOpen }: { summary: CaloriesSummary; onOpen: (
               <span className="hl-track hl-phone-macro__track"><span className="hl-fill" style={{ width: `${macro.progress}%` }} /></span>
             </span>
           ))}
+        </span>
+      </button>
+    </section>
+  )
+}
+
+/** Los pasos de hoy y el sueño de anoche: tocarla lleva a Actividad. */
+function ActivityCard({ dashboard, onOpen }: { dashboard: HealthDashboard; onOpen: () => void }) {
+  return (
+    <section className="hl-panel hl-phone-card">
+      <button type="button" className="hl-phone-card__button" onClick={onOpen}>
+        <span className="hl-phone-card__head">
+          <span className="hl-h2">Actividad</span>
+          <span className="hl-small hl-muted hl-phone-card__more">Ver detalle<ChevronRight size={16} aria-hidden="true" /></span>
+        </span>
+        <span className="hl-phone-card__pair">
+          <span>
+            <span className="hl-small hl-muted">Pasos · {dashboard.steps.todayCaption.toLowerCase()}</span>
+            <span className="hl-mid">{dashboard.steps.todayLabel}</span>
+          </span>
+          <span>
+            <span className="hl-small hl-muted">Sueño · {dashboard.sleep.todayCaption.toLowerCase()}</span>
+            <span className="hl-mid">{dashboard.sleep.todayLabel}</span>
+          </span>
         </span>
       </button>
     </section>

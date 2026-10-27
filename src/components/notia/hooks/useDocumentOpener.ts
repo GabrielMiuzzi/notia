@@ -64,7 +64,8 @@ export function useDocumentOpener({
           extension,
           viewKind,
           source: result.content,
-          ...(result.lockedContext ? { lockedContext: result.lockedContext } : {}),
+          ...(result.lockedContext ? { lockedContext: result.lockedContext, lockedContextSource: result.lockedContextSource } : {}),
+          ...(result.readOnly ? { readOnly: result.readOnly } : {}),
         }
         openDocumentInTab(nextDocument, result.content, result.revision)
         openFileMeasurement.success({ sourceLength: result.content.length })

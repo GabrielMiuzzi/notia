@@ -35,6 +35,9 @@ pub enum ToolPolicy {
     /// The AI actions of the library: the Owner's only.
     AiActionRead,
     AiActionWrite,
+    /// The AI tasks of the library: the Owner's only, created by the agent.
+    AiTaskRead,
+    AiTaskWrite,
     /// The open Meeting of this device: the Owner's only.
     MeetingRead,
     MeetingWrite,
@@ -102,6 +105,10 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
         memory_tool("add_agent_biography", "Suma un hecho de la vida del usuario a su biografía narrada."),
         memory_tool("add_agent_talk", "Anota un rasgo de cómo habla el usuario."),
         memory_tool("add_agent_person", "Anota quién es una persona que menciona el usuario."),
+        memory_tool(
+            "add_agent_improvement",
+            "Anota en improve.md un error de una herramienta, una herramienta que falta o algo de Notia a mejorar.",
+        ),
     ]);
     catalog.extend(alias_tools(
         [
@@ -233,6 +240,9 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     catalog.extend(routine_tools(&super::gym::tools::GYM_WRITE_TOOLS, false));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_READ_TOOLS, true));
     catalog.extend(ai_action_tools(&super::ai_actions::tools::AI_ACTION_WRITE_TOOLS, false));
+    // The AI tasks reach the same chats as the actions.
+    catalog.extend(ai_action_tools(&super::ai_tasks::tools::AI_TASK_READ_TOOLS, true));
+    catalog.extend(ai_action_tools(&super::ai_tasks::tools::AI_TASK_WRITE_TOOLS, false));
     catalog.extend(meeting_tools(&super::meeting_tools::MEETING_READ_TOOLS, true));
     catalog.extend(meeting_tools(&super::meeting_tools::MEETING_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
@@ -560,13 +570,15 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         | "add_agent_thought"
         | "add_agent_biography"
         | "add_agent_talk"
-        | "add_agent_person" => {
+        | "add_agent_person"
+        | "add_agent_improvement" => {
             ToolPolicy::Memory
         }
         "search_library_documents"
         | "search_library_context"
         | "search_library_exact"
         | "get_document_metadata"
+        | "inspect_page_chain"
         | "find_document_references"
         | "compare_documents"
         | "extract_document_facts"
@@ -606,6 +618,8 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::gym::tools::GYM_READ_TOOLS.contains(&name) => ToolPolicy::GymRead,
         name if super::gym::tools::is_gym_write_tool(name) => ToolPolicy::GymWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
+        name if super::ai_tasks::tools::AI_TASK_READ_TOOLS.contains(&name) => ToolPolicy::AiTaskRead,
+        name if super::ai_tasks::tools::is_ai_task_write_tool(name) => ToolPolicy::AiTaskWrite,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
         name if super::meeting_tools::MEETING_READ_TOOLS.contains(&name) => ToolPolicy::MeetingRead,
         name if super::meeting_tools::is_meeting_write_tool(name) => ToolPolicy::MeetingWrite,
@@ -785,6 +799,17 @@ pub fn authorize_tool_call(
         ToolPolicy::AiActionRead | ToolPolicy::AiActionWrite => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "Las acciones de IA son solo del Owner de la biblioteca.",
+            false,
+        )),
+        // The tasks keep the Owner's memory and answer the Owner.
+        ToolPolicy::AiTaskRead | ToolPolicy::AiTaskWrite
+            if context.actor.is_library_owner() && context.persistence_policy.allows_memory() =>
+        {
+            Ok(())
+        }
+        ToolPolicy::AiTaskRead | ToolPolicy::AiTaskWrite => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "Las Tareas IA son solo del Owner de la biblioteca.",
             false,
         )),
         // The meeting is recorded on the Owner's device: only the Owner's
@@ -1031,6 +1056,32 @@ mod tests {
         assert_eq!(crate::tool_routing::tool_area("create_ai_action"), Some(crate::tool_routing::ToolArea::Actions));
     }
 
+    /// The hourly review asks for tasks, routine, agenda, mail and finance at
+    /// once: together they pass the tool limit, so Finanzas used to be left
+    /// out without a word while the agent was told it had it.
+    #[test]
+    fn the_hourly_review_reads_every_area_it_asks_for() {
+        use crate::tool_routing::{area_coverage, turn_tools, AreaCoverage, ToolArea};
+        let mut owner = principal();
+        owner.all_contexts = true;
+        let library = restrict_tool_access(
+            project_tool_catalog(&context(BackendScope::Library), &owner, &canonical_tool_catalog(), ToolCatalogProjection::Full).expect("catalog"),
+            ToolAccess::All,
+            true,
+        );
+        let max = crate::protocol::BackendLimits::default().max_tools;
+        let areas = [ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Finance];
+        let round = turn_tools(&library, &areas, max);
+        assert!(round.len() <= max);
+        let coverage = area_coverage(&library, &round, &areas);
+        assert_eq!(coverage.full.first(), Some(&ToolArea::Tasks));
+        assert!(coverage.missing.is_empty(), "{coverage:?}");
+        assert_ne!(coverage, AreaCoverage { full: areas.to_vec(), ..AreaCoverage::default() });
+        for name in ["get_finance_dashboard", "list_agenda", "list_gmail_messages", "get_task_board_summary"] {
+            assert!(round.iter().any(|tool| tool.name == name), "{name}");
+        }
+    }
+
     /// Every chat is routed by area: each area it offers fits in one round
     /// with the tools every round keeps and `change_tool_areas`.
     fn assert_every_area_fits(tools: &[ToolDefinition], max_tools: usize) {
@@ -1197,7 +1248,7 @@ mod tests {
         assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &thought, ToolCatalogProjection::Full).is_ok());
         assert!(authorize_tool_call(&without_memory, &principal(), &thought, ToolCatalogProjection::Full).is_err());
         assert_eq!(restrict_tool_access(vec![thought], ToolAccess::ReadOnly, false).len(), 1);
-        for name in ["add_agent_biography", "add_agent_talk", "add_agent_person"] {
+        for name in ["add_agent_biography", "add_agent_talk", "add_agent_person", "add_agent_improvement"] {
             let tool = canonical_tool_catalog().into_iter().find(|tool| tool.name == name).expect("tool");
             assert!(!tool.requires_confirmation && tool_policy(name) == ToolPolicy::Memory);
             assert!(authorize_tool_call(&context(BackendScope::Library), &principal(), &tool, ToolCatalogProjection::Full).is_ok());

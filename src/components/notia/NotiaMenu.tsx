@@ -31,6 +31,8 @@ import { useAgentDocumentChanges, useAgentEntryMoves } from './hooks/useAgentDoc
 import { store } from '../../store/index'
 import { isTextFileDocument } from '../../types/views/fileDocument'
 import { readLibraryDocument } from '../../services/libraries/libraryDocumentRuntime'
+import { flushPendingEditorChanges } from '../../services/markdown/pendingEditorChanges'
+import { useConfirmationEngine } from '../../context/confirmation/useConfirmationEngine'
 import { useResumeWorkout } from '../../modules/gym/hooks/useResumeWorkout'
 import { useAppDispatch, useAppSelector, type RootState } from '../../store/hooks'
 import { toggleSidebar, toggleRightChatPanel, setSettingsOpen, setLibraryManagerOpen, setRightChatPanelOpen } from '../../features/ui/uiSlice'
@@ -176,11 +178,28 @@ function NotiaMenuComponent() {
 
   const bumpLibraryIndexRevisionCallback = useCallback(() => { bumpLibraryIndexRevisionRef.current() }, [])
 
+  // The text the backend wrote after merging goes to the open editor; it is
+  // wired below, once the editor update exists.
+  const mergedSourceRef = useRef<(path: string, source: string, revision?: string) => void>(() => {})
+  const handleMergedSource = useCallback((path: string, source: string, revision?: string) => {
+    mergedSourceRef.current(path, source, revision)
+  }, [])
+  const { confirm } = useConfirmationEngine()
+  const confirmDiscard = useCallback((name: string, reason: string) => confirm({
+    title: 'Cerrar sin guardar',
+    message: `${reason} Si cerrás «${name}», se pierden esos cambios.`,
+    confirmLabel: 'Cerrar sin guardar',
+    cancelLabel: 'Seguir editando',
+    tone: 'danger',
+  }), [confirm])
+
   const tabManager = useTabManager({
     clearPendingTextSaveByPath,
     bumpLibraryIndexRevision: bumpLibraryIndexRevisionCallback,
     resetColdPassSession,
     activeLibraryId,
+    onMergedSource: handleMergedSource,
+    confirmDiscard,
   })
   const { persistDirtyTextDocuments } = tabManager
 
@@ -407,12 +426,21 @@ function NotiaMenuComponent() {
   const getOpenTextPaths = useCallback(() => (
     store.getState().documents.openTabs.filter((tab) => isTextFileDocument(tab.document)).map((tab) => tab.document.path)
   ), [])
+  const { persistTextDocumentSource } = tabManager
   const reloadAgentChangedDocuments = useCallback((paths: string[]) => {
     const libraryId = activeLibraryId
     if (!libraryId) return
+    // Keystrokes still in the editor count as unsaved text.
+    flushPendingEditorChanges()
     for (const path of paths) {
       const tab = store.getState().documents.openTabs.find((item) => item.document.path === path)
       if (!tab || !isTextFileDocument(tab.document)) continue
+      // Unsaved text is never replaced: saving it merges it with the change.
+      if (tab.document.source !== tab.latestSavedSource) {
+        clearPendingTextSaveByPath(path)
+        void persistTextDocumentSource(path, tab.document.source)
+        continue
+      }
       const markdown = tab.document.viewKind === 'markdown'
       void readLibraryDocument(libraryId, path, { markdownDefaults: markdown }).then((read) => {
         const current = store.getState().documents.openTabs.find((item) => item.document.path === path)
@@ -421,7 +449,14 @@ function NotiaMenuComponent() {
         else handleExternalTextDocumentChange(path, read.content, read.revision)
       })
     }
-  }, [activeLibraryId, handleActiveMarkdownDocumentChanged, handleExternalTextDocumentChange])
+  }, [activeLibraryId, clearPendingTextSaveByPath, handleActiveMarkdownDocumentChanged, handleExternalTextDocumentChange, persistTextDocumentSource])
+  useEffect(() => {
+    mergedSourceRef.current = (path, source, revision) => {
+      const tab = store.getState().documents.openTabs.find((item) => item.document.path === path)
+      if (tab && isTextFileDocument(tab.document) && tab.document.viewKind === 'markdown') handleActiveMarkdownDocumentChanged(path, source, revision)
+      else handleExternalTextDocumentChange(path, source, revision)
+    }
+  }, [handleActiveMarkdownDocumentChanged, handleExternalTextDocumentChange])
   useAgentDocumentChanges(activeLibraryId, getOpenTextPaths, reloadAgentChangedDocuments)
   // A note or folder the agent moves keeps its open tabs, at the new path.
   const getOpenTabPaths = useCallback(() => store.getState().documents.openTabs.map((tab) => tab.document.path), [])

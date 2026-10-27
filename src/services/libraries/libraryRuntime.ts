@@ -71,6 +71,25 @@ export async function revokeLibraryBinding(libraryId: string): Promise<void> {
   await callBackend('revoke_library_binding', { libraryId })
 }
 
+export interface FolderContextResult {
+  ok: boolean
+  error?: string
+  /** Notes inside the folder that changed their context. */
+  rewritten: number
+}
+
+/**
+ * Assigns `context` to the folder the explorer shows at `path` (`null`
+ * removes it). The backend validates it and rewrites the notes inside.
+ */
+export async function setFolderContext(libraryId: string, path: string, context: string | null): Promise<FolderContextResult> {
+  try {
+    return await callBackend<FolderContextResult>('library_set_folder_context', { payload: { libraryId, path, context } })
+  } catch (error) {
+    return { ok: false, error: errorMessage(error, 'No se pudo cambiar el contexto de la carpeta.'), rewritten: 0 }
+  }
+}
+
 /** Explorer entry mutation expressed with the paths the explorer shows. */
 export type LibraryEntryMutation =
   | { action: 'create'; parentPath: string; name: string; kind: 'folder' | 'note' | 'mermaid' }

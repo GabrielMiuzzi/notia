@@ -52,7 +52,8 @@ pub fn is_silent(answer: &str) -> bool {
 }
 
 /// Tools an autonomous run keeps: those that read and, of the agent files,
-/// only its thoughts. Nobody asked for the run, so there is no instruction,
+/// only its thoughts and `improve.md`, which no prompt reads, so a mail
+/// that dictates an entry changes nothing. Nobody asked for the run, so there is no instruction,
 /// personal fact, part of the biography, way of talking or person to save,
 /// and a mail could otherwise dictate one.
 pub fn autonomous_tools(tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
@@ -200,7 +201,7 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
-        for kept in ["add_agent_thought", "list_agenda", "list_gmail_messages", "request_user_clarification"] {
+        for kept in ["add_agent_thought", "add_agent_improvement", "list_agenda", "list_gmail_messages", "request_user_clarification"] {
             assert!(names.iter().any(|name| name == kept), "{kept}");
         }
         for dropped in [

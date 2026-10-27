@@ -10,8 +10,11 @@ interface OpenFileDocumentBase {
 export interface OpenTextFileDocument extends OpenFileDocumentBase {
   viewKind: 'markdown' | 'text'
   source: string
-  /** Context of the Task Manager board the note lives in; it cannot change. */
+  /** Context of the Task Manager board or folder the note lives in; it cannot change. */
   lockedContext?: string
+  lockedContextSource?: 'board' | 'folder'
+  /** Why the note opens read-only, as the backend says (a file only the AI writes). */
+  readOnly?: string
 }
 
 export interface OpenImageFileDocument extends OpenFileDocumentBase {

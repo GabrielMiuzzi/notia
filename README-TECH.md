@@ -1200,7 +1200,7 @@ Segundo paso del plan de separación. El explorador, los documentos y las entrad
 
 - `backend-core/src/library_tree.rs`:
   - `LibraryTreeNodeDto` es el nodo único del explorador para escritorio y Android.
-  - `normalize_tree` descarta ids repetidos entre hermanos, completa `expanded`, `hasChildren` y `children` de las carpetas y aplica el orden: carpetas primero, después las notas encadenadas por `previousPage`/`nextPage` (cada cadena según la fecha de creación de su cabeza) y al final las notas sueltas por fecha y nombre. Reemplaza a `pageLinkSortEngine.ts`.
+  - `normalize_tree` descarta ids repetidos entre hermanos, completa `expanded`, `hasChildren` y `children` de las carpetas y aplica el orden: carpetas primero, después las notas; las encadenadas por `previousPage`/`nextPage` van juntas y cada cadena o nota suelta se ubica por la fecha de creación de su primera nota y su nombre (desde 2026-10-19 las sueltas ya no van al final: una nota cuyos vecinos están en otras carpetas, como la portada de un tema, conserva su lugar). Reemplaza a `pageLinkSortEngine.ts`.
   - `library_logical_path` convierte la ruta que muestra el explorador (raíz de la biblioteca más la ruta relativa, en escritorio o como URI SAF visible) en ruta lógica; rechaza lo que queda fuera de la biblioteca. `library_visible_path` hace la conversión inversa.
   - `library_display_name` deriva el nombre de la carpeta, incluido el id de documento codificado en una URI tree de Android.
 - `src-tauri/app/src/library_session.rs` (comandos nuevos):
@@ -9223,7 +9223,7 @@ Todos son asíncronos; la derivación de la clave tarda un momento.
 
   | Endpoint | Qué hace |
   |---|---|
-  | `/login` | Suma `remember`: sesión de 30 días en el servidor y cookie con `Max-Age`; sin ella, 12 horas y cookie de sesión. |
+  | `/login` | Suma `remember`: sesión de 30 días en el servidor, que sobrevive a los reinicios de Notia (ver «Recordar sesión que dura (2026-10-18)»), y cookie con `Max-Age`; sin ella, 12 horas y cookie de sesión. La cookie es `SameSite=Lax`. |
   | `/first-login` | Primer paso de «Primer inicio»: el usuario existe y no tiene contraseña. |
   | `/create-password` | Crea la contraseña de ese usuario. |
   | `/change-password` | Verifica la actual, guarda la nueva y cierra las sesiones de ese usuario. |
@@ -9381,8 +9381,8 @@ Comandos. Los tres están en `LOCAL_ONLY_COMMANDS`, así un cliente nunca cambia
 - **Sesión:**
   - Los comandos `app_auth_*` de un cliente van al host.
   - La cookie `notia_session` vive en memoria, junto con usuario y contraseña de esa ejecución, para abrir otra sesión si el host se reinició.
-  - «Recordar sesión» guarda la contraseña protegida por el sistema (`config_vault`, clave `host-session-<biblioteca>`). «Recordar datos» usa la clave `host-<biblioteca>`.
-  - Un 401 que no se recupera avisa `notia:host-link` con `signedIn: false`, y la ventana vuelve al login.
+  - «Recordar sesión» guarda la contraseña protegida por el sistema (`config_vault`, clave `host-session-<biblioteca>`). «Recordar datos» usa la clave `host-<biblioteca>`. Esa contraseña también renueva la sesión cuando el proceso del cliente volvió a arrancar (`renew_session`).
+  - Solo un 401 seguido de un rechazo del host al volver a iniciar sesión (`host_refused`: 401/403) avisa `notia:host-link` con `signedIn: false`, y la ventana vuelve al login. Si el host no responde en ese momento, la sesión y las credenciales se conservan y se reintenta (ver «Recordar sesión que dura (2026-10-18)»).
 - **Comandos** (`registry::client_dispatch`, antes de `dispatch`). Mientras el enlace usa el host (`uses_host`: cliente y no trabajando con la copia):
   - `CLIENT_LOCAL_COMMANDS` corre en el equipo: login, conexión, copia y preferencias del dispositivo.
   - Todo comando remoto va a `/api/invoke`, con el error del backend del host tal cual.
@@ -12288,3 +12288,618 @@ Pedido: que el agente maneje todas las funciones del tablero (estimaciones, pers
 - **Modal de comentario**: el editor usaba la columna de las notas, con 48–120 px de margen izquierdo para el agarre de bloques, y el texto quedaba muy corrido a la derecha. `.tareas-comment-editor` fija `--notia-editor-gutter` y `--notia-editor-right` en 14 px (el margen del encabezado del diálogo) y sin sangría extra.
 - **Texto de ayuda en español**: `MarkdownView` acepta `placeholder` y lo pasa a Crepe (`Crepe.Feature.Placeholder`); por defecto «Escribí acá…» (antes el editor mostraba «Please enter…» en todas las notas) y el comentario usa «Escribí el comentario…».
 - **Validación**: `tsc`, ESLint y Vitest de Task Manager (163, con la prueba nueva del doble clic y el `title`); captura en Chrome del modal de comentario con el texto alineado al título.
+
+## Tablero publicado: menú lateral, explorador y grafo del contexto (2026-10-18)
+
+Pedido: la página publicada tiene el menú de la izquierda de la app con solo **Archivos** y **Vista de grafo**; el árbol y el grafo muestran únicamente las notas y carpetas del contexto de los tableros publicados; los invitados crean y editan notas, no pueden cambiarles el contexto y las nuevas nacen con el contexto del tablero.
+
+### Alcance de la biblioteca publicada (`app/src/published_library.rs`)
+
+- `PublishedLibraryScope { library_id, contexts, context_tags, ticket_paths }` sale de `task_manager_snapshot_for_publication` con los tableros de la sesión (`PublishedScope.board_ids`), nunca de la página. `contexts` son los contextos de esos tableros plegados (`fold`: minúsculas sin acentos); `context_tags` los conserva tal cual, con el del tablero activo (`activeBoard` del payload) primero; `ticket_paths` son las rutas lógicas de los tickets publicados.
+- **Nota visible** (`admits`): un `.md` fuera de carpetas ocultas (ningún segmento empieza con `.`), fuera de `task-manager/` (o `task-mannager/`), cuyo `contexto` del frontmatter (`library_graph::note_context`, con el contexto del tablero para los tickets) está en `contexts`; dentro de `task-manager/` solo los tickets publicados. Una carpeta existe en el árbol solo si contiene una nota visible (`tree_of`). La lista sale de las fuentes del grafo en caché (`cached_graph`); al leer o escribir una nota se vuelve a leer del disco (`visible_note_context`).
+- **Identidades.** La página nombra todo como `published-vault/<ruta lógica>` (el alias solo es la raíz). `logical_path_of` quita el alias y rechaza rutas absolutas, `://`, `.` y `..`; `alias_path` hace el camino inverso en las respuestas. `is_alias_path` distingue esas identidades de la ruta lógica de un ticket.
+
+### Comandos de la publicación
+
+Están en `PUBLISHED_COMMANDS` y los despacha `task_manager_execute_for_publication`; las lecturas van por `POST /invoke` y las escrituras (`library_write_document`, `library_mutate_entry`) por el WebSocket (`PublicationMutationCommand`, validadas en `validate_publication_mutation_args`: `path` ≤ 2048, `content` texto, `expectedRevision` opcional; `action` ≤ 16 y `name`, `kind`, `sourcePath`, `mode`, `contexto`, `activeBoard` opcionales). Las escrituras devuelven `changed = ok`, así los demás navegadores y el host reciben `changed` y recargan.
+
+| Comando | Qué hace |
+|---|---|
+| `library_read_directory {path}` | Árbol completo (`LibraryTreeNodeDto`, carpetas primero) de las notas visibles bajo `path`. |
+| `library_read_document {path, markdownDefaults}` | `LibraryDocumentReadDto` con `lockedContext` = el contexto de la nota: el editor muestra la propiedad con candado. |
+| `library_write_document {path, content, expectedRevision?, createIfMissing?}` | Escribe una nota visible con la revisión. Si el frontmatter cambia el contexto, `Forbidden` «El contexto de la nota lo define el tablero publicado y no se puede cambiar.» (`kept_context`). Crear exige un contexto publicado. |
+| `library_mutate_entry {action, path, name?, kind?, sourcePath?, mode?, contexto?, activeBoard?}` | `create` nota (frontmatter `contexto` = el pedido si está publicado, si no el del tablero activo; `new_note_content`) o carpeta; `rename`, `delete`, `paste` (`move`/`copy`) sobre notas visibles o carpetas cuyas notas son todas visibles (`folder_is_fully_visible`, con `library_inventory`). `task-manager/` y las carpetas ocultas nunca se editan. Nombres: ≤ 160 caracteres, sin separadores, sin punto inicial ni caracteres de control (`validate_entry_name`). Corre `library_session::mutate_entry_at` (`apply_entry_operation`, como la app). |
+| `backend_library_graph`, `backend_library_graph_search` | `library_graph::restrict_graph_model` deja solo los nodos y aristas visibles y recalcula grados; `graph_view_model` arma el resumen; las rutas salen con alias. |
+| `markdown_ink_*` | Sobre un ticket, como antes (`authorized_ticket_path`); sobre `published-vault/...`, `authorized_note` comprueba la visibilidad y reescribe `path` a la ruta lógica antes de `note_ink::execute_for_publication`. |
+
+### Interfaz
+
+- `PublishedTaskManagerShell` arma `aside.notia-sidebar` con `PublishedRail` (Explorador, que abre o cierra el árbol con `aria-pressed`; Tareas; Grafo) y `PublishedExplorer` cuando está abierto (estado en `localStorage` `task-manager:published-explorer-open`). El contenido es `MainView` si hay una pestaña activa, `PublishedGraph` si la vista es el grafo, y si no `TaskManagerApp`. La barra superior es `PublishedTopBar` (ver «Tablero publicado: barra superior y versión mobile (2026-10-18)»).
+- `PublishedExplorer` reutiliza `FileTree` y `FileTreeContextMenu` (nueva nota, nueva carpeta, renombrar, eliminar, abrir; en táctil con pulsación larga) y las acciones del encabezado (nueva nota, nueva carpeta y «Ocultar explorador», como en el lienzo). El buscador filtra por nombre en la página (solo visual). Eliminar confirma con `useConfirmationEngine`. Recarga el árbol con `changed`/`resync-required` de la publicación y avisa a la shell (`onLibraryChanged`) para que el grafo se lea de nuevo. Los errores de Rust se muestran en el diálogo de la shell.
+- `PublishedGraph` carga `GraphView` de forma diferida con `useLibraryGraphData({ libraryPath: 'published-vault', revision })`; tocar un nodo abre la nota.
+- `usePublishedTicketTabs` maneja pestañas `ticket` y `note`: las notas se leen con `library_read_document` (`markdownDefaults`) y se guardan con `library_write_document` y la revisión; los tickets siguen con `task_manager_read_ticket_source` / `task_manager_write_ticket_source`. Renombrar o eliminar desde el explorador actualiza o cierra la pestaña.
+- El contexto de una nota nueva es el `contexto` del tablero que se está mirando (`onActivePanelChange` de `TaskManagerApp`), si no el del primer tablero publicado, si no `#Personal`.
+
+### Decisiones y límites
+
+- El explorador solo muestra notas `.md`: no se crean diagramas Mermaid ni se ven adjuntos, imágenes u otros archivos, porque no tienen contexto.
+- Los `[[enlaces]]` no se resuelven ni se sugieren (mostrarían la biblioteca entera); la búsqueda es por nombre y en la página, no por contenido.
+- Una carpeta con notas de otros contextos no se renombra, mueve ni elimina desde la publicación: el invitado no debe tocar lo que no ve.
+- En el host, el explorador y el grafo de la ventana se enteran por el watcher de archivos, como con cualquier cambio externo.
+- La publicación sigue siendo solo de Windows; en Android no hay diferencia porque no publica.
+
+### Validaciones (2026-10-18)
+
+- `cargo test -p notia-app --features bluetooth`: 519 (`published_library` 5, `publication` 45, `registry` 12); `cargo check -p notia-app --tests` sin avisos nuevos; `cargo check --target aarch64-linux-android` en verde.
+- Vitest completo: 709 en 140 archivos, con `PublishedExplorer.test.tsx` (lista y abre, crea con el contexto del tablero, renombra y avisa a las pestañas, muestra el rechazo de Rust). `tsc` y ESLint limpios.
+- Capturas en Chrome sin cabeza con un transporte simulado: tablero con explorador, grafo, nota abierta con el contexto bloqueado y teléfono (420 px).
+- Pendiente: probar la publicación real desde otro navegador (crear, renombrar, mover y eliminar notas y carpetas, el grafo y los trazos sobre una nota) y el refresco del host.
+
+## Recordar sesión que dura (2026-10-18)
+
+Síntoma: con «Recordar sesión» marcado, el navegador del Task Manager publicado volvía a pedir usuario y contraseña, y la app en modo Cliente (con copia y sin copia, en Android) pedía el login al minimizarla o bloquear la pantalla.
+
+### Tablero publicado
+
+- **Causa.** Las sesiones vivían solo en memoria (`authenticated_sessions`) y cada publicación las borraba: también la republicación automática al abrir Notia. La cookie de 30 días del navegador quedaba apuntando a una sesión que el servidor ya no conocía. Además la cookie era `SameSite=Strict`: abrir la URL desde un enlace de otra app (Telegram, WhatsApp) llegaba sin cookie.
+- **Arreglo.** Una sesión abierta con `remember` se codifica `usuario\0vencimiento\0remembered` (`encode_authenticated_session`, tercer campo `REMEMBERED_SESSION_MARK`; `authenticated_session_expired` lee solo el segundo campo). Las sesiones recordadas y vigentes se guardan en `app_data/task-manager-publication/sessions-<biblioteca>.bin`, selladas con `device_secret` (DPAPI de la cuenta de Windows): `store_remembered_sessions` después de cada login recordado, poda por vencimiento, revocación de usuario, cambio de contraseña y pérdida de autorización. `publish_task_manager_boards` las repone para la misma biblioteca (`restore_remembered_sessions`, hasta el límite de clientes) y `stop_task_manager_publication` (el Owner deja de publicar) borra el archivo (`forget_remembered_sessions`). La cookie pasa a `SameSite=Lax`: viaja en la navegación desde otra app y sigue sin viajar en POST de otro origen; las escrituras además exigen `Origin`.
+- **Qué sigue cerrando el acceso:** los 30 días, quitar o deshabilitar al usuario, cambiarle la contraseña, cambiar sus contextos (la autorización se comprueba en cada pedido) y dejar de publicar desde Configuraciones. Cerrar Notia o republicar ya no.
+- **Prueba:** `remembered_sessions_come_back_when_the_library_is_published_again` (guarda, sella, repone solo la recordada vigente, nada para otra biblioteca, borra al revocar y al detener).
+
+### Modo Cliente
+
+- **Causa.** `renew_session` devolvía solo «sí/no»: un host que no respondía en el momento de renovar (la tablet recién despierta, Tailscale reconectando) se trataba igual que una contraseña rechazada: `end_session` borraba la sesión y las credenciales, `notia:host-link` avisaba `signedIn: false` y la ventana volvía al login. `auth_status` también respondía «locked» cuando el host no contestaba al abrir la sesión recordada, y después de un reinicio del proceso solo usaba las credenciales de la ejecución, no las recordadas.
+- **Arreglo** (`host_client.rs`):
+  - `open_session` distingue el rechazo (401/403 → `Unauthorized`) de un host en problemas (429, 5xx → `ProviderUnavailable`, reintentable).
+  - `renew_session` usa las credenciales de la ejecución o, si no hay, las de «Recordar sesión» (`remembered_session_credentials`), y devuelve el error.
+  - `authenticated` y el hilo de eventos (`relay_events`) terminan la sesión solo cuando el host la rechazó (`host_refused`); si no se lo pudo consultar, la conservan y vuelven a intentar (`EVENTS_RETRY`).
+  - `ensure_session` reemplaza a `has_session`: comprueba `/api/session`, renueva si hace falta y devuelve `Err` cuando el host no responde, así `auth_status` falla (la ventana muestra «Sin conexión» con Reintentar o pasa a la copia) en lugar de «locked». Un rechazo del host olvida la sesión recordada (`forget_credentials`), para no insistir con una contraseña vieja y sumar al enfriamiento del host.
+- **Validación:** `cargo test -p notia-app --features bluetooth`: 520 (con la prueba nueva y el flujo host/cliente en 127.0.0.1); `cargo check` Android: 59 avisos, como antes.
+- **Pendiente:** probar en la tablet (minimizar, bloquear la pantalla, dejarla dormir más de 12 h para que venza la sesión del host) y en el navegador del tablero publicado después de reiniciar Notia.
+
+## Tablero publicado: barra superior y versión mobile (2026-10-18)
+
+Pedido: ajustar la barra superior del Task Manager publicado al board «Web publicada · barra superior» del lienzo (claude.ai/artifact/QD8PjEfhZyHHTunoRADJ8p) e implementar la versión mobile (boards «Mobile · …»).
+
+### Barra superior (`components/published/PublishedTopBar.tsx`, `styles/publishedTopBar.css`)
+
+| Zona | Qué muestra | Contrato |
+|---|---|---|
+| Izquierda | Mostrar/Ocultar explorador, marca de Notia (el lienzo dice «Munin»), ruta `published-vault / Task Manager`, `Vista de grafo` o la nota abierta | La miga de la biblioteca abre el explorador |
+| Centro | Las pestañas de notas y tickets abiertos (solo si hay) | Se retiró la pestaña fija «Task Manager»: «Tareas» y «Grafo» del menú vuelven |
+| Derecha | Píldora de sincronización, «Publicado», Copiar enlace, Asistente, tema, cuenta | Ver abajo |
+
+- **Sincronización.** El estado sale de `subscribeTaskManagerPublicationStatus`; «· hace N min» cuenta desde el último `connected` o `changed` y se refresca cada 30 s. Tocarla llama `requestTaskManagerPublicationResync()` (nuevo en `taskManagerPublicationClient`: `beginResync('manual')`, o `connect()` si todavía no hubo bienvenida) y vuelve a leer explorador y grafo. Queda deshabilitada con la publicación revocada, detenida o reconfigurada.
+- **Copiar enlace.** Copia `origin + /task-manager` (la página de ingreso, sin `/app`) con `navigator.clipboard`; si falla, el aviso muestra el enlace.
+- **Tema.** Claro u oscuro en la página, guardado en `localStorage` (`task-manager:published-theme`); arranca con el del host. También lo recibe `MainView`.
+- **Cuenta.** Iniciales, nombre y «Propietario/Invitado de published-vault». El bootstrap suma `userName` y `userRole` (`publication_user_view`: nombre de `library_users`, «Propietario» para `user-owner`). «Cerrar sesión» hace `POST /task-manager/logout` (nuevo, `serve_publication_logout`): borra la sesión (y la recordada, con `store_remembered_sessions`), cierra streams y WebSocket de esa persona si no le quedan otras sesiones y responde la cookie con `Max-Age=0`; la página va al ingreso aunque falle. Como todo POST con sesión, exige el `Origin` de la página. El menú del lienzo también tiene «Ajustes de publicación» y «Abrir en la app de escritorio»: no existen para un invitado ni hay enlace profundo a la app, así que no se muestran.
+- **Menú y explorador.** Riel de 52 px (Explorador, Tareas, Grafo) y explorador de 248 px; el encabezado del explorador tiene nueva nota, nueva carpeta y «Ocultar explorador» (se retiraron colapsar y expandir carpetas, que el lienzo no tiene).
+- **Anchos.** 1100 px oculta «· hace N min» y la miga de la biblioteca; 860 px oculta «Publicado» y las etiquetas de Copiar enlace y Asistente, y el explorador flota con un fondo que lo cierra; 600 px oculta la marca y la etiqueta de sincronización, deja botones de 44 px y saca el riel: el botón del explorador abre riel y explorador juntos, flotando. Con puntero grueso todos los botones miden 44 px. El lienzo solo dibuja 1440 px; a 860 px su barra ya se superponía, por eso las etiquetas se ocultan antes.
+- **CSS retirado.** `.notia-published-titlebar*`, `.notia-publication-status*`, `.notia-published-chat-toggle` y `.notia-published-titlebar-controls` de `notia.css`. `.notia-published-workspace` aísla su apilamiento (`isolation: isolate`) para que nada del tablero tape el menú de la cuenta.
+
+### Versión mobile del Task Manager (`components/phone/`, `styles/taskPhone.css`)
+
+- **Cuándo.** `TaskManagerApp` mide su raíz con `useNarrowContainer` (borde, como los otros módulos) y bajo 600 px muestra `TaskManagerPhone` en lugar de encabezado, pestañas, filtros y vistas de escritorio. Los diálogos (ticket, comentario, personas, columna, tablero) y los avisos se comparten. Vale para la app y para la publicación.
+- **Secciones.** `PhoneBottomNav`: Tareas, Pomodoro, Archivo (con la cantidad de completadas) y Ajustes (abre `BoardEditDialog`; no aparece sin `canManageBoards`, o sea en la publicación). Dentro de Tareas, `PhoneHeader` (tablero, búsqueda, engranaje) con Tablero / Lista / Management, que se recuerdan por tablero como en escritorio. Si la pestaña activa era Completadas, Canceladas o Pomodoro, el teléfono cambia al primer tablero.
+- **Tablero** (`PhoneBoard`, `PhoneCard`): una columna por vez; chips, flechas y deslizamiento horizontal (más de 60 px con menos de 50 px de desvío) la cambian. Abre en la columna de tipo «Sprint actual». Usa `buildBoardModel` y `useTaskInteractions` (los mismos `send`, `leave`, `moveTo` y `flashTask` de escritorio). La tarjeta: prioridad (abre la hoja de prioridad), tiempo corriendo, «Bloqueada», anillo de 32 px, ⋯, proyecto, título (abre el detalle), descripción, motivo de bloqueo, personas, subtareas e Iniciar o Pausar + Finalizar. `PhoneTaskSheet` (hoja inferior `PhoneSheet`, con Escape y foco): Iniciar/Finalizar, Pausar/Finalizar o Desbloquear; Prioridad, Mover a, Personas, Proyecto y Tiempo (estos tres abren el detalle), Abrir detalle completo; Duplicar, Desestimar y Eliminar. El botón + flotante y «Agregar en …» crean «Nueva tarea» en la columna visible.
+- **Lista** (`PhoneList`): grupos plegables con «N h restantes» (estimado menos dedicado de las filas visibles) y filtros rápidos Todas, Mías, En progreso y Urgentes y altas (`matchesQuickFilter` en `taskFilters.ts`; solo eligen qué filas se ven, como los filtros de escritorio). El círculo de cada fila finaliza la tarea.
+- **Detalle** (`PhoneTaskDetail`): nuevo comando `task_manager_task_detail {context, logicalPath}` → `TaskDetailDto {description, comments[{commentId, author, initials, color, when, text}]}` (`backend-core/src/task_detail_view.rs`; `when` es «ahora», «hace N min», «hoy HH:MM», «ayer HH:MM», «12 oct» o «12 oct 2025»; el autor sale de `library_users` y el color de `board_members`). Está en `PUBLISHED_COMMANDS` y la publicación lo resuelve con el alcance de la sesión. Se vuelve a leer con cada `generation` y después de comentar. Todo lo demás usa intents existentes: `rename-task`, `change-priority`, `set-task-project` (más `add-board-project` para «Crear proyecto»), `set-task-people`, `set-task-time` (estimado ±0,5 h, dedicado ±0,25 h, estimaciones rápidas 1/2/4/8/16), `add-subtask`, `toggle-subtask`, `delete-task` (subtarea), `add-comment` y `start/pause/finish/cancel/unblock/duplicate/move-task`. Al finalizar, desestimar o eliminar queda un aviso con «Deshacer» (`manager.undo`). Su ⋯ suma «Abrir nota» (el editor de siempre) y no tiene «Copiar enlace»: un ticket no tiene dirección propia.
+- **Management** (`PhoneManagement`): la misma `ManagementView` de Rust con dos campos nuevos: `range.modes[].shortLabel` («Auto», «Sprints», «Q completo») y `criticalChain[]` (`CriticalStepDto {taskPath, letter, title, when, link, linkKind}`: la primera cadena crítica, con «C depende de B» o «Misma persona: X sigue con C»). El Gantt usa las posiciones de Rust con filas de 48 px y una columna fija de 112 px, y se desliza de costado. Las filas del rango se despliegan con ES, Dur., EF, LS, Holgura y LF del nodo CPM.
+- **Pomodoro**: el mismo `PomodoroPanel` bajo el título «Pomodoro», sin la ayuda de teclado.
+- **Archivo** (`PhoneArchive`): Completadas y Canceladas del tablero, búsqueda (`filterArchiveRows`), páginas de 20 y una hoja con prioridad, horas y período, «Recuperar a …» (`restore-tasks`) y «Eliminar definitivamente» (`delete-tasks`, con confirmación porque no se puede deshacer).
+- **Ajustes**: `BoardEditDialog` ya ocupaba la pantalla bajo 720 px; bajo 560 px sigue el board «Mobile · Editar tablero»: cerrar a la izquierda, «Guardar» en el encabezado, secciones como tarjetas, «Descartar» / «Guardar cambios» y, nuevo, «Eliminar tablero» (`onDelete`, con la confirmación de siempre; nunca para `default`).
+- **Fuera de alcance, a propósito.** El botón «Módulos de Munin» del lienzo es el menú de la app, que la app y la publicación ya tienen. Los filtros de estado, prioridad, proyecto y persona de escritorio no tienen controles en el teléfono: el teléfono solo aplica la búsqueda. Crear, editar y reordenar columnas sigue en escritorio. El lienzo dibuja cuatro prioridades; el teléfono ofrece las cinco, con «Atrasado».
+
+### Validaciones (2026-10-18)
+
+- `cargo test -p notia-backend-core`: 658 y la falla previa `image_generation::only_sexual_content_with_minors_is_refused`, ajena a este cambio; incluye `a_comment_says_when_it_was_written` y la cadena crítica en `the_table_offers_predecessors_and_marks_cycles`. `cargo test -p notia-app --features bluetooth`: 520. `cargo check` Android: 59 avisos, como antes. Vitest completo: 719 en 142 archivos.
+- Vitest: `TaskManagerPhone.test.tsx` (columna inicial y cambio, iniciar y prioridad desde la hoja, mover, detalle con comentarios y estimación, Ajustes solo con permiso, filtro «Mías»), `PublishedTopBar.test.tsx` (ruta, sincronización, explorador, asistente, cerrar sesión, publicación terminada) y `PublishedExplorer.test.tsx` («Ocultar explorador»). `tsc` y ESLint limpios.
+- Capturas en Chrome sin cabeza con transporte simulado: barra a 1440, 1000, 760 y 390 px; Tablero, Lista, Detalle, hojas, Management, Pomodoro, Archivo y Ajustes a 390 × 844, en tema oscuro y claro.
+- Pendiente: probar en un teléfono Android real (deslizamiento, teclado virtual en el detalle, hojas) y la publicación desde un teléfono con una sesión real (cerrar sesión, sincronizar).
+
+## Explorador: cadenas y notas sueltas en el mismo orden (2026-10-19)
+
+- **Por qué.** El curso `Cursos/programacion` (importado de GitBook) quedó encadenado entero con `nextPage`/`previousPage` en el orden de su índice, cruzando carpetas. En cada carpeta, la portada de un tema (antes `README.md`) y las notas cuyos vecinos están en otras carpetas no tienen hermanos enlazados: `sort_siblings` las trataba como sueltas y las mandaba al final, después de las cadenas.
+- **Cambio.** `library_tree::sort_siblings` ordena cadenas y notas sueltas juntas por el `createdAt` de su primera nota y después por nombre. Las carpetas siguen primero.
+- **Prueba.** `a_course_chained_across_folders_keeps_its_order_in_each_folder` (portada y última nota enlazadas solo a otras carpetas) y `folders_first_then_chains_and_single_notes_by_date` (antes `folders_first_then_page_chains_then_loose_notes`, con la nota suelta más antigua ahora primero).
+- **El curso.** Los 28 `README.md` se renombraron al título de su tema según `SUMMARY.md` (sin `?`, que Windows no permite); las 145 notas quedaron encadenadas (`SUMMARY.md` → … → `documentacion/manuales.md`; hermanos por nombre, otras carpetas por ruta de la biblioteca con `.md`), con `createdAt` creciente en ese orden y `SUMMARY.md` reescrito como índice de `[[ruta|Título]]`. El texto de cada nota no cambió (comparado byte a byte con una copia).
+
+## Contextos predeterminados `#Confidencial` y `#Publico` (2026-10-19)
+
+- **Pedido.** `#Confidencial` tiene que ser predeterminado y no poder borrarse; también un contexto nuevo `#Publico`, predeterminado y sin poder borrarse.
+- **Rust** (`backend-core/src/library_config.rs`). `DEFAULT_LIBRARY_CONTEXTS` suma `#Publico` (`#D97706`). `PROTECTED_CONTEXT_TAGS = ["#Confidencial", "#Publico"]` e `is_protected_context` (sin distinguir mayúsculas). `normalize_library_config`, que corre en cada lectura y escritura de `.notia/notiaConfig.json`, ahora llama `ensure_protected_contexts` también con `contextDefaultsVersion` vigente: si falta alguno de los dos (borrado o renombrado), lo agrega al final con su color. El color que tenga se respeta. Las bibliotecas existentes reciben `#Publico` en la próxima lectura, sin migración.
+- **Interfaz.** `isProtectedContext` en `libraryContexts.ts` (solo para la vista; Rust es quien los garantiza). En **Configuraciones → Contextos** esas filas muestran «Predeterminado», el nombre queda de solo lectura y el botón de eliminar deshabilitado; el color se puede cambiar. `DEFAULT_LIBRARY_CONTEXTS` de TypeScript suma `#Publico`.
+- **Pruebas.** `protected_contexts_survive_removal_and_renaming_and_keep_their_color` y `current_configs_keep_removed_default_contexts_removed_but_the_protected_ones` en Rust; `knows the contexts that cannot be removed` en Vitest.
+
+## Contexto por carpeta (2026-10-19)
+
+- **Pedido.** Con clic derecho en una carpeta se elige su contexto, que queda guardado. Toda nota creada o movida dentro tiene ese contexto obligatoriamente; una carpeta sin contexto deja libres a sus notas. El contexto se muestra a la derecha del nombre, como el formato de los archivos.
+- **Dónde se guarda.** `.notia/folderContexts.json` (`{"version":1,"folders":{"<ruta lógica>":"#Tag"}}`), sin cifrar y aparte de `notiaConfig.json`: la configuración está cifrada con la contraseña del Owner y el frontend la reescribe entera. Un archivo dañado o ilegible equivale a no tener asignaciones, así nunca bloquea una nota.
+- **Reglas** (`backend-core/src/folder_contexts.rs`). `FolderContexts::effective` da el contexto de la carpeta con asignación más cercana (sin distinguir mayúsculas); una subcarpeta con el suyo manda. Solo aplica a notas `.md` dentro de una carpeta. `folder_key` rechaza la raíz, segmentos vacíos, `.`/`..`, carpetas ocultas y `task-manager`/`task-mannager` (sus tickets llevan el contexto del tablero). `follow` mueve, copia o borra las asignaciones con la carpeta en renombrar, mover, copiar y eliminar. `mark_tree` completa `context` de los nodos carpeta del árbol. `markdown_editing::with_context` reemplaza o agrega `contexto` en el frontmatter (crea uno si no hay), no toca bóvedas ColdPass ni frontmatter mal formado y devuelve `None` si ya lo tiene.
+- **Aplicación** (`app/src/folder_contexts.rs`). Caché por biblioteca de 30 s, invalidada en cada escritura propia. Se fuerza el contexto en:
+  - guardado del editor y del tablero publicado (`library_write_document`): el contenido se corrige antes de escribir y la revisión devuelta es la del contenido escrito;
+  - apertura en el editor (`library_read_document` con `markdownDefaults`): si la nota no lo tiene, se escribe sobre la revisión leída y se devuelve el contenido nuevo;
+  - creación desde el explorador (`apply_entry_operation`, acción `create` de nota);
+  - herramientas del agente `create_library_note`, `replace_library_document` y aplicar previews (una o varias notas);
+  - nota de Meeting (`write_note_here`), con la revisión del contenido escrito.
+- **Operaciones del explorador.** `apply_entry_operation` lee del índice los archivos de la entrada antes de la operación (después se reindexa) y, si salió bien, actualiza las asignaciones y reescribe las notas que quedaron en una carpeta con contexto (`notes_to_stamp`), cada una sobre la revisión recién leída.
+- **Comando** `library_set_folder_context {libraryId, path, context|null} → {ok, error?, rewritten}`. Valida que el contexto exista en el catálogo de la biblioteca (y usa su escritura), guarda la asignación y reescribe las notas indexadas de la carpeta. Pasa por `registry.rs` (`COMMAND_NAMES` y la tabla de rutas); no está en `PUBLISHED_COMMANDS`, así que el tablero publicado no lo alcanza.
+- **Contexto bloqueado.** `LibraryDocumentReadDto` suma `lockedContextSource` (`board` o `folder`); el contexto del tablero tiene prioridad. Propiedades muestra el candado con «Lo define la carpeta» o «Lo define el tablero de tareas».
+- **Tablero publicado.** Su explorador muestra los contextos de carpeta. Un invitado solo crea o mueve notas a una carpeta con contexto si ese contexto es uno de los publicados (si no, Rust lo rechaza, porque la nota saldría de la publicación); al crear, la nota toma el contexto de la carpeta. El menú del invitado no ofrece cambiar el contexto de una carpeta.
+- **Interfaz.** `NotiaFileNode.context`; `FileTree` dibuja la insignia con el estilo de `.notia-tree-extension` (sin minúsculas forzadas, con elipsis). `reconcileTreeNodes` y `areTreeNodesEqual` comparan `context` para que el cambio llegue al árbol. El ítem «Contexto de la carpeta…» del menú de carpetas abre `FolderContextDialog` (opciones de 44 px, «Sin contexto», error del backend) y al guardar fuerza el refresco del árbol.
+- **Límites.** Las notas sin indexar todavía (creadas por fuera hace instantes) toman el contexto al abrirse o guardarse. El listado de una carpeta con más archivos que el límite del índice no se reescribe entero de una vez. Los archivos que no son `.md` no tienen frontmatter y no cambian.
+- **Pruebas.** Rust: 8 pruebas de `folder_contexts` (carpeta más cercana, carpetas rechazadas, cambios, archivo dañado, seguir renombrar/mover/copiar/eliminar, rutas movidas, notas a reescribir, árbol) y `a_note_takes_the_context_of_its_folder`. Vitest: `FolderContextDialog.test.tsx` (elección, «Sin contexto», error, cerrado) y la insignia del árbol.
+- **Validaciones.** `tsc -b` y ESLint sin errores; Vitest 724/724; `notia-backend-core` 669 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba antes; `notia-app --features bluetooth` 520/520; `cargo check` para `aarch64-linux-android` sin errores (59 advertencias, las mismas de antes).
+- **Pendiente.** Prueba manual en Windows y en Android (SAF): asignar, crear, mover entre carpetas con y sin contexto, renombrar la carpeta y ver la insignia en el tablero publicado.
+
+## Espacios públicos (2026-10-20)
+
+- **Pedido.** En Configuraciones, la opción «Publicar» permite agregar espacios públicos, cada uno en un puerto distinto y como instancia separada, con carpetas y notas que tengan el contexto «Publico». El diseño de la web es el de GitBook, con la estructura de `Cursos/programacion` como ejemplo. Al publicar una carpeta entera, el índice se arma solo.
+- **Reglas** (`backend-core/src/public_spaces/`):
+  - `mod.rs`: preferencias del dispositivo `publicSpaces` (`{spaces: [{id, name, libraryId, port, enabled, items: [{path, kind: folder|file}]}]}`, máx. 16 espacios y 200 elementos), `normalize_public_spaces` (las llama `device_preferences::normalize_device_preferences`), `publishable_path` (sin `.`/`..`, carpetas ocultas ni `task-manager`), `validate` (puertos repetidos o reservados), `free_port` e `in_items`. `PUBLIC_CONTEXT_TAG = "#Publico"`.
+  - `index.rs`: `build_index(items, pages) -> SpaceIndex { groups, order, trail }`. Una carpeta publicada aporta sus notas como primeras páginas y un grupo por subcarpeta. La portada de una carpeta es la nota cuyo nombre coincide (`comparable_name`: sin acentos, mayúsculas ni signos) o `README`/`index`. El orden de lectura sigue las cadenas `nextPage` (cabezas por `createdAt`) y los ciclos van al final. `slug` arma los ids de los títulos. Probado contra el curso real: las 143 entradas del `Indice.md` hecho a mano salen en el mismo orden.
+  - `render/`:
+    - `render_page(source, path, &dyn SpacePages) -> RenderedPage { title, description, html, outline }`.
+    - `parse_blocks` arma el árbol de etiquetas GitBook fuera del código cercado. Etiquetas desconocidas o sin cerrar quedan como texto. `embed`/`file`/`content-ref` sin cierre son etiquetas sueltas.
+    - `write_block` escribe hint, tabs, stepper, columns, updates, code, prompt, if (`condition_state`), embed, file, content-ref e include (máx. 3 niveles, sin entrar al índice de la página).
+    - `markdown.rs` recorre los eventos de `pulldown-cmark` (sin su feature `html`; `pulldown-cmark-escape` no está en el registro offline). Resuelve enlaces, wikilinks e imágenes solo hacia páginas y archivos publicados; el primer `#` es el título; `h2`/`h3` forman el índice de la página.
+    - `sanitize.rs` deja solo etiquetas y atributos de texto, tablas y `<details>` del HTML de una nota. Descarta `script`/`style`/`iframe` con su contenido, atributos `on*`, `style` y esquemas `javascript:`/`data:`.
+    - `links.rs` arma las URLs (`/ruta/de/la/nota` sin `.md`, `/files/...`) y resuelve rutas relativas.
+  - `search.rs`: todas las palabras deben aparecer, sin distinguir acentos ni mayúsculas; los títulos van primero y hay como mucho 20 resultados con un fragmento.
+  - `site.rs`: `Site::build(name, items, pages, files)` y las respuestas JSON `space_view`, `page_view`, `search_view` y `file_for_url`.
+- **App** (`app/src/public_spaces.rs` y `public_spaces/server.rs`):
+  - **Instantánea:** `Snapshot` por espacio. Lee del índice de la biblioteca los archivos de los elementos y deja solo las notas cuyo `contexto` propio, o el que impone su carpeta, es `#Publico`, más las imágenes. Se rehace si pasaron 10 s, si cambió la generación del índice o si cambió el espacio.
+  - **Servidores:** uno por espacio, cada uno con su `TcpListener` en `0.0.0.0:<puerto>`, su hilo, su bandera de parada, hasta 64 conexiones y 600 solicitudes por minuto por IP. Usan HTTP plano, solo `GET`.
+  - **Rutas:**
+    - `/assets/*` sirve `dist/` (de disco en debug, embebido en release).
+    - `/api/space`, `/api/page?path=` y `/api/search?q=` devuelven JSON.
+    - `/files/*` sirve imágenes publicadas con `Content-Security-Policy: sandbox`.
+    - Cualquier otra ruta sirve `public-space.html` con una CSP sin scripts de terceros ni en línea.
+  - **Arranque y detención:** `reconfigure` arranca, reinicia o detiene cada servidor según lo guardado. El plugin `public-spaces-autostart` lo corre 8 s después de abrir Notia, salvo en un cliente de un host.
+  - **Plataformas:** el servidor no existe en Android ni iOS, donde la vista devuelve `available: false`.
+- **Comandos** (registry: `COMMAND_NAMES` y rutas):
+  - `public_spaces_view` devuelve el estado de cada servidor, URL, páginas y si cada elemento sigue siendo `#Publico`.
+  - `public_spaces_save {spaces}` normaliza y valida. Rechaza puertos repetidos, el del host o el del tablero publicado, bibliotecas ausentes y elementos sin `#Publico`. Después guarda y reconfigura.
+  - `public_space_candidates {libraryId, items}` lista carpetas `#Publico` (por contexto de carpeta) y notas `#Publico`, sin lo que `items` ya publica (`is_covered`: el elemento mismo o lo que está dentro de una carpeta agregada). El selector lo vuelve a pedir cada vez que cambia el contenido del espacio, aunque no esté guardado. `normalize_items` descarta al guardar los elementos que quedan dentro de una carpeta del mismo espacio.
+  - `public_space_open {id}` abre el navegador.
+- **Interfaz:**
+  - **Web pública:** entrada Vite `public-space.html` → `src/publicSpace.tsx` → `modules/public-space/`.
+    - `PublicSpaceApp` maneja la ruta con `history`, el tema (con `localStorage` solo como preferencia del visitante), `Ctrl + K` y el menú lateral como cajón por debajo de 1024 px.
+    - Componentes: `SpaceSidebar`, `PageArticle`, `PageOutline` y `SearchDialog`.
+    - `articleEnhancer` solo agrega lo visual: pestañas, colores de código con `refractor` (más JSX/TSX), «Copiar», KaTeX y Mermaid.
+    - `publicSpace.css` usa la paleta del proyecto en ambos temas, con objetivos de 44 px para el dedo.
+    - `vite.config.ts` suma la entrada y separa React en `vendor-react`, así la web no descarga MUI ni los íconos.
+  - **Configuraciones:** `settings/PublicSpacesSection.tsx` dentro de «Publicar». Permite nombre, publicado, puerto, contenido con selector de candidatos, URL, estado, abrir, eliminar y «Guardar y publicar».
+- **Límites:**
+  - Sin HTTPS: el sitio es de lectura y para la red local.
+  - El sitio sirve también los demás archivos JS de `dist/assets` (solo código de la interfaz).
+  - Una nota recién creada aparece cuando la biblioteca se vuelve a indexar.
+  - Las condiciones de GitBook que dependen del lector no se muestran.
+- **Pruebas.**
+  - Rust: 22 en `public_spaces` (preferencias, índice con un curso reducido, render de bloques, enlaces y HTML filtrado, búsqueda y sitio), más la prueba ignorada `writes_a_library_folder_for_the_preview`, que genera el JSON de una carpeta real para la vista previa.
+  - Vitest: `PublicSpaceApp.test.tsx` (primera página, anterior/siguiente, índice, página no publicada, búsqueda) y `PublicSpacesSection.test.tsx` (agregar y guardar, error del backend).
+  - Vista previa con Chrome headless sobre el curso real: escritorio oscuro y claro, teléfono a 390 px, menú lateral y búsqueda.
+- **Validaciones.** `tsc -b` y ESLint sin errores; Vitest 729/729; `notia-backend-core` 690 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba; `notia-app --features bluetooth` 520/520; `cargo check` para `aarch64-linux-android` con las mismas 59 advertencias de antes; `vite build` genera `public-space.html` sin scripts en línea.
+- **Pendiente.** Prueba manual en Windows con la app: crear dos espacios en puertos distintos, abrirlos desde otro equipo y comprobar que quitar `#Publico` saca la nota del sitio.
+
+## Editor: cambios externos combinados en vez de conflicto (2026-10-20)
+
+- **Problema.** Después de que el agente cambiara la nota abierta, seguir escribiendo terminaba en «No se pudo guardar: la nota cambió fuera del editor…». El guardado mandaba la revisión vieja y el backend lo rechazaba. Además, `persistOpenTabBeforeClose` exigía guardar para cerrar, así que la pestaña quedaba trabada. La recarga por `notia://library-documents-changed` también reemplazaba el editor entero, perdiendo lo escrito y todavía no guardado.
+- **Combinación** (`backend-core/src/text_merge.rs`). `merge_texts(base, mine, theirs) -> Merged { content, conflicts }` hace una combinación de tres vías por líneas. Usa LCS con recorte de prefijo y sufijo comunes, con un tope de 4M celdas; más allá, el medio cuenta como cambiado entero. Los cambios en lugares distintos se aplican los dos y uno idéntico se escribe una vez. Si los dos cambiaron las mismas líneas de forma distinta, quedan ambas versiones (la del editor primero) y se cuenta como conflicto. Nunca se pierde texto.
+- **Guardado.**
+  - `library_write_document` (registry) llama ahora a `library_session::library_save_document`.
+  - Con `baseContent`, que es el texto que el editor leyó o guardó por última vez, un conflicto de revisión no se rechaza. Rust lee el archivo, combina, aplica el contexto de carpeta y escribe sobre la revisión leída, con hasta 3 intentos.
+  - Responde `content` (lo escrito, si no es lo enviado) y `mergeConflicts`. Sin `baseContent` el comportamiento es el de antes.
+  - `LibraryDocumentPayload.base_content` es opcional y los demás llamadores no cambian.
+- **Interfaz.**
+  - `useTabManager.persistTextDocumentSource` manda `baseContent` junto con `expectedRevision`. Con `content` en la respuesta, vacía lo pendiente del editor y, si la pestaña sigue igual, muestra lo combinado con `onMergedSource`, que es la actualización externa del editor (`handleActiveMarkdownDocumentChanged`).
+  - Si se siguió escribiendo, no toca el estado guardado: el próximo guardado combina otra vez desde la misma base.
+  - Con `mergeConflicts > 0` avisa que quedaron las dos versiones.
+  - `reloadAgentChangedDocuments` vacía lo pendiente del editor. Si la pestaña tiene texto sin guardar, la guarda (y así se combina) en vez de reemplazarla.
+  - `closeTabByPath` pregunta «Cerrar sin guardar» con `confirmDiscard` cuando el guardado falla.
+- **Pendiente.** El editor de notas del tablero publicado (`usePublishedTicketTabs`) sigue mostrando «cambió en otra sesión» ante un conflicto: no recibe actualizaciones externas. Falta también la prueba manual con el agente editando mientras se escribe.
+- **Pruebas.**
+  - Rust: 5 en `text_merge`: lugares distintos, el agente agrega al final, cambio idéntico, misma línea con las dos versiones, borrado y líneas sin salto final.
+  - Vitest: `useTabManager.test.tsx` cubre que se manda la base y se muestra lo combinado, y que una nota que no se puede guardar no traba la pestaña.
+- **Validaciones.** `tsc -b` y ESLint sin errores; Vitest 731/731; `notia-backend-core` 696 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba; `notia-app` 520/520; Android con las mismas 59 advertencias.
+
+## Espacios públicos: propiedad `publicado` (2026-10-20)
+
+- **Pedido.** Los `.md` de una carpeta publicada en un espacio público tienen la propiedad `publicado`, `true` o `false`. Con `true` la nota aparece en la wiki; con `false`, no.
+- **Reglas** (`backend-core`):
+  - `public_spaces::PUBLISHED_PROPERTY = "publicado"`.
+  - `is_unpublished(source)` es verdadero con `false`, `no` o `0`; una nota sin la propiedad se muestra.
+  - `with_published_property` agrega `publicado: true` solo si falta (`markdown_editing::with_missing_property`, que no toca ColdPass ni frontmatter mal formado).
+  - `in_published_folder(spaces, library_id, path)` dice si la nota está en una carpeta de un espacio habilitado de esa biblioteca. Las notas agregadas sueltas no reciben la propiedad, pero también respetan un `false`.
+  - `Site::build` deja fuera las notas con `publicado: false`, que así no aparecen en el índice, la búsqueda, anterior/siguiente ni como destino de enlaces.
+- **Imposición** (`app/src/folder_contexts.rs`). `enforced` aplica ahora las dos reglas de la carpeta: el contexto de carpeta y `publicado` en una carpeta publicada (`public_spaces::in_published_folder` lee los espacios del dispositivo). Corre en los mismos lugares que el contexto de carpeta: guardado del editor y del tablero publicado, apertura en el editor, herramientas del agente, nota de Meeting, creación y movimiento desde el explorador.
+- **Notas existentes.** `stamp(paths)` reescribe cada nota con `enforced`, sobre la revisión leída. Lo usan:
+  - al guardar los espacios (`stamp_published_folders`);
+  - al arrancar, después de levantar los servidores;
+  - al asignar un contexto de carpeta;
+  - al mover o copiar, y al crear desde el explorador.
+  Se quitó `folder_contexts::notes_to_stamp` del núcleo, que quedó sin uso.
+- **Interfaz.** No cambia: `publicado: true` sin comillas es booleano y el panel de Propiedades lo muestra como casilla.
+- **Pruebas.** Rust: `notes_of_a_published_folder_carry_publicado`, `a_note_with_publicado_false_is_left_out` y `a_missing_property_is_added_and_an_existing_one_kept`.
+- **Validaciones.** `notia-backend-core` 698 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba; `notia-app` 520/520; Android con las mismas 59 advertencias. Sin cambios en TypeScript.
+- **Pendiente.** Prueba manual: destildar `publicado` en una nota del curso y ver que desaparece del sitio en unos segundos.
+
+
+## Mermaid: paleta de tema unificada y diagramas del sitio publicado (2026-10-20)
+
+- **Problema.** En la vista previa de un bloque `mermaid` dentro del editor Markdown los colores se veían mal: en el tema oscuro, reglas CSS forzadas con `!important` en `src/styles/notia.css` (`.notia-markdown-editor-root .milkdown svg …`) pintaban todo el texto del SVG con `--color-app-text` (claro) sobre las notas amarillas de Mermaid (`#fff5ad`), dejándolo casi invisible, y forzaban el relleno de los nodos ignorando las variables de tema. Además, la tabla de variables cubría solo flujo y nodos; Mermaid fija por su cuenta las notas de secuencia (amarillo), la grilla y tareas hechas del Gantt (grises, `red`, `navy`) y deriva los colores de pie y git del color primario, que en oscuro es azul marino. En la wiki publicada el diagrama a veces se veía como código: una página abierta antes de reconstruir el sitio no podía cargar el *chunk* de Mermaid renombrado y el render quedaba sin hacerse.
+- **Paleta única** (`src/modules/mermaid/engines/mermaidTheme.ts`). `buildMermaidThemeVariables(appTheme)` devuelve las `themeVariables` del tema `base` de Mermaid con la paleta del proyecto para los dos temas (`dark` o, para cualquier otro valor, claro). Cubre el trío primario/secundario/terciario y además las variables que Mermaid fija a mano: notas (`noteBkgColor`/`noteTextColor`/`noteBorderColor`), activaciones y número de secuencia; grilla, sección alterna, tareas hechas y críticas, línea de hoy y vertical del Gantt; trazos y textos del pie; etiquetas de commit y tag del git. Las series de `pie1..12` y `git0..7` se pintan con los acentos de la paleta (teal, periwinkle, ámbar, salvia, violeta, rosa, coral, oro, slate…) y sus etiquetas con un color de contraste.
+- **Motor** (`mermaidEngine.ts`). Se quitó la tabla de variables incrustada y la interfaz `MermaidThemeVariables`; el motor importa `buildMermaidThemeVariables` de `mermaidTheme.ts`. Lo usan el editor de `.mmd`, la vista previa dentro de las notas y la exportación de notas, así que comparten exactamente los mismos colores.
+- **CSS del editor** (`src/styles/notia.css`). Se eliminó el bloque «Mermaid SVG inside Milkdown code-block previews» (textos, nodos, aristas y cajas con `fill`/`stroke` `!important`). Los colores los decide ahora Mermaid con las `themeVariables`. Las reglas `!important` que quedan en `mermaid.css` son solo de la interacción del editor (`.mermaid-anchor`, `.mermaid-node--selected`, `.mermaid-edge-selected`, `.mermaid-connection-line`), que no existe en las vistas de solo lectura.
+- **Reacción al tema** (`useMermaidLazyRender.ts`). El render perezoso recordaba con `hasRenderedRef` que ya había dibujado y no volvía a hacerlo al cambiar el tema. Ahora guarda en `renderedKeyRef` una clave de `[theme, config, code]`; si cambia (por ejemplo, al alternar claro/oscuro), aborta el render anterior y dibuja de nuevo.
+- **Sitio publicado** (`src/modules/public-space/services/articleEnhancer.ts`).
+  - `renderDiagrams` inicializa Mermaid con `theme: 'base'` y `buildMermaidThemeVariables`, así el diagrama del sitio usa la misma paleta.
+  - Cada diagrama se dibuja como `.ps-diagram` guardando su código en `data-source` y el tema en `data-renderedTheme`. Al volver a aplicar los retoques con otro tema (al alternar), se redibuja en el lugar; si el tema coincide, se omite.
+  - El render de Mermaid no es seguro en paralelo (usa estado global) y React StrictMode monta dos veces, así que todos los dibujos pasan por una sola cadena de promesas (`diagramChain`). La segunda llamada encuentra los diagramas ya dibujados para ese tema y no hace nada.
+  - Si el visor de Mermaid no se puede importar (un sitio reconstruido renombra sus archivos, o se cae la red), el bloque conserva su código y muestra el motivo encima (`.ps-diagram-error` con `data-error`, estilado en `publicSpace.css`). Los retoques se aplican con `Promise.allSettled`, así que si uno falla los demás siguen.
+  - `highlightCode`, `renderMath` y `wireTabs` marcan lo ya procesado (`data-highlighted`, `data-rendered`, `data-wired`) para no repetir trabajo al redibujar los diagramas por un cambio de tema.
+- **Recarga ante un *bundle* viejo** (`src/publicSpace.tsx`). Un `vite:preloadError` (un *chunk* que ya no existe porque el sitio se reconstruyó) recarga la página una sola vez; una segunda falla en los 30 s siguientes ya no recarga y se muestra el código. Evita el bucle de recargas y hace que una pestaña abierta durante una reconstrucción tome la versión nueva.
+- **Pruebas.**
+  - Vitest: `mermaidTheme.test.ts` (notas con la paleta y no el amarillo, acentos de pie/git con etiquetas legibles, grises del Gantt reemplazados, cualquier tema distinto de `dark` es claro); `useMermaidLazyRender.test.tsx` (dibuja al hacerse visible y vuelve a dibujar solo al cambiar el tema); `articleEnhancer.test.ts` (dibuja con la paleta y conserva el código para el otro tema, código visible con el motivo cuando Mermaid falla o el visor no carga, fórmulas una sola vez).
+  - Vista previa con Chrome headless: los ocho tipos de diagrama en claro y oscuro con el motor real; la vista previa dentro del editor (cadena de clases `.notia-app-shell .notia-markdown-editor-root .milkdown .notia-mermaid-inline-host` con las hojas de estilo reales) con texto legible en los dos temas; y la wiki publicada real (dibuja en la primera carga oscura, redibuja al pasar a claro, y con el *chunk* bloqueado recarga una vez y deja el código).
+- **Validaciones.** `tsc -b` sin errores; ESLint sin errores en los archivos tocados (quedan 4 errores preexistentes en `MeetingCompletedPanel.tsx`, `useMeetingAiContext.ts`, `MermaidCodePane.tsx` y `MermaidStage.tsx`, ajenos a este cambio); Vitest 739/739.
+- **Pendiente.** Prueba manual en la app: abrir una nota con un bloque `mermaid` y alternar el tema; abrir la wiki publicada desde otro equipo y alternar su tema.
+
+## Espacios públicos: los renders del editor, solo para leer (2026-10-20)
+
+- **Pedido.** La wiki publicada mostraba los bloques de código sin marco ni colores (captura de `char/string`) y debía mostrar todo lo que el editor Markdown (Milkdown) renderiza, solo para leer.
+- **Diagnóstico.** Con el `dist/` vigente y una carga limpia el marco y los colores sí aparecían: los ponía `articleEnhancer.addCodeChrome` en el navegador, así que cualquier falla de JavaScript (por ejemplo, una página abierta mientras el build de Android reescribía `dist/`) dejaba el código sin marco. Además el bloque no igualaba al del editor (sin números de línea ni «Ajustar»), y faltaban LaTeX en bloque, XGraph, notas al pie, bloques en celdas de tabla, las casillas de tareas del editor, el color `violet` y el resaltado como fondo.
+- **Inventario del editor y estado en la wiki.**
+
+| Render del editor | Cómo se guarda | En la wiki |
+|---|---|---|
+| Bloque de código (CodeMirror) | fence con lenguaje | Rust escribe el marco: chip de lenguaje, «Números» (activo), «Ajustar», «Copiar» y una fila por línea; el navegador colorea y hace funcionar los botones |
+| Fórmula en bloque | fence `latex`/`math`/`tex`, `$$` | KaTeX |
+| Fórmula en línea | `$…$` | KaTeX |
+| Mermaid | fence `mermaid` | SVG con la paleta, se redibuja con el tema |
+| XGraph (JSXGraph) | fence `xgraph`/`jsxgraph` | tablero en un marco aislado, mismo `createXGraphDocument` que el editor |
+| Tareas | `- [x]` | casillas SVG del editor; la hecha, tachada |
+| Notas al pie | `[^x]` y `[^x]: …` | referencia en teal y definiciones al pie |
+| Subrayado, color, resaltado, alineación | `<u>`, `<span data-color>`, `<mark data-color>`, `<div align>` | mismos colores que el editor (`--ps-gold` para amarillo) |
+| Bloques en celdas | `<!--notia-table-block:…-->` (JSON de ProseMirror) | Rust los convierte a HTML |
+| Wikilinks, imágenes, bloques GitBook, tablas | — | ya existían |
+| Emoji `:código:` | el editor guarda el carácter | se ve el carácter; los `:código:` sueltos quedan como texto |
+| Escritura a mano | `.notia/ink/`, fuera del `.md` | no se publica |
+
+- **Rust** (`backend-core/src/public_spaces/render/`):
+  - `code.rs` (nuevo): `code_block(language, text, CodeView)` decide cada fence. `mermaid` → `pre.ps-mermaid`; `latex`/`math`/`tex` → `div.ps-math.ps-math-display`; `xgraph`/`jsxgraph` → `div.ps-xgraph > pre.ps-xgraph-source` (más de 100.000 caracteres → aviso, como el editor); el resto → `div.ps-code-block[data-numbers][data-wrap]` con la barra y `<span class="ps-line">` por línea. `CodeView` arranca con números y sin ajuste; un `{% code %}` lo cambia con `lineNumbers="false"` y `overflow="wrap"` (`PageContext.code_view`). `task_marker(checked)` escribe la casilla.
+  - `table_blocks.rs` (nuevo): `marker_node` decodifica el comentario (URI, JSON, máx. 500.000 caracteres) y `write_node` escribe párrafos, títulos, citas, código (por `code_block`), listas con tareas, imágenes, `math_inline`, HTML filtrado y las marcas (`strong`, `emphasis`, `inlineCode`, `strike_through`, `link`, `notia_underline`, `notia_text_color`, `notia_highlight`), con wikilinks resueltos y profundidad máxima 32. Un marcador inválido no muestra nada.
+  - `markdown.rs`: `ENABLE_FOOTNOTES`; las definiciones son `div.ps-footnote#fn-<id>` y las referencias `sup.ps-footnote-ref`. Los bloques GitBook cortan la nota en trozos, así que `PageContext.footnotes` (todas las etiquetas de la página) agrega a cada trozo una definición marcadora para las que viven en otro trozo, y esa definición no se escribe. Los comentarios de celda pasan por `table_blocks` antes que por `sanitize`.
+- **Servidor** (`app/src/public_spaces/server.rs`): `/xgraph-frame` sirve `public-space-xgraph.html` con su propia CSP (`script-src 'self' 'unsafe-inline' 'unsafe-eval'`, `connect-src 'none'`, `frame-ancestors 'self'`). `/assets/*` agrega `Access-Control-Allow-Origin: *`, porque el marco no tiene origen y carga los módulos como otro origen; son los mismos archivos públicos de siempre. La página principal mantiene su CSP sin `unsafe-eval`.
+- **Frontend**:
+  - `public-space-xgraph.html` + `src/publicSpaceXGraph.ts` (entrada nueva de Vite): avisa `notia-xgraph-ready`, recibe `{code, theme}` del padre y escribe con `document.write` el documento de `createXGraphDocument` (su CSP con nonce y la URL absoluta de `jsxgraphcore.js`). El nonce sale de `crypto.getRandomValues`, porque el sitio es HTTP y `randomUUID` exige contexto seguro.
+  - `articleEnhancer.ts`: ya no arma el marco del código. `highlightCode` colorea con refractor el texto de las líneas y `splitHastLines` reparte los tokens por fila (un comentario de varias líneas se repite en cada una). Un solo listener por artículo maneja «Números», «Ajustar» y «Copiar»; copiar usa `navigator.clipboard` en contexto seguro y si no un `textarea` con `execCommand('copy')`, que antes no copiaba en la red local. `renderBoards` crea `iframe.ps-xgraph-frame[sandbox=allow-scripts]` hacia `/xgraph-frame`, responde al `ready` del marco que corresponde y vuelve a crear el marco al cambiar el tema, con colores tomados de `--ps-*`. Mermaid y KaTeX no cambian.
+  - `publicSpace.css`: bloque de código igual al del editor (pozo más oscuro, números con contador CSS, `pre-wrap` al ajustar, botones de 44 px con puntero grueso), XGraph, tareas, notas al pie, colores y resaltado con `--ps-rich` y el token `--ps-gold` (`#D9B44A` / `#B08900`).
+- **Límites.** Los `:código:` de emoji que no pasaron por el editor quedan como texto. La escritura a mano no se publica. Los diagramas no tienen el zoom ni la exportación del editor: la wiki es solo para leer.
+- **Hallazgo.** En `Facultad/Algebra/Teoria/Vectores-en-el-plano.md`, el primer bloque XGraph usa `board.create('axis', [-1, 0, 6, 0])` y `board.create('arrow', [0, 0, 3, 1])`. JSXGraph 1.13 rechaza esos parámetros (pide puntos), así que ese bloque muestra «No se pudo completar el gráfico» tanto en el editor como en la wiki.
+- **Pruebas.**
+  - Rust: 5 en `code.rs` (marco y líneas, sin lenguaje y escape, diagramas y fórmulas, tareas, lenguaje del fence) y 5 en `render` (marco y LaTeX, `{% code %}`, tareas y notas al pie, nota al pie después de un bloque GitBook, bloques en celdas con marcador roto).
+  - Vitest: `articleEnhancer.test.ts` suma `splitHastLines`, coloreado por línea, botones y copia sin contexto seguro, y el marco XGraph (sandbox, mensaje `ready` del marco correcto, otro marco al cambiar el tema).
+  - Chrome headless contra un servidor que imita al de Rust (mismas rutas, CSP y CORS, `dist/` real, JSON de `writes_a_library_folder_for_the_preview`): una nota con todos los renders en oscuro y claro a 1200 px y 390 px, sin desborde horizontal, el tablero XGraph dibujado con la paleta y sin error dentro del marco, y `char/string` del curso real.
+- **Validaciones.** `tsc -b` sin errores; ESLint sin errores en lo tocado (siguen los 4 preexistentes de `MeetingCompletedPanel.tsx`, `useMeetingAiContext.ts`, `MermaidCodePane.tsx` y `MermaidStage.tsx`); Vitest 743/743; `notia-backend-core` 708 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba; `notia-app --features bluetooth` 520/520; `cargo check` para `aarch64-linux-android` con las mismas 59 advertencias; `vite build` genera `public-space-xgraph.html`.
+- **Pendiente.** Prueba manual con la app: abrir el espacio publicado desde otro equipo, una página con XGraph y una con código, y probar «Copiar» por HTTP en la red local.
+
+## Telegram: prompt conversacional elegido por la primera llamada (2026-10-21)
+
+- **Pedido.** Cuando la persona escribe por Telegram algo personal («Me llegó la heladera 😭😭 estoy muy feliz…»), el agente respondía como asistente («Una sola cosa, cuando puedas: ¿qué vas a cenar hoy?… Te la puedo cargar en Salud»). La primera llamada debe poder elegir entre el prompt default y un segundo prompt default conversacional: un agente simpático, preguntón y buena onda.
+- **Prompt conversacional** (`backend-core/src/defaults/agent_prompt_conversation.md`, `prompt::CONVERSATION_AGENT_PROMPT`): se alegra o acompaña primero, hace una o dos preguntas abiertas sobre lo que contó, usa memoria, biografía y personas para que la charla sea personal, escribe como en un chat (sin listas ni cierres de asistente) y no convierte la charla en trabajo: no ofrece cargar datos ni recuerda pendientes salvo pedido o urgencia. Si aparece un pedido concreto, lo hace y vuelve a la charla. Ante angustia fuerte prioriza el bienestar y sugiere ayuda. Mantiene lo de honestidad, datos no confiables, secretos y prompts personalizados del default.
+- **Elección.** La llamada del router (`tool_routing`) ya elegía áreas y `thinking`. `with_prompt_choice(system)` le agrega la clave `"prompt": "asistente" | "conversacion"`, con la regla de que contar algo y además pedir una acción es `asistente`. `RouterDecision.conversational` lee `conversacion…` como `Some(true)`, `asistente` como `Some(false)` y cualquier otro valor como `None`.
+- **Solo Telegram.** `route_turn_areas` (`app/src/backend_runtime.rs`) ofrece la elección cuando el canal es Telegram, el turno no es autónomo y no es una acción de IA. Devuelve `RoutedTurn { areas, thinking, conversational }`. El chat de la app no cambia.
+- **Aplicación.** `AgentRequest.conversational` (bool; se omite al serializar cuando es `false`) queda guardado en el journal, así que un turno reanudado lo conserva. `compose_request_system_prompt` usa `base_agent_prompt(request.conversational)` como base. El prompt personalizado elegido, las reglas, la memoria, la biografía, `talk.md`, las personas, las habilidades, las herramientas de las áreas y las confirmaciones siguen igual.
+- **Sin archivo visible.** No hay `.agent/promps/conversacional.md`: los archivos de esa carpeta son prompts elegibles y agentes del Chat IA, y el conversacional es una base embebida como el default.
+- **Lectura del router más robusta.** Algunos modelos escriben su razonamiento en la respuesta, con llaves, y la cierran con `</think>`. `router_json` toma lo que viene después de `</think>`, y si el tramo entero no se lee, el último objeto JSON. Antes esas respuestas caían a las palabras: áreas por fallback, `thinking` y prompt por defecto.
+- **Prueba con modelos reales.** Se usó el prompt real del router, volcado por una prueba temporal ya quitada, sobre 24 mensajes: 12 de charla y 12 de pedido, la mitad escritos después de la regla.
+  - `glm-5.3-flash:cloud`: 24/24, con la lectura nueva (9 respuestas no se leían con la anterior).
+  - `qwen3.5:4b`: 23/24; eligió charla para «estoy contento! recordame mañana llamar a Juan», aunque con el área agenda.
+  - Con memoria de ejemplo y el mensaje de la heladera, el prompt conversacional respondió alegrándose y preguntando («¿ya la llenaron con todo…?»), sin ofrecer cargar datos.
+  - `deepseek-v4-flash:cloud`, presente en el Ollama local, fue retirado el 2026-09-25 y responde error.
+- **Pruebas.** Rust: `a_telegram_turn_also_picks_the_default_prompt`, `an_answer_with_the_reasoning_written_before_it_still_reads` (router) y `the_conversational_base_replaces_only_the_default_prompt` (prompt).
+- **Validaciones.** `notia-backend-core` 711 pasan y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba; `notia-app --features bluetooth` 520/520; `cargo check` para `aarch64-linux-android` con las mismas 59 advertencias. Sin cambios en TypeScript.
+- **Pendiente.** Prueba manual por Telegram con el modelo configurado: un mensaje personal, uno con pedido y uno mixto, y revisar el log `[notia:router] … prompt conversacional|default`.
+
+## Mermaid: bloques `rect` coloreados que se leen en los dos temas (2026-10-21)
+
+- **Problema.** Un diagrama de secuencia con `rect rgb(238, 245, 255)` (colores pálidos pensados para una página blanca) se veía mal en tema oscuro: el tema pinta los textos de mensajes y etiquetas en claro (`#edf0f5`), y sobre esos fondos pálidos quedaban invisibles.
+- **Arreglo** (`src/modules/mermaid/engines/mermaidTheme.ts`):
+  - `adaptBlockColour(colour, dark)` lee colores hex, `rgb()` y `rgba()`. En tema oscuro, un color claro (luminosidad HSL > 0,55) pasa al mismo tono con saturación hasta 0,28 y luminosidad 0,18. En tema claro, un color oscuro (< 0,4) pasa al mismo tono con saturación hasta 0,6 y luminosidad 0,93. Respeta el alfa. Los colores que ya sirven al tema y los nombres de color (`aqua`) no cambian.
+  - `adaptBlockColours(svg, dark)` cambia solo el `fill` de los `<rect class="rect">`, que son los fondos que Mermaid dibuja para `rect` (`drawBackgroundRect`); notas, actores y cajas `alt`/`loop` no se tocan.
+- **Dónde se aplica.** `renderMermaid` lo aplica a todo SVG en tema `dark` o `mermaid-dark`: editor `.mmd`, vista previa dentro de las notas y exportaciones (que usan tema claro y por eso no cambian los pálidos). `articleEnhancer.drawDiagrams` lo aplica en la wiki publicada, también al redibujar por cambio de tema.
+- **Por qué no opacidad.** Bajar la opacidad del bloque deja los tres pálidos casi iguales sobre el fondo oscuro y se pierde la diferencia de fases que el autor quiso marcar. El mismo tono oscuro la conserva (azul, verde, naranja).
+- **Pruebas.** Vitest: `mermaidTheme.test.ts` (claro a oscuro conservando el tono, alfa, `#fff`, colores que no cambian, nombres de color, y que solo cambia `rect.rect` y no una nota).
+- **Verificación visual.** Chrome headless con el diagrama de la consulta de tarjetas que mandó el usuario, en la cadena de clases del editor con las hojas reales, en oscuro y claro: todos los mensajes, números y etiquetas `alt` legibles y las tres fases con su tono.
+- **Validaciones.** `tsc -b` y ESLint sin errores en lo tocado; Vitest 745/745; `vite build` actualizó `dist/`.
+
+## Chat IA: «Toda la librería» guardada y ediciones Markdown sin devolver el preview (2026-10-25)
+
+- **Pedido.** En un chat con la carpeta `programacion` como contexto, el agente tenía que reordenar el índice de un curso y poner `nextPage`/`previousPage` en unos 140 documentos. Falló así:
+  - «El documento no pertenece a la biblioteca autorizada»;
+  - después, cada `apply_multi_document_markdown_edit` respondía «El preview multi-documento no es válido», aunque el preview se había generado bien;
+  - el camino de un documento funcionaba, pero cada campo costaba un preview y un apply con la nota entera, así que quedó a medias.
+  - Aparte, la persona encendía «Toda la librería», mandaba un mensaje, y el interruptor volvía a quedar apagado.
+- **Causa del interruptor.** `ai_chat` guarda el turno con `chat_history::append_turn` cuando el título no cambia. `append_last_messages` agregaba los mensajes y conservaba el encabezado viejo del archivo. Por eso `libraryRag`, `selectedContextFiles`, `selectedContextFolders`, `selectedContextMode` y `contextScopeKey`, que `apply_turn_context` cambia en memoria, nunca llegaban al disco. Al volver a leer el chat, el interruptor mostraba el valor anterior. **Arreglo:** el encabezado se rearma con `chat_header`, que ahora usa también `serialize_chat_document`. Parte de lo que tiene el archivo, porque el panel de contexto pudo cambiar herramientas, escritura o contexto permanente durante el turno, y le suma el contexto del turno.
+- **Causa del apply.** `apply_markdown_edit` y `apply_multi_document_markdown_edit` pedían «el objeto exacto devuelto» por el preview: el texto viejo y el nuevo de cada documento, anchors con `fingerprint` y bytes. El modelo nunca lo copia igual, y con varios documentos no entra en una respuesta. **Contrato nuevo:**
+  - `apply_markdown_edit` recibe lo mismo que `preview_markdown_edit`: `path`, `operation`, `expectedRevision` opcional y `selectedHunkIds`.
+  - `apply_multi_document_markdown_edit` recibe lo mismo que `preview_multi_document_markdown_edit`: `edits[{path, operation, expectedRevision?}]` y `selectedHunkIds`.
+  - Rust recalcula el preview sobre el documento actual (`TauriBackendToolExecutor::markdown_preview` / `multi_markdown_preview`). El cálculo es determinista y los ids de los hunks dependen de la ruta, el anchor y el texto nuevo, no del id de la llamada, así que coinciden con los de la confirmación.
+  - Se quitó el argumento `preview`.
+- **Preview compacto.** Los dos previews devuelven al modelo solo `path`, `expectedRevision` y `hunks[{id, startLine, endLine, oldText, newText}]`. El multi-documento lo devuelve dentro de `documents`. Ya no se devuelven `oldContent`, `newContent`, anchors ni `documentId`. El preview pasa a ser opcional: la confirmación visible ya muestra el diff.
+- **Revisión confirmada.** `execute_confirmed` escribe en la llamada la `expectedRevision` de cada documento que mostró la confirmación (`with_confirmed_revisions`, por edit en el multi-documento). Si un documento cambia mientras la persona decide, el apply responde `conflict` y no escribe nada. Una `expectedRevision` del modelo que no coincide también da `conflict`.
+- **Varias operaciones por documento** (`markdown_editing::preview_multi_document_markdown_edit`). Antes, repetir una ruta daba «repite una ruta», así que `nextPage` y `previousPage` de la misma nota no entraban en una llamada.
+  - Ahora las operaciones de una ruta se encadenan en el orden dado (`preview_chained_edits`).
+  - Una sola operación conserva su hunk semántico. Varias dejan un hunk `document` con el tramo del texto original que cambió (`changed_span`, en límites de carácter).
+  - Límites: `MAX_MULTI_DOCUMENT_EDITS` = 60 operaciones y `MAX_MULTI_DOCUMENT_DOCUMENTS` = 20 documentos (antes 20 y 20). Si hay más documentos, el error pide dividir en tandas.
+  - Se quitó `MAX_MULTI_DOCUMENT_APPLY` del runtime, que duplicaba el límite.
+- **`documentId` con la ruta sola** (`library_document_adapter::path_from_document_id`). Las búsquedas devuelven `biblioteca:ruta`, pero el preview Markdown nombraba el documento con la ruta sola, y el modelo la reutilizaba como `documentId`. Ahora una ruta sin `:` se acepta como ruta lógica de la biblioteca: una ruta lógica nunca tiene `:`, y después se busca en el inventario de esa biblioteca. Un id con el prefijo de otra biblioteca sigue dando `forbidden`.
+- **Guía del agente** (`prompt_guidance`): usar el apply con la ruta y la operación, encadenar operaciones de una nota y seguir en tandas hasta terminar. Los esquemas de `tool_schemas.json` describen el contrato nuevo.
+- **Pruebas.**
+  - Rust, núcleo: `an_appended_turn_keeps_the_library_search_and_context_of_the_composer`, `multi_document_edits_of_the_same_document_run_in_order` y `changed_span_keeps_the_common_prefix_and_suffix_on_char_boundaries`.
+  - Rust, app: `a_document_id_is_a_prefixed_or_bare_path_of_the_library` y `the_agent_sets_several_properties_of_several_documents_in_one_apply` (confirmación, documento cambiado durante la confirmación, encadenado).
+  - Se actualizó `the_agent_fixes_a_sentence_of_a_note_from_telegram`: preview compacto, apply con los mismos argumentos y revisión vieja que da `conflict`.
+- **Validaciones.**
+  - `notia-backend-core`: 714 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 520/520, 11 ignoradas, sin warnings nuevos en lo tocado.
+  - `cargo check` Android (`aarch64-linux-android`): compila con 59 warnings, los mismos que la línea base.
+  - No hubo cambios en TypeScript.
+- **Pendiente.**
+  - Prueba manual en la app, en Windows y Android, con el modelo configurado: el mismo pedido de encadenar un curso con confirmación «todo», y que el diff de la confirmación muestre cada documento.
+  - Encender «Toda la librería», mandar un mensaje, cambiar de chat y volver: el interruptor tiene que seguir encendido.
+  - El interruptor se guarda al mandar un mensaje, no al tocarlo: si se toca y se cambia de chat sin escribir, el cambio se pierde, como antes.
+
+## Agente: registro de automejora `improve.md` (2026-10-25)
+
+- **Pedido.** Un archivo `.agent/memory/improve.md` que la IA llene sola cuando detecta errores, herramientas que le faltan o cosas de Notia a mejorar, y que **no** se agregue a su contexto.
+- **Archivo** (`backend-core/src/agent_workspace.rs`):
+  - `IMPROVE_PATH`, marcador `NOTIA_AGENT_IMPROVE_VERSION:1`, título «Mejoras para Notia» y una línea por entrada: `AAAA-MM-DD HH:MM · tipo · descripción`.
+  - `ImprovementKind`: `error` (una herramienta falló o respondió mal sin culpa del pedido), `herramienta` (falta una) y `mejora`. `ImprovementKind::parse` lee también sinónimos; lo desconocido es `mejora`.
+  - `improvement_entry` colapsa los espacios y admite hasta `MAX_IMPROVEMENT_CHARS` = 800 caracteres.
+  - `with_improvement` descarta la misma combinación de tipo y descripción aunque tenga otra fecha (sin distinguir mayúsculas). Cuando se pasa de `IMPROVE_LIMIT` (300 entradas, 150.000 caracteres) borra las más viejas: es un registro, no conocimiento que haya que conservar.
+  - `parse_improvements` lee solo las líneas `- `, así el texto del encabezado no cuenta como entrada.
+  - Lleva el contexto `#Confidencial`, como los demás archivos del agente.
+- **Ruta privada** (`paths.rs`): `AgentPathKind::Improvements`, con las mismas reglas que la memoria: solo el Owner y una política que guarde memoria. El inventario no recorre carpetas ocultas, así que las búsquedas y lecturas de la biblioteca no lo ven.
+- **Fuera del contexto.**
+  - `prompt.rs` no tiene loader para `improve.md`.
+  - `AgentFiles` y la organización conjunta (`agent_knowledge`), la revisión diaria y `normalize_agent_files` no lo incluyen.
+  - La única llamada al modelo que lo ve es la reflexión en segundo plano, con las 60 entradas más recientes (`REFLECTION_KNOWN_IMPROVEMENTS`), solo para no repetirlas.
+- **Herramienta `add_agent_improvement`** (`kind`, `improvement`):
+  - Política `Memory`: sin confirmación, siempre ofrecida (no depende del área del ruteo) y en los mismos alcances que las demás herramientas de memoria (biblioteca, documento y Task Manager; no Finanzas).
+  - `backend_runtime` la ejecuta con `agent_workspace::append_improvement`, bajo el lock del workspace. Devuelve `changed` y no agenda la organización.
+  - `ensure_agent_memory_writable` concentra el chequeo de Owner y política que antes estaba dentro de `append_agent_file`.
+  - Las corridas autónomas la conservan: nada la lee después, así que un mail que dicte una entrada no cambia el comportamiento.
+  - Etiqueta de progreso: «anotando una mejora para Notia» (Telegram y `agentToolLabels.ts`).
+- **Cuándo la usa.** Una regla nueva del bloque por defecto (`defaults/agent_rules.md`): anotar en el mismo turno, sin avisar a la persona, una falla de herramienta que no sea suya, una herramienta faltante o algo que funcionaría mejor, y seguir con el pedido. No se anotan los errores propios corregidos reintentando, ni datos personales, contenido de documentos o secretos. El bloque por defecto se reemplaza en cada biblioteca al preparar el workspace.
+- **Llenado automático por la reflexión.** `reflection_messages` pide además `improvements` como `tipo: descripción`. `parse_reflection` las convierte en `(ImprovementKind, texto)`, y `agent_knowledge::reflect` las agrega con `append_improvement`. La reflexión ya recibía cada herramienta del turno con su error, así que también cubre los turnos en que el agente no llamó la herramienta. Las corridas autónomas no tienen reflexión.
+- **Creación.** `write_missing_lists` lo crea vacío al preparar el workspace, y el reloj de cada minuto lo recrea si se borra.
+- **Pruebas.**
+  - Rust, núcleo: `improvements_are_dated_typed_unique_and_bounded`; `a_reflection_adds_only_clean_new_items` (mejoras en el pedido y en la respuesta); `memory_tools_need_the_owner_and_a_memory_policy` y `an_autonomous_run_only_reads_and_keeps_its_thoughts` incluyen la herramienta; `paths` valida la ruta privada.
+  - Rust, app: `the_agent_notes_improvements_for_notia_once` (archivo en disco, sin repetidos, tipos, ningún otro archivo del agente escrito, invitado rechazado). Usa `AgentWorkspaceState::prepared_for`, solo en tests, porque preparar el workspace necesita la base del inventario.
+- **Validaciones.**
+  - `notia-backend-core`: 715 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 521/521, 11 ignoradas.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+  - `tsc -b` sin errores.
+- **Pendiente.** Prueba manual con el modelo configurado, en Windows y Android: provocar un error de herramienta y pedir algo sin herramienta. Revisar que `improve.md` se llene (por la herramienta o por la reflexión) y que el contenido no aparezca en el prompt.
+
+## Contexto reservado `#System`: archivos que escribe solo la IA (2026-10-26)
+
+- **Pedido.** Un contexto nuevo, System, para los archivos de la IA que modifica solo la IA. La persona los puede leer con el editor Markdown y no editarlos a mano.
+- **Qué archivos.** `agent_workspace::SYSTEM_FILES`: `rules.md`, `memory.md`, `thoughts.md`, `biography.md`, `talk.md`, `people.md` e `improve.md` de `.agent/memory`.
+  - Quedan afuera los prompts, habilidades y dinámicas de `.agent` (los escribe la persona, siguen `#Confidencial`) y los chats (`chat/`, que el chat escribe con lo que la persona manda).
+  - `default.md` no tiene contexto: Notia lo reescribe en cada preparación del workspace.
+- **El contexto.** `library_config::SYSTEM_CONTEXT_TAG = "#System"` e `is_system_context` (con o sin `#`, sin distinguir mayúsculas). Es reservado y no forma parte del catálogo:
+  - `normalize_contexts` lo descarta.
+  - `backend_write_library_config` rechaza guardarlo.
+  - `library_users::normalize_context_tag` rechaza asignarlo a un usuario.
+  - Una carpeta no puede tomarlo porque `set_folder_context` solo admite contextos del catálogo.
+  - El Owner lee esos archivos porque tiene todos los contextos (`all_contexts`). Además las rutas de `.agent/memory` ya exigen Owner y una política que guarde memoria, y el inventario no recorre carpetas ocultas.
+- **Escritura de la IA.** `agent_workspace::with_system_context` y `with_agent_context(path, …)`. Esta última elige `#System` para un archivo de sistema y `#Confidencial` para el resto, y las dos comparten `with_context_line`.
+  - `app/src/agent_workspace.rs` escribe los archivos de sistema con `#System`.
+  - La preparación del workspace reescribe cada archivo de `.agent` con `with_agent_context`, así que una biblioteca existente pasa de `#Confidencial` a `#System` en la primera sesión.
+  - La IA sigue escribiendo por `library_documents::with_documents`, que no pasa por los comandos de la persona.
+- **Bloqueo para la persona** (`library_session.rs`):
+  - `library_write_document`, que usan el guardado del editor (`library_save_document`), el modo página, la colaboración (el que guarda) y la página publicada, rechaza con `system_write_refusal`:
+    - un archivo de sistema: «Este archivo lo escribe solo la IA (contexto #System)…»;
+    - una nota Markdown cuyo `contexto` sería `#System`.
+  - `apply_entry_operation` rechaza con `touches_system_files`:
+    - borrar o renombrar un archivo de sistema o una carpeta que contenga uno (`holds_system_files`: `.agent`, `.agent/memory`);
+    - pegar (mover o copiar) uno;
+    - crear o renombrar algo sobre una ruta de sistema.
+- **Lectura.** `library_read_document` devuelve `readOnly` con el motivo para un archivo de sistema y no le agrega las propiedades por defecto de una nota ni el contexto de carpeta, así que abrirlo no lo modifica. La página publicada nunca llega a `.agent` (`readOnly: None`).
+- **Editor** (solo presentación):
+  - `useDocumentOpener` guarda `readOnly` en la pestaña.
+  - `FileViewHost` no conecta el guardado de una nota de solo lectura.
+  - `MarkdownView` (`readOnly`): Crepe queda en `setReadonly(true)` (también con la herramienta del lápiz), no muestra la barra del lápiz ni la de formato, y arriba muestra el aviso que mandó Rust (`.notia-markdown-readonly`, con tokens del tema).
+  - `MarkdownPropertiesPanel` y `PropertyValue` (`readOnly`) muestran los valores sin editar, quitar ni agregar, y el contexto como chip con candado.
+  - Los enlaces entre notas siguen abriéndose.
+- **Lo que sigue funcionando.** **Borrar memoria** del panel del chat (`backend_save_agent_memories`) es una acción explícita de Rust, no una edición a mano, y sigue vaciando `memory.md`.
+- **Pruebas.**
+  - Rust, núcleo: `the_files_only_the_ai_writes_are_system_files` y `the_system_context_is_reserved_and_never_in_the_catalog`.
+  - Rust, app: `the_person_only_reads_the_files_the_ai_writes`, `explorer_operations_never_touch_the_files_the_ai_writes`, y `the_agent_notes_improvements_for_notia_once` (ahora con `#System`).
+  - Vitest: `only shows the properties of a read-only note`.
+- **Validaciones.**
+  - `notia-backend-core`: 717 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 523/523.
+  - `tsc -b` y ESLint en lo tocado, sin errores.
+  - Vitest: 746/746 en 148 archivos.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+- **Pendiente.** Prueba manual en Windows y Android (teléfono y tableta): abrir `memory.md` desde el explorador y comprobar que no se puede escribir ni cambiar propiedades, y que renombrar, mover o borrar `.agent/memory` muestra el error. Revisar que después de la primera sesión los siete archivos digan `contexto: "#System"`.
+
+## Tareas IA: Planificador, Ejecutor y Review fuera del turno (2026-10-26)
+
+- **Pedido.** Un componente nuevo, parecido a Acciones IA, para los pedidos complejos o de muchos pasos (desde Telegram o un chat de la app):
+  - un plan inicial generado por un prompt «Planificador»;
+  - llamadas repetidas a un prompt «Ejecutor» hasta completar los pasos;
+  - un «Review» que puede pedir que la tarea se vuelva a trabajar.
+  - Prompts por defecto en `.agent/promps`; el paso a paso, el resultado y el flujo como diagrama de nodos (Mermaid).
+  - SQLite con un máximo de una semana, y herramientas del agente para gestionarlas, leerlas y revisarlas.
+  - Las crea solo el agente; puede pedir aprobaciones o, al crearla, ofrecer «Aprobar todo».
+- **Núcleo** (`backend-core/src/ai_tasks/`):
+  - `mod.rs`: el modelo, guardado como JSON.
+    - `AiTask` tiene título, objetivo, origen (app o Telegram con su chat), `approve_all`, estado, fase, pasos, revisiones, `review_request`, aprobación pendiente, resultado, error y fechas.
+    - `AiTaskStatus`: planning, running, reviewing, awaiting-approval, completed, failed, cancelled e interrupted.
+    - `AiTaskPhase` con su archivo de prompt: `planificador.md`, `ejecutor.md`, `review.md`.
+    - `AiTaskStep` tiene ronda (0 para el plan, n para la corrección n) e informe.
+  - La máquina de estados es pura: `next_work` (plan, ejecutar el primer paso no hecho, revisar o terminar) y `apply_review`.
+    - Si el review aprueba, toma su resultado.
+    - Si pide rehacer, agrega los pasos de la ronda siguiente (o uno «Corregir lo que pidió la revisión»).
+    - A las 5 revisiones que piden rehacer (`MAX_REWORK_REVIEWS`), la tarea se detiene.
+  - Límites: 30 pasos, título de 120 caracteres, objetivo de 12.000, informes de 20.000.
+  - `prompts.rs`: los pedidos de cada fase.
+    - El Ejecutor recibe el objetivo, el plan con estados, los informes hechos (presupuesto de 80.000 caracteres), la revisión que pidió rehacer y el paso.
+    - `phase_guidance` agrega al prompt de sistema el formato que Rust lee: `PASOS:` numerados para el plan, `NO TERMINADO:` para un paso que no se pudo terminar y `VEREDICTO/COMENTARIOS/PASOS/RESULTADO` para el review. Los prompts editables no pueden romper esa lectura.
+    - `parse_plan` lee líneas `1.`/`1)` o viñetas.
+    - `parse_review` lee las secciones; sin veredicto, «rehacer» o la presencia de pasos pide rehacer.
+  - `workflow.rs`: `workflow_mermaid` arma un `flowchart TD`: pedido → plan → pasos por ronda → review N (con `-->|rehacer|`) → fin. Cada nodo lleva la clase de su estado (`done`, `running`, `waiting`, `pending`, `failed`, `rework`) y las etiquetas van escapadas.
+  - `views.rs`: las tarjetas y el detalle del panel con textos y horas (`moment_label`, zona del lugar de Clima) y «Se borra …».
+  - `tools.rs`:
+    - Herramientas de lectura: `list_ai_tasks`, `get_ai_task`.
+    - Herramientas de escritura: `create_ai_task`, `cancel_ai_task`, `resume_ai_task`, `review_ai_task`, `delete_ai_task`.
+    - También: argumentos, búsqueda por id o título exacto, vistas para el modelo y textos de confirmación.
+    - `phase_tools` recorta lo que ofrece cada fase: el Planificador y el Review solo leen (`ToolAccess::ReadOnly`), y ninguna fase tiene herramientas de tareas que escriban ni de plan del agente.
+- **Contrato del pedido.** `AgentRequest.ai_task: Option<AiTaskTurn { task_id, phase }>`. El runtime:
+  - exige Owner con memoria;
+  - aplica `phase_tools`;
+  - suma `phase_guidance`;
+  - no hace la reflexión posterior.
+  - `prompt_name` es el archivo de la fase, que se suma al prompt base como cualquier prompt elegido.
+- **Catálogo.**
+  - Políticas `AiTaskRead`/`AiTaskWrite`, solo para el Owner con una política que guarde memoria, en los mismos alcances que Acciones IA.
+  - `tool_area` devuelve `None`, así se ofrecen en todo pedido sin depender del área del ruteo.
+  - Esquemas en `tool_schemas.json`.
+  - Guía (`prompt_guidance::ai_task_tools`): crear una tarea para los pedidos largos, escribir un objetivo autosuficiente porque la tarea no ve el chat, y no hacerla en el turno.
+  - Etiquetas de progreso en Telegram y en `agentToolLabels.ts`.
+- **«Aprobar todo».**
+  - `execute_confirmed` escribe `approveAll` en la llamada de `create_ai_task` con el `approve_all` de la decisión, por encima de lo que mande el modelo.
+  - Con «Confirmar todos» en la creación (o en una aprobación posterior), el ejecutor responde solo a las confirmaciones y planes de cada fase. Las preguntas siempre esperan a la persona.
+- **App** (`app/src/ai_task_runner.rs`; `app/src/ai_tasks.rs` es otro módulo, el de las verificaciones del proveedor, y no cambió):
+  - **SQLite**: esquema 32, tabla `ai_tasks (id, status, created_at, updated_at, task_json)` con índice por fecha, en la base de la biblioteca (`open_user_data_connection`, sincronizada por SAF en Android).
+    - `update_task` solo actualiza: una tarea borrada no se vuelve a escribir.
+    - `delete_expired` borra las de más de una semana que ningún hilo trabaja. Corre al listar, al crear y cada hora.
+  - **Ejecución**: un hilo por tarea (`spawn`) recorre `next_work`. Cada fase es un `execute_backend_request` del Owner, canal App, alcance Library y persistente, con su `prompt_name` y `ai_task`, como el `drive` de Telegram.
+    - Un `Operation` con interacción pasa por `approve`:
+      - con `approve_all`, la decisión se arma sola;
+      - si no, se guarda la aprobación (`AiTaskApproval`), la tarea queda `awaiting-approval`, se avisa y se espera la respuesta en un canal (poll de 1 s), con cancelación y un plazo de un día.
+    - Las decisiones (`decision_for`) usan los mismos tipos que Telegram: `ConfirmationDecision`, `PlanDecision` y `ClarificationAnswer`. Elegir «Confirmar todos» deja la tarea en `approve_all`.
+    - Un informe que empieza con «NO TERMINADO:» marca el paso como fallido y detiene la tarea.
+    - Al terminar, una tarea de Telegram manda `finished_message` al chat del Owner.
+    - Si el Ejecutor cambió datos, emite `LIBRARY_CHANGED_EVENT`.
+  - **Telegram**: `send_task_message` y `mark_task_message` en `telegram_worker` (no tocan la pregunta pendiente del chat).
+    - Los botones llevan `aitask:<id>:<c|a|x|oN>`.
+    - `handle_update` los entrega a `answer_from_telegram`, solo si responde el Owner.
+    - Al responder, el mensaje se reescribe con el resultado (HTML escapado).
+    - «Proponer otra cosa» y las respuestas de texto libre se responden desde el panel.
+  - **Comandos del panel** (Owner): `ai_tasks_list`, `ai_task_get`, `ai_task_answer` (valida la respuesta antes de enviarla), `ai_task_cancel` (cancela también el pedido de la fase en curso), `ai_task_resume` y `ai_task_delete`. El evento es `notia://ai-task-changed` con el id de la biblioteca.
+  - **Arranque**: a los 30 s, las tareas activas sin hilo pasan a `interrupted` («Notia se cerró mientras la tarea trabajaba»). Un cliente de Host/Cliente no corre tareas: las corre el host, que es donde el agente las crea.
+  - **Prompts por defecto**: la preparación del workspace escribe `planificador.md`, `ejecutor.md` y `review.md` en `.agent/promps` solo si faltan, con `#Confidencial`, porque son editables.
+- **Interfaz** (`src/modules/ai-tasks/`, solo presentación): vista `ai-tasks` registrada como las demás (pestaña especial, barra izquierda con el ícono `Workflow`, chip del chat lateral).
+  - Lista de tarjetas (estado, fase, progreso, origen, «Aprobar todo») y detalle con:
+    - aprobación (`AiTaskApprovalCard`, con las cuatro opciones o las opciones y el texto de una pregunta);
+    - error y resultado (Markdown con `ChatMarkdownMessage`);
+    - flujo (`AiTaskWorkflowGraph`, `useMermaidRender` con el tema de la app y espaciado compacto, alto máximo 560 px con scroll);
+    - objetivo, paso a paso desplegable con los informes, revisiones y «Se borra …».
+  - Colores con tokens y la paleta: estados con los acentos de columna y prioridad, chips al 18 % y al 10 %, nodos coloreados por clase.
+  - Botones táctiles de 44 px.
+  - Container query de 760 px: en teléfono se ve la lista o el detalle, con botón para volver.
+- **Pruebas.**
+  - Rust, núcleo (`ai_tasks/tests.rs`): lectura del plan y del review, ciclo completo con rehacer y aprobar, revisiones agotadas, diagrama, herramientas y formatos de fase.
+  - Rust, app: ida y vuelta en SQLite con vencimiento y tarea borrada; respuestas convertidas en decisiones y botones de Telegram.
+  - Vitest (`AiTasksView.test.tsx`): lista vacía, detalle, «Confirmar todos», proponer otra cosa y cancelar.
+- **Verificación visual.** Raíz temporal de Vite y Chrome headless (ya borrada) en escritorio oscuro y claro y en teléfono de 390 px. Se corrigieron el botón «volver» visible en escritorio, el desborde de rutas largas en la aprobación y el alto del diagrama.
+- **Validaciones.**
+  - `notia-backend-core`: 724 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 525/525.
+  - Vitest: 749/749 en 149 archivos.
+  - `tsc -b` y ESLint sin errores.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+- **Pendiente y decisiones.**
+  - Nada de esto se probó con un modelo real, Telegram real ni Android.
+  - Hay que medir si el modelo configurado decide crear tareas cuando corresponde y respeta los formatos de plan y veredicto.
+  - Cada tarea usa un hilo propio, sin límite de tareas simultáneas.
+  - El review puede pedir rehacer hasta 5 veces.
+  - Una aprobación espera un día.
+  - No hay un lienzo de diseño para esta vista: sigue el lenguaje visual de Acciones IA.
+
+## Salud: pasos diarios y horas de sueño con histórico (2026-10-26)
+
+- **Pedido.** Agregar a Salud la cantidad de pasos diarios y las horas de sueño, con histórico como el peso.
+- **Modelo** (`backend-core/src/health/mod.rs`):
+  - `HealthData` suma `steps` (pasos por fecha) y `sleep` (minutos por fecha, la del día en que se despertó). El sueño se guarda en minutos para no perder «7:20».
+  - `validate_steps(date, texto)` lee el número como es-AR con `parse_number` («8.432» → 8432) y admite de 0 a 150.000 pasos.
+  - `parse_sleep_minutes` lee «7,5», «7.5», «7:30», «7 h 30», «7h30m», «7 horas y media», «8» y «450 min».
+  - `validate_sleep` admite de 1 minuto a 24 horas.
+  - Las fechas no pueden ser futuras (`check_date`).
+  - `sleep_label` («7 h 30 min») y `steps_label` («8.432 pasos»).
+  - Constantes: `STEPS_GOAL` = 8.000 (meta orientativa) y `SLEEP_RANGE_MINUTES` = 7 a 9 h.
+- **Cambios** (`change.rs`):
+  - Mutaciones `SetSteps { date, steps: String }`, `DeleteSteps`, `SetSleep { date, duration: String }` y `DeleteSleep`. Llegan como texto y las lee Rust, porque `toNumber` del frontend no entiende «8.432» ni «7:30».
+  - `StoreOp` correspondientes, con resúmenes para la confirmación («Cambiar los pasos del …: 4.310 pasos → 5.000 pasos.»).
+- **Tablero** (`dashboard.rs`):
+  - `DailyPanel { today_label, today_caption («Hoy», «Anoche»), summary, ranges, chart, empty_text, entries }` para `steps` y `sleep`.
+  - `DashboardQuery` suma `steps_range` y `sleep_range`, con los mismos períodos que el peso.
+  - `daily_chart` reusa el contrato `WeightChart`, con el eje desde cero, marcas «redondas» (`nice_step`) y la meta como línea («Meta 8.000», «Mínimo recomendado 7 h»).
+  - `summary` lleva el promedio de los días con registro de la última semana (con aviso si el sueño queda fuera de 7 a 9 h) y la meta.
+- **SQLite**: esquema 33, `health_steps (owner_user_id, date, steps)` y `health_sleep (owner_user_id, date, minutes)`, por usuario con `ON DELETE CASCADE`. Las carga `health::load` y las escribe `apply_ops`.
+- **IA** (`tools.rs`):
+  - `log_steps { steps, date? }`.
+  - `log_sleep { hours | minutes | duration, date? }`: las horas se convierten a minutos.
+  - `delete_health_record` acepta `steps` y `sleep`.
+  - `list_health_records` acepta `steps` y `sleep` (con `label`).
+  - `get_health_summary` suma `stepsToday`, `stepsGoal`, `sleepLastNightMinutes`, `sleepRecommendedHours` y `last7Days`.
+  - Esquemas en `tool_schemas.json`, guía de Salud («Dormí 7 horas y media» es `log_sleep`; lo de anoche lleva la fecha de hoy) y etiquetas de progreso de Telegram.
+- **Interfaz** (solo presentación):
+  - `DailyPanelView` (en `HealthPanels.tsx`), con la misma estructura que el panel de peso: valor del día, resumen, períodos, `WeightChartView`, formulario de fecha y valor, y registros que se borran.
+  - Los textos de cada panel están en `healthUi.ts` (`STEPS_COPY`, `SLEEP_COPY`).
+  - Escritorio: los dos paneles uno al lado del otro debajo del agua (`.hl-daily-pair`, dos columnas desde 1024 px de vista).
+  - Celular: pestaña **Actividad** entre Peso y Cuerpo, y tarjeta **Actividad** en Hoy con los pasos de hoy y el sueño de anoche.
+  - Los fixtures `__fixtures__/dashboard*.json` se regeneraron con `dump_dashboard_fixtures`, y el escenario «Sobrepeso» suma pasos y sueño.
+- **Pruebas.**
+  - Rust, núcleo: `steps_and_sleep_are_read_as_written_and_validated`, `steps_and_sleep_changes_write_and_delete_one_day`, `steps_and_sleep_panels_show_today_the_week_and_the_history` y `the_assistant_logs_steps_and_sleep_and_reads_them_back`.
+  - Rust, app: la ida y vuelta de SQLite suma pasos (con reemplazo y borrado) y sueño.
+  - Vitest: panel de pasos y sueño, carga como texto, borrado y período en `HealthDashboardView.test.tsx`; pestaña y tarjeta Actividad en `HealthPhone.test.tsx`.
+- **Verificación visual.** Raíz temporal de Vite y Chrome headless (ya borrada): escritorio oscuro y claro y celular de 390 px (Hoy y Actividad). Se agregó un espacio duro en «7 a 9 h» para que «h» no quede sola en la línea siguiente.
+- **Validaciones.**
+  - `notia-backend-core`: 728 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 525/525.
+  - Vitest: 750/750 en 149 archivos.
+  - `tsc -b` y ESLint sin errores.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+- **Pendiente.** Prueba manual en la app (Windows y Android) y por Telegram con el modelo real («hoy caminé 9.000 pasos», «dormí 7 y media»). No se leen pasos ni sueño de relojes o del teléfono: se cargan a mano o con la IA.
+
+## Agente: reparación de las entradas de `improve.md` (2026-10-26)
+
+- **Pedido.** Reparar las 19 entradas que el asistente anotó en `.agent/memory/improve.md` de la biblioteca gaia y sacarlas del archivo. La de pasos en Salud ya estaba resuelta en la sección anterior. El archivo quedó solo con su encabezado.
+- **Áreas que no entran juntas** (`tool_routing.rs`, `agent.rs`). Causa de 8 entradas: la revisión horaria pedía tareas, rutina, agenda, correo y finanzas. En la biblioteca suman 22 herramientas fijas más 39, 13, 6, 10 y 60, por encima de `max_tools` (96). `tools_for_areas` descartaba finanzas sin avisar, y `change_tool_areas` contestaba «Ya tenés las herramientas de estas áreas».
+  - Ahora la primera área llega completa. Cada área siguiente llega completa solo si después todavía entran las herramientas de lectura de las que siguen; si no, llega solo con las de lectura (`read_only`). Si ni esas entran, queda afuera.
+  - `area_coverage` mide lo que trae la ronda: `full`, `read_only` y `missing`.
+  - `change_tool_areas` devuelve `areas`, `readOnlyAreas`, `missingAreas` y una nota (`AreaCoverage::note`) que dice cómo conseguir el resto. Su descripción muestra «Áreas actuales: tareas, finanzas (solo lectura); no entraron con las demás: …».
+  - Llamar a una herramienta que el actor puede usar pero cuya área no está cargada devuelve `invalid-input` con «llamá change_tool_areas con «finanzas»…» (`unavailable_tool_error`), en lugar de un `forbidden` que parecía falta de permiso.
+  - Prueba con el catálogo real: `the_hourly_review_reads_every_area_it_asks_for`.
+- **Lecturas viejas después de editar** (`agent.rs`). `get_document_metadata` lee siempre el archivo. La «caché» era la del agente: una llamada idéntica dentro del mismo pedido reusaba su resultado. La clave de una herramienta de lectura ahora suma la cantidad de resultados con `changed` hasta ese momento, así que después de una escritura vuelve a leer. Prueba: `a_read_after_a_change_reads_again`.
+- **Tanda de varios documentos** (`markdown_editing.rs`, `backend_runtime.rs`).
+  - `preview_multi_document_markdown_edit` revisa todos los documentos antes de responder. Si alguno falla, el error dice «No se aplicó ningún cambio: N de M documentos de la tanda fallaron», con cada ruta y su motivo (`batch_failure`). La escritura ya era todo o nada.
+  - El resultado de `apply_multi_document_markdown_edit` trae `summary` («…el último fue …») y, por documento, `frontmatter` con las claves que cambiaron y su valor nuevo (`frontmatter_changes`).
+- **Cadenas de páginas.**
+  - Herramienta nueva `inspect_page_chain { folder }` (área biblioteca, solo lectura, hasta `MAX_CHAIN_DOCUMENTS` = 300 páginas). Lee el inventario de la carpeta y `page_links::inspect_page_chain` arma las cadenas desde su primera página, las páginas en orden con todo su frontmatter y los problemas: `roto`, `no-reciproco`, `ruta-corta`, `varios-anteriores`, `ciclo` y `suelta`. Los destinos fuera de la carpeta se buscan con `metadata`.
+  - `get_document_metadata` acepta además `documentIds` (hasta 60); cada documento devuelve su metadata o su error.
+- **Comidas** (`health/tools.rs`, `health/mod.rs`, `app/src/health.rs`).
+  - `resolve_meal` busca por id, después por descripción exacta y después por la única comida que contiene el texto (o está contenida en él). Sin `meal`, toma la última cargada (del día `date`, si viene). Sin una sola coincidencia, el error lista hasta 8 candidatas con id, fecha, categoría y kcal. `update_meal` ya no exige `meal`.
+  - Las 825 contra 660 kcal de la misma receta salían de `portionNote`, que estima la IA. `meal_basis` dice en la confirmación y en el resultado (`basis`) si los valores son «Calculado: 1 porción de «X» (660 kcal por porción)» o «Estimado por la IA…». El esquema indica usar `servings` para sobras o para la misma cantidad.
+- **Tickets de compra** (`finance_agent_inputs.rs`, `finance_records.rs`).
+  - `purchase_item_problem` arma «Líneas a corregir: items[1] («ANULACION LECHE»): unitPrice es negativo…» en lugar del genérico `itemAmounts`.
+  - Un producto anulado en la caja va con `voided: true`: no se suma ni se guarda, y su línea negativa no se manda.
+  - `purchase_mismatch` explica la cuenta cuando el total no cierra (líneas, descuentos, impuestos, total calculado, total impreso y diferencia) y pide no tocar el descuento solo para que cuadre. Esto se revisa también en la confirmación, antes de preguntarle a la persona.
+- **Tickets de Task Manager.**
+  - `read_tickets_by_id` (`task_manager_tool_input.rs`) lee por id también los finalizados y cancelados (`includeArchived` vale `true` por defecto). Los que no puede leer van en `notRead` con su motivo, sin hacer fallar a los demás.
+  - `read_all_task_tickets` acepta páginas de 100 tickets, y su descripción aclara que `detailPreview` es solo el comienzo de la descripción.
+- **Otros.** La descripción del área Salud para el router suma pasos y sueño. La guía de la biblioteca suma `inspect_page_chain` y lo que devuelve la tanda.
+- **Validaciones.**
+  - `notia-backend-core`: 737 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - `notia-app`: 526/526.
+  - Vitest: 750/750.
+  - `tsc -b` sin errores.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+- **Pendiente.** Probar en la app y por Telegram con el modelo real: la revisión horaria con las cinco áreas, una tanda de `nextPage` con `inspect_page_chain`, un ticket con productos anulados y el cambio de categoría de una comida sin id.

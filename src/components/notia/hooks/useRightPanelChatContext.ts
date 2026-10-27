@@ -13,7 +13,7 @@ export type RightPanelDocument = Pick<OpenFileDocument, 'path' | 'name' | 'viewK
 
 interface UseRightPanelChatContextParams {
   activeDocument: RightPanelDocument | null
-  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'gym' | 'home'
+  activeWorkspaceView: 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'documents' | 'routine' | 'ai-actions' | 'ai-tasks' | 'recipes' | 'health' | 'gym' | 'home'
   graphChatContextSummary: string | null
   graphChatEffectivePaths: string[]
   graphChatHasExplicitSelection: boolean
@@ -45,7 +45,7 @@ export function resolveRightPanelAgentScope(
   if (activeWorkspaceView === 'task-manager') return 'task-manager'
   if (activeWorkspaceView === 'graph') return 'graph'
   if (activeWorkspaceView === 'finance') return 'finance'
-  if (activeWorkspaceView === 'routine' || activeWorkspaceView === 'ai-actions' || activeWorkspaceView === 'recipes' || activeWorkspaceView === 'health' || activeWorkspaceView === 'gym' || activeWorkspaceView === 'agenda' || activeWorkspaceView === 'home') return 'library'
+  if (activeWorkspaceView === 'routine' || activeWorkspaceView === 'ai-actions' || activeWorkspaceView === 'ai-tasks' || activeWorkspaceView === 'recipes' || activeWorkspaceView === 'health' || activeWorkspaceView === 'gym' || activeWorkspaceView === 'agenda' || activeWorkspaceView === 'home') return 'library'
   return activeWorkspaceView === 'documents' && activeDocument?.viewKind === 'markdown'
     ? 'document'
     : null
@@ -119,6 +119,7 @@ export function buildRightPanelChatContextChip(
   if (activeWorkspaceView === 'finance') return viewChip('Finanzas')
   if (activeWorkspaceView === 'routine') return viewChip('Rutina')
   if (activeWorkspaceView === 'ai-actions') return viewChip('Acciones IA')
+  if (activeWorkspaceView === 'ai-tasks') return viewChip('Tareas IA')
   if (activeWorkspaceView === 'recipes') return viewChip('Recetas')
   if (activeWorkspaceView === 'health') return viewChip('Salud')
   if (activeWorkspaceView === 'gym') return viewChip('Gimnasio')

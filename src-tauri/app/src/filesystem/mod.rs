@@ -4,5 +4,5 @@ pub mod commands;
 pub(crate) mod desktop;
 pub(crate) mod helpers;
 pub(crate) mod types;
-mod validation;
+pub(crate) mod validation;
 pub mod watch;

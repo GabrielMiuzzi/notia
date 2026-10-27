@@ -130,8 +130,8 @@ pub(crate) fn schedule_reflection(app: &AppHandle, library_id: &str, idempotency
     let library_id = library_id.to_string();
     std::thread::spawn(move || match reflect(&app, &library_id, &transcript) {
         Ok(added) => log::info!(
-            "[notia:memory] reflexión: {} memorias, {} pensamientos, {} datos de biografía, {} rasgos de habla y {} personas nuevos",
-            added[0], added[1], added[2], added[3], added[4]
+            "[notia:memory] reflexión: {} memorias, {} pensamientos, {} datos de biografía, {} rasgos de habla, {} personas y {} mejoras nuevos",
+            added[0], added[1], added[2], added[3], added[4], added[5]
         ),
         Err(error) => log::error!("[notia:memory] no se pudo reflexionar sobre el turno: {:?}", error.code),
     });
@@ -148,10 +148,11 @@ fn biography_text(biography: &crate::backend::agent_workspace::Biography) -> Str
 }
 
 /// Asks the model what the turn taught and saves it. Returns how many
-/// memories, thoughts, facts of the biography, traits of talk and people it
-/// added.
-fn reflect(app: &AppHandle, library_id: &str, transcript: &str) -> Result<[usize; 5], BackendError> {
+/// memories, thoughts, facts of the biography, traits of talk, people and
+/// improvements it added.
+fn reflect(app: &AppHandle, library_id: &str, transcript: &str) -> Result<[usize; 6], BackendError> {
     let files = crate::agent_workspace::agent_files(app, library_id)?;
+    let improvements = crate::agent_workspace::improvements(app, library_id)?;
     let biography = biography_text(&files.biography);
     let (_, now) = crate::local_time::local_now();
     let known = knowledge::KnownKnowledge {
@@ -160,11 +161,12 @@ fn reflect(app: &AppHandle, library_id: &str, transcript: &str) -> Result<[usize
         biography: &biography,
         talk: &files.talk,
         people: &files.people,
+        improvements: &improvements,
     };
     let (system, user) = knowledge::reflection_messages(transcript, known, &now);
     let answer = crate::backend_runtime::complete_text(app, library_id, &system, &user, ORGANIZE_TIMEOUT)?;
     let Some(reflection) = knowledge::parse_reflection(&answer) else {
-        return Ok([0; 5]);
+        return Ok([0; 6]);
     };
     let lists = [
         (AgentItem::Memory, &reflection.memories, "memoria"),
@@ -186,7 +188,16 @@ fn reflect(app: &AppHandle, library_id: &str, transcript: &str) -> Result<[usize
     if added.iter().any(|count| *count > 0) {
         schedule_organization(app, library_id);
     }
-    Ok(added)
+    // `improve.md` is not organized: nothing reads it into a prompt.
+    let mut improved = 0;
+    for (kind, text) in &reflection.improvements {
+        match crate::agent_workspace::append_improvement(app, library_id, *kind, text) {
+            Ok(true) => improved += 1,
+            Ok(false) => {}
+            Err(error) => log::error!("[notia:memory] una mejora de la reflexión no se guardó: {:?}", error.code),
+        }
+    }
+    Ok([added[0], added[1], added[2], added[3], added[4], improved])
 }
 
 /// Saves a thought Notia keeps by itself (for example, a message it sent)

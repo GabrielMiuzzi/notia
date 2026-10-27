@@ -110,6 +110,7 @@ pub fn normalize_device_preferences(value: &Value) -> Value {
         "pen": normalize_pen(&section("pen")),
         "audioDevices": crate::audio_devices::normalize_audio_devices(&section("audioDevices")),
         "meetingAiContext": crate::meeting_ai::normalize_context_choices(&section("meetingAiContext")),
+        "publicSpaces": crate::public_spaces::normalize_public_spaces(&section("publicSpaces")),
     })
 }
 

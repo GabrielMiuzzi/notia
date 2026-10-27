@@ -1,5 +1,6 @@
 import { backendFileUrl, callBackend } from '../../../services/transport'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
+import { Lock } from 'lucide-react'
 import { useAppDispatch, useAppSelector } from '../../../store/hooks'
 import { setRightChatPanelOpen } from '../../../features/ui/uiSlice'
 import { requestChatPanel } from '../../../services/chat/chatComposerRequests'
@@ -145,8 +146,11 @@ const INLINE_LATEX_BUTTON_SELECTOR = '[data-notia-inkmath-inline-button]'
 interface MarkdownViewProps {
   source: string
   documentPath: string
-  /** Context the note keeps because it lives in a Task Manager board. */
+  /** Context the note keeps because it lives in a Task Manager board or in a folder with a context. */
   lockedContextTag?: string
+  lockedContextSource?: 'board' | 'folder'
+  /** Why the note is read-only (a file only the AI writes): shown above it, nothing in it can be changed. */
+  readOnly?: string
   libraryId?: string
   /**
    * The note's new Markdown, with the path of the note it belongs to: the
@@ -407,9 +411,9 @@ function renderMermaidPreview(
  * puts the caret in the note (a palm, the desk around the sheet, the gap
  * between pages) and the stylus is not taken for the system's handwriting.
  */
-function followPenTool(crepe: Crepe, tool: PenBarTool) {
+function followPenTool(crepe: Crepe, tool: PenBarTool, readOnly: boolean) {
   const drawing = tool !== 'selector'
-  crepe.setReadonly(drawing)
+  crepe.setReadonly(readOnly || drawing)
   const dom = crepe.editor.action((ctx) => ctx.get(editorViewCtx)).dom
   if (drawing && document.activeElement instanceof HTMLElement && dom.contains(document.activeElement)) document.activeElement.blur()
 }
@@ -510,6 +514,8 @@ function MarkdownViewInner({
   source,
   documentPath,
   lockedContextTag,
+  lockedContextSource,
+  readOnly,
   libraryId,
   onSourceChange,
   onSharedSourceChange,
@@ -605,6 +611,7 @@ function MarkdownViewInner({
   const hasFrontmatterRef = useRef(parsedDocument.hasFrontmatter)
   const documentPathRef = useRef(documentPath)
   const onSourceChangeRef = useRef(onSourceChange)
+  const readOnlyRef = useRef(Boolean(readOnly))
   const onSharedSourceChangeRef = useRef(onSharedSourceChange)
   // Shared editing: the session, its cursors and whether another editor saves.
   const collabSessionRef = useRef<MarkdownCollabSession | null>(null)
@@ -679,8 +686,9 @@ function MarkdownViewInner({
 
   useEffect(() => {
     const crepe = crepeRef.current
-    if (crepe && isEditorReady) followPenTool(crepe, penTool)
-  }, [isEditorReady, penTool])
+    readOnlyRef.current = Boolean(readOnly)
+    if (crepe && isEditorReady) followPenTool(crepe, penTool, Boolean(readOnly))
+  }, [isEditorReady, penTool, readOnly])
 
   useEffect(() => {
     if (source === latestComposedSourceRef.current) {
@@ -1306,7 +1314,7 @@ function MarkdownViewInner({
 
       isReadyRef.current = true
       setIsEditorReady(true)
-      followPenTool(crepe, penToolRef.current)
+      followPenTool(crepe, penToolRef.current, readOnlyRef.current)
       void startCollaboration()
       addMathOcrButtons()
       addInlineLatexInkMathButtons()
@@ -1656,7 +1664,7 @@ function MarkdownViewInner({
       style={sheetPixels ? { '--notia-desk-padding': `${deskPadding}px` } as CSSProperties : undefined}
       aria-label="Markdown editor"
     >
-      {sheetPixels ? (
+      {sheetPixels && !readOnly ? (
         <MarkdownPenBar
           tool={penTool}
           onToolChange={setPenTool}
@@ -1688,6 +1696,12 @@ function MarkdownViewInner({
           ) : null}
           <div className="notia-markdown-page-flow">
             <ChatAttachmentImages source={source} />
+            {readOnly ? (
+              <p className="notia-markdown-readonly" role="note">
+                <Lock size={13} strokeWidth={2} aria-hidden="true" />
+                <span>{readOnly}</span>
+              </p>
+            ) : null}
             <div className="notia-markdown-properties-wrap">
               <MarkdownPropertiesPanel
                 entries={frontmatterEntries}
@@ -1700,6 +1714,8 @@ function MarkdownViewInner({
                 onCreateLinkedNote={onCreateLinkedNote}
                 contexts={contexts}
                 lockedContextTag={lockedContextTag}
+                lockedContextSource={lockedContextSource}
+                readOnly={Boolean(readOnly)}
               />
             </div>
             <div ref={rootRef} className="notia-markdown-editor-root" />
@@ -1725,12 +1741,14 @@ function MarkdownViewInner({
       </div>
       <WikiLinkSuggestionMenu state={wikiLinkMenuState} onSelect={handleWikiLinkSelect} />
       <WikiLinkPreviewCard rootRef={rootRef} libraryId={libraryId} />
-      <MarkdownFormatToolbar
-        state={formatToolbarState}
-        hostRef={viewportRef}
-        toolbarRef={toolbarRef}
-        {...formatToolbarActions}
-      />
+      {readOnly ? null : (
+        <MarkdownFormatToolbar
+          state={formatToolbarState}
+          hostRef={viewportRef}
+          toolbarRef={toolbarRef}
+          {...formatToolbarActions}
+        />
+      )}
     </div>
   )
 }

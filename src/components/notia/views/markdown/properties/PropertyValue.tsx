@@ -39,7 +39,10 @@ export interface PropertyValueProps {
   libraryId?: string
   contexts: readonly LibraryContext[]
   lockedContextTag?: string
+  lockedContextSource?: 'board' | 'folder'
   onCreateLinkedNote?: (title: string) => Promise<string | null>
+  /** The note is read-only: the value is shown, never edited. */
+  readOnly?: boolean
 }
 
 function renderLinkedText(
@@ -142,9 +145,26 @@ export function PropertyValue({
   libraryId,
   contexts,
   lockedContextTag,
+  lockedContextSource,
   onCreateLinkedNote,
+  readOnly = false,
 }: PropertyValueProps) {
   const { key, value } = entry
+  if (readOnly) {
+    if (kind === 'context') {
+      return (
+        <span className="notia-properties-chip" title="Lo define Notia">
+          {contextLabel(value) || 'Sin contexto'}
+          <Lock size={11} aria-label="Lo define Notia" />
+        </span>
+      )
+    }
+    return (
+      <span className="notia-properties-text">
+        {typeof value === 'string' && value !== '' ? renderLinkedText(value, wikiLinkLookup, onOpenLinkedFile, key) : formatFrontmatterValue(value)}
+      </span>
+    )
+  }
   const save = (next: FrontmatterValue) => {
     onStopEdit()
     if (JSON.stringify(next) !== JSON.stringify(value)) onCommit(next)
@@ -153,10 +173,11 @@ export function PropertyValue({
   if (kind === 'context') {
     const label = contextLabel(value) || 'Sin contexto'
     if (lockedContextTag) {
+      const reason = lockedContextSource === 'folder' ? 'Lo define la carpeta' : 'Lo define el tablero de tareas'
       return (
-        <span className="notia-properties-chip" title="Lo define el tablero de tareas">
+        <span className="notia-properties-chip" title={reason}>
           {label}
-          <Lock size={11} aria-label="Lo define el tablero" />
+          <Lock size={11} aria-label={reason} />
         </span>
       )
     }

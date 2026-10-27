@@ -110,3 +110,16 @@ export function filterArchiveRows(rows: readonly TaskArchiveRow[], filters: Task
     return words.every((word) => text.includes(word))
   })
 }
+
+/** Quick filters of the phone's «Lista». */
+export type QuickFilter = 'all' | 'mine' | 'progress' | 'urgent'
+
+/** Whether a task passes a quick filter; `me` is the viewer's name on the board. */
+export function matchesQuickFilter(task: TaskItem, filter: QuickFilter, me: string | null): boolean {
+  switch (filter) {
+    case 'all': return true
+    case 'mine': return Boolean(me) && (task.assignees ?? []).some((person) => folded(person) === folded(me ?? ''))
+    case 'progress': return task.state === 'En progreso'
+    case 'urgent': return task.priority === 'Atrasado' || task.priority === 'Urgente' || task.priority === 'Alta'
+  }
+}

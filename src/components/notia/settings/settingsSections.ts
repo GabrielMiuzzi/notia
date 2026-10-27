@@ -50,7 +50,7 @@ export const SETTINGS_SECTION_META: Record<SettingsSection, SettingsSectionMeta>
   Telegram: { description: 'Bot de esta biblioteca y usuarios vinculados.', icon: Send, keywords: 'bot token' },
   'Cuentas asociadas': { description: 'Credenciales de Google Cloud y cuenta de Gmail de la biblioteca activa.', icon: AtSign, keywords: 'gmail correo mail email google cloud gcp client id secret oauth' },
   Backups: { description: 'Copias automáticas de la biblioteca activa.', icon: Archive, keywords: 'copia zip carpeta' },
-  Publicar: { description: 'Compartí tableros del Task Manager en la red local.', icon: Globe, keywords: 'task manager puerto navegador red' },
+  Publicar: { description: 'Compartí tableros del Task Manager y espacios públicos de lectura en la red local.', icon: Globe, keywords: 'task manager puerto navegador red espacios públicos gitbook sitio' },
   Finanzas: { description: 'Datos del módulo Finanzas en la biblioteca activa.', icon: CreditCard, keywords: 'eliminar borrar datos' },
 }
 

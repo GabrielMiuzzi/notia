@@ -5,11 +5,12 @@
 //! persistent store DTOs, generating identifiers on the backend so the model
 //! never chooses a ticket, comment or group id.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::error::BackendError;
+use crate::error::{BackendError, BackendErrorCode};
 use crate::task_manager_tools::{
-    TaskColumnKind, TaskGroupDto, TaskMutationDto, TaskPriority, TaskState, TaskUpdateFieldsDto,
+    TaskColumnKind, TaskGroupDto, TaskManagerContextDto, TaskManagerReadPort, TaskMutationDto, TaskPriority, TaskState,
+    TaskTicketReadRequest, TaskUpdateFieldsDto, MAX_TASK_RESULTS,
 };
 
 /// Maximum tickets read by one `read_task_tickets` call.
@@ -270,10 +271,38 @@ pub fn ticket_ids_to_read(arguments: &Value) -> Result<Vec<String>, BackendError
     Ok(unique)
 }
 
+/// The tickets of a `read_task_tickets` call. A ticket asked by id is read
+/// even when finished or cancelled, since its id came from a listing that
+/// includes them; one that cannot be read goes in `notRead` with its reason
+/// instead of failing the others.
+pub fn read_tickets_by_id(port: &dyn TaskManagerReadPort, context: &TaskManagerContextDto, arguments: &Value) -> Result<Value, BackendError> {
+    let include_archived = arguments.get("includeArchived").and_then(Value::as_bool).unwrap_or(true);
+    let mut tickets = Vec::new();
+    let mut not_read = Vec::new();
+    for ticket_id in ticket_ids_to_read(arguments)? {
+        let request = TaskTicketReadRequest {
+            context: context.clone(),
+            ticket_id: ticket_id.clone(),
+            include_archived,
+            subtask_offset: 0,
+            subtask_limit: MAX_TASK_RESULTS,
+            comment_offset: 0,
+            comment_limit: MAX_TASK_RESULTS,
+        };
+        match port.read_ticket(&request) {
+            Ok(ticket) => tickets.push(ticket),
+            Err(error) if matches!(error.code, BackendErrorCode::NotFound | BackendErrorCode::Forbidden | BackendErrorCode::InvalidInput) => {
+                not_read.push(json!({ "ticketId": ticket_id, "error": error.message }))
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(json!({ "tickets": tickets, "notRead": not_read }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn ids() -> impl FnMut() -> String {
         let mut next = 0;

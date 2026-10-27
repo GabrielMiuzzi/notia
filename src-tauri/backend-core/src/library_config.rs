@@ -25,12 +25,35 @@ const MAX_CONTEXTS: usize = 200;
 pub const DEFAULT_CONTEXT_TAG: &str = "#Personal";
 
 /// Default context catalog of every library.
-pub const DEFAULT_LIBRARY_CONTEXTS: [(&str, &str); 4] = [
+pub const DEFAULT_LIBRARY_CONTEXTS: [(&str, &str); 5] = [
     ("#Laboral", "#2563EB"),
     ("#Personal", "#16A34A"),
     ("#Academico", "#9333EA"),
     ("#Confidencial", "#DC2626"),
+    ("#Publico", "#D97706"),
 ];
+
+/// Contexts every library always has: they cannot be removed or renamed
+/// away. A configuration that lacks one gets it back with its color.
+pub const PROTECTED_CONTEXT_TAGS: [&str; 2] = ["#Confidencial", "#Publico"];
+
+/// Context of the files only the AI writes (`.agent/memory`). Notia sets
+/// it; it is not part of the catalog, so it cannot be chosen for a note or
+/// a folder, assigned to a user nor created in Settings. The Owner, who
+/// has every context, reads those files; nobody edits them by hand.
+pub const SYSTEM_CONTEXT_TAG: &str = "#System";
+
+/// Whether `tag` is the reserved `#System` context.
+pub fn is_system_context(tag: &str) -> bool {
+    let tag = tag.trim();
+    let tag = tag.strip_prefix('#').unwrap_or(tag);
+    tag.eq_ignore_ascii_case(&SYSTEM_CONTEXT_TAG[1..])
+}
+
+/// Whether `tag` is one of the contexts that cannot be removed.
+pub fn is_protected_context(tag: &str) -> bool {
+    PROTECTED_CONTEXT_TAGS.iter().any(|protected| protected.eq_ignore_ascii_case(tag.trim()))
+}
 
 /// Result of normalizing a stored configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +124,7 @@ pub fn normalize_library_config(value: &Value) -> NormalizedLibraryConfig {
         config.insert("telegram".into(), normalize_telegram(telegram));
     }
     let contexts = if current_defaults {
-        normalize_contexts(candidate.get("contexts"))
+        ensure_protected_contexts(normalize_contexts(candidate.get("contexts")))
     } else {
         ensure_default_contexts(candidate.get("contexts"))
     };
@@ -192,13 +215,26 @@ fn normalize_contexts(value: Option<&Value>) -> Vec<Value> {
     items
         .iter()
         .filter_map(|item| {
-            let tag = normalize_context_tag(item.get("tag")?.as_str()?)?;
+            let tag = normalize_context_tag(item.get("tag")?.as_str()?).filter(|tag| !is_system_context(tag))?;
             seen.insert(tag.to_lowercase()).then(|| {
                 json!({ "tag": tag, "color": normalize_context_color(item.get("color")) })
             })
         })
         .take(MAX_CONTEXTS)
         .collect()
+}
+
+/// Adds back the protected contexts a configuration lost (removed or renamed).
+fn ensure_protected_contexts(mut contexts: Vec<Value>) -> Vec<Value> {
+    for (tag, color) in DEFAULT_LIBRARY_CONTEXTS.iter().filter(|(tag, _)| is_protected_context(tag)) {
+        let present = contexts
+            .iter()
+            .any(|context| context.get("tag").and_then(Value::as_str).is_some_and(|known| known.eq_ignore_ascii_case(tag)));
+        if !present {
+            contexts.push(json!({ "tag": tag, "color": color }));
+        }
+    }
+    contexts
 }
 
 fn ensure_default_contexts(value: Option<&Value>) -> Vec<Value> {
@@ -324,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn current_configs_keep_removed_default_contexts_removed() {
+    fn current_configs_keep_removed_default_contexts_removed_but_the_protected_ones() {
         let normalized = normalize_library_config(&json!({
             "contextDefaultsVersion": 1,
             "contexts": [{ "tag": "#Uno" }, { "tag": "#uno" }, { "tag": "dos tres" }],
@@ -332,8 +368,44 @@ mod tests {
         assert!(!normalized.needs_migration);
         assert_eq!(
             normalized.config["contexts"],
-            json!([{ "tag": "#Uno", "color": DEFAULT_CONTEXT_COLOR }])
+            json!([
+                { "tag": "#Uno", "color": DEFAULT_CONTEXT_COLOR },
+                { "tag": "#Confidencial", "color": "#DC2626" },
+                { "tag": "#Publico", "color": "#D97706" },
+            ])
         );
+    }
+
+    #[test]
+    fn protected_contexts_survive_removal_and_renaming_and_keep_their_color() {
+        // «Confidencial» renamed and «Publico» removed: both come back; the
+        // new name stays as another context.
+        let normalized = normalize_library_config(&json!({
+            "contextDefaultsVersion": 1,
+            "contexts": [{ "tag": "#Secreto", "color": "#DC2626" }, { "tag": "#confidencial", "color": "#111111" }],
+        }));
+        assert_eq!(
+            normalized.config["contexts"],
+            json!([
+                { "tag": "#Secreto", "color": "#DC2626" },
+                { "tag": "#confidencial", "color": "#111111" },
+                { "tag": "#Publico", "color": "#D97706" },
+            ])
+        );
+        assert!(is_protected_context(" #PUBLICO "));
+        assert!(!is_protected_context("#Personal"));
+    }
+
+    #[test]
+    fn the_system_context_is_reserved_and_never_in_the_catalog() {
+        assert!(is_system_context("#System") && is_system_context(" system ") && is_system_context("#SYSTEM"));
+        assert!(!is_system_context("#Systems") && !is_system_context("#Confidencial"));
+        let normalized = normalize_library_config(&json!({
+            "contextDefaultsVersion": 1,
+            "contexts": [{ "tag": "#System", "color": "#64748B" }, { "tag": "#Personal", "color": "#16A34A" }],
+        }));
+        let tags = normalized.config["contexts"].as_array().expect("contexts").iter().filter_map(|context| context["tag"].as_str()).collect::<Vec<_>>();
+        assert!(tags.contains(&"#Personal") && !tags.iter().any(|tag| is_system_context(tag)), "{tags:?}");
     }
 
     #[test]

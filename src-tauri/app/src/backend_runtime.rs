@@ -989,7 +989,8 @@ fn compose_request_system_prompt(
                 .clone()
                 .map(|name| notia_backend_core::agent_workspace::normalize_prompt_file_name(&name))
                 .unwrap_or_else(|| crate::agent_workspace::selected_prompt(app, &request.context.library_id)),
-            default_prompt: notia_backend_core::DEFAULT_AGENT_PROMPT.to_string(),
+            // The conversational base when the routing call chose it for a Telegram turn.
+            default_prompt: notia_backend_core::base_agent_prompt(request.conversational).to_string(),
             default_rules: notia_backend_core::DEFAULT_AGENT_RULES.to_string(),
             synchronize_default_prompt: false,
         },
@@ -1010,6 +1011,10 @@ fn compose_request_system_prompt(
     if let Some(action) = &request.scheduled_action {
         system.push_str("\n\n");
         system.push_str(&notia_backend_core::ai_actions::prompts::action_guidance(action));
+    }
+    if let Some(turn) = &request.ai_task {
+        system.push_str("\n\n");
+        system.push_str(&notia_backend_core::ai_tasks::prompts::phase_guidance(turn.phase));
     }
     let guidance = notia_backend_core::scope_guidance(
         &request.context,
@@ -1164,9 +1169,6 @@ struct TauriBackendToolExecutor {
     attachment_images: Vec<(String, String)>,
 }
 
-/// Documents a single multi-document apply may touch.
-const MAX_MULTI_DOCUMENT_APPLY: usize = 20;
-
 impl TauriBackendToolExecutor {
     fn supported_tool_names() -> &'static [&'static str] {
         &[
@@ -1185,6 +1187,7 @@ impl TauriBackendToolExecutor {
             "add_agent_biography",
             "add_agent_talk",
             "add_agent_person",
+            "add_agent_improvement",
             "generate_image",
             "edit_image",
             "read_library_documents",
@@ -1192,6 +1195,7 @@ impl TauriBackendToolExecutor {
             "search_library_context",
             "search_library_exact",
             "get_document_metadata",
+            "inspect_page_chain",
             "find_document_references",
             "compare_documents",
             "read_active_markdown_document",
@@ -1331,6 +1335,8 @@ impl TauriBackendToolExecutor {
             "set_weight_goal",
             "set_health_plan",
             "log_water",
+            "log_steps",
+            "log_sleep",
             "log_meal",
             "update_meal",
             "delete_health_record",
@@ -1358,6 +1364,13 @@ impl TauriBackendToolExecutor {
             "delete_ai_action",
             "run_ai_action_now",
             "retry_ai_action_run",
+            "list_ai_tasks",
+            "get_ai_task",
+            "create_ai_task",
+            "cancel_ai_task",
+            "resume_ai_task",
+            "review_ai_task",
+            "delete_ai_task",
             "list_agenda",
             "create_agenda_event",
             "delete_agenda_event",
@@ -1590,12 +1603,22 @@ impl TauriBackendToolExecutor {
         Ok(MarkdownEditRequest {
             operation_id: call.id.clone(),
             locator,
-            // Some models quote the revision; both forms are the same number.
-            expected_revision: call.arguments.get("expectedRevision").and_then(|value| {
-                value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse::<u64>().ok()))
-            }),
+            expected_revision: revision_argument(&call.arguments),
             operation,
         })
+    }
+
+    /// The preview of a `preview_markdown_edit` or `apply_markdown_edit`
+    /// call, computed from the current document. Both take the same path and
+    /// operation, so the apply never needs the preview back from the model.
+    fn markdown_preview(
+        &self,
+        context: &BackendRequestContext,
+        call: &ToolCall,
+    ) -> Result<MarkdownEditPreview, BackendError> {
+        let request = Self::markdown_edit_request(context, call)?;
+        let document = self.reader(&context.library_id)?.read_document(&request.locator)?;
+        preview_markdown_edit(&document.content, &request)
     }
 
     fn preview_markdown_tool(
@@ -1603,10 +1626,7 @@ impl TauriBackendToolExecutor {
         context: &BackendRequestContext,
         call: &ToolCall,
     ) -> Result<Value, BackendError> {
-        let request = Self::markdown_edit_request(context, call)?;
-        let document = self.reader(&context.library_id)?.read_document(&request.locator)?;
-        serde_json::to_value(preview_markdown_edit(&document.content, &request)?)
-            .map_err(|_| invalid_result())
+        Ok(compact_markdown_preview(&self.markdown_preview(context, call)?))
     }
 
     /// Builds a multi-document request from the canonical tool schema
@@ -1641,11 +1661,15 @@ impl TauriBackendToolExecutor {
         }))
     }
 
-    fn preview_multi_markdown_tool(
+    /// The preview of a `preview_multi_document_markdown_edit` or
+    /// `apply_multi_document_markdown_edit` call, computed from the current
+    /// documents. An edit with `expectedRevision` fails when its document
+    /// changed since.
+    fn multi_markdown_preview(
         &self,
         context: &BackendRequestContext,
         call: &ToolCall,
-    ) -> Result<Value, BackendError> {
+    ) -> Result<MultiDocumentMarkdownPreview, BackendError> {
         let mut request = match Self::path_based_multi_edit(context, &call.arguments)? {
             Some(request) => request,
             None => {
@@ -1673,8 +1697,58 @@ impl TauriBackendToolExecutor {
             Self::ensure_agent_writable(&edit.locator)?;
         }
         let reader = self.reader(&context.library_id)?;
-        serde_json::to_value(preview_multi_document_markdown_edit(&reader, &request)?)
-            .map_err(|_| invalid_result())
+        let preview = preview_multi_document_markdown_edit(&reader, &request)?;
+        for edit in call.arguments.get("edits").and_then(Value::as_array).into_iter().flatten() {
+            let Some(expected) = revision_argument(edit) else {
+                continue;
+            };
+            let path = Self::locator(context, edit)?.logical_path.as_str().to_string();
+            let changed = preview
+                .previews
+                .iter()
+                .any(|document| document.locator.logical_path.as_str() == path && document.expected_revision != expected);
+            if changed {
+                return Err(BackendError::new(
+                    BackendErrorCode::Conflict,
+                    format!("El documento {path} cambió desde el preview; releelo y volvé a pedir el cambio."),
+                    true,
+                ));
+            }
+        }
+        Ok(preview)
+    }
+
+    /// Writes into a Markdown apply call the revisions its confirmation
+    /// showed, per edit for a multi-document apply.
+    fn with_confirmed_revisions(arguments: &mut Value, preview: &MutationPreview) {
+        let revision = |path: &str| {
+            preview
+                .documents
+                .iter()
+                .find(|document| document.path == path.trim())
+                .map(|document| document.expected_revision)
+        };
+        if let Some(edits) = arguments.get_mut("edits").and_then(Value::as_array_mut) {
+            for edit in edits {
+                let revision = Self::explicit_path(edit).and_then(|path| revision(&path));
+                if let (Some(revision), Some(edit)) = (revision, edit.as_object_mut()) {
+                    edit.insert("expectedRevision".to_string(), json!(revision));
+                }
+            }
+        } else if let (Some(document), Some(arguments)) = (preview.documents.first(), arguments.as_object_mut()) {
+            arguments.insert("expectedRevision".to_string(), json!(document.expected_revision));
+        }
+    }
+
+    fn preview_multi_markdown_tool(
+        &self,
+        context: &BackendRequestContext,
+        call: &ToolCall,
+    ) -> Result<Value, BackendError> {
+        let preview = self.multi_markdown_preview(context, call)?;
+        Ok(json!({
+            "documents": preview.previews.iter().map(compact_markdown_preview).collect::<Vec<_>>(),
+        }))
     }
 
     /// `content` with the images of the person's message it inserts
@@ -1703,23 +1777,7 @@ impl TauriBackendToolExecutor {
         context: &BackendRequestContext,
         call: &ToolCall,
     ) -> Result<Value, BackendError> {
-        let preview_value = call
-            .arguments
-            .get("preview")
-            .cloned()
-            .unwrap_or_else(|| call.arguments.clone());
-        let mut preview = serde_json::from_value::<MarkdownEditPreview>(preview_value)
-            .map_err(|_| BackendError::invalid_input("El preview Markdown no es válido."))?;
-        if preview.locator.library_id != context.library_id {
-            return Err(BackendError::new(
-                BackendErrorCode::Forbidden,
-                "El preview Markdown no pertenece a la biblioteca activa.",
-                false,
-            ));
-        }
-        let path = preview.locator.logical_path.as_str().to_string();
-        preview.locator = DocumentLocatorDto::new(&context.library_id, &path, None, None)?;
-        Self::ensure_agent_writable(&preview.locator)?;
+        let preview = self.markdown_preview(context, call)?;
         let selected_hunk_ids = call
             .arguments
             .get("selectedHunkIds")
@@ -1731,6 +1789,7 @@ impl TauriBackendToolExecutor {
             return Ok(json!({ "changed": false, "operationId": preview.operation_id }));
         };
         let content = self.with_message_images(content)?;
+        let content = crate::folder_contexts::enforce(&self.app, &context.library_id, preview.locator.logical_path.as_str(), content);
         let reader = self.reader(&context.library_id)?;
         let current = reader.read_document(&preview.locator)?;
         if current.revision != preview.expected_revision {
@@ -1756,22 +1815,6 @@ impl TauriBackendToolExecutor {
         }))
     }
 
-    fn multi_markdown_preview(call: &ToolCall) -> Result<MultiDocumentMarkdownPreview, BackendError> {
-        let value = call
-            .arguments
-            .get("preview")
-            .cloned()
-            .unwrap_or_else(|| call.arguments.clone());
-        let preview = serde_json::from_value::<MultiDocumentMarkdownPreview>(value)
-            .map_err(|_| BackendError::invalid_input("El preview multi-documento no es válido."))?;
-        if preview.previews.is_empty() || preview.previews.len() > MAX_MULTI_DOCUMENT_APPLY {
-            return Err(BackendError::invalid_input(
-                "El preview multi-documento no tiene un tamaño válido.",
-            ));
-        }
-        Ok(preview)
-    }
-
     /// Applies a multi-document preview all-or-nothing: every document is
     /// materialized and its revision verified before the first write, and
     /// documents already written are restored if a later write fails.
@@ -1780,7 +1823,7 @@ impl TauriBackendToolExecutor {
         context: &BackendRequestContext,
         call: &ToolCall,
     ) -> Result<Value, BackendError> {
-        let preview = Self::multi_markdown_preview(call)?;
+        let preview = self.multi_markdown_preview(context, call)?;
         let selected = call
             .arguments
             .get("selectedHunkIds")
@@ -1801,17 +1844,7 @@ impl TauriBackendToolExecutor {
         let reader = self.reader(&context.library_id)?;
         let mut planned = Vec::new();
         for document in &preview.previews {
-            if document.locator.library_id != context.library_id {
-                return Err(BackendError::new(
-                    BackendErrorCode::Forbidden,
-                    "El preview Markdown no pertenece a la biblioteca activa.",
-                    false,
-                ));
-            }
-            let mut document = document.clone();
             let path = document.locator.logical_path.as_str().to_string();
-            document.locator = DocumentLocatorDto::new(&context.library_id, &path, None, None)?;
-            Self::ensure_agent_writable(&document.locator)?;
             let ids = if selected.is_empty() {
                 Vec::new()
             } else {
@@ -1826,7 +1859,7 @@ impl TauriBackendToolExecutor {
                 }
                 ids
             };
-            let Some(content) = materialize_markdown_preview(&document, &ids)? else {
+            let Some(content) = materialize_markdown_preview(document, &ids)? else {
                 continue;
             };
             let current = reader.read_document(&document.locator)?;
@@ -1837,7 +1870,9 @@ impl TauriBackendToolExecutor {
                     true,
                 ));
             }
-            planned.push((document.locator, current.content, self.with_message_images(content)?));
+            let content = self.with_message_images(content)?;
+            let content = crate::folder_contexts::enforce(&self.app, &context.library_id, document.locator.logical_path.as_str(), content);
+            planned.push((document.locator.clone(), current.content, content));
         }
         let registry = self.app.state::<LibraryBindingRegistry>();
         let picker = self.app.state::<AndroidDirectoryPickerState>();
@@ -1878,14 +1913,22 @@ impl TauriBackendToolExecutor {
             }
             written.push(entry);
         }
+        // Each document says the frontmatter it now has where it changed,
+        // so a long chain edit shows the last link it set.
+        let last = planned.last().map(|(locator, _, _)| locator.logical_path.as_str().to_string());
         Ok(json!({
             "changed": !planned.is_empty(),
             "operationId": preview.operation_id,
+            "summary": match &last {
+                Some(last) => format!("Se aplicaron los {} documentos de la tanda; el último fue {last}.", planned.len()),
+                None => "No había nada que cambiar.".to_string(),
+            },
             "documents": planned
                 .iter()
-                .map(|(locator, _, content)| json!({
+                .map(|(locator, original, content)| json!({
                     "path": locator.logical_path.as_str(),
                     "revision": crate::backend::compute_document_revision(content),
+                    "frontmatter": notia_backend_core::markdown_editing::frontmatter_changes(original, content),
                 }))
                 .collect::<Vec<_>>(),
         }))
@@ -2290,6 +2333,11 @@ impl TauriBackendToolExecutor {
                     &utc_today(),
                 )
                 .map_err(rejected)?;
+                // A ticket that does not add up goes back before asking.
+                let validation = crate::finance_records::validate_purchase(&purchase).map_err(BackendError::invalid_input)?;
+                if !validation.valid {
+                    return Err(BackendError::invalid_input(crate::finance_records::purchase_mismatch(&purchase, &validation)));
+                }
                 (
                     format!(
                         "Guardar ticket de {}: {} producto(s), total {} {}, en {}.",
@@ -2355,17 +2403,10 @@ impl TauriBackendToolExecutor {
             "replace_library_document" | "delete_library_document" => {
                 self.existing_document_locator(context, &call.arguments)?
             }
-            "apply_markdown_edit" => {
-                let preview = call.arguments.get("preview").unwrap_or(&call.arguments);
-                let path = preview
-                    .pointer("/locator/logicalPath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if path.is_empty() {
-                    return Ok(None);
-                }
-                DocumentLocatorDto::new(&context.library_id, path, None, None)?
-            }
+            "apply_markdown_edit" => match Self::explicit_path(&call.arguments) {
+                Some(_) => Self::locator(context, &call.arguments)?,
+                None => return Ok(None),
+            },
             _ => return Ok(None),
         };
         let previous = self.reader(&context.library_id)?.read_document(&locator)?;
@@ -2567,6 +2608,19 @@ impl TauriBackendToolExecutor {
         kind: crate::agent_workspace::AgentItem,
         value: &str,
     ) -> Result<Value, BackendError> {
+        Self::ensure_agent_memory_writable(context)?;
+        let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
+        // A parallel call without tools and without memory context
+        // organizes every agent file together; the turn does not wait for it.
+        if changed {
+            crate::agent_knowledge::schedule_organization(&self.app, &context.library_id);
+        }
+        Ok(json!({ "changed": changed }))
+    }
+
+    /// The agent files of `.agent/memory` are written only for the owner
+    /// under a policy that keeps memory.
+    fn ensure_agent_memory_writable(context: &BackendRequestContext) -> Result<(), BackendError> {
         if !context.persistence_policy.allows_memory() {
             return Err(BackendError::new(
                 BackendErrorCode::Forbidden,
@@ -2581,13 +2635,7 @@ impl TauriBackendToolExecutor {
                 false,
             ));
         }
-        let changed = crate::agent_workspace::append_agent_item(&self.app, &context.library_id, kind, value)?;
-        // A parallel call without tools and without memory context
-        // organizes every agent file together; the turn does not wait for it.
-        if changed {
-            crate::agent_knowledge::schedule_organization(&self.app, &context.library_id);
-        }
-        Ok(json!({ "changed": changed }))
+        Ok(())
     }
 
     /// `generate_image` / `edit_image`: draws with the local model and keeps
@@ -2709,15 +2757,27 @@ impl ToolExecutor for TauriBackendToolExecutor {
             let _ = decision;
             return self.execute(context, &call);
         }
-        if matches!(call.name.as_str(), "apply_markdown_edit" | "apply_multi_document_markdown_edit")
-            && !decision.hunk_ids.is_empty()
-        {
+        if call.name == "create_ai_task" {
+            // «Confirmar todos» on the creation lets the task apply its
+            // changes without asking; the model never decides it.
             let mut call = call.clone();
             if let Some(arguments) = call.arguments.as_object_mut() {
-                arguments.insert(
-                    "selectedHunkIds".to_string(),
-                    serde_json::to_value(&decision.hunk_ids).map_err(|_| invalid_result())?,
-                );
+                arguments.insert("approveAll".to_string(), Value::Bool(decision.approve_all));
+            }
+            return self.execute(context, &call);
+        }
+        if matches!(call.name.as_str(), "apply_markdown_edit" | "apply_multi_document_markdown_edit") {
+            // The apply computes the preview again: the revisions the person
+            // saw make it fail if a document changed while they decided.
+            let mut call = call.clone();
+            Self::with_confirmed_revisions(&mut call.arguments, preview);
+            if !decision.hunk_ids.is_empty() {
+                if let Some(arguments) = call.arguments.as_object_mut() {
+                    arguments.insert(
+                        "selectedHunkIds".to_string(),
+                        serde_json::to_value(&decision.hunk_ids).map_err(|_| invalid_result())?,
+                    );
+                }
             }
             return self.execute(context, &call);
         }
@@ -2730,13 +2790,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         call: &ToolCall,
     ) -> Result<Option<MutationPreview>, BackendError> {
         if call.name == "apply_markdown_edit" {
-            let preview_value = call
-                .arguments
-                .get("preview")
-                .cloned()
-                .unwrap_or_else(|| call.arguments.clone());
-            let preview = serde_json::from_value::<MarkdownEditPreview>(preview_value)
-                .map_err(|_| BackendError::invalid_input("El preview Markdown no es válido."))?;
+            let preview = self.markdown_preview(context, call)?;
             return Ok(Some(MutationPreview {
                 operation_id: call.id.clone(),
                 summary: format!("Aplicar edición Markdown en {}", preview.locator.logical_path.as_str()),
@@ -2766,7 +2820,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
             }));
         }
         if call.name == "apply_multi_document_markdown_edit" {
-            let preview = Self::multi_markdown_preview(call)?;
+            let preview = self.multi_markdown_preview(context, call)?;
             return Ok(Some(MutationPreview {
                 operation_id: call.id.clone(),
                 summary: format!("Aplicar edición Markdown en {} documentos", preview.previews.len()),
@@ -2911,6 +2965,29 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 hunks: vec![PreviewHunk {
                     id: call.id.clone(),
                     document_path: format!("gym:{}", context.library_id),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: summary,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
+        if crate::ai_task_runner::is_ai_task_write_tool(&call.name) {
+            // Checked as its execution will do it; a rejection goes back to
+            // the model before asking the Owner.
+            let summary = crate::ai_task_runner::preview_tool(&self.app, context, &call.name, &call.arguments)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary: summary.lines().next().unwrap_or("Cambiar Tareas IA").to_string(),
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: format!("ai-tasks:{}", context.library_id),
                     start_line: 1,
                     end_line: 1,
                     old_text: String::new(),
@@ -3320,8 +3397,56 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 serde_json::to_value(page).map_err(|_| invalid_result())?
             }
             "get_document_metadata" => {
-                let locator = self.existing_document_locator(context, &call.arguments)?;
-                serde_json::to_value(reader.metadata(&locator)?).map_err(|_| invalid_result())?
+                // Several documents at once, read now from their files.
+                let ids = Self::ids(&call.arguments);
+                if ids.is_empty() {
+                    let locator = self.existing_document_locator(context, &call.arguments)?;
+                    serde_json::to_value(reader.metadata(&locator)?).map_err(|_| invalid_result())?
+                } else {
+                    if ids.len() > notia_backend_core::MAX_READ_DOCUMENTS * 3 {
+                        return Err(BackendError::invalid_input(format!(
+                            "get_document_metadata lee hasta {} documentos por vez; para una carpeta entera usá inspect_page_chain.",
+                            notia_backend_core::MAX_READ_DOCUMENTS * 3
+                        )));
+                    }
+                    let documents = ids
+                        .iter()
+                        .map(|id| {
+                            let arguments = json!({ "documentId": id });
+                            match self.existing_document_locator(context, &arguments).and_then(|locator| reader.metadata(&locator)) {
+                                Ok(metadata) => serde_json::to_value(metadata).map_err(|_| invalid_result()),
+                                Err(error) => Ok(json!({ "documentId": id, "error": error.message })),
+                            }
+                        })
+                        .collect::<Result<Vec<_>, BackendError>>()?;
+                    json!({ "documents": documents })
+                }
+            }
+            "inspect_page_chain" => {
+                let folder = Self::text(&call.arguments, "folder").trim().trim_matches('/').to_string();
+                if folder.is_empty() {
+                    return Err(BackendError::invalid_input("inspect_page_chain necesita folder: la carpeta de las páginas (por ejemplo «Cursos/Rust»)."));
+                }
+                let limit = notia_backend_core::page_links::MAX_CHAIN_DOCUMENTS;
+                let page = reader.inventory(&notia_backend_core::InventoryRequest {
+                    library_id: context.library_id.clone(),
+                    prefix: Some(notia_backend_core::LogicalPathDto::new(&folder)?),
+                    offset: 0,
+                    limit: limit + 1,
+                })?;
+                if page.total > limit {
+                    return Err(BackendError::invalid_input(format!(
+                        "La carpeta {folder} tiene {} documentos y se revisan hasta {limit} por vez: elegí una subcarpeta.",
+                        page.total
+                    )));
+                }
+                let exists = |path: &str| {
+                    DocumentLocatorDto::new(&context.library_id, path, None, None)
+                        .and_then(|locator| reader.metadata(&locator))
+                        .is_ok()
+                };
+                let report = notia_backend_core::page_links::inspect_page_chain(&folder, page.items, &exists);
+                serde_json::to_value(report).map_err(|_| invalid_result())?
             }
             "find_document_references" => {
                 let locator = self.existing_document_locator(context, &call.arguments)?;
@@ -3599,6 +3724,12 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 )
                 .ok_or_else(|| BackendError::invalid_input("Indicá el nombre de la persona y quién es, en una oración breve."))?;
                 self.append_agent_file(context, crate::agent_workspace::AgentItem::Person, &entry)?
+            }
+            "add_agent_improvement" => {
+                Self::ensure_agent_memory_writable(context)?;
+                let kind = notia_backend_core::agent_workspace::ImprovementKind::parse(&Self::text(&call.arguments, "kind"));
+                let text = Self::first_text(&call.arguments, "improvement", "content");
+                json!({ "changed": crate::agent_workspace::append_improvement(&self.app, &context.library_id, kind, &text)? })
             }
             "get_finance_record" => {
                 let entity = Self::text(&call.arguments, "entity");
@@ -4309,6 +4440,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     ));
                 }
                 let content = self.with_message_images(content)?;
+                let content = crate::folder_contexts::enforce(&self.app, &context.library_id, locator.logical_path.as_str(), content);
                 let registry = self.app.state::<LibraryBindingRegistry>();
                 let picker = self.app.state::<AndroidDirectoryPickerState>();
                 let adapter = crate::filesystem::adapter::TauriFilesystemDocumentAdapter::for_library(
@@ -4323,6 +4455,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 let locator = self.existing_document_locator(context, &call.arguments)?;
                 Self::ensure_agent_writable(&locator)?;
                 let content = self.with_message_images(Self::text(&call.arguments, "content"))?;
+                let content = crate::folder_contexts::enforce(&self.app, &context.library_id, locator.logical_path.as_str(), content);
                 // Tools report backend-core revisions (numbers); the editor
                 // may still send the platform `sha256:` form.
                 let expected = call.arguments.get("expectedRevision");
@@ -4433,6 +4566,9 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 crate::ai_actions::execute_tool(&self.app, &context.library_id, &database, name, &call.arguments)
                     .map_err(crate::ai_actions::tool_error)?
             }
+            name if crate::ai_task_runner::is_ai_task_tool(name) => {
+                crate::ai_task_runner::execute_tool(&self.app, context, name, &call.arguments)?
+            }
             name if crate::routine_tools::is_routine_tool(name) => crate::routine_tools::execute_tool(
                 &self.app,
                 &self.routine_context(context)?,
@@ -4469,7 +4605,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::meeting_tools::is_meeting_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::ai_task_runner::is_ai_task_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::meeting_tools::is_meeting_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4484,6 +4620,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     | "add_agent_biography"
                     | "add_agent_talk"
                     | "add_agent_person"
+                    | "add_agent_improvement"
                     | "save_finance_account"
                     | "save_finance_category"
                     | "save_finance_transaction"
@@ -4707,6 +4844,14 @@ pub(crate) fn execute_backend_request(
     if request.autonomous {
         request.tools = notia_backend_core::agent_autonomy::autonomous_tools(std::mem::take(&mut request.tools));
     }
+    // A phase of an AI task runs for the Owner with memory, with its
+    // phase's tools; nothing else may claim to be one.
+    if let Some(turn) = &request.ai_task {
+        if !(request.context.actor.is_library_owner() && request.context.persistence_policy.allows_memory()) {
+            return Err(BackendError::new(BackendErrorCode::Forbidden, "Las Tareas IA solo corren para el Owner.", false));
+        }
+        request.tools = notia_backend_core::ai_tasks::tools::phase_tools(std::mem::take(&mut request.tools), turn.phase, request.library_search);
+    }
     // `thoughts.md`, `biography.md`, `talk.md` and `people.md` are always
     // present for the runs that read them, even when deleted during the
     // session; a new `people.md` starts with the people the memory names.
@@ -4722,11 +4867,13 @@ pub(crate) fn execute_backend_request(
     // Every chat with more than one area is routed: the turn keeps every
     // tool the actor may use and offers those of its areas, which the agent
     // may change mid-run, and the same call decides whether the turn thinks
-    // (see `backend_core::tool_routing`). A resumed run keeps both.
+    // and, on Telegram, whether it answers with the conversational prompt
+    // (see `backend_core::tool_routing`). A resumed run keeps all three.
     if fresh_run {
-        let (areas, thinking) = route_turn_areas(app, state, &request).unzip();
-        request.tool_areas = areas;
-        request.thinking = thinking.flatten();
+        let routed = route_turn_areas(app, state, &request);
+        request.thinking = routed.as_ref().and_then(|routed| routed.thinking);
+        request.conversational = routed.as_ref().is_some_and(|routed| routed.conversational);
+        request.tool_areas = routed.map(|routed| routed.areas);
     }
     state.journal.store_request(&request)?;
     let provider_settings = provider_settings_for_library(app, state, &request.context.library_id)?;
@@ -4901,12 +5048,13 @@ const ROUTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 /// projected for the actor's contexts); a module's chat suggests its own
 /// area, which also decides with words when the model does not answer.
 /// The same answer says whether the turn needs thinking (`None` when the
-/// model does not say). `None` when the tools span a single area. See
-/// `backend_core::tool_routing`.
-fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &AgentRequest) -> Option<(Vec<String>, Option<bool>)> {
+/// model does not say) and, in a Telegram turn the person wrote, whether it
+/// answers with the conversational prompt. `None` when the tools span a
+/// single area. See `backend_core::tool_routing`.
+fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &AgentRequest) -> Option<RoutedTurn> {
     use notia_backend_core::tool_routing::{
-        area_ids, fallback_areas, home_area, needs_routing, offered_areas, parse_router_answer, router_prompt, RouterMessage,
-        MAX_ROUTER_IMAGES,
+        area_ids, fallback_areas, home_area, needs_routing, offered_areas, parse_router_answer, router_prompt, with_prompt_choice,
+        RouterMessage, MAX_ROUTER_IMAGES,
     };
     use notia_backend_core::{BackendMessage, MessageRole};
     // The published board only reaches its tickets.
@@ -4937,6 +5085,11 @@ fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &Agen
         })
         .collect::<Vec<_>>();
     let (system, user) = router_prompt(&offered, &conversation, home);
+    // Only a message the person wrote on Telegram may get the conversational prompt.
+    let offers_conversation = request.context.channel == notia_backend_core::BackendChannel::Telegram
+        && !request.autonomous
+        && request.scheduled_action.is_none();
+    let system = if offers_conversation { with_prompt_choice(system) } else { system };
     let decision = provider_settings_for_library(app, state, &request.context.library_id)
         .and_then(|settings| complete_with(app, settings, request.context.clone(), &system, &user, last_images, ROUTING_TIMEOUT))
         .map(|answer| parse_router_answer(&answer, &offered))
@@ -4945,12 +5098,21 @@ fn route_turn_areas(app: &AppHandle, state: &BackendRuntimeState, request: &Agen
         Some(areas) => (areas, "modelo"),
         None => (fallback_areas(&last_text, &offered, with_attachments, home), "palabras"),
     };
+    let conversational = offers_conversation && decision.conversational == Some(true);
     log::info!(
-        "[notia:router] áreas {:?} elegidas por {source}; thinking {:?}",
+        "[notia:router] áreas {:?} elegidas por {source}; thinking {:?}; prompt {}",
         areas.iter().map(|area| area.id()).collect::<Vec<_>>(),
-        decision.thinking
+        decision.thinking,
+        if conversational { "conversacional" } else { "default" }
     );
-    Some((area_ids(&areas), decision.thinking))
+    Some(RoutedTurn { areas: area_ids(&areas), thinking: decision.thinking, conversational })
+}
+
+/// What the routing call decided for a fresh run.
+struct RoutedTurn {
+    areas: Vec<String>,
+    thinking: Option<bool>,
+    conversational: bool,
 }
 
 /// One completion without tools for a background task of the library
@@ -5298,6 +5460,35 @@ fn invalid_markdown_operation(error: serde_json::Error) -> BackendError {
     ))
 }
 
+/// `expectedRevision` of a tool call or of one of its edits. Some models quote
+/// the revision; both forms are the same number.
+fn revision_argument(arguments: &Value) -> Option<u64> {
+    arguments.get("expectedRevision").and_then(|value| {
+        value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse::<u64>().ok()))
+    })
+}
+
+/// What a Markdown preview tells the model: the document, its revision and
+/// the changes, not the whole text. The apply takes the same path and
+/// operation and computes the preview again.
+fn compact_markdown_preview(preview: &MarkdownEditPreview) -> Value {
+    json!({
+        "path": preview.locator.logical_path.as_str(),
+        "expectedRevision": preview.expected_revision,
+        "hunks": preview
+            .hunks
+            .iter()
+            .map(|hunk| json!({
+                "id": hunk.id,
+                "startLine": hunk.anchor.start_line,
+                "endLine": hunk.anchor.end_line,
+                "oldText": hunk.old_text,
+                "newText": hunk.new_text,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 fn unsupported(message: &str) -> BackendError {
     BackendError::new(BackendErrorCode::Unsupported, message, false)
 }
@@ -5320,7 +5511,8 @@ fn schedule_turn_reflection(
     let Some((request, tools, response)) = state.journal.turn_record(context, idempotency_key) else {
         return;
     };
-    if request.autonomous {
+    // The phases of an AI task keep their work in the task itself.
+    if request.autonomous || request.ai_task.is_some() {
         return;
     }
     let asked = request
@@ -5442,6 +5634,8 @@ mod tests {
             scheduled_action: None,
             tool_areas: None,
             thinking: None,
+            conversational: false,
+            ai_task: None,
         };
         let later = request("¿Me pasás la rutina de hoy?");
         assert!(super::last_user_images(&later).is_empty());
@@ -5610,30 +5804,194 @@ mod tests {
         assert!(unknown.message.contains("replaceParagraph") && unknown.message.contains("replaceText"), "{}", unknown.message);
 
         let revision = crate::backend::compute_document_revision(source);
+        let edit = json!({
+            "path": "Meet.md",
+            "expectedRevision": revision,
+            "operation": { "type": "replaceText", "payload": {
+                "find": "La extensión del horario de remesas de 0 a 3.",
+                "replace": "Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.",
+            } },
+        });
         let preview = executor
-            .execute(
-                &context,
-                &call(
-                    "preview_markdown_edit",
-                    through_float(&json!({
-                        "path": "Meet.md",
-                        "expectedRevision": revision,
-                        "operation": { "type": "replaceText", "payload": {
-                            "find": "La extensión del horario de remesas de 0 a 3.",
-                            "replace": "Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.",
-                        } },
-                    })),
-                ),
-            )
-            .expect("preview");
-        let preview = preview.data.expect("preview data");
+            .execute(&context, &call("preview_markdown_edit", through_float(&edit)))
+            .expect("preview")
+            .data
+            .expect("preview data");
+        // The model sees what changes, not the whole note twice.
+        assert_eq!(preview["path"], "Meet.md");
+        assert_eq!(preview["hunks"].as_array().map(Vec::len), Some(1));
+        assert!(preview.get("newContent").is_none() && preview.get("oldContent").is_none());
+        // The apply takes the same path and operation, not the preview.
         let applied = executor
-            .execute(&context, &call("apply_markdown_edit", through_float(&json!({ "preview": preview }))))
+            .execute(&context, &call("apply_markdown_edit", through_float(&edit)))
             .expect("applied");
         assert!(applied.ok, "{:?}", applied.error);
         assert_eq!(
             std::fs::read_to_string(root.join("Meet.md")).expect("note"),
             "# Meet\n\n- Restringir el horario de operatoria de 0 a 1, en corresponsalías y remesas.\n- Otro punto.\n"
+        );
+        // The same revision again is stale now.
+        let stale = executor
+            .execute(&context, &call("apply_markdown_edit", through_float(&edit)))
+            .expect_err("stale revision");
+        assert_eq!(stale.code, notia_backend_core::BackendErrorCode::Conflict);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// `improve.md`: the agent notes what Notia could improve, once each,
+    /// only for the owner, and no agent file the prompt reads changes.
+    #[test]
+    fn the_agent_notes_improvements_for_notia_once() {
+        use crate::host::{AppContext, AppPaths, HostPorts, Manager};
+        use notia_backend_core::{
+            BackendActor, BackendChannel, BackendErrorCode, BackendRequestContext, BackendScope, PersistencePolicy,
+            RequestControl, ToolCall, ToolExecutor,
+        };
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!("notia-agent-improve-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".agent/memory")).expect("root");
+        let app = AppContext::new(AppPaths::default(), HostPorts::default());
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-1", &root).expect("binding");
+        app.manage(registry);
+        app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+        app.manage(crate::agent_history::AgentHistoryState::default());
+        app.manage(crate::agent_workspace::AgentWorkspaceState::prepared_for("library-1"));
+        let executor = TauriBackendToolExecutor {
+            app: app.clone(),
+            snapshot: None,
+            web_search_tracker: Mutex::new(Default::default()),
+            control: RequestControl::new(None),
+            journal: Arc::new(Default::default()),
+            idempotency_key: "key-1".into(),
+            request_images: Vec::new(),
+            attachment_images: Vec::new(),
+        };
+        let mut context = BackendRequestContext {
+            request_id: "request-1".into(),
+            library_id: "library-1".into(),
+            actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+            channel: BackendChannel::App,
+            scope: BackendScope::Library,
+            persistence_policy: PersistencePolicy::Persistent,
+        };
+        let note = |kind: &str, text: &str| ToolCall {
+            id: "call-improve".into(),
+            name: "add_agent_improvement".into(),
+            arguments: json!({ "kind": kind, "improvement": text }),
+            round: 1,
+        };
+        let improve = || std::fs::read_to_string(root.join(".agent/memory/improve.md")).expect("improve.md");
+
+        let added = executor
+            .execute(&context, &note("error", "apply_multi_document_markdown_edit rechaza siempre el preview."))
+            .expect("noted");
+        assert_eq!(added.data.expect("data")["changed"], true);
+        let repeated = executor
+            .execute(&context, &note("error", "apply_multi_document_markdown_edit rechaza siempre el preview."))
+            .expect("repeated");
+        assert_eq!(repeated.data.expect("data")["changed"], false);
+        executor.execute(&context, &note("herramienta", "Falta renombrar carpetas.")).expect("tool");
+
+        let file = improve();
+        assert!(file.contains("contexto: \"#System\""), "{file}");
+        assert!(file.contains("# Mejoras para Notia"));
+        assert_eq!(file.matches(" · error · apply_multi_document_markdown_edit rechaza siempre el preview.").count(), 1, "{file}");
+        assert!(file.contains(" · herramienta · Falta renombrar carpetas."));
+        // Nothing the prompt reads was written.
+        let written = std::fs::read_dir(root.join(".agent/memory")).expect("memory").count();
+        assert_eq!(written, 1);
+
+        context.actor.library_user_id = "user-guest".into();
+        let guest = executor.execute(&context, &note("mejora", "Otra.")).expect_err("guest");
+        assert_eq!(guest.code, BackendErrorCode::Forbidden);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// The chat request of 2026-10-25: chain a course by setting `nextPage`
+    /// and `previousPage` of many documents in one confirmed apply.
+    #[test]
+    fn the_agent_sets_several_properties_of_several_documents_in_one_apply() {
+        use crate::host::{AppContext, AppPaths, HostPorts, Manager};
+        use notia_backend_core::{
+            BackendActor, BackendChannel, BackendErrorCode, BackendRequestContext, BackendScope, ConfirmationDecision,
+            MutationPreview, PersistencePolicy, RequestControl, ToolCall, ToolExecutor,
+        };
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!("notia-agent-chain-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Cursos")).expect("root");
+        for name in ["Intro", "Algoritmos"] {
+            std::fs::write(root.join(format!("Cursos/{name}.md")), format!("---\nnextPage: \"[[viejo.md]]\"\n---\n# {name}\n")).expect("note");
+        }
+        let app = AppContext::new(AppPaths::default(), HostPorts::default());
+        let registry = crate::library_registry::LibraryBindingRegistry::default();
+        registry.register_desktop_root("library-1", &root).expect("binding");
+        app.manage(registry);
+        app.manage(crate::mobile_directory_picker::AndroidDirectoryPickerState::empty());
+        app.manage(crate::agent_history::AgentHistoryState::default());
+        let executor = TauriBackendToolExecutor {
+            app: app.clone(),
+            snapshot: None,
+            web_search_tracker: Mutex::new(Default::default()),
+            control: RequestControl::new(None),
+            journal: Arc::new(Default::default()),
+            idempotency_key: "key-1".into(),
+            request_images: Vec::new(),
+            attachment_images: Vec::new(),
+        };
+        let context = BackendRequestContext {
+            request_id: "request-1".into(),
+            library_id: "library-1".into(),
+            actor: BackendActor { library_user_id: "user-owner".into(), external_identity: None },
+            channel: BackendChannel::App,
+            scope: BackendScope::Library,
+            persistence_policy: PersistencePolicy::Persistent,
+        };
+        let set = |path: &str, key: &str, value: &str| json!({
+            "path": path,
+            "operation": { "type": "setFrontmatter", "payload": { "key": key, "value": value } },
+        });
+        let call = ToolCall {
+            id: "call-chain".into(),
+            name: "apply_multi_document_markdown_edit".into(),
+            arguments: json!({ "edits": [
+                set("Cursos/Intro.md", "nextPage", "[[Cursos/Algoritmos.md]]"),
+                set("Cursos/Intro.md", "previousPage", "N/A"),
+                set("Cursos/Algoritmos.md", "nextPage", "N/A"),
+                set("Cursos/Algoritmos.md", "previousPage", "[[Cursos/Intro.md]]"),
+            ] }),
+            round: 1,
+        };
+        let accept = |preview: &MutationPreview| ConfirmationDecision {
+            operation_id: preview.operation_id.clone(),
+            accepted: true,
+            hunk_ids: Vec::new(),
+            approve_all: false,
+            suggestion: None,
+        };
+
+        // A document that changes while the person decides is not written.
+        let preview = executor.preview(&context, &call).expect("preview").expect("a preview");
+        assert_eq!(preview.documents.len(), 2);
+        std::fs::write(root.join("Cursos/Algoritmos.md"), "---\nnextPage: N/A\n---\n# Algoritmos editado\n").expect("edit");
+        let stale = executor.execute_confirmed(&context, &call, &accept(&preview), Some(&preview)).expect_err("stale");
+        assert_eq!(stale.code, BackendErrorCode::Conflict);
+        assert!(std::fs::read_to_string(root.join("Cursos/Intro.md")).expect("intro").contains("viejo.md"));
+
+        let preview = executor.preview(&context, &call).expect("preview").expect("a preview");
+        let result = executor.execute_confirmed(&context, &call, &accept(&preview), Some(&preview)).expect("applied");
+        assert!(result.ok, "{:?}", result.error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("Cursos/Intro.md")).expect("intro"),
+            "---\nnextPage: \"[[Cursos/Algoritmos.md]]\"\npreviousPage: N/A\n---\n# Intro\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Cursos/Algoritmos.md")).expect("algoritmos"),
+            "---\nnextPage: N/A\npreviousPage: \"[[Cursos/Intro.md]]\"\n---\n# Algoritmos editado\n"
         );
         std::fs::remove_dir_all(root).expect("cleanup");
     }

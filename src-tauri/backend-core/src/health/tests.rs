@@ -52,6 +52,11 @@ fn overweight() -> HealthData {
         objective: Objective { target_kg: Some(76.0), pace: 0.5 },
         plan: None,
         water,
+        steps: [("2026-09-24", 6_200), ("2026-09-26", 9_800), ("2026-09-27", 11_250), ("2026-09-28", 4_310)]
+            .into_iter()
+            .map(|(date, steps)| (date.to_string(), steps))
+            .collect(),
+        sleep: [("2026-09-26", 400), ("2026-09-27", 465), ("2026-09-28", 390)].into_iter().map(|(date, minutes)| (date.to_string(), minutes)).collect(),
         meals: vec![
             meal("m1", "2026-09-28", MealCategory::Desayuno, "Café con leche y tostadas", 320.0, 1),
             meal("m2", "2026-09-28", MealCategory::Almuerzo, "Milanesa de pollo con ensalada", 520.0, 2),
@@ -255,6 +260,81 @@ fn the_phone_cards_summarize_today_and_the_last_month() {
 }
 
 /// Los tableros de las pruebas de Vitest (`src/modules/health/components/__fixtures__`):
+#[test]
+fn steps_and_sleep_are_read_as_written_and_validated() {
+    assert_eq!(validate_steps("2026-09-28", "8.432", TODAY), Ok(("2026-09-28".to_string(), 8_432)));
+    assert_eq!(validate_steps("2026-09-28", "12000", TODAY).map(|(_, steps)| steps), Ok(12_000));
+    assert!(validate_steps("2026-09-28", "", TODAY).is_err());
+    assert!(validate_steps("2026-09-28", "200000", TODAY).is_err());
+    assert!(validate_steps("2026-09-29", "100", TODAY).is_err(), "no future days");
+    for (text, minutes) in [("7,5", 450), ("7.5", 450), ("7:30", 450), ("7 h 30", 450), ("7h30m", 450), ("7 horas y media", 450), ("8", 480), ("450 min", 450), ("45 minutos", 45)] {
+        assert_eq!(parse_sleep_minutes(text), Some(minutes), "{text}");
+    }
+    assert_eq!(parse_sleep_minutes("mucho"), None);
+    assert_eq!(parse_sleep_minutes("7:75"), None);
+    assert!(validate_sleep("2026-09-28", "30", TODAY).is_err(), "30 hours");
+    assert!(validate_sleep("2026-09-28", "0", TODAY).is_err());
+    assert_eq!(sleep_label(450), "7 h 30 min");
+    assert_eq!(sleep_label(480), "8 h");
+    assert_eq!(sleep_label(45), "45 min");
+    assert_eq!(steps_label(8_432), "8.432 pasos");
+}
+
+#[test]
+fn steps_and_sleep_changes_write_and_delete_one_day() {
+    let data = overweight();
+    let set = plan_change(&data, &HealthMutation::SetSteps { date: "2026-09-28".into(), steps: "5.000".into() }, TODAY, &ids()).expect("steps");
+    assert_eq!(set.ops, vec![StoreOp::PutSteps { date: "2026-09-28".into(), steps: 5_000 }]);
+    assert!(set.summary.contains("4.310 pasos → 5.000 pasos"), "{}", set.summary);
+    let slept = plan_change(&data, &HealthMutation::SetSleep { date: "2026-09-25".into(), duration: "8:15".into() }, TODAY, &ids()).expect("sleep");
+    assert_eq!(slept.ops, vec![StoreOp::PutSleep { date: "2026-09-25".into(), minutes: 495 }]);
+    assert!(slept.summary.starts_with("Registrar 8 h 15 min de sueño"), "{}", slept.summary);
+    let deleted = plan_change(&data, &HealthMutation::DeleteSleep { date: "2026-09-27".into() }, TODAY, &ids()).expect("delete");
+    assert_eq!(deleted.ops, vec![StoreOp::DeleteSleep("2026-09-27".into())]);
+    let missing = plan_change(&data, &HealthMutation::DeleteSteps { date: "2026-09-01".into() }, TODAY, &ids()).expect_err("missing");
+    assert_eq!(missing.code, HealthErrorCode::NotFound);
+}
+
+#[test]
+fn steps_and_sleep_panels_show_today_the_week_and_the_history() {
+    let dashboard = build_dashboard(&overweight(), &DashboardQuery { steps_range: WeightRange::Days30, ..DashboardQuery::default() }, TODAY, 13);
+    let steps = &dashboard.steps;
+    assert_eq!((steps.today_label.as_str(), steps.today_caption.as_str()), ("4.310", "Hoy"));
+    assert!(steps.summary.starts_with("Promedio de la semana: 7.890 pasos."), "{}", steps.summary);
+    assert_eq!(steps.entries.first().map(|row| row.value_label.as_str()), Some("4.310 pasos"));
+    let chart = steps.chart.as_ref().expect("chart");
+    assert_eq!(chart.points.len(), 4);
+    assert!(chart.y_ticks.first().is_some_and(|tick| tick.at == 0.0 && tick.label == "0"));
+    assert!(chart.points.iter().all(|point| (0.0..=1.0).contains(&point.y)));
+    assert_eq!(chart.goal.as_ref().map(|goal| goal.label.as_str()), Some("Meta 8.000"));
+    let sleep = &dashboard.sleep;
+    assert_eq!((sleep.today_label.as_str(), sleep.today_caption.as_str()), ("6 h 30 min", "Anoche"));
+    assert!(sleep.summary.contains("Promedio de la semana: 6 h 58 min, menos de lo recomendado.") && sleep.summary.contains("Recomendado: 7 a 9\u{a0}h."), "{}", sleep.summary);
+    assert_eq!(sleep.chart.as_ref().map(|chart| chart.points[0].value_label.as_str()), Some("6 h 40 min"));
+    let empty = build_dashboard(&HealthData::default(), &DashboardQuery::default(), TODAY, 13);
+    assert!(empty.steps.chart.is_none() && empty.steps.today_label == "—" && empty.sleep.entries.is_empty());
+}
+
+#[test]
+fn the_assistant_logs_steps_and_sleep_and_reads_them_back() {
+    let data = overweight();
+    let action = |name: &str, arguments: serde_json::Value| tool_action(name, &arguments, &data, TODAY, 13);
+    assert_eq!(action("log_steps", json!({ "steps": 9000 })), Ok(ToolAction::Change(HealthMutation::SetSteps { date: "2026-09-28".into(), steps: "9000".into() })));
+    assert_eq!(action("log_sleep", json!({ "hours": 7.5 })), Ok(ToolAction::Change(HealthMutation::SetSleep { date: "2026-09-28".into(), duration: "450 min".into() })));
+    assert_eq!(action("log_sleep", json!({ "duration": "6:45", "date": "2026-09-27" })), Ok(ToolAction::Change(HealthMutation::SetSleep { date: "2026-09-27".into(), duration: "6:45".into() })));
+    assert!(action("log_sleep", json!({})).is_err());
+    assert_eq!(action("delete_health_record", json!({ "kind": "sueño", "date": "2026-09-27" })), Ok(ToolAction::Change(HealthMutation::DeleteSleep { date: "2026-09-27".into() })));
+    let summary = summary_view(&data, TODAY);
+    assert_eq!(summary["stepsToday"], 4_310);
+    assert_eq!(summary["sleepLastNightMinutes"], 390);
+    assert_eq!(summary["last7Days"].as_array().map(Vec::len), Some(7));
+    let sleep = records_view(&data, &json!({ "kind": "sleep" }), TODAY).expect("records");
+    assert_eq!(sleep["count"], 3);
+    assert_eq!(sleep["records"][0]["label"], "6 h 40 min");
+    let parsed = plan_change(&data, &HealthMutation::SetSleep { date: "2026-09-28".into(), duration: "450 min".into() }, TODAY, &ids()).expect("sleep");
+    assert_eq!(parsed.ops, vec![StoreOp::PutSleep { date: "2026-09-28".into(), minutes: 450 }]);
+}
+
 /// «Sobrepeso» con el plan calculado, y sin perfil.
 /// `HEALTH_FIXTURES=<carpeta> cargo test -p notia-backend-core dump_dashboard_fixtures -- --ignored`.
 #[test]
@@ -332,6 +412,23 @@ fn tools_read_arguments_into_the_same_changes() {
         ToolAction::Change(HealthMutation::DeleteMeal { id: "m3".into() })
     );
     assert!(tool_action("update_meal", &json!({ "meal": "milanesa de pollo con ensalada" }), &data, TODAY, 13).unwrap_err().message.contains("m2"));
+    // Part of the description finds the only meal that has it; none lists the last ones.
+    let ToolAction::Change(HealthMutation::SaveMeal { id: Some(id), input }) =
+        tool_action("update_meal", &json!({ "meal": "bolognesa", "category": "cena" }), &data, TODAY, 13).expect("by part")
+    else {
+        panic!()
+    };
+    assert_eq!((id.as_str(), input.category.as_str()), ("m3", "cena"));
+    let missing = tool_action("update_meal", &json!({ "meal": "sushi" }), &data, TODAY, 13).unwrap_err();
+    assert!(missing.message.contains("Las últimas cargadas: ") && missing.message.contains("m3 (") && missing.message.contains(" kcal"), "{}", missing.message);
+    // Without meal, the last one logged.
+    let ToolAction::Change(HealthMutation::SaveMeal { id: Some(last), .. }) =
+        tool_action("update_meal", &json!({ "category": "merienda" }), &data, TODAY, 13).expect("last")
+    else {
+        panic!()
+    };
+    let newest = data.meals.iter().max_by_key(|meal| meal.created_at_ms).expect("meal");
+    assert_eq!(last, newest.id);
     let update = tool_action("update_meal", &json!({ "meal": "m2", "kcal": 600 }), &data, TODAY, 13).expect("update");
     let ToolAction::Change(HealthMutation::SaveMeal { id: Some(id), input }) = update else { panic!() };
     assert_eq!((id.as_str(), input.kcal, input.protein_g), ("m2", Some(600.0), Some(20.0)));
@@ -384,6 +481,10 @@ fn a_meal_is_scaled_from_its_recipe() {
     assert_eq!(portion_name("Guiso de lentejas", &Portion::Servings(1.5)), "Guiso de lentejas · 1,5 porciones");
     assert_eq!(portion_name("Guiso de lentejas", &Portion::Servings(1.0)), "Guiso de lentejas");
     assert_eq!(portion_name("Guiso", &Portion::Note("con doble papas".into())), "Guiso (con doble papas)");
+    // The same amount always says how it was calculated; the AI says it estimated.
+    assert_eq!(meal_basis("Guiso", 660.0, Some(1.0), ""), "Calculado: 1 porción de «Guiso» (660 kcal por porción).");
+    assert_eq!(meal_basis("Guiso", 660.0, Some(1.25), ""), "Calculado: 1,25 porciones de «Guiso» (660 kcal por porción).");
+    assert!(meal_basis("Guiso", 660.0, None, "sobras de la cena").starts_with("Estimado por la IA para «sobras de la cena»"));
     assert_eq!(recipe_meal_time(MealCategory::Merienda), crate::recipes::MealTime::Snack);
 
     // The AI answer for another amount: its macros, or its servings.

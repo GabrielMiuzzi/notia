@@ -279,6 +279,28 @@ export function deletePomodoroEntry(context: TaskManagerBackendContext, entryId:
   return callBackend<boolean>('task_manager_delete_pomodoro', { payload: { context, entryId } })
 }
 
+/** A comment of a ticket, as the phone's «Detalle de tarea» shows it. */
+export interface TaskDetailComment {
+  commentId: string
+  author: string
+  initials: string
+  /** The author's board color; null for people outside the board. */
+  color: string | null
+  /** «ahora», «hace 5 min», «ayer 09:10», «12 oct». */
+  when: string
+  text: string
+}
+
+export interface TaskDetail {
+  description: string
+  comments: TaskDetailComment[]
+}
+
+/** Description and comments of a ticket (`task_detail_view` in Rust). */
+export function readTaskDetail(context: TaskManagerBackendContext, taskPath: string): Promise<TaskDetail> {
+  return callBackend<TaskDetail>('task_manager_task_detail', { payload: { context, logicalPath: taskPath } })
+}
+
 export function readTaskMarkdownSource(
   context: TaskManagerBackendContext,
   taskPath: string,

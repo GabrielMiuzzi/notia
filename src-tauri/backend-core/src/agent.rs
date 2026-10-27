@@ -19,7 +19,8 @@ use super::protocol::{
 };
 use super::runtime::InteractionRuntime;
 use super::tool_routing::{
-    area_ids, needs_routing, offered_areas, parse_area_ids, parse_switch_arguments, turn_tools, MAX_AREA_SWITCHES, SWITCH_AREA_TOOL,
+    area_coverage, area_ids, needs_routing, offered_areas, parse_area_ids, parse_switch_arguments, tool_area, turn_tools,
+    MAX_AREA_SWITCHES, SWITCH_AREA_TOOL,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -938,14 +939,18 @@ fn run_agent_inner(
                         progressed = true;
                         areas = next;
                         tools = with_attachment_tool(turn_tools(&pool, &areas, options.limits.max_tools));
+                        // An area that did not fit whole is said, not hidden.
+                        let coverage = area_coverage(&pool, &tools, &areas);
                         ToolResult {
                             call_id: call.id.clone(),
                             ok: true,
                             changed: false,
                             data: Some(serde_json::json!({
-                                "areas": area_ids(&areas),
+                                "areas": area_ids(&coverage.full),
+                                "readOnlyAreas": area_ids(&coverage.read_only),
+                                "missingAreas": area_ids(&coverage.missing),
                                 "tools": tools.iter().map(|tool| tool.name.as_str()).filter(|name| *name != SWITCH_AREA_TOOL).collect::<Vec<_>>(),
-                                "note": "Ya tenés las herramientas de estas áreas: seguí con el pedido.",
+                                "note": coverage.note(),
                             })),
                             error: None,
                             preview: None,
@@ -1024,18 +1029,21 @@ fn run_agent_inner(
                     ok: false,
                     changed: false,
                     data: None,
-                    error: Some(BackendError::new(
-                        BackendErrorCode::Forbidden,
-                        "La herramienta solicitada no está disponible para esta operación.",
-                        false,
-                    )),
+                    error: Some(unavailable_tool_error(&call.name, routed.then_some(pool.as_slice()))),
                     preview: None,
                 };
                 append_tool_message(&mut messages, &call, &result);
                 tool_results.push(result);
                 continue;
             };
-            let call_key = tool_call_key(&call.name, &call.arguments);
+            // A read repeated after a change reads again instead of reusing
+            // what it returned before (a metadata read after an edit used to
+            // show the old frontmatter): its key carries the changes so far.
+            let call_key = if tool.read_only {
+                format!("{}#{}", tool_call_key(&call.name, &call.arguments), tool_results.iter().filter(|result| result.changed).count())
+            } else {
+                tool_call_key(&call.name, &call.arguments)
+            };
             let authorization =
                 authorize_tool_call(&request.context, principal, tool, options.projection);
             let duplicate_in_round = !seen_call_keys.insert(call_key.clone());
@@ -1792,6 +1800,28 @@ fn bounded_reason(message: &str) -> String {
     }
 }
 
+/// The error of a call to a tool the round does not carry. In a routed
+/// run, a tool the actor may use but whose area is not loaded (or loaded
+/// only with its read tools) says how to get it, instead of looking
+/// forbidden.
+fn unavailable_tool_error(name: &str, pool: Option<&[ToolDefinition]>) -> BackendError {
+    let area = pool
+        .filter(|pool| pool.iter().any(|tool| tool.name == name))
+        .and_then(|_| tool_area(name));
+    match area {
+        Some(area) => BackendError::invalid_input(format!(
+            "{name} es del área «{}», que no está cargada completa en esta ronda: llamá change_tool_areas con «{}» primero (y las áreas que sigas usando) y volvé a intentarlo.",
+            area.id(),
+            area.id()
+        )),
+        None => BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La herramienta solicitada no está disponible para esta operación.",
+            false,
+        ),
+    }
+}
+
 pub fn tool_call_key(name: &str, arguments: &serde_json::Value) -> String {
     format!("{}:{}", name.trim(), canonical_json(arguments))
 }
@@ -1962,6 +1992,8 @@ mod tests {
             scheduled_action: None,
             tool_areas: None,
             thinking: None,
+            conversational: false,
+            ai_task: None,
         }
     }
 
@@ -2849,6 +2881,56 @@ mod tests {
 
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> ProviderToolCall {
         ProviderToolCall { id: id.into(), name: name.into(), arguments }
+    }
+
+    /// Reads the calls and changes the document on every write.
+    struct NamedExecutor {
+        executed: Mutex<Vec<String>>,
+    }
+
+    impl ToolExecutor for NamedExecutor {
+        fn execute(&self, _: &BackendRequestContext, call: &ToolCall) -> Result<ToolResult, BackendError> {
+            let mut executed = self.executed.lock().expect("executed");
+            executed.push(call.name.clone());
+            let changed = call.name == "set_frontmatter";
+            Ok(ToolResult {
+                call_id: call.id.clone(),
+                ok: true,
+                changed,
+                data: Some(serde_json::json!({ "reads": executed.iter().filter(|name| name.starts_with("get_")).count() })),
+                error: None,
+                preview: None,
+            })
+        }
+    }
+
+    #[test]
+    fn a_read_after_a_change_reads_again() {
+        let read = || call("read", "get_document_metadata", serde_json::json!({ "path": "curso/1.md" }));
+        let provider = RecordingProvider::new(vec![
+            assistant("", vec![read()]),
+            assistant("", vec![call("write", "set_frontmatter", serde_json::json!({ "path": "curso/1.md" }))]),
+            assistant("", vec![read()]),
+            assistant("", vec![read()]),
+            assistant("Listo.", Vec::new()),
+        ]);
+        let executor = NamedExecutor { executed: Mutex::new(Vec::new()) };
+        let request = request(vec![tool("get_document_metadata", true), tool("set_frontmatter", false)]);
+        run_agent(&provider, &executor, &NoopAgentState, &VecEventSink::default(), &request, &principal(), &RequestControl::new(None), &AgentRuntimeOptions::default())
+            .expect("agent completes");
+        // The read after the write runs again; the one right after it reuses it.
+        assert_eq!(*executor.executed.lock().expect("executed"), ["get_document_metadata", "set_frontmatter", "get_document_metadata"]);
+    }
+
+    #[test]
+    fn a_tool_of_an_area_not_loaded_says_how_to_get_it() {
+        let pool = vec![tool("search_web", true), tool("get_finance_dashboard", true)];
+        let error = unavailable_tool_error("get_finance_dashboard", Some(&pool));
+        assert_eq!(error.code, BackendErrorCode::InvalidInput);
+        assert!(error.message.contains("change_tool_areas con «finanzas»"), "{}", error.message);
+        // A tool the actor cannot use, or a run without areas, stays forbidden.
+        assert_eq!(unavailable_tool_error("log_meal", Some(&pool)).code, BackendErrorCode::Forbidden);
+        assert_eq!(unavailable_tool_error("get_finance_dashboard", None).code, BackendErrorCode::Forbidden);
     }
 
     #[test]

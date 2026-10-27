@@ -12,7 +12,7 @@ use crate::host::{
 
 const NOTIA_DIRECTORY: &str = ".notia";
 const DATABASE_FILE_NAME: &str = "notia.db";
-pub const CURRENT_SCHEMA_VERSION: i64 = 31;
+pub const CURRENT_SCHEMA_VERSION: i64 = 33;
 /// A client's copy that never got its host's database.
 pub(crate) const COPY_WITHOUT_DATABASE: &str =
     "La copia de este equipo no tiene la base de datos de la biblioteca: conectate al host para completarla.";
@@ -1269,6 +1269,47 @@ fn migrate_to(connection: &Connection, target: i64) -> Result<i64, rusqlite::Err
              CREATE INDEX IF NOT EXISTS idx_gym_workouts_owner_date
                  ON gym_workouts(owner_user_id, date);
              INSERT INTO notia_schema_migrations (version) VALUES (31);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 32 && target >= 32 {
+        // AI tasks: the plan, steps, reviews and pending approval of each
+        // task as JSON decided by backend-core::ai_tasks, kept a week.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ai_tasks (
+                 id TEXT PRIMARY KEY,
+                 status TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 task_json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_ai_tasks_created
+                 ON ai_tasks(created_at);
+             INSERT INTO notia_schema_migrations (version) VALUES (32);",
+        )?;
+        transaction.commit()?;
+    }
+    if current_version < 33 && target >= 33 {
+        // Salud: los pasos y los minutos de sueño de cada día, por usuario,
+        // con su histórico como el peso.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS health_steps (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 steps INTEGER NOT NULL CHECK (steps >= 0),
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (owner_user_id, date)
+             );
+             CREATE TABLE IF NOT EXISTS health_sleep (
+                 owner_user_id TEXT NOT NULL REFERENCES library_users(id) ON DELETE CASCADE,
+                 date TEXT NOT NULL,
+                 minutes INTEGER NOT NULL CHECK (minutes > 0),
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (owner_user_id, date)
+             );
+             INSERT INTO notia_schema_migrations (version) VALUES (33);",
         )?;
         transaction.commit()?;
     }

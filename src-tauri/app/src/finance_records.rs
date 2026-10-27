@@ -136,6 +136,17 @@ fn purchase_storage_error(step: &str, error: rusqlite::Error) -> String {
     format!("finance_purchase.{step}: {error}")
 }
 
+/// Why a ticket does not add up, with the sum that was made, so the agent
+/// looks for the missing or extra line instead of padding the discount.
+pub(crate) fn purchase_mismatch(record: &PurchaseRecord, validation: &PurchaseValidation) -> String {
+    format!(
+        "El ticket no cierra: la suma de las líneas da {}, con descuentos de {} e impuestos de {} da {}, pero el total impreso es {} (diferencia de {}). \
+         Revisá si falta o sobra una línea (un producto anulado se marca con voided: true y su línea negativa no se manda), los descuentos y si los impuestos ya están incluidos en los precios; \
+         no cambies el descuento solo para que cuadre.",
+        record.subtotal_amount, record.discount_amount, record.tax_amount, validation.calculated_total, record.total_amount, validation.discrepancy
+    )
+}
+
 pub(crate) fn validate_purchase(record: &PurchaseRecord) -> Result<PurchaseValidation, String> {
     if record.id.trim().is_empty()
         || record.account_id.trim().is_empty()
@@ -240,11 +251,7 @@ pub(crate) fn store_purchase(
 ) -> FinanceCommandResult<SavedPurchase> {
     let validation = validate_purchase(record)?;
     if record.status != "pending" && !validation.valid {
-        return Err(format!(
-            "La compra no puede confirmarse: existe una diferencia de {}.",
-            validation.discrepancy
-        )
-        .into());
+        return Err(purchase_mismatch(record, &validation).into());
     }
     let (account_type, account_currency): (String, String) = connection
         .query_row(
@@ -2463,6 +2470,8 @@ mod tests {
         let validation = validate_purchase(&record).expect("validation result");
         assert!(!validation.valid);
         assert_eq!(validation.discrepancy, "0.02");
+        let message = purchase_mismatch(&record, &validation);
+        assert!(message.contains("la suma de las líneas da 10.00") && message.contains("el total impreso es 10.02 (diferencia de 0.02)"), "{message}");
 
         record.total_amount = "9.98".into();
         let validation = validate_purchase(&record).expect("validation result");

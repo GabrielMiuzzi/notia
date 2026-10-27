@@ -331,7 +331,8 @@ fn resolve_target(source: &str, reference: &str, lookup: &Lookup) -> Option<Stri
         .map(str::to_string)
 }
 
-fn frontmatter_context(content: &str) -> Option<String> {
+/// The `contexto` property of a note's frontmatter, without quotes.
+pub fn frontmatter_context(content: &str) -> Option<String> {
     let normalized = content.replace("\r\n", "\n");
     let body = normalized.strip_prefix("---\n")?;
     let end = body.find("\n---")?;
@@ -444,6 +445,33 @@ const GRAPH_VIEW_HIDDEN_FOLDERS: [&str; 2] = [crate::gym::GYM_FOLDER, crate::rec
 pub fn is_hidden_from_graph_view(path: &str) -> bool {
     let folder = top_folder(path);
     GRAPH_VIEW_HIDDEN_FOLDERS.iter().any(|hidden| folder.eq_ignore_ascii_case(hidden))
+}
+
+/// The graph of the notes `keep` admits (by logical path): the links among
+/// them, with degrees, neighbors and the summary counted again.
+pub fn restrict_graph_model(model: &GraphModelDto, keep: impl Fn(&str) -> bool) -> GraphModelDto {
+    let edges = model
+        .edges
+        .iter()
+        .filter(|edge| keep(&edge.source_path) && keep(&edge.target_path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut degree = HashMap::<&str, usize>::new();
+    for edge in &edges {
+        *degree.entry(edge.source_path.as_str()).or_default() += 1;
+        *degree.entry(edge.target_path.as_str()).or_default() += 1;
+    }
+    let nodes = model
+        .nodes
+        .iter()
+        .filter(|node| keep(&node.path))
+        .map(|node| GraphNodeDto {
+            degree: degree.get(node.path.as_str()).copied().unwrap_or(0),
+            neighbors: Vec::new(),
+            ..node.clone()
+        })
+        .collect::<Vec<_>>();
+    finish_model(nodes, edges)
 }
 
 /// What Graph View shows of the library graph: without the notes of the

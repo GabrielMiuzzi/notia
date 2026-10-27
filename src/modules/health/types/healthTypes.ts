@@ -12,6 +12,8 @@ export interface DashboardQuery {
   foodDate: string | null
   weightRange: WeightRange
   measurementDate: string | null
+  stepsRange: WeightRange
+  sleepRange: WeightRange
 }
 
 export interface StateChip {
@@ -60,6 +62,17 @@ export interface WeightPanel {
   chart: WeightChart | null
   emptyText: string
   entries: Array<{ date: string; dateLabel: string; kgLabel: string }>
+}
+
+/** Un registro diario con histórico, como el peso: los pasos o el sueño. */
+export interface DailyPanel {
+  todayLabel: string
+  todayCaption: string
+  summary: string
+  ranges: Choice[]
+  chart: WeightChart | null
+  emptyText: string
+  entries: Array<{ date: string; dateLabel: string; valueLabel: string }>
 }
 
 export interface PlanView {
@@ -201,6 +214,8 @@ export interface HealthDashboard {
   todayCalories: CaloriesSummary | null
   weightTrend: WeightTrend
   water: WaterPanel | null
+  steps: DailyPanel
+  sleep: DailyPanel
   composition: CompositionPanel | null
   profileForm: ProfileForm
   mealForm: { suggestedCategory: string; categories: Choice[]; recent: RecentMeal[] }
@@ -244,6 +259,11 @@ export type HealthMutation =
   | { kind: 'clearPlan' }
   | { kind: 'addWater'; date: string; deltaMl: number }
   | { kind: 'setWater'; date: string; ml: number }
+  /** Como se escribieron: Rust los lee («8.432», «7:30»). */
+  | { kind: 'setSteps'; date: string; steps: string }
+  | { kind: 'deleteSteps'; date: string }
+  | { kind: 'setSleep'; date: string; duration: string }
+  | { kind: 'deleteSleep'; date: string }
   | { kind: 'saveMeal'; id: string | null; input: MealInput }
   | { kind: 'deleteMeal'; id: string }
 

@@ -88,6 +88,9 @@ function areTreeNodesEqual(leftNode: NotiaFileNode, rightNode: NotiaFileNode): b
   if (Boolean(leftNode.hasChildren) !== Boolean(rightNode.hasChildren)) {
     return false
   }
+  if (leftNode.context !== rightNode.context) {
+    return false
+  }
   const leftChildren = leftNode.children ?? []
   const rightChildren = rightNode.children ?? []
   if (leftChildren.length !== rightChildren.length) {

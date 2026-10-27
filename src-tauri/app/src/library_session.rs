@@ -246,7 +246,7 @@ pub(crate) async fn library_open(window: Window, payload: LibraryPayload) -> Res
         let _ = &window;
         let nodes = android_read(&app, &library, library.path.clone(), false).await?;
         LibraryTreeViewDto {
-            nodes: shallow_listing(nodes),
+            nodes: with_folder_contexts(&app, &library.id, shallow_listing(nodes), ""),
             lazy: true,
             watched: false,
         }
@@ -262,7 +262,7 @@ pub(crate) async fn library_open(window: Window, payload: LibraryPayload) -> Res
         .map_err(|_| blocking_error())??;
         remember_signature(&app, &library.id, signature);
         LibraryTreeViewDto {
-            nodes: normalize_tree(nodes),
+            nodes: with_folder_contexts(&app, &library.id, normalize_tree(nodes), ""),
             lazy: false,
             watched: watch(&window, &library),
         }
@@ -306,7 +306,7 @@ pub(crate) async fn library_refresh(app: AppHandle, payload: LibraryRefreshPaylo
     reindex_in_background(&app, &library.id);
     Ok(LibraryRefreshDto {
         changed: true,
-        nodes: Some(nodes),
+        nodes: Some(with_folder_contexts(&app, &library.id, nodes, "")),
     })
 }
 
@@ -331,7 +331,7 @@ pub(crate) async fn read_directory(
     let folder = notia_backend_core::library_tree::library_visible_path(&library.path, &logical);
     #[cfg(target_os = "android")]
     {
-        Ok(shallow_listing(android_read(app, &library, folder, false).await?))
+        Ok(with_folder_contexts(app, &library.id, shallow_listing(android_read(app, &library, folder, false).await?), &logical))
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -353,8 +353,15 @@ pub(crate) async fn read_directory(
         })
         .await
         .map_err(|_| blocking_error())??;
-        Ok(shallow_listing(nodes))
+        Ok(with_folder_contexts(app, &library.id, shallow_listing(nodes), &logical))
     }
+}
+
+/// The explorer nodes read from the folder `parent` (logical path), with
+/// the context each folder has.
+fn with_folder_contexts(app: &AppHandle, library_id: &str, mut nodes: Vec<LibraryTreeNodeDto>, parent: &str) -> Vec<LibraryTreeNodeDto> {
+    notia_backend_core::folder_contexts::mark_tree(&mut nodes, parent, &crate::folder_contexts::load(app, library_id));
+    nodes
 }
 
 /// Identity the explorer shows for a logical path of a library.
@@ -377,6 +384,7 @@ pub(crate) fn read_library_text(app: &AppHandle, library_id: &str, logical_path:
             expected_revision: None,
             create_if_missing: false,
             markdown_defaults: false,
+            base_content: None,
         },
     );
     if result.ok {
@@ -405,58 +413,111 @@ fn is_markdown(logical_path: &str) -> bool {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LibraryDocumentPayload {
-    library_id: String,
+    pub(crate) library_id: String,
     /// Identity of the document as the explorer shows it.
-    path: String,
+    pub(crate) path: String,
     #[serde(default)]
-    content: Option<String>,
+    pub(crate) content: Option<String>,
     #[serde(default)]
-    expected_revision: Option<String>,
+    pub(crate) expected_revision: Option<String>,
     #[serde(default)]
-    create_if_missing: bool,
+    pub(crate) create_if_missing: bool,
     /// On read, add the default note frontmatter when it is missing (the
     /// editor opening a note); other reads leave the file untouched.
     #[serde(default)]
-    markdown_defaults: bool,
+    pub(crate) markdown_defaults: bool,
+    /// On write, the text the editor last read or saved: when the file
+    /// changed since (the agent, another device), both changes are merged.
+    #[serde(default)]
+    pub(crate) base_content: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LibraryDocumentReadDto {
-    ok: bool,
-    content: String,
+    pub(crate) ok: bool,
+    pub(crate) content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    revision: Option<String>,
+    pub(crate) revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     /// Path of the document inside the library.
     #[serde(skip_serializing_if = "Option::is_none")]
-    logical_path: Option<String>,
-    /// Context the note must keep because it lives in a Task Manager board.
+    pub(crate) logical_path: Option<String>,
+    /// Context the note must keep because it lives in a Task Manager board
+    /// or in a folder with a context.
     #[serde(skip_serializing_if = "Option::is_none")]
-    locked_context: Option<String>,
+    pub(crate) locked_context: Option<String>,
+    /// What sets `locked_context`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) locked_context_source: Option<LockedContextSource>,
+    /// Why the document opens read-only: a file only the AI writes
+    /// (`#System`). Every write of it is refused anyway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) read_only: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum LockedContextSource {
+    Board,
+    Folder,
+}
+
+/// A note opened in the editor takes what its folder forces (its context,
+/// `publicado` in a published folder), written over the revision just read. When that write fails the stored content is
+/// kept, so the editor never shows what is not on disk.
+fn with_folder_context(
+    app: &AppHandle,
+    library_id: &str,
+    logical_path: &str,
+    result: &mut crate::filesystem::types::ReadLibraryFileResult,
+) {
+    let Some(updated) = crate::folder_contexts::enforced(app, library_id, logical_path, &result.content) else { return };
+    let revision = crate::filesystem::types::content_revision(&result.content);
+    let written = crate::library_documents::with_documents(app, library_id, |documents| {
+        documents.adapter.write_locator(&documents.locator(logical_path)?, &updated, Some(&revision))
+    });
+    match written {
+        Ok(()) => {
+            result.revision = Some(crate::filesystem::types::content_revision(&updated));
+            result.content = updated;
+        }
+        Err(error) => log::warn!("[notia:folder-contexts] la nota no tomó el contexto de su carpeta code={:?}", error.code),
+    }
 }
 
 /// Reads a document of the library. With `markdownDefaults`, a note gets
 /// the default frontmatter when it is missing, persisted against the
 /// revision just read.
-pub(crate) fn library_read_document(app: AppHandle, payload: LibraryDocumentPayload) -> LibraryDocumentReadDto {
+pub(crate) fn library_read_document(app: AppHandle, mut payload: LibraryDocumentPayload) -> LibraryDocumentReadDto {
     let library_id = payload.library_id.clone();
     let logical_path = catalog_entry(&app, &payload.library_id)
         .and_then(|library| logical_path_of(&library, &payload.path))
         .ok();
+    // A file only the AI writes opens as it is: no note defaults, no
+    // folder context.
+    let system = logical_path.as_deref().is_some_and(notia_backend_core::agent_workspace::is_system_file);
+    if system {
+        payload.markdown_defaults = false;
+    }
     // Only the editor opening a note asks for its defaults: Home lists it.
     let opened_in_editor = payload.markdown_defaults;
-    let result = read_document(&app, payload);
+    let mut result = read_document(&app, payload);
     if let Some(path) = logical_path.as_deref().filter(|path| opened_in_editor && result.ok && is_markdown(path)) {
         crate::recent_documents::record(&app, &library_id, path);
+        with_folder_context(&app, &library_id, path, &mut result);
     }
-    let locked_context = logical_path
-        .as_deref()
-        .filter(|path| result.ok && is_markdown(path))
-        .and_then(|path| crate::task_manager_commands::board_context_of_document(&app, &library_id, path));
+    let locked_context = logical_path.as_deref().filter(|path| result.ok && is_markdown(path)).and_then(|path| {
+        crate::task_manager_commands::board_context_of_document(&app, &library_id, path)
+            .map(|tag| (tag, LockedContextSource::Board))
+            .or_else(|| crate::folder_contexts::effective(&app, &library_id, path).map(|tag| (tag, LockedContextSource::Folder)))
+    });
+    let (locked_context, locked_context_source) = locked_context.unzip();
     LibraryDocumentReadDto {
         locked_context,
+        locked_context_source,
+        read_only: (system && result.ok).then(|| SYSTEM_FILE_READ_ONLY.to_string()),
         logical_path: result.ok.then_some(logical_path).flatten(),
         ok: result.ok,
         content: result.content,
@@ -465,7 +526,7 @@ pub(crate) fn library_read_document(app: AppHandle, payload: LibraryDocumentPayl
     }
 }
 
-fn read_document(app: &AppHandle, payload: LibraryDocumentPayload) -> crate::filesystem::types::ReadLibraryFileResult {
+pub(crate) fn read_document(app: &AppHandle, payload: LibraryDocumentPayload) -> crate::filesystem::types::ReadLibraryFileResult {
     let app = app.clone();
     let failure = |error: BackendError| crate::filesystem::types::ReadLibraryFileResult {
         ok: false,
@@ -536,11 +597,22 @@ pub(crate) fn library_write_document(
     };
     let markdown = is_markdown(&logical_path);
     let library_id = library.id.clone();
+    let content = payload
+        .content
+        .map(|content| if markdown { crate::folder_contexts::enforce(&app, &library_id, &logical_path, content) } else { content });
+    if let Some(refusal) = system_write_refusal(&logical_path, content.as_deref()) {
+        return crate::filesystem::types::WriteLibraryFileResult {
+            ok: false,
+            revision: None,
+            error: Some(refusal.to_string()),
+            conflict: None,
+        };
+    }
     let result = crate::filesystem::commands::backend_write_library_document(
         crate::filesystem::commands::BackendDocumentPayload {
             library_id: library.id,
             logical_path,
-            content: payload.content,
+            content,
             expected_revision: payload.expected_revision,
             create_if_missing: payload.create_if_missing,
             ensure_markdown_defaults: false,
@@ -553,6 +625,78 @@ pub(crate) fn library_write_document(
         crate::library_graph::schedule_link_cache_rebuild(&app, &library_id);
     }
     result
+}
+
+/// What an editor's save wrote.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LibrarySaveDto {
+    #[serde(flatten)]
+    result: crate::filesystem::types::WriteLibraryFileResult,
+    /// The text written when it is not the one sent: the editor's merged
+    /// with what changed in the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    /// Places where both changed the same lines and both versions stayed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merge_conflicts: Option<usize>,
+}
+
+/// A file that changes again between reading and writing is merged again.
+const MAX_MERGE_ATTEMPTS: usize = 3;
+
+/// The editor's save. When the file changed since the editor's revision and
+/// the editor sent the text it started from, nothing is refused: its
+/// changes and the file's are merged (`text_merge`) and the merge written.
+pub(crate) fn library_save_document(app: AppHandle, payload: LibraryDocumentPayload) -> LibrarySaveDto {
+    let plain = |result| LibrarySaveDto { result, content: None, merge_conflicts: None };
+    let (Some(base), Some(mine)) = (payload.base_content.clone(), payload.content.clone()) else {
+        return plain(library_write_document(app, payload));
+    };
+    let mut result = library_write_document(
+        app.clone(),
+        LibraryDocumentPayload { content: Some(mine.clone()), base_content: None, ..payload.clone_without_content() },
+    );
+    for _ in 0..MAX_MERGE_ATTEMPTS {
+        if result.conflict.is_none() {
+            break;
+        }
+        let current = read_document(&app, LibraryDocumentPayload { content: None, expected_revision: None, base_content: None, ..payload.clone_without_content() });
+        let Some(revision) = current.revision.filter(|_| current.ok) else { break };
+        let merged = notia_backend_core::text_merge::merge_texts(&base, &mine, &current.content);
+        let written = match resolve_logical_path(&app, &payload.library_id, &payload.path) {
+            Ok(path) if is_markdown(&path) => crate::folder_contexts::enforce(&app, &payload.library_id, &path, merged.content),
+            _ => merged.content,
+        };
+        result = library_write_document(
+            app.clone(),
+            LibraryDocumentPayload {
+                content: Some(written.clone()),
+                expected_revision: Some(revision),
+                base_content: None,
+                ..payload.clone_without_content()
+            },
+        );
+        if result.ok {
+            return LibrarySaveDto { result, content: Some(written), merge_conflicts: Some(merged.conflicts) };
+        }
+    }
+    plain(result)
+}
+
+impl LibraryDocumentPayload {
+    /// The same document, without content or revision.
+    fn clone_without_content(&self) -> Self {
+        Self {
+            library_id: self.library_id.clone(),
+            path: self.path.clone(),
+            content: None,
+            expected_revision: self.expected_revision.clone(),
+            create_if_missing: self.create_if_missing,
+            markdown_defaults: false,
+            base_content: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -614,6 +758,39 @@ pub(crate) fn library_mutate_entry(
     )
 }
 
+/// Runs an explorer operation on logical paths the caller already checked
+/// (the published page), as `library_mutate_entry` does for the explorer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mutate_entry_at(
+    app: &AppHandle,
+    library_id: &str,
+    action: &str,
+    logical_path: &str,
+    name: Option<&str>,
+    kind: Option<&str>,
+    source_logical_path: Option<&str>,
+    mode: Option<&str>,
+) -> crate::filesystem::types::OperationResult {
+    if action != "create" && action != "paste" && logical_path.is_empty() {
+        return crate::filesystem::types::OperationResult {
+            ok: false,
+            error: Some("La raíz de la biblioteca no se puede modificar.".to_string()),
+        };
+    }
+    apply_entry_operation(
+        app,
+        crate::filesystem::commands::BackendLibraryEntryPayload {
+            library_id: library_id.to_string(),
+            action: action.to_string(),
+            logical_path: logical_path.to_string(),
+            name: name.map(str::to_string),
+            kind: kind.map(str::to_string),
+            source_logical_path: source_logical_path.map(str::to_string),
+            mode: mode.map(str::to_string),
+        },
+    )
+}
+
 /// Moves a file or folder of a library into another folder for the agent,
 /// creating the missing destination folders, as the explorer moves an entry.
 pub(crate) fn move_entry(
@@ -649,12 +826,59 @@ pub(crate) fn move_entry(
     }
 }
 
+const SYSTEM_FILE_READ_ONLY: &str = "Este archivo lo escribe solo la IA (contexto #System): se puede leer, pero no editar a mano.";
+const SYSTEM_CONTEXT_RESERVED: &str = "El contexto #System es solo de los archivos que escribe la IA: elegí otro contexto para esta nota.";
+const SYSTEM_ENTRY_LOCKED: &str = "Los archivos que escribe solo la IA (contexto #System) y las carpetas que los contienen no se borran, renombran, mueven ni copian a mano.";
+
+/// Why a person's write of `logical_path` with `content` is refused: the
+/// file is one only the AI writes, or the note would take the reserved
+/// `#System` context. The AI writes its files through `agent_workspace`,
+/// never through this path.
+fn system_write_refusal(logical_path: &str, content: Option<&str>) -> Option<&'static str> {
+    if notia_backend_core::agent_workspace::is_system_file(logical_path) {
+        return Some(SYSTEM_FILE_READ_ONLY);
+    }
+    let takes_system = is_markdown(logical_path)
+        && content
+            .and_then(notia_backend_core::library_graph::frontmatter_context)
+            .is_some_and(|tag| notia_backend_core::library_config::is_system_context(&tag));
+    takes_system.then_some(SYSTEM_CONTEXT_RESERVED)
+}
+
+/// Whether an explorer operation deletes, renames, moves or copies a file
+/// only the AI writes (or a folder holding one), or creates or renames an
+/// entry onto one of their paths.
+fn touches_system_files(payload: &crate::filesystem::commands::BackendLibraryEntryPayload) -> bool {
+    use notia_backend_core::agent_workspace::{holds_system_files, is_system_file};
+    let lands_on_system_file = |parent: &str| {
+        let Some(name) = payload.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) else { return false };
+        let target = match parent.trim_matches('/') {
+            "" => name.to_string(),
+            parent => format!("{parent}/{name}"),
+        };
+        is_system_file(&target) || is_system_file(&format!("{target}.md"))
+    };
+    match payload.action.as_str() {
+        "delete" => holds_system_files(&payload.logical_path),
+        "rename" => {
+            let parent = payload.logical_path.trim_matches('/').rsplit_once('/').map_or("", |(parent, _)| parent);
+            holds_system_files(&payload.logical_path) || lands_on_system_file(parent)
+        }
+        "paste" => payload.source_logical_path.as_deref().is_some_and(holds_system_files),
+        "create" => lands_on_system_file(&payload.logical_path),
+        _ => false,
+    }
+}
+
 /// Runs an entry operation on logical paths; the handwriting of the notes
 /// follows them (`.notia/ink`) and the library is indexed again.
 fn apply_entry_operation(
     app: &AppHandle,
     payload: crate::filesystem::commands::BackendLibraryEntryPayload,
 ) -> crate::filesystem::types::OperationResult {
+    if touches_system_files(&payload) {
+        return crate::filesystem::types::OperationResult { ok: false, error: Some(SYSTEM_ENTRY_LOCKED.to_string()) };
+    }
     let library_id = payload.library_id.clone();
     let ink_change = crate::note_ink::plan_entry_change(
         app,
@@ -665,10 +889,25 @@ fn apply_entry_operation(
         payload.source_logical_path.as_deref(),
         payload.mode.as_deref(),
     );
+    let files_before = ink_change
+        .as_ref()
+        .map(|change| crate::folder_contexts::files_before(app, &library_id, change))
+        .unwrap_or_default();
+    let created_note = (payload.action == "create" && payload.kind.as_deref() == Some("note")).then(|| {
+        let file_name = crate::filesystem::validation::normalize_library_entry_name("note", payload.name.as_deref().unwrap_or_default());
+        match payload.logical_path.trim().trim_matches('/') {
+            "" => file_name,
+            parent => format!("{parent}/{file_name}"),
+        }
+    });
     let result = crate::filesystem::commands::backend_library_entry_operation(payload, app.state(), app.state());
     if result.ok {
         if let Some(change) = &ink_change {
             crate::note_ink::apply_entry_change(app, &library_id, change);
+            crate::folder_contexts::apply_entry_change(app, &library_id, change, &files_before);
+        }
+        if let Some(note) = &created_note {
+            crate::folder_contexts::apply_to_new_note(app, &library_id, note);
         }
         reindex_in_background(app, &library_id);
     }
@@ -812,4 +1051,48 @@ pub(crate) async fn library_list_files(app: AppHandle, payload: LibraryPayload) 
     })
     .await
     .map_err(|_| blocking_error())?
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::filesystem::commands::BackendLibraryEntryPayload;
+
+    fn entry(action: &str, path: &str, name: Option<&str>, source: Option<&str>) -> BackendLibraryEntryPayload {
+        BackendLibraryEntryPayload {
+            library_id: "library-1".into(),
+            action: action.into(),
+            logical_path: path.into(),
+            name: name.map(str::to_string),
+            kind: None,
+            source_logical_path: source.map(str::to_string),
+            mode: None,
+        }
+    }
+
+    #[test]
+    fn the_person_only_reads_the_files_the_ai_writes() {
+        let refusal = |path: &str, content: Option<&str>| super::system_write_refusal(path, content);
+        assert_eq!(refusal(".agent/memory/memory.md", Some("- dato")), Some(super::SYSTEM_FILE_READ_ONLY));
+        assert_eq!(refusal(".agent/memory/improve.md", None), Some(super::SYSTEM_FILE_READ_ONLY));
+        // Prompts, skills and notes stay editable; no note takes #System.
+        assert_eq!(refusal(".agent/promps/mio.md", Some("hola")), None);
+        assert_eq!(refusal("Ideas/a.md", Some("---\ncontexto: \"#Personal\"\n---\nhola")), None);
+        assert_eq!(refusal("Ideas/a.md", Some("---\ncontexto: \"#System\"\n---\nhola")), Some(super::SYSTEM_CONTEXT_RESERVED));
+        assert_eq!(refusal("Ideas/a.txt", Some("---\ncontexto: \"#System\"\n---\n")), None);
+    }
+
+    #[test]
+    fn explorer_operations_never_touch_the_files_the_ai_writes() {
+        let touches = |payload: BackendLibraryEntryPayload| super::touches_system_files(&payload);
+        assert!(touches(entry("delete", ".agent/memory/people.md", None, None)));
+        assert!(touches(entry("delete", ".agent", None, None)));
+        assert!(touches(entry("rename", ".agent/memory", Some("viejo"), None)));
+        assert!(touches(entry("rename", ".agent/memory/notas.md", Some("memory.md"), None)));
+        assert!(touches(entry("paste", "Ideas", None, Some(".agent/memory/talk.md"))));
+        assert!(touches(entry("create", ".agent/memory", Some("improve"), None)));
+        assert!(!touches(entry("delete", ".agent/promps/mio.md", None, None)));
+        assert!(!touches(entry("rename", "Ideas/a.md", Some("memory.md"), None)));
+        assert!(!touches(entry("paste", ".agent/memory", None, Some("Ideas/a.md"))));
+        assert!(!touches(entry("create", ".agent/memory", Some("otra.md"), None)));
+    }
 }

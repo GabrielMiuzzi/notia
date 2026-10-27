@@ -153,6 +153,12 @@ fn route(command: &str) -> Option<Route> {
         "ai_action_runs" => ai_action_runs,
         "ai_action_retry" => ai_action_retry,
         "ai_action_test" => ai_action_test,
+        "ai_tasks_list" => ai_tasks_list,
+        "ai_task_get" => ai_task_get,
+        "ai_task_answer" => ai_task_answer,
+        "ai_task_cancel" => ai_task_cancel,
+        "ai_task_resume" => ai_task_resume,
+        "ai_task_delete" => ai_task_delete,
         "recipes_grid" => recipes_grid,
         "recipes_detail" => recipes_detail,
         "recipes_photo" => recipes_photo,
@@ -294,6 +300,11 @@ fn route(command: &str) -> Option<Route> {
         "library_read_document" => library_read_document,
         "library_write_document" => library_write_document,
         "library_mutate_entry" => library_mutate_entry,
+        "library_set_folder_context" => library_set_folder_context,
+        "public_spaces_view" => public_spaces_view,
+        "public_spaces_save" => public_spaces_save,
+        "public_space_candidates" => public_space_candidates,
+        "public_space_open" => public_space_open,
         "library_pick_directory" => library_pick_directory,
         "library_list_files" => library_list_files,
         "library_list_folders" => library_list_folders,
@@ -304,6 +315,7 @@ fn route(command: &str) -> Option<Route> {
         "task_manager_pomodoro" => task_manager_pomodoro,
         "task_manager_delete_pomodoro" => task_manager_delete_pomodoro,
         "task_manager_read_ticket_source" => task_manager_read_ticket_source,
+        "task_manager_task_detail" => task_manager_task_detail,
         "task_manager_write_ticket_source" => task_manager_write_ticket_source,
         "connection_settings" => connection_settings,
         "save_connection_settings" => save_connection_settings,
@@ -445,6 +457,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_action_runs",
     "ai_action_retry",
     "ai_action_test",
+    "ai_tasks_list",
+    "ai_task_get",
+    "ai_task_answer",
+    "ai_task_cancel",
+    "ai_task_resume",
+    "ai_task_delete",
     "recipes_grid",
     "recipes_detail",
     "recipes_photo",
@@ -568,6 +586,11 @@ pub const COMMAND_NAMES: &[&str] = &[
     "library_read_document",
     "library_write_document",
     "library_mutate_entry",
+    "library_set_folder_context",
+    "public_spaces_view",
+    "public_spaces_save",
+    "public_space_candidates",
+    "public_space_open",
     "library_pick_directory",
     "library_list_files",
     "library_list_folders",
@@ -578,6 +601,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "task_manager_pomodoro",
     "task_manager_delete_pomodoro",
     "task_manager_read_ticket_source",
+    "task_manager_task_detail",
     "task_manager_write_ticket_source",
     "connection_settings",
     "save_connection_settings",
@@ -726,7 +750,15 @@ pub const PUBLISHED_COMMANDS: &[&str] = &[
     "task_manager_board_view",
     "task_manager_board_execute",
     "task_manager_management_view",
+    // The notes of the published boards' contexts: explorer, editor and graph.
+    "library_read_directory",
+    "library_read_document",
+    "library_write_document",
+    "library_mutate_entry",
+    "backend_library_graph",
+    "backend_library_graph_search",
     "task_manager_read_ticket_source",
+    "task_manager_task_detail",
     "task_manager_write_ticket_source",
     "task_manager_pomodoro",
     // The ticket's editor: its page and pen preferences (kept in the page),
@@ -1308,6 +1340,37 @@ fn ai_action_retry(app: &AppHandle, _window_label: &str, command: &str, args: &V
 fn ai_action_test(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "input")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_actions::ai_action_test(arg0, arg1, arg2).await) })))
+}
+
+fn ai_tasks_list(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1) = (app.clone(), arg(command, args, "context")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_tasks_list(arg0, arg1).await) })))
+}
+
+fn ai_task_get(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_get(arg0, arg1, arg2).await) })))
+}
+
+fn ai_task_answer(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2, arg3, arg4) =
+        (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?, arg(command, args, "approvalId")?, arg(command, args, "answer")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_answer(arg0, arg1, arg2, arg3, arg4).await) })))
+}
+
+fn ai_task_cancel(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_cancel(arg0, arg1, arg2).await) })))
+}
+
+fn ai_task_resume(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_resume(arg0, arg1, arg2).await) })))
+}
+
+fn ai_task_delete(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_delete(arg0, arg1, arg2).await) })))
 }
 
 fn recipes_grid(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -2072,11 +2135,52 @@ fn library_read_document(app: &AppHandle, _window_label: &str, command: &str, ar
 }
 
 fn library_write_document(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
-    Ok(Dispatch::Ready(reply_value(crate::library_session::library_write_document(app.clone(), arg(command, args, "payload")?))))
+    Ok(Dispatch::Ready(reply_value(crate::library_session::library_save_document(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn library_mutate_entry(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_value(crate::library_session::library_mutate_entry(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn library_set_folder_context(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_value(crate::folder_contexts::library_set_folder_context(app.clone(), arg(command, args, "payload")?))))
+}
+
+fn public_spaces_view(app: &AppHandle, _window_label: &str, _command: &str, _args: &Value) -> Result<Dispatch, Value> {
+    let app = app.clone();
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(
+            crate::host::async_runtime::spawn_blocking(move || crate::public_spaces::public_spaces_view(app))
+                .await
+                .map_err(|_| crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudieron leer los espacios públicos.", true)),
+        )
+    })))
+}
+
+fn public_spaces_save(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(
+            crate::host::async_runtime::spawn_blocking(move || crate::public_spaces::public_spaces_save(app, payload))
+                .await
+                .unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudieron guardar los espacios públicos.", true))),
+        )
+    })))
+}
+
+fn public_space_candidates(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (app, payload) = (app.clone(), arg(command, args, "payload")?);
+    Ok(Dispatch::Pending(Box::pin(async move {
+        reply_result(
+            crate::host::async_runtime::spawn_blocking(move || crate::public_spaces::public_space_candidates(app, payload))
+                .await
+                .unwrap_or_else(|_| Err(crate::backend::BackendError::new(crate::backend::BackendErrorCode::Internal, "No se pudo leer la biblioteca.", true))),
+        )
+    })))
+}
+
+fn public_space_open(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::public_spaces::public_space_open(app.clone(), arg(command, args, "payload")?))))
 }
 
 fn library_pick_directory(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
@@ -2125,6 +2229,10 @@ fn task_manager_pomodoro(app: &AppHandle, _window_label: &str, command: &str, ar
 
 fn task_manager_delete_pomodoro(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     Ok(Dispatch::Ready(reply_result(crate::task_manager_commands::task_manager_delete_pomodoro(app.clone(), arg(command, args, "payload")?, app.state(), app.state()))))
+}
+
+fn task_manager_task_detail(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    Ok(Dispatch::Ready(reply_result(crate::task_manager_commands::task_manager_task_detail(app.clone(), arg(command, args, "payload")?, app.state(), app.state()))))
 }
 
 fn task_manager_read_ticket_source(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

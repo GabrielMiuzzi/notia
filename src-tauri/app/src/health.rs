@@ -19,7 +19,7 @@ use crate::backend::health::change::{ai_plan_summary, plan_basis, plan_change, C
 use crate::backend::health::dashboard::{build_dashboard, DashboardQuery, HealthDashboard};
 use crate::backend::health::tools::{records_view, summary_view, tool_action, MealRequest, ToolAction};
 use crate::backend::health::{
-    calorie_floor, eaten_factor, field_errors_message, fmt, parse_date, portion_name, recipe_meal_time, recipe_serving, scale, vitals, FieldError,
+    calorie_floor, eaten_factor, field_errors_message, fmt, meal_basis, parse_date, portion_name, recipe_meal_time, recipe_serving, scale, vitals, FieldError,
     HealthData, HealthMutation, Meal, MealCategory, MealInput, Measurement, Nutrition, Objective, Plan, Portion, Profile, WeightEntry,
 };
 use crate::backend::recipes::{find_duplicate, Recipe, RecipeInput};
@@ -232,6 +232,14 @@ pub(crate) fn load(connection: &Connection, owner: &str) -> HealthResult<HealthD
         .prepare("SELECT date, ml FROM health_water WHERE owner_user_id = ?1")?
         .query_map([owner], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    let steps = connection
+        .prepare("SELECT date, steps FROM health_steps WHERE owner_user_id = ?1")?
+        .query_map([owner], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let sleep = connection
+        .prepare("SELECT date, minutes FROM health_sleep WHERE owner_user_id = ?1")?
+        .query_map([owner], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
     let meals = connection
         .prepare(
             "SELECT id, date, category, name, kcal, protein_g, carbs_g, fat_g, fiber_g, created_at, recipe_id
@@ -250,7 +258,7 @@ pub(crate) fn load(connection: &Connection, owner: &str) -> HealthResult<HealthD
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(HealthData { profile, weights, measurements, objective: objective.unwrap_or_default(), plan, water, meals })
+    Ok(HealthData { profile, weights, measurements, objective: objective.unwrap_or_default(), plan, water, steps, sleep, meals })
 }
 
 /// Crea la fila de ajustes del usuario si todavía no existe.
@@ -315,6 +323,26 @@ fn apply_ops(connection: &Connection, owner: &str, ops: &[StoreOp]) -> HealthRes
                      ON CONFLICT(owner_user_id, date) DO UPDATE SET ml = excluded.ml, updated_at = excluded.updated_at",
                     params![owner, date, ml, now],
                 )?;
+            }
+            StoreOp::PutSteps { date, steps } => {
+                connection.execute(
+                    "INSERT INTO health_steps (owner_user_id, date, steps, updated_at) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(owner_user_id, date) DO UPDATE SET steps = excluded.steps, updated_at = excluded.updated_at",
+                    params![owner, date, steps, now],
+                )?;
+            }
+            StoreOp::DeleteSteps(date) => {
+                connection.execute("DELETE FROM health_steps WHERE owner_user_id = ?1 AND date = ?2", params![owner, date])?;
+            }
+            StoreOp::PutSleep { date, minutes } => {
+                connection.execute(
+                    "INSERT INTO health_sleep (owner_user_id, date, minutes, updated_at) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(owner_user_id, date) DO UPDATE SET minutes = excluded.minutes, updated_at = excluded.updated_at",
+                    params![owner, date, minutes, now],
+                )?;
+            }
+            StoreOp::DeleteSleep(date) => {
+                connection.execute("DELETE FROM health_sleep WHERE owner_user_id = ?1 AND date = ?2", params![owner, date])?;
             }
             StoreOp::PutMeal(meal) => {
                 let n = &meal.nutrition;
@@ -485,8 +513,9 @@ enum Ready {
     Mutation(HealthMutation),
     Plan(Plan),
     /// Lo que comió: la receta (nueva, que se guarda al confirmar, o la del
-    /// recetario) y la comida de Salud calculada con ella.
-    Meal { new_recipe: Option<Recipe>, recipe_name: String, meal: HealthMutation },
+    /// recetario), la comida de Salud calculada con ella y cómo salieron sus
+    /// valores (`meal_basis`).
+    Meal { new_recipe: Option<Recipe>, recipe_name: String, meal: HealthMutation, basis: String },
 }
 
 /// Planes y comidas que la IA estimó para una confirmación, por llamada,
@@ -588,18 +617,22 @@ fn resolve_meal(app: &AppHandle, context: &HealthContext, request: MealRequest, 
         recipe_id: Some(recipe.id.clone()),
         ..request.input.clone()
     };
+    let mut basis = "Con los valores que dijiste.".to_string();
     if !request.input.has_nutrition() {
         let serving = recipe_serving(&recipe);
         let photo_of_existing = new_recipe.is_none() && photo.is_some();
-        let nutrition = match eaten_factor(&recipe, &request.portion, photo_of_existing) {
+        let factor = eaten_factor(&recipe, &request.portion, photo_of_existing);
+        let eaten = match &request.portion {
+            Portion::Note(note) => note.clone(),
+            Portion::Grams(grams) => format!("{} g", fmt(*grams, 0)),
+            Portion::Servings(servings) => format!("{} porciones", fmt(*servings, 2)),
+            Portion::One if request.description.trim().is_empty() => "la foto del plato".to_string(),
+            Portion::One => request.description.clone(),
+        };
+        basis = meal_basis(&recipe.name, serving.kcal, factor, &eaten);
+        let nutrition = match factor {
             Some(factor) => scale(serving, factor),
             None => {
-                let eaten = match &request.portion {
-                    Portion::Note(note) => note.clone(),
-                    Portion::Grams(grams) => format!("{} g", fmt(*grams, 0)),
-                    Portion::Servings(servings) => format!("{} porciones", fmt(*servings, 2)),
-                    Portion::One => request.description.clone(),
-                };
                 let (system, user) = portion_prompt(&recipe, &eaten, photo.is_some());
                 let answer = crate::backend_runtime::complete_with_images(app, library_id, &system, &user, photo.iter().map(|photo| photo.base64.clone()).collect(), AI_TIMEOUT)
                     .map_err(|error| HealthCommandError::ai(format!("No se pudo calcular lo que comió con IA ({}).", error.message)))?;
@@ -615,7 +648,7 @@ fn resolve_meal(app: &AppHandle, context: &HealthContext, request: MealRequest, 
             ..input
         };
     }
-    Ok(Ready::Meal { new_recipe, recipe_name: recipe.name.clone(), meal: HealthMutation::SaveMeal { id: None, input } })
+    Ok(Ready::Meal { new_recipe, recipe_name: recipe.name.clone(), meal: HealthMutation::SaveMeal { id: None, input }, basis })
 }
 
 /// Lo que se hace con la receta, para la confirmación.
@@ -651,8 +684,8 @@ fn summary_of(data: &HealthData, ready: &Ready) -> HealthResult<String> {
             summary
         }
         Ready::Plan(plan) => ai_plan_summary(plan),
-        Ready::Meal { new_recipe, recipe_name, meal } => {
-            format!("{}\n{}", recipe_summary(new_recipe.as_ref(), recipe_name), plan_change(data, meal, today, &new_ids())?.summary)
+        Ready::Meal { new_recipe, recipe_name, meal, basis } => {
+            format!("{}\n{} {basis}", recipe_summary(new_recipe.as_ref(), recipe_name), plan_change(data, meal, today, &new_ids())?.summary)
         }
     })
 }
@@ -698,7 +731,11 @@ pub(crate) fn execute_tool(app: &AppHandle, context: &HealthContext, call_id: &s
         Ready::Meal { meal: HealthMutation::SaveMeal { input, .. }, .. } => input.recipe_id.clone(),
         _ => None,
     });
-    Ok(serde_json::json!({ "ok": true, "summary": change.summary, "mealId": change.meal_id, "recipeId": recipe_id }))
+    let basis = match &ready {
+        Ready::Meal { basis, .. } => Some(basis.clone()),
+        _ => None,
+    };
+    Ok(serde_json::json!({ "ok": true, "summary": change.summary, "mealId": change.meal_id, "recipeId": recipe_id, "basis": basis }))
 }
 
 #[cfg(test)]
@@ -758,6 +795,11 @@ mod tests {
         );
         apply(&connection, owner, HealthMutation::AddWater { date: "2026-09-28".into(), delta_ml: 250 });
         apply(&connection, owner, HealthMutation::AddWater { date: "2026-09-28".into(), delta_ml: 500 });
+        apply(&connection, owner, HealthMutation::SetSteps { date: "2026-09-27".into(), steps: "6.200".into() });
+        apply(&connection, owner, HealthMutation::SetSteps { date: "2026-09-28".into(), steps: "9000".into() });
+        apply(&connection, owner, HealthMutation::SetSteps { date: "2026-09-28".into(), steps: "9500".into() });
+        apply(&connection, owner, HealthMutation::DeleteSteps { date: "2026-09-27".into() });
+        apply(&connection, owner, HealthMutation::SetSleep { date: "2026-09-28".into(), duration: "7:15".into() });
         let meal = MealInput {
             date: "2026-09-28".into(),
             category: "almuerzo".into(),
@@ -776,6 +818,8 @@ mod tests {
         assert_eq!(data.plan.as_ref().map(|plan| plan.kcal), Some(1886.0));
         assert_eq!(data.measurements[0].value("grasaKg"), Some(18.2));
         assert_eq!(data.water.get("2026-09-28"), Some(&750));
+        assert_eq!(data.steps.iter().map(|(date, steps)| (date.as_str(), *steps)).collect::<Vec<_>>(), [("2026-09-28", 9_500)]);
+        assert_eq!(data.sleep.get("2026-09-28"), Some(&435));
         assert_eq!(data.meals.len(), 1);
         assert_eq!(data.meals[0].nutrition.kcal, 480.0);
         assert_eq!(data.meals[0].recipe_id.as_deref(), Some("recipe-guiso"));

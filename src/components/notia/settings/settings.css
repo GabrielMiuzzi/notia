@@ -947,3 +947,36 @@
   .notia-settings-mode-client { padding-left: 14px; padding-right: 14px; }
   .notia-settings-host-spacer { display: none; }
 }
+
+/* Publicar → Espacios públicos */
+.notia-public-space-actions { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.notia-public-space-actions .notia-button { gap: 6px; }
+.notia-public-space-head { display: flex; align-items: center; gap: 12px; }
+.notia-settings-modal .notia-public-space-name { flex: 1; width: auto; font-weight: 600; }
+.notia-public-space-items,
+.notia-public-space-options { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.notia-public-space-item,
+.notia-public-space-option {
+  min-height: var(--settings-control);
+  padding: 4px 4px 4px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--settings-line);
+  border-radius: 8px;
+  background: var(--settings-field-bg);
+  color: var(--settings-text);
+}
+.notia-public-space-item > svg,
+.notia-public-space-option > svg { flex-shrink: 0; color: var(--settings-accent); }
+.notia-public-space-item-text,
+.notia-public-space-option-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.notia-public-space-option { width: 100%; padding-right: 12px; font: inherit; text-align: left; cursor: pointer; }
+.notia-public-space-option:hover,
+.notia-public-space-option:focus-visible { border-color: var(--settings-accent); background: var(--settings-accent-bg); }
+.notia-public-space-option-kind { flex-shrink: 0; color: var(--settings-muted); font-size: 12px; }
+.notia-public-space-picker { margin-top: 14px; padding: 12px; border: 1px solid var(--settings-line); border-radius: 10px; }
+.notia-public-space-picker-head { display: flex; align-items: center; gap: 8px; }
+.notia-settings-modal .notia-public-space-picker-head .notia-settings-field { flex: 1; width: auto; }
+.notia-public-space-picker .notia-public-space-options { max-height: 280px; overflow-y: auto; }
+.notia-public-space-picker .notia-settings-empty { padding: 12px 4px 4px; }

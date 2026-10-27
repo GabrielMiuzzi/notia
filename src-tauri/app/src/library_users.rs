@@ -726,6 +726,12 @@ fn normalize_context_tag(value: &str) -> CommandResult<String> {
             "Cada contexto debe ser una etiqueta sin espacios de hasta 128 caracteres.",
         ));
     }
+    if crate::backend::library_config::is_system_context(&normalized) {
+        return Err(error(
+            "invalid_context",
+            "El contexto #System es solo de los archivos que escribe la IA y no se asigna a usuarios.",
+        ));
+    }
     Ok(normalized)
 }
 

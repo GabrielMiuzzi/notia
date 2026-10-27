@@ -29,6 +29,9 @@ interface MarkdownPropertiesPanelProps {
   onCreateLinkedNote?: (title: string) => Promise<string | null>
   contexts?: readonly LibraryContext[]
   lockedContextTag?: string
+  lockedContextSource?: 'board' | 'folder'
+  /** The note is read-only: the properties are shown, never changed. */
+  readOnly?: boolean
 }
 
 const KIND_ICONS: Record<PropertyKind, LucideIcon> = {
@@ -136,6 +139,8 @@ function MarkdownPropertiesPanelInner({
   onCreateLinkedNote,
   contexts = [],
   lockedContextTag,
+  lockedContextSource,
+  readOnly = false,
 }: MarkdownPropertiesPanelProps) {
   const [isOpen, setIsOpen] = useState(readStoredOpen)
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -192,7 +197,7 @@ function MarkdownPropertiesPanelInner({
             const kind = kindOverrides[entry.key] && entry.value === '' ? kindOverrides[entry.key] as PropertyKind : inferPropertyKind(entry)
             const Icon = iconFor(entry.key, kind)
             const isEditing = editingKey === entry.key
-            const canDelete = !isProtectedKey(entry.key) && !(isContextKey(entry.key) && lockedContextTag)
+            const canDelete = !readOnly && !isProtectedKey(entry.key) && !(isContextKey(entry.key) && lockedContextTag)
             return (
               <div key={entry.key} className={`notia-properties-row${isEditing ? ' is-editing' : ''}`}>
                 <div className="notia-properties-key">
@@ -212,7 +217,9 @@ function MarkdownPropertiesPanelInner({
                     libraryId={libraryId}
                     contexts={contexts}
                     lockedContextTag={lockedContextTag}
+                    lockedContextSource={lockedContextSource}
                     onCreateLinkedNote={onCreateLinkedNote}
+                    readOnly={readOnly}
                   />
                 </div>
                 {canDelete ? (
@@ -229,8 +236,8 @@ function MarkdownPropertiesPanelInner({
               </div>
             )
           })}
-          {entries.length > 0 ? <span className="notia-properties-divider" aria-hidden="true" /> : null}
-          {isAdding ? (
+          {entries.length > 0 && !readOnly ? <span className="notia-properties-divider" aria-hidden="true" /> : null}
+          {readOnly ? null : isAdding ? (
             <AddPropertyForm existingKeys={existingKeys} onAdd={addProperty} onCancel={() => setIsAdding(false)} />
           ) : (
             <NotiaButton variant="ghost" className="notia-properties-add-button" onClick={() => setIsAdding(true)}>

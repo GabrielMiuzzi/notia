@@ -1753,7 +1753,7 @@ impl TaskManagerReadPort for InMemoryTaskManager {
         ensure_board_access(&request.context, library, &ticket.summary.board_id)?;
         if !request.include_archived && ticket.summary.state.is_archived() {
             return Err(not_found(
-                "El ticket no está disponible en el alcance activo.",
+                "El ticket está finalizado o cancelado: pedilo con includeArchived: true.",
             ));
         }
         let mut subtasks = library
@@ -4460,6 +4460,22 @@ segundo");
             closed_at_unix_ms: None,
             block_note: None,
         }
+    }
+
+    #[test]
+    fn tickets_read_by_id_include_finished_ones_and_say_which_failed() {
+        let (manager, context) = setup();
+        manager.seed_ticket(ticket("ticket-a", "Abierto", None)).unwrap();
+        let mut done = ticket("ticket-b", "Terminado", None);
+        done.summary.state = TaskState::Completed;
+        manager.seed_ticket(done).unwrap();
+        let read = |arguments: serde_json::Value| crate::task_manager_tool_input::read_tickets_by_id(&manager, &context, &arguments).expect("read");
+        let result = read(serde_json::json!({ "ticketIds": ["ticket-a", "ticket-b", "ticket-x"] }));
+        assert_eq!(result["tickets"].as_array().map(Vec::len), Some(2));
+        assert_eq!(result["notRead"][0]["ticketId"], "ticket-x");
+        // Leaving finished tickets out says how to get them.
+        let result = read(serde_json::json!({ "ticketIds": ["ticket-b"], "includeArchived": false }));
+        assert!(result["notRead"][0]["error"].as_str().unwrap_or_default().contains("includeArchived: true"), "{result}");
     }
 
     #[test]

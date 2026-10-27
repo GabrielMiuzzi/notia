@@ -4,7 +4,7 @@
 //! preview never calls a write port; applying one validates the captured source
 //! and delegates the final revision check to the atomic document port.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,10 @@ use super::library_tools::{
 };
 
 pub const MAX_MARKDOWN_HUNKS: usize = 200;
-pub const MAX_MULTI_DOCUMENT_EDITS: usize = 20;
+/// Operations of one multi-document edit; a document may take several.
+pub const MAX_MULTI_DOCUMENT_EDITS: usize = 60;
+/// Documents one multi-document edit may change.
+pub const MAX_MULTI_DOCUMENT_DOCUMENTS: usize = 20;
 pub const MAX_MARKDOWN_TAG_CHARS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,31 +362,42 @@ pub fn preview_multi_document_markdown_edit(
             "La operación multi-documento no tiene un tamaño válido.",
         ));
     }
-    let mut library_id: Option<&str> = None;
-    let mut paths = HashSet::new();
-    let mut previews = Vec::with_capacity(request.edits.len());
-    for (index, edit) in request.edits.iter().enumerate() {
-        if library_id.is_none() {
-            library_id = Some(edit.locator.library_id.as_str());
-        }
-        if library_id != Some(edit.locator.library_id.as_str()) {
+    // Edits of the same document run in the order given, one after another.
+    let mut documents: Vec<(&DocumentLocatorDto, Vec<&MarkdownOperation>)> = Vec::new();
+    for edit in &request.edits {
+        if edit.locator.library_id != request.edits[0].locator.library_id {
             return Err(scope_error(
                 "Una operación multi-documento no puede cruzar bibliotecas.",
             ));
         }
-        if !paths.insert(edit.locator.path().to_string()) {
-            return Err(BackendError::invalid_input(
-                "Una operación multi-documento repite una ruta.",
-            ));
+        match documents.iter_mut().find(|(locator, _)| locator.path() == edit.locator.path()) {
+            Some((_, operations)) => operations.push(&edit.operation),
+            None => documents.push((&edit.locator, vec![&edit.operation])),
         }
-        let document = port.read_document(&edit.locator)?;
-        let child = MarkdownEditRequest {
-            operation_id: child_operation_id(&request.operation_id, index, edit.locator.path()),
-            locator: edit.locator.clone(),
-            expected_revision: None,
-            operation: edit.operation.clone(),
-        };
-        previews.push(preview_document_edit(&document, &child)?);
+    }
+    if documents.len() > MAX_MULTI_DOCUMENT_DOCUMENTS {
+        return Err(BackendError::invalid_input(format!(
+            "Una operación multi-documento cambia hasta {MAX_MULTI_DOCUMENT_DOCUMENTS} documentos; dividila en tandas."
+        )));
+    }
+    // Every document is checked before answering, so one missing page in a
+    // long batch names all the edits to fix instead of only the first.
+    let total = documents.len();
+    let mut previews = Vec::with_capacity(total);
+    let mut failures = Vec::new();
+    for (index, (locator, operations)) in documents.into_iter().enumerate() {
+        let operation_id = child_operation_id(&request.operation_id, index, locator.path());
+        match port
+            .read_document(locator)
+            .and_then(|document| preview_chained_edits(&document, &operation_id, &operations))
+        {
+            Ok(preview) => previews.push(preview),
+            Err(error) if matches!(error.code, BackendErrorCode::Cancelled | BackendErrorCode::Timeout) => return Err(error),
+            Err(error) => failures.push((locator.path().to_string(), error)),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(batch_failure(&failures, total));
     }
     let documents = previews
         .iter()
@@ -465,7 +479,7 @@ pub fn apply_multi_document_markdown_preview(
     preview: &MultiDocumentMarkdownPreview,
     selected_hunk_ids: &[String],
 ) -> Result<MultiDocumentMarkdownApplyResult, BackendError> {
-    if preview.previews.is_empty() || preview.previews.len() > MAX_MULTI_DOCUMENT_EDITS {
+    if preview.previews.is_empty() || preview.previews.len() > MAX_MULTI_DOCUMENT_DOCUMENTS {
         return Err(BackendError::invalid_input(
             "El preview multi-document no tiene un tamaño válido.",
         ));
@@ -553,6 +567,114 @@ fn preview_document_edit(
         expected_revision: document.revision,
         ..preview
     })
+}
+
+/// The error of a batch with documents that failed: each one with its
+/// reason and what to do; nothing was written.
+fn batch_failure(failures: &[(String, BackendError)], total: usize) -> BackendError {
+    let code = if failures.iter().all(|(_, error)| error.code == failures[0].1.code) {
+        failures[0].1.code
+    } else {
+        BackendErrorCode::InvalidInput
+    };
+    let listed = failures
+        .iter()
+        .map(|(path, error)| format!("- {path}: {}", error.message))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ready = total - failures.len();
+    BackendError::new(
+        code,
+        format!(
+            "No se aplicó ningún cambio: {} de {total} documentos de la tanda fallaron.\n{listed}\nCorregí o sacá esas ediciones y volvé a mandar la tanda; los otros {ready} documentos están bien.",
+            failures.len()
+        ),
+        failures.iter().all(|(_, error)| error.retryable),
+    )
+}
+
+/// The frontmatter keys an edit changed, with their new value (`None` when
+/// it removed the key), so the result of a batch says where it left a chain.
+pub fn frontmatter_changes(before: &str, after: &str) -> BTreeMap<String, Option<String>> {
+    let (before, _) = crate::library_tools::parse_frontmatter(before);
+    let (after, _) = crate::library_tools::parse_frontmatter(after);
+    let mut changes = BTreeMap::new();
+    for (key, value) in &after {
+        if before.get(key) != Some(value) {
+            changes.insert(key.clone(), Some(value.clone()));
+        }
+    }
+    for key in before.keys().filter(|key| !after.contains_key(*key)) {
+        changes.insert(key.clone(), None);
+    }
+    changes
+}
+
+/// The preview of one or more operations on a document. Several operations
+/// run one after another on the previous result and leave a single hunk with
+/// the span of the original text that changed.
+fn preview_chained_edits(
+    document: &DocumentContent,
+    operation_id: &str,
+    operations: &[&MarkdownOperation],
+) -> Result<MarkdownEditPreview, BackendError> {
+    let request = |operation: &MarkdownOperation| MarkdownEditRequest {
+        operation_id: operation_id.to_string(),
+        locator: document.locator.clone(),
+        expected_revision: None,
+        operation: operation.clone(),
+    };
+    let first = preview_document_edit(document, &request(operations[0]))?;
+    if operations.len() == 1 {
+        return Ok(first);
+    }
+    let mut content = first.new_content.clone();
+    for operation in &operations[1..] {
+        content = preview_markdown_edit(&content, &request(operation))?.new_content;
+    }
+    let (start, old_end, new_end) = changed_span(&document.content, &content);
+    let anchor = make_anchor(
+        &document.locator,
+        &MarkdownAnchorKind::Document,
+        "documento",
+        0,
+        &document.content,
+        start,
+        old_end,
+    );
+    let new_text = content[start..new_end].to_string();
+    let hunk = MarkdownHunk {
+        id: hunk_id(&anchor, &new_text),
+        anchor: anchor.clone(),
+        old_text: document.content[start..old_end].to_string(),
+        new_text,
+    };
+    Ok(MarkdownEditPreview {
+        format: validate_markdown_format(&content)?,
+        new_content: content,
+        anchors: vec![anchor],
+        hunks: vec![hunk],
+        ..first
+    })
+}
+
+/// Byte span that differs between two texts: where it starts and where it
+/// ends in each one.
+fn changed_span(old: &str, new: &str) -> (usize, usize, usize) {
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .take_while(|((_, old_char), new_char)| old_char == new_char)
+        .last()
+        .map_or(0, |((index, character), _)| index + character.len_utf8());
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(old_char, new_char)| old_char == new_char)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    (prefix, old.len() - suffix, new.len() - suffix)
 }
 
 fn plan_operation(
@@ -1157,6 +1279,43 @@ pub fn set_note_page_mode(source: &str, enabled: bool) -> Result<String, Backend
     Ok(result)
 }
 
+/// The note with `contexto` set to `tag`: the value is replaced, or the key
+/// added (with a frontmatter when there is none). `None` when it already has
+/// that context, for ColdPass vaults and for malformed frontmatter, which is
+/// never rewritten implicitly.
+pub fn with_context(source: &str, tag: &str) -> Option<String> {
+    if crate::coldpass::is_coldpass_vault(source) {
+        return None;
+    }
+    let metadata = frontmatter(source).ok()?;
+    let newline = newline_for(source);
+    let value = serialize_value(tag);
+    match metadata {
+        Some(metadata) => match metadata.fields.iter().find(|field| field.key == "contexto") {
+            Some(field) if field.value.trim().trim_matches('"').eq_ignore_ascii_case(tag) => None,
+            Some(field) => replace_range(source, field.value_start, field.value_end, &value).ok(),
+            None => replace_range(source, metadata.close_start, metadata.close_start, &format!("contexto: {value}{newline}")).ok(),
+        },
+        None => Some(format!("---{newline}contexto: {value}{newline}---{newline}{source}")),
+    }
+}
+
+/// The note with `key: value` (written as is, e.g. `true`) added when it
+/// does not have the key yet; `None` when it has it, for ColdPass vaults
+/// and for malformed frontmatter.
+pub fn with_missing_property(source: &str, key: &str, value: &str) -> Option<String> {
+    if crate::coldpass::is_coldpass_vault(source) {
+        return None;
+    }
+    let metadata = frontmatter(source).ok()?;
+    let newline = newline_for(source);
+    match metadata {
+        Some(metadata) if metadata.fields.iter().any(|field| field.key == key) => None,
+        Some(metadata) => replace_range(source, metadata.close_start, metadata.close_start, &format!("{key}: {value}{newline}")).ok(),
+        None => Some(format!("---{newline}{key}: {value}{newline}---{newline}{source}")),
+    }
+}
+
 fn replace_range(
     source: &str,
     start: usize,
@@ -1748,6 +1907,34 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_property_is_added_and_an_existing_one_kept() {
+        assert_eq!(
+            with_missing_property("---\ncontexto: \"#Publico\"\n---\nTexto\n", "publicado", "true").as_deref(),
+            Some("---\ncontexto: \"#Publico\"\npublicado: true\n---\nTexto\n")
+        );
+        assert_eq!(with_missing_property("---\npublicado: false\n---\n", "publicado", "true"), None);
+        assert_eq!(with_missing_property("Sin propiedades", "publicado", "true").as_deref(), Some("---\npublicado: true\n---\nSin propiedades"));
+    }
+
+    #[test]
+    fn a_note_takes_the_context_of_its_folder() {
+        assert_eq!(
+            with_context("---\ncreatedAt: 1\ncontexto: \"#Personal\"\n---\nCuerpo\n", "#Laboral").as_deref(),
+            Some("---\ncreatedAt: 1\ncontexto: \"#Laboral\"\n---\nCuerpo\n")
+        );
+        assert_eq!(
+            with_context("---\r\ncreatedAt: 1\r\n---\r\nHola", "#Laboral").as_deref(),
+            Some("---\r\ncreatedAt: 1\r\ncontexto: \"#Laboral\"\r\n---\r\nHola")
+        );
+        assert_eq!(
+            with_context("# Sin propiedades\n", "#Laboral").as_deref(),
+            Some("---\ncontexto: \"#Laboral\"\n---\n# Sin propiedades\n")
+        );
+        assert_eq!(with_context("---\ncontexto: \"#laboral\"\n---\n", "#Laboral"), None);
+        assert_eq!(with_context("<!-- NOTIA_COLDPASS_OWNER_V1 -->\nnonce: a\n", "#Laboral"), None);
+    }
+
+    #[test]
     fn markdown_defaults_fill_only_missing_properties() {
         let source = "---\ncontexto: \"#Laboral\"\n---\nCuerpo\n";
         assert_eq!(ensure_markdown_defaults("<!-- NOTIA_COLDPASS_OWNER_V1 -->\nnonce: a\n", 1), None);
@@ -1959,5 +2146,87 @@ sin cierre
             .unwrap()
             .content
             .starts_with("---"));
+    }
+
+    #[test]
+    fn multi_document_edits_of_the_same_document_run_in_order() {
+        let library = library();
+        let set = |path: &str, key: &str, value: &str| MarkdownDocumentEdit {
+            locator: locator(path),
+            operation: MarkdownOperation::SetFrontmatter { key: key.into(), value: value.into() },
+        };
+        let preview = preview_multi_document_markdown_edit(
+            &library,
+            &MultiDocumentMarkdownEditRequest {
+                operation_id: "multi".into(),
+                edits: vec![
+                    set("notes/a.md", "nextPage", "[[notes/b.md]]"),
+                    set("notes/b.md", "previousPage", "[[notes/a.md]]"),
+                    set("notes/a.md", "previousPage", "N/A"),
+                    set("notes/a.md", "priority", "high"),
+                ],
+            },
+        )
+        .expect("multi preview");
+        assert_eq!(preview.previews.len(), 2);
+        assert_eq!(preview.previews[0].hunks.len(), 1);
+        let result = apply_multi_document_markdown_preview(&library, &preview, &[]).expect("apply");
+        assert!(result.changed);
+        let a = library.read_document(&locator("notes/a.md")).unwrap().content;
+        assert!(a.starts_with("---\ntags: [one]\npriority: high\nnextPage: "), "{a}");
+        assert!(a.contains("previousPage: N/A\n---\n# A\n"), "{a}");
+        assert!(library.read_document(&locator("notes/b.md")).unwrap().content.contains("previousPage: "));
+
+        let too_many = (0..=MAX_MULTI_DOCUMENT_DOCUMENTS)
+            .map(|index| set(&format!("notes/{index}.md"), "nextPage", "x"))
+            .collect::<Vec<_>>();
+        let error = preview_multi_document_markdown_edit(
+            &library,
+            &MultiDocumentMarkdownEditRequest { operation_id: "multi".into(), edits: too_many },
+        )
+        .expect_err("too many documents");
+        assert!(error.message.contains("tandas"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_batch_with_missing_documents_names_them_all_and_writes_nothing() {
+        let library = library();
+        let set = |path: &str| MarkdownDocumentEdit {
+            locator: locator(path),
+            operation: MarkdownOperation::SetFrontmatter { key: "nextPage".into(), value: "N/A".into() },
+        };
+        let before = library.read_document(&locator("notes/a.md")).unwrap().content;
+        let error = preview_multi_document_markdown_edit(
+            &library,
+            &MultiDocumentMarkdownEditRequest {
+                operation_id: "multi".into(),
+                edits: vec![set("notes/a.md"), set("notes/falta.md"), set("notes/b.md"), set("notes/otra.md")],
+            },
+        )
+        .expect_err("missing documents");
+        assert_eq!(error.code, BackendErrorCode::NotFound);
+        assert!(error.message.starts_with("No se aplicó ningún cambio: 2 de 4 documentos"), "{}", error.message);
+        assert!(error.message.contains("- notes/falta.md: ") && error.message.contains("- notes/otra.md: "), "{}", error.message);
+        assert!(error.message.contains("los otros 2 documentos están bien"), "{}", error.message);
+        assert_eq!(library.read_document(&locator("notes/a.md")).unwrap().content, before);
+    }
+
+    #[test]
+    fn frontmatter_changes_say_what_a_batch_set() {
+        let changes = frontmatter_changes(
+            "---\nnextPage: \"[[a.md]]\"\ntitle: X\nold: 1\n---\n# X\n",
+            "---\nnextPage: \"[[b.md]]\"\ntitle: X\npreviousPage: N/A\n---\n# X\n",
+        );
+        assert_eq!(changes.get("nextPage"), Some(&Some("[[b.md]]".to_string())));
+        assert_eq!(changes.get("previousPage"), Some(&Some("N/A".to_string())));
+        assert_eq!(changes.get("old"), Some(&None));
+        assert!(!changes.contains_key("title"));
+    }
+
+    #[test]
+    fn changed_span_keeps_the_common_prefix_and_suffix_on_char_boundaries() {
+        assert_eq!(changed_span("año: 1\n", "año: 22\n"), (6, 7, 8));
+        assert_eq!(changed_span("igual", "igual"), (5, 5, 5));
+        assert_eq!(changed_span("", "nuevo"), (0, 0, 5));
     }
 }

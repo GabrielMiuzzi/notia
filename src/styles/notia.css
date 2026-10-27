@@ -1946,66 +1946,6 @@
   height: 100%;
 }
 
-.notia-published-titlebar {
-  justify-content: space-between;
-  padding: 0 10px 0 14px;
-  -webkit-app-region: initial;
-}
-
-.notia-published-titlebar-label {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 8px;
-  color: var(--color-heading-text);
-}
-
-.notia-published-titlebar-label span {
-  color: var(--color-subtle-text);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.notia-publication-status {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  max-width: 260px;
-  color: var(--color-subtle-text);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.notia-publication-status::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.notia-publication-status--connected {
-  color: #6fcf97;
-}
-
-.notia-publication-status--syncing,
-.notia-publication-status--connecting,
-.notia-publication-status--paused {
-  color: #ffb86b;
-}
-
-.notia-publication-status--offline,
-.notia-publication-status--conflict,
-.notia-publication-status--revoked,
-.notia-publication-status--stopped,
-.notia-publication-status--reconfigured {
-  color: #ff6b6b;
-}
-
 .notia-publication-terminal {
   display: flex;
   align-items: center;
@@ -2043,12 +1983,6 @@
   }
 }
 
-.notia-published-chat-toggle {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-}
-
 .notia-published-workspace,
 .notia-published-task-content {
   min-width: 0;
@@ -2059,6 +1993,23 @@
   display: flex;
   flex: 1 1 auto;
   overflow: hidden;
+}
+
+/* The published explorer: the notes of the published boards' contexts. */
+.notia-published-explorer-empty {
+  margin: 12px 14px;
+  color: var(--color-muted-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.notia-published-graph-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted-text);
+  font-size: 13px;
 }
 
 .notia-published-chat-plan {
@@ -2094,10 +2045,6 @@
     --titlebar-height: 52px;
   }
 
-  .notia-published-chat-toggle {
-    width: 48px;
-    height: 48px;
-  }
 }
 
 .notia-tree-extension {
@@ -2112,6 +2059,63 @@
   font-weight: 600;
   line-height: 1.2;
   text-transform: lowercase;
+}
+
+.notia-folder-context-hint {
+  margin: 0 0 10px;
+  color: var(--color-subtle-text);
+}
+
+.notia-folder-context-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(320px, 50dvh);
+  overflow-y: auto;
+}
+
+/* Rows of 44px so a finger picks one on Android. */
+.notia-folder-context-option {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-heading-text);
+  cursor: pointer;
+}
+
+.notia-folder-context-option:hover,
+.notia-folder-context-option:focus-within {
+  background: var(--color-hover-surface);
+}
+
+.notia-folder-context-option input {
+  margin: 0;
+  accent-color: var(--color-accent-text);
+}
+
+.notia-folder-context-swatch {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+}
+
+.notia-folder-context-error {
+  margin: 10px 0 0;
+  color: var(--color-error-text);
+}
+
+/* The folder's context keeps the format badge, without its lower case. */
+.notia-tree-folder-context {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
 }
 
 .notia-tree-inline-input {
@@ -4732,61 +4736,6 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   outline-offset: 2px;
 }
 
-/* ── Mermaid SVG inside Milkdown code-block previews ──────────── */
-.notia-markdown-editor-root .milkdown svg text,
-.notia-markdown-editor-root .milkdown svg tspan {
-  fill: var(--color-app-text) !important;
-}
-
-.notia-markdown-editor-root .milkdown svg .node .label,
-.notia-markdown-editor-root .milkdown svg .nodeLabel,
-.notia-markdown-editor-root .milkdown svg .label,
-.notia-markdown-editor-root .milkdown svg .cluster-label,
-.notia-markdown-editor-root .milkdown svg .edgeLabel,
-.notia-markdown-editor-root .milkdown svg .edge-label,
-.notia-markdown-editor-root .milkdown svg .nodeLabel div,
-.notia-markdown-editor-root .milkdown svg .nodeLabel span {
-  fill: var(--color-app-text) !important;
-  color: var(--color-app-text) !important;
-}
-
-.notia-markdown-editor-root .milkdown svg foreignObject,
-.notia-markdown-editor-root .milkdown svg foreignObject div,
-.notia-markdown-editor-root .milkdown svg foreignObject span,
-.notia-markdown-editor-root .milkdown svg foreignObject p {
-  color: var(--color-app-text) !important;
-  background: transparent !important;
-}
-
-.notia-markdown-editor-root .milkdown svg .node > rect,
-.notia-markdown-editor-root .milkdown svg .node > circle,
-.notia-markdown-editor-root .milkdown svg .node > ellipse,
-.notia-markdown-editor-root .milkdown svg .node > polygon,
-.notia-markdown-editor-root .milkdown svg .node > path,
-.notia-markdown-editor-root .milkdown svg [class*="node"] > rect,
-.notia-markdown-editor-root .milkdown svg [class*="node"] > circle,
-.notia-markdown-editor-root .milkdown svg [class*="node"] > ellipse,
-.notia-markdown-editor-root .milkdown svg [class*="node"] > polygon,
-.notia-markdown-editor-root .milkdown svg [class*="node"] > path,
-.notia-markdown-editor-root .milkdown svg .cluster > rect,
-.notia-markdown-editor-root .milkdown svg .icon-shape {
-  fill: var(--color-card-bg) !important;
-  stroke: var(--color-border-soft) !important;
-}
-
-.notia-markdown-editor-root .milkdown svg .edgePath path,
-.notia-markdown-editor-root .milkdown svg path[class*="flowchart-link"],
-.notia-markdown-editor-root .milkdown svg path[class*="edge-pattern"],
-.notia-markdown-editor-root .milkdown svg path[class*="edge-thickness"] {
-  stroke: var(--color-border-soft) !important;
-}
-
-.notia-markdown-editor-root .milkdown svg .labelBox,
-.notia-markdown-editor-root .milkdown svg .label-container {
-  fill: var(--color-card-bg) !important;
-  stroke: var(--color-border-soft) !important;
-}
-
 .notia-wikilink-token {
   white-space: pre-wrap;
 }
@@ -6358,10 +6307,6 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
 @media (hover: none) and (pointer: coarse) {
   .notia-app-shell.notia-published-task-manager {
     --titlebar-height: 52px;
-  }
-
-  .notia-published-titlebar {
-    height: var(--titlebar-height);
   }
 
   .notia-titlebar-button,

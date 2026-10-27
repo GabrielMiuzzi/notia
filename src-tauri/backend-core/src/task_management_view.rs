@@ -101,6 +101,30 @@ pub struct ManagementViewDto {
     pub table: CpmTableDto,
     /// «B → E → F  ·  C», or «—».
     pub critical_path: String,
+    /// The main critical chain, step by step («Ruta crítica» of the phone).
+    pub critical_chain: Vec<CriticalStepDto>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CriticalLinkKind {
+    /// The next step depends on this one.
+    Dependency,
+    /// The same person goes on with the next step.
+    Resource,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CriticalStepDto {
+    pub task_path: String,
+    pub letter: String,
+    pub title: String,
+    /// «lun 19 oct · 09:00 → mar 20 oct · 15:00 · 9 h».
+    pub when: String,
+    /// «C depende de B» or «Misma persona: Gabriel sigue con C»; none on the last step.
+    pub link: Option<String>,
+    pub link_kind: Option<CriticalLinkKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +204,8 @@ pub struct RangeModeOptionDto {
     pub mode: ManagementRangeMode,
     /// «Auto · Q», «Auto · 3 sprints», «Sprints», «Q completo».
     pub label: String,
+    /// «Auto», «Sprints», «Q completo»: the phone's segmented control.
+    pub short_label: String,
     pub tooltip: String,
     pub selected: bool,
 }
@@ -713,7 +739,47 @@ pub fn management_view(input: &PlannerInput, request: &ManagementRequest) -> Man
         network,
         table,
         critical_path: analysis.critical_path.clone(),
+        critical_chain: critical_chain(&context),
     }
+}
+
+/// The first critical chain, with what ties each step to the next.
+fn critical_chain(context: &Context) -> Vec<CriticalStepDto> {
+    let Some(chain) = context.analysis.critical_chains.first() else {
+        return Vec::new();
+    };
+    chain
+        .iter()
+        .enumerate()
+        .map(|(position, &index)| {
+            let task = context.task(index);
+            let next = chain.get(position + 1).copied();
+            let link = next.map(|next_index| {
+                let next_task = context.task(next_index);
+                if next_task.predecessors.contains(&index) {
+                    (format!("{} depende de {}", next_task.letter, task.letter), CriticalLinkKind::Dependency)
+                } else {
+                    let shared = task
+                        .task
+                        .people
+                        .iter()
+                        .filter(|person| next_task.task.people.iter().any(|other| other.eq_ignore_ascii_case(person)))
+                        .map(|person| first_name(person).to_string())
+                        .collect::<Vec<_>>();
+                    let who = if shared.is_empty() { "La misma persona".to_string() } else { format!("Misma persona: {}", shared.join(", ")) };
+                    (format!("{who} sigue con {}", next_task.letter), CriticalLinkKind::Resource)
+                }
+            });
+            CriticalStepDto {
+                task_path: task.task.task_path.clone(),
+                letter: task.letter.clone(),
+                title: task.task.title.clone(),
+                when: format!("{} → {} · {}", context.start_label(index), context.end_label(index), hours(task.duration)),
+                link_kind: link.as_ref().map(|(_, kind)| *kind),
+                link: link.map(|(text, _)| text),
+            }
+        })
+        .collect()
 }
 
 fn division_picker(context: &Context, offset: i32, current: &CalendarSpan) -> DivisionPickerDto {
@@ -792,7 +858,17 @@ fn visible_range(
         (ManagementRangeMode::Division, format!("{prefix} completo"), "Toda la división".to_string()),
     ]
     .into_iter()
-    .map(|(option, label, tooltip)| RangeModeOptionDto { mode: option, label, tooltip, selected: option == mode })
+    .map(|(option, label, tooltip)| RangeModeOptionDto {
+        mode: option,
+        short_label: match option {
+            ManagementRangeMode::Auto => "Auto".to_string(),
+            ManagementRangeMode::Sprints => "Sprints".to_string(),
+            ManagementRangeMode::Division => format!("{prefix} completo"),
+        },
+        label,
+        tooltip,
+        selected: option == mode,
+    })
     .collect();
     let range = ManagementRangeDto {
         title,
@@ -1770,6 +1846,15 @@ mod tests {
             with(task("C"), 2.0, &["P2"], TaskPriority::Medium),
         ]));
         assert_eq!(view.critical_path, "A → B");
+        // The phone's chain: the same person ties A to B.
+        let chain = &view.critical_chain;
+        assert_eq!(chain.iter().map(|step| step.letter.as_str()).collect::<Vec<_>>(), ["A", "B"]);
+        assert_eq!(chain[0].link_kind, Some(CriticalLinkKind::Resource));
+        assert_eq!(chain[0].link.as_deref(), Some("Misma persona: P1 sigue con B"));
+        assert!(chain[0].when.ends_with("· 4 h"), "{}", chain[0].when);
+        assert_eq!((chain[1].link.as_deref(), chain[1].link_kind), (None, None));
+        let short = view.range.modes.iter().map(|mode| mode.short_label.as_str()).collect::<Vec<_>>();
+        assert_eq!(short[..2], ["Auto", "Sprints"]);
         let network = &view.network;
         let a = &network.nodes[0];
         let b = &network.nodes[1];

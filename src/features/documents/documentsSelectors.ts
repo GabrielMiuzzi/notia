@@ -1,7 +1,7 @@
 import { createSelector } from '@reduxjs/toolkit'
 import type { RootState } from '../../store/index'
 import type { OpenDocumentTab } from './documentsTypes'
-import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from './documentsSlice'
+import { GRAPH_WORKSPACE_TAB_PATH, CHAT_WORKSPACE_TAB_PATH, TASK_MANAGER_WORKSPACE_TAB_PATH, COLDPASS_WORKSPACE_TAB_PATH, MEETING_WORKSPACE_TAB_PATH, FINANCE_WORKSPACE_TAB_PATH, AGENDA_WORKSPACE_TAB_PATH, ROUTINE_WORKSPACE_TAB_PATH, AI_ACTIONS_WORKSPACE_TAB_PATH, AI_TASKS_WORKSPACE_TAB_PATH, RECIPES_WORKSPACE_TAB_PATH, HEALTH_WORKSPACE_TAB_PATH, GYM_WORKSPACE_TAB_PATH, HOME_WORKSPACE_TAB_PATH } from './documentsSlice'
 
 export const selectOpenTabs = (state: RootState) => state.documents.openTabs
 export const selectActiveTabPath = (state: RootState) => state.documents.activeTabPath
@@ -36,7 +36,7 @@ export const selectSaveStatus = createSelector(
   (tab) => tab?.saveStatus ?? 'idle' as const,
 )
 
-export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'routine' | 'ai-actions' | 'recipes' | 'health' | 'gym' | 'home' => {
+export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'graph' | 'chat' | 'task-manager' | 'coldpass' | 'meeting' | 'finance' | 'agenda' | 'routine' | 'ai-actions' | 'ai-tasks' | 'recipes' | 'health' | 'gym' | 'home' => {
   const path = state.documents.activeTabPath
   if (path === GRAPH_WORKSPACE_TAB_PATH) return 'graph'
   if (path === CHAT_WORKSPACE_TAB_PATH) return 'chat'
@@ -47,6 +47,7 @@ export const selectActiveWorkspaceView = (state: RootState): 'documents' | 'grap
   if (path === AGENDA_WORKSPACE_TAB_PATH) return 'agenda'
   if (path === ROUTINE_WORKSPACE_TAB_PATH) return 'routine'
   if (path === AI_ACTIONS_WORKSPACE_TAB_PATH) return 'ai-actions'
+  if (path === AI_TASKS_WORKSPACE_TAB_PATH) return 'ai-tasks'
   if (path === RECIPES_WORKSPACE_TAB_PATH) return 'recipes'
   if (path === HEALTH_WORKSPACE_TAB_PATH) return 'health'
   if (path === GYM_WORKSPACE_TAB_PATH) return 'gym'
@@ -100,6 +101,7 @@ export const selectTitleBarTabs = createSelector(
     if (specialTabs.agenda) tabs.push({ path: AGENDA_WORKSPACE_TAB_PATH, title: 'Agenda' })
     if (specialTabs.routine) tabs.push({ path: ROUTINE_WORKSPACE_TAB_PATH, title: 'Rutina' })
     if (specialTabs.aiActions) tabs.push({ path: AI_ACTIONS_WORKSPACE_TAB_PATH, title: 'Acciones IA' })
+    if (specialTabs.aiTasks) tabs.push({ path: AI_TASKS_WORKSPACE_TAB_PATH, title: 'Tareas IA' })
     if (specialTabs.recipes) tabs.push({ path: RECIPES_WORKSPACE_TAB_PATH, title: 'Recetas' })
     if (specialTabs.health) tabs.push({ path: HEALTH_WORKSPACE_TAB_PATH, title: 'Salud' })
     if (specialTabs.gym) tabs.push({ path: GYM_WORKSPACE_TAB_PATH, title: 'Gimnasio' })

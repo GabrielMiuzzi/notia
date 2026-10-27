@@ -43,6 +43,15 @@ describe('MarkdownPropertiesPanel', () => {
   })
   afterEach(cleanup)
 
+  it('only shows the properties of a read-only note', () => {
+    renderPanel({ entries: [{ key: 'contexto', value: '#System' }, { key: 'estado', value: 'activo' }], readOnly: true })
+    expect(screen.getByText('System')).toBeTruthy()
+    expect(screen.getByText('activo')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Agregar propiedad/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Quitar la propiedad/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Contexto: .*Cambiar/ })).toBeNull()
+  })
+
   it('folds into a summary with the context and the creation date', () => {
     renderPanel()
     const toggle = screen.getByRole('button', { name: /Propiedades/ })

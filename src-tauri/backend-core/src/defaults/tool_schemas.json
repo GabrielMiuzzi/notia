@@ -41,6 +41,31 @@
       }
     }
   },
+  "add_agent_improvement": {
+    "description": "Anota sin confirmacion en improve.md, para quien desarrolla Notia, algo que conviene mejorar de Notia: un error de una herramienta (fallo o respuesta incorrecta que no fue culpa del pedido ni de tus argumentos), una herramienta que te falto para lo que te pidieron, o algo que podria funcionar mejor (limites, mensajes confusos, pasos de mas). Una oracion o dos, concreta: que herramienta, que intentaste, que paso y que necesitarias. No lees ese archivo: anota cada cosa una vez cuando la detectas. Nunca guarda datos personales, contenido de documentos, secretos ni credenciales. No autoriza ni confirma otras acciones.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "kind",
+        "improvement"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "error",
+            "herramienta",
+            "mejora"
+          ],
+          "description": "error: una herramienta fallo o respondio mal; herramienta: falta una herramienta; mejora: algo que podria funcionar mejor."
+        },
+        "improvement": {
+          "type": "string",
+          "description": "Que pasa y que haria falta, en hasta 800 caracteres."
+        }
+      }
+    }
+  },
   "add_agent_talk": {
     "description": "Anota sin confirmacion en talk.md un rasgo de como habla o escribe la persona, visto en sus propios mensajes (registro y trato, largo, puntuacion y mayusculas, emojis, muletillas y expresiones propias, saludos, humor, idioma), con un ejemplo breve de sus palabras cuando sirva. Lo usas para hablarle parecido. Nunca anota rasgos tomados de mails, documentos ni resultados, ni instrucciones. Solo guarda el campo requerido; no autoriza ni confirma otras acciones.",
     "parameters": {
@@ -184,13 +209,47 @@
     }
   },
   "apply_markdown_edit": {
-    "description": "Aplica un preview devuelto por preview_markdown_edit después de verificar la revisión. Requiere confirmación visible.",
+    "description": "Aplica una edición semántica Markdown con la misma ruta y operación que preview_markdown_edit: Rust calcula el cambio sobre el documento actual (no se le pasa el preview) y la confirmación visible muestra el diff. expectedRevision opcional: falla si el documento cambió.",
     "parameters": {
       "type": "object",
       "properties": {
-        "preview": {
+        "path": {
+          "type": "string",
+          "description": "Ruta lógica del documento."
+        },
+        "operation": {
           "type": "object",
-          "description": "Objeto exacto devuelto por preview_markdown_edit."
+          "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}, replaceText{find,replace} (cambia el único lugar donde aparece find, copiado tal cual del documento; para corregir una frase o un párrafo de la nota).",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "setFrontmatter",
+                "removeFrontmatter",
+                "addWikilink",
+                "replaceWikilink",
+                "addTag",
+                "removeTag",
+                "setFact",
+                "removeFact",
+                "insertTemplate",
+                "replaceTemplate",
+                "insertBlock",
+                "replaceBlock",
+                "replaceText"
+              ]
+            },
+            "payload": {
+              "type": "object"
+            }
+          }
+        },
+        "expectedRevision": {
+          "type": "integer"
         },
         "selectedHunkIds": {
           "type": "array",
@@ -201,7 +260,8 @@
         }
       },
       "required": [
-        "preview"
+        "path",
+        "operation"
       ]
     }
   },
@@ -690,7 +750,7 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 100,
-          "description": "Una línea por producto o ajuste legible del ticket. Incluye los ajustes de redondeo impresos como líneas independientes. No inventes líneas ni importes.",
+          "description": "Una línea por producto o ajuste legible del ticket. Incluye los ajustes de redondeo impresos como líneas independientes. Un producto anulado en la caja va con voided: true y sin su línea negativa. No inventes líneas ni importes: si el ticket no cierra, el error muestra la cuenta para encontrar la línea que falta o sobra.",
           "items": {
             "type": "object",
             "required": [
@@ -724,6 +784,10 @@
               "lineTotal": {
                 "type": "string",
                 "description": "Importe final exacto de la linea."
+              },
+              "voided": {
+                "type": "boolean",
+                "description": "true si el producto fue anulado o eliminado en la caja: no se suma ni se guarda, y su línea negativa de anulación no se manda."
               }
             }
           }
@@ -1444,15 +1508,37 @@
     }
   },
   "get_document_metadata": {
-    "description": "Obtiene metadata y frontmatter del documento autorizado sin devolver su cuerpo. Fuente de verdad: la biblioteca autorizada. Devuelve evidencia acotada según sus parámetros y límites; no permite afirmar completitud, escritura ni datos ausentes.",
+    "description": "Obtiene metadata y todo el frontmatter de uno o varios documentos autorizados sin devolver su cuerpo, leídos en el momento desde el archivo (después de editar, muestra el cambio). Pasá documentId (o path) para uno, o documentIds para hasta 60 de una vez. Para revisar los nextPage/previousPage de una carpeta entera usá inspect_page_chain. Fuente de verdad: la biblioteca autorizada.",
     "parameters": {
       "type": "object",
-      "required": [
-        "documentId"
-      ],
       "properties": {
         "documentId": {
           "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "description": "Ruta lógica del documento, en lugar de documentId."
+        },
+        "documentIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 60,
+          "description": "Varios documentos de una vez (ids o rutas lógicas); cada uno devuelve su metadata o su error."
+        }
+      }
+    }
+  },
+  "inspect_page_chain": {
+    "description": "Lee de una vez los nextPage/previousPage de todas las páginas Markdown de una carpeta (y sus subcarpetas, hasta 300): devuelve las cadenas en orden desde su primera página, cada página con todo su frontmatter, y los problemas encontrados: roto (apunta a un documento que no existe), no-reciproco (la otra página no enlaza de vuelta), ruta-corta (usa solo el nombre en lugar de la ruta completa), varios-anteriores, ciclo y suelta (sin enlaces en una carpeta con cadena). Usala antes y después de reordenar un curso o una wiki para verificar la cadena completa sin leer página por página. No modifica nada.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "folder"
+      ],
+      "properties": {
+        "folder": {
+          "type": "string",
+          "description": "Carpeta de las páginas, como ruta lógica de la biblioteca (por ejemplo «Cursos/Rust»)."
         }
       }
     }
@@ -1853,7 +1939,7 @@
     }
   },
   "preview_markdown_edit": {
-    "description": "Prepara un preview semántico de una edición Markdown sin escribir. Devuelve hunks, anchors y la revisión esperada.",
+    "description": "Muestra, sin escribir, el cambio de una edición semántica Markdown: la ruta, la revisión esperada y los hunks. Opcional: apply_markdown_edit recibe la misma ruta y operación.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -1903,14 +1989,14 @@
     }
   },
   "preview_multi_document_markdown_edit": {
-    "description": "Prepara un preview aislado de ediciones semánticas en varios documentos de la biblioteca activa.",
+    "description": "Muestra, sin escribir, el cambio de ediciones semánticas en varios documentos de la biblioteca activa: por documento, la ruta, la revisión y los hunks. Opcional: apply_multi_document_markdown_edit recibe las mismas edits.",
     "parameters": {
       "type": "object",
       "properties": {
         "edits": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 20,
+          "maxItems": 60,
           "items": {
             "type": "object",
             "required": [
@@ -1956,7 +2042,8 @@
                 "type": "integer"
               }
             }
-          }
+          },
+          "description": "Hasta 60 operaciones sobre hasta 20 documentos. Un documento puede repetirse: sus operaciones se aplican en el orden dado."
         }
       },
       "required": [
@@ -1972,7 +2059,7 @@
     }
   },
   "read_all_task_tickets": {
-    "description": "Enumera todos los tickets autorizados (incluidos archivados) con paginación. Usala para inventarios, conteos o resúmenes completos y respetá hasMore.",
+    "description": "Enumera todos los tickets autorizados (incluidos finalizados y cancelados), hasta 100 por página: para un tablero entero seguí con offset mientras hasMore sea true. Cada ticket trae su estado, prioridad, padre y detailPreview, que es solo el comienzo de la descripción (termina en … si sigue); para el detalle completo usá read_task_tickets con sus ids. Usala para inventarios, conteos o resúmenes completos.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -1983,7 +2070,7 @@
         "limit": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 50
+          "maximum": 100
         },
         "offset": {
           "type": "integer",
@@ -2021,7 +2108,7 @@
     }
   },
   "read_task_tickets": {
-    "description": "Lee el detalle completo de uno o varios tickets con subtareas y comentarios.",
+    "description": "Lee el detalle completo de uno o varios tickets (hasta 20) con subtareas y comentarios, también los finalizados o cancelados. Un id que no se puede leer va en notRead con su motivo y no impide leer los demás.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -2036,7 +2123,7 @@
         },
         "includeArchived": {
           "type": "boolean",
-          "description": "Incluye tickets finalizados o cancelados solo si el usuario lo pide."
+          "description": "false para dejar afuera los tickets finalizados o cancelados; por defecto se leen."
         }
       },
       "required": [
@@ -3553,13 +3640,61 @@
     }
   },
   "apply_multi_document_markdown_edit": {
-    "description": "Aplica un preview devuelto por preview_multi_document_markdown_edit después de verificar la revisión de todos los documentos antes de escribir. Si un documento falla, revierte los ya escritos. Requiere confirmación visible.",
+    "description": "Aplica ediciones semánticas en varios documentos (las mismas edits que preview_multi_document_markdown_edit; no se le pasa el preview). Rust calcula el cambio sobre los documentos actuales, verifica todas las revisiones antes de escribir y, si un documento falla, revierte los ya escritos. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
-        "preview": {
-          "type": "object",
-          "description": "Objeto exacto devuelto por preview_multi_document_markdown_edit."
+        "edits": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 60,
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "operation"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "operation": {
+                "type": "object",
+                "description": "Operación semántica: {type, payload}. Tipos: setFrontmatter{key,value}, removeFrontmatter{key}, addWikilink{target,alias?}, replaceWikilink{anchorId,target,alias?}, addTag{tag}, removeTag{tag}, setFact{key,value}, removeFact{key}, insertTemplate{name,body}, replaceTemplate{anchorId,body}, insertBlock{language,content}, replaceBlock{anchorId,language,content}, replaceText{find,replace} (cambia el único lugar donde aparece find, copiado tal cual del documento; para corregir una frase o un párrafo de la nota).",
+                "required": [
+                  "type",
+                  "payload"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "setFrontmatter",
+                      "removeFrontmatter",
+                      "addWikilink",
+                      "replaceWikilink",
+                      "addTag",
+                      "removeTag",
+                      "setFact",
+                      "removeFact",
+                      "insertTemplate",
+                      "replaceTemplate",
+                      "insertBlock",
+                      "replaceBlock",
+                      "replaceText"
+                    ]
+                  },
+                  "payload": {
+                    "type": "object"
+                  }
+                }
+              },
+              "expectedRevision": {
+                "type": "integer"
+              }
+            }
+          },
+          "description": "Hasta 60 operaciones sobre hasta 20 documentos. Un documento puede repetirse: sus operaciones se aplican en el orden dado."
         },
         "selectedHunkIds": {
           "type": "array",
@@ -3570,7 +3705,7 @@
         }
       },
       "required": [
-        "preview"
+        "edits"
       ]
     }
   },
@@ -4580,6 +4715,112 @@
       ]
     }
   },
+  "list_ai_tasks": {
+    "description": "Lista tus Tareas IA guardadas (una semana desde que se crean), de la más nueva a la más vieja: estado, pasos hechos y si esperan una respuesta de la persona.",
+    "parameters": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "get_ai_task": {
+    "description": "Lee una Tarea IA completa: objetivo, plan, informe de cada paso, revisiones, lo que espera y el resultado.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea (de list_ai_tasks) o su título exacto."
+        }
+      }
+    }
+  },
+  "create_ai_task": {
+    "description": "Crea una Tarea IA para un pedido complejo o de muchos pasos, que Notia trabaja fuera de este turno: un Planificador arma el plan, un Ejecutor hace cada paso y un Review lo revisa y pide rehacer lo que falte. La persona la sigue en el panel Tareas IA y, si la pidió por Telegram, le llegan las aprobaciones y el resultado por ahí. Requiere confirmación visible; «Confirmar todos» hace que la tarea aplique sus cambios sin volver a preguntar.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "title",
+        "goal"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Título corto (hasta 120 caracteres)."
+        },
+        "goal": {
+          "type": "string",
+          "description": "Objetivo completo y autosuficiente: qué hay que lograr, sobre qué (rutas, nombres, ids), criterios de terminado y todo el contexto de la conversación que haga falta, porque la tarea no ve este chat."
+        }
+      }
+    }
+  },
+  "cancel_ai_task": {
+    "description": "Cancela una Tarea IA que está trabajando o esperando una respuesta. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea (de list_ai_tasks) o su título exacto."
+        }
+      }
+    }
+  },
+  "resume_ai_task": {
+    "description": "Reanuda una Tarea IA fallida, cancelada o interrumpida desde el paso donde quedó. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea (de list_ai_tasks) o su título exacto."
+        }
+      }
+    }
+  },
+  "review_ai_task": {
+    "description": "Pide otra revisión de una Tarea IA terminada; si el Review encuentra algo mal, la tarea vuelve a trabajarse. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea (de list_ai_tasks) o su título exacto."
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Qué revisar especialmente (opcional)."
+        }
+      }
+    }
+  },
+  "delete_ai_task": {
+    "description": "Borra una Tarea IA y su historial. Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Id de la tarea (de list_ai_tasks) o su título exacto."
+        }
+      }
+    }
+  },
   "create_ai_action": {
     "description": "Crea una Acción IA: un recordatorio, una tarea a una hora o una tarea recurrente que la IA va a ejecutar sola y responder por Telegram al Owner. Requiere confirmación visible.",
     "parameters": {
@@ -4994,14 +5235,14 @@
     }
   },
   "get_health_summary": {
-    "description": "Estado de Salud del usuario hoy: perfil, edad, peso y su cambio en 30 días, IMC, metabolismo basal, gasto diario, peso objetivo, plan de calorías y macros (o el de mantenimiento), lo comido hoy con lo que queda, agua de hoy y su objetivo, y la última medición de la balanza con el estado de cada valor.",
+    "description": "Estado de Salud del usuario hoy: perfil, edad, peso y su cambio en 30 días, IMC, metabolismo basal, gasto diario, peso objetivo, plan de calorías y macros (o el de mantenimiento), lo comido hoy con lo que queda, agua de hoy y su objetivo, y la última medición de la balanza con el estado de cada valor. También los pasos de hoy y su meta, el sueño de anoche y el recomendado, y los pasos y el sueño de los últimos 7 días.",
     "parameters": {
       "type": "object",
       "properties": {}
     }
   },
   "list_health_records": {
-    "description": "Registros de Salud entre dos fechas (los últimos 30 días si faltan): pesos, mediciones de la balanza, comidas (con id, categoría, calorías y macros) o agua por día.",
+    "description": "Registros de Salud entre dos fechas (los últimos 30 días si faltan): pesos, mediciones de la balanza, comidas (con id, categoría, calorías y macros), agua, pasos o sueño por día.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -5011,7 +5252,9 @@
             "weights",
             "measurements",
             "meals",
-            "water"
+            "water",
+            "steps",
+            "sleep"
           ]
         },
         "from": {
@@ -5234,6 +5477,49 @@
       ]
     }
   },
+  "log_steps": {
+    "description": "Registra los pasos caminados en un día (reemplaza los de ese día). Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "description": "Pasos del día, de 0 a 150000."
+        },
+        "date": {
+          "type": "string",
+          "description": "Fecha YYYY-MM-DD; hoy si falta. No puede ser futura."
+        }
+      },
+      "required": [
+        "steps"
+      ]
+    }
+  },
+  "log_sleep": {
+    "description": "Registra cuánto durmió en una noche (reemplaza el registro de ese día). La fecha es la del día en que se despertó: lo de anoche va con la fecha de hoy. Mandá hours (7.5), minutes o duration («7:30»). Requiere confirmación visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "hours": {
+          "type": "number",
+          "description": "Horas dormidas, con decimales (7.5 = 7 h 30 min)."
+        },
+        "minutes": {
+          "type": "integer",
+          "description": "Minutos dormidos, si los dijo así."
+        },
+        "duration": {
+          "type": "string",
+          "description": "La duración como la escribió: «7:30», «7 h 30»."
+        },
+        "date": {
+          "type": "string",
+          "description": "Día en que se despertó, YYYY-MM-DD; hoy si falta. No puede ser futura."
+        }
+      }
+    }
+  },
   "log_meal": {
     "description": "Registra lo que comió el usuario (contado o en la foto de su plato, con o sin texto). Notia busca la receta en Recetas (por recipe o por el nombre del plato) y, si no existe, la crea revisada por IA a partir del plato (con la foto si la hay); si ya existía, usa esa. Después carga la comida en Salud con las calorías y macros de la cantidad que comió: una porción, servings porciones, grams gramos (sobre el peso por porción de la receta) o lo que describe portionNote. Si dijo las calorías o macros, se usan esos. Requiere confirmación visible.",
     "parameters": {
@@ -5275,7 +5561,7 @@
         },
         "portionNote": {
           "type": "string",
-          "description": "Lo que cambió respecto de la receta, si no se dice con porciones o gramos: «con 200 g de papas en vez de 100», «sin pan», «medio plato»."
+          "description": "Lo que cambió respecto de la receta, si no se dice con porciones o gramos: «con 200 g de papas en vez de 100», «sin pan», «medio plato». Lo estima la IA y puede dar distinto cada vez: no lo uses para sobras ni para la misma cantidad de otra comida (eso es servings, o nada para una porción)."
         },
         "description": {
           "type": "string",
@@ -5318,13 +5604,13 @@
     }
   },
   "update_meal": {
-    "description": "Cambia una comida registrada: descripción, categoría, fecha (newDate) o valores; lo que no se manda queda igual. Requiere confirmación visible.",
+    "description": "Cambia una comida registrada: descripción, categoría, fecha (newDate) o valores; lo que no se manda queda igual. La comida se busca por id, por su descripción o parte de ella (con date para acotar) o, sin meal, es la última cargada (del día date, si lo mandás). Si no hay una sola coincidencia, el error lista candidatas con su id. Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
         "meal": {
           "type": "string",
-          "description": "id de la comida (de list_health_records o get_health_summary) o su descripción exacta."
+          "description": "id de la comida (de list_health_records o get_health_summary), su descripción o parte de ella. En update_meal, sin meal es la última comida cargada."
         },
         "date": {
           "type": "string",
@@ -5368,14 +5654,11 @@
           "type": "number",
           "minimum": 0
         }
-      },
-      "required": [
-        "meal"
-      ]
+      }
     }
   },
   "delete_health_record": {
-    "description": "Elimina un peso (por fecha), una medición de la balanza (por fecha; el peso de ese día queda) o una comida (por id o descripción). Requiere confirmación visible.",
+    "description": "Elimina un peso (por fecha), una medición de la balanza (por fecha; el peso de ese día queda), una comida (por id o descripción), los pasos o el sueño de un día (por fecha). Requiere confirmación visible.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -5384,16 +5667,18 @@
           "enum": [
             "weight",
             "measurement",
-            "meal"
+            "meal",
+            "steps",
+            "sleep"
           ]
         },
         "date": {
           "type": "string",
-          "description": "YYYY-MM-DD del peso o la medición, o de la comida si se la busca por descripción."
+          "description": "YYYY-MM-DD del peso, la medición, los pasos o el sueño, o de la comida si se la busca por descripción."
         },
         "meal": {
           "type": "string",
-          "description": "id de la comida (de list_health_records o get_health_summary) o su descripción exacta."
+          "description": "id de la comida (de list_health_records o get_health_summary), su descripción o parte de ella. En update_meal, sin meal es la última comida cargada."
         }
       },
       "required": [

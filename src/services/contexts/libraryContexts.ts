@@ -5,13 +5,26 @@ export interface LibraryContext {
 
 export const DEFAULT_CONTEXT_TAG = '#Personal'
 export const CONFIDENTIAL_CONTEXT_TAG = '#Confidencial'
+export const PUBLIC_CONTEXT_TAG = '#Publico'
 
 export const DEFAULT_LIBRARY_CONTEXTS: readonly LibraryContext[] = [
   { tag: '#Laboral', color: '#2563EB' },
   { tag: '#Personal', color: '#16A34A' },
   { tag: '#Academico', color: '#9333EA' },
   { tag: CONFIDENTIAL_CONTEXT_TAG, color: '#DC2626' },
+  { tag: PUBLIC_CONTEXT_TAG, color: '#D97706' },
 ]
+
+/**
+ * Contexts every library keeps (`PROTECTED_CONTEXT_TAGS` in Rust, which
+ * adds them back to any configuration that lost them). Settings only uses
+ * this to lock their name and their delete button.
+ */
+const PROTECTED_CONTEXT_TAGS = [CONFIDENTIAL_CONTEXT_TAG, PUBLIC_CONTEXT_TAG]
+
+export function isProtectedContext(tag: string): boolean {
+  return PROTECTED_CONTEXT_TAGS.some((protectedTag) => protectedTag.toLowerCase() === tag.trim().toLowerCase())
+}
 
 const CONTEXT_TAG_PATTERN = /^#[^\s#]+$/
 const HEX_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/

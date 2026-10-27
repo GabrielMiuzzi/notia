@@ -14,15 +14,26 @@ export interface ReadLibraryFileResult {
   error?: string
   /** Path of the document inside the library. */
   logicalPath?: string
-  /** Context of the Task Manager board the note lives in. */
+  /** Context the note keeps: the one of its Task Manager board or folder. */
   lockedContext?: string
+  /** What sets `lockedContext`. */
+  lockedContextSource?: LockedContextSource
+  /** Why the document opens read-only (a file only the AI writes, `#System`); the backend refuses its writes. */
+  readOnly?: string
 }
+
+export type LockedContextSource = 'board' | 'folder'
 
 export interface WriteLibraryFileResult {
   ok: boolean
   error?: string
   /** Revision of the content the backend wrote. */
   revision?: string
+  /** What the backend wrote when it is not the text sent: the editor's
+   * changes merged with the ones the file got meanwhile. */
+  content?: string
+  /** Places where both changed the same lines; both versions stayed. */
+  mergeConflicts?: number
   conflict?: {
     kind: 'revision'
     expectedRevision: string
@@ -35,6 +46,9 @@ export interface WriteLibraryDocumentOptions {
   expectedRevision?: string
   /** Create the document when missing (ignored with a revision). */
   createIfMissing?: boolean
+  /** The text the editor last read or saved: if the file changed since,
+   * the backend merges both changes instead of refusing the save. */
+  baseContent?: string
 }
 
 /**
@@ -74,6 +88,7 @@ export async function writeLibraryDocument(
         content,
         ...(options.expectedRevision !== undefined ? { expectedRevision: options.expectedRevision } : {}),
         ...(options.createIfMissing ? { createIfMissing: true } : {}),
+        ...(options.baseContent !== undefined ? { baseContent: options.baseContent } : {}),
       },
     })
     timer.success({ ok: result.ok })

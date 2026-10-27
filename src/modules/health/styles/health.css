@@ -222,6 +222,11 @@ p[data-over="false"] { color: var(--hl-muted); }
 .hl-records li + li { border-top: 1px solid var(--hl-line); }
 .hl-records__value { display: inline-flex; align-items: center; gap: 12px; }
 
+/* Pasos y sueño: dos paneles como el del peso, uno al lado del otro en pantallas anchas. */
+.hl-daily-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.hl-phone-card__pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.hl-phone-card__pair > span { display: flex; flex-direction: column; gap: 2px; }
+
 .hl-chart { position: relative; display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 20px; height: 100%; }
 .hl-chart__y { position: relative; margin: 8px 0; }
 .hl-chart__y span { position: absolute; right: 8px; color: var(--hl-muted); font-size: 11px; transform: translateY(50%); }
@@ -346,6 +351,7 @@ p[data-over="false"] { color: var(--hl-muted); }
 }
 
 @container hl (min-width: 1024px) {
+  .hl-daily-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hl-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .hl-grid__full { grid-column: 1 / -1; }
   .hl-grid__wide { grid-column: span 2; }

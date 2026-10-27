@@ -43,7 +43,7 @@ describe('HealthPhone', () => {
     expect(within(calories).getByText('40 / 137 g')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Agua de hoy' })).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Índice de masa corporal' })).toBeTruthy()
-    const weight = screen.getByRole('button', { name: /Ver detalle/ })
+    const weight = screen.getByRole('button', { name: /^Peso.*Ver detalle/ })
     expect(within(weight).getByText('Objetivo 76 kg, faltan 6,4')).toBeTruthy()
     // Un solo peso en el mes: sin línea.
     expect(weight.querySelector('.hl-spark')).toBeNull()
@@ -57,7 +57,16 @@ describe('HealthPhone', () => {
     expect(screen.getAllByRole('button', { name: 'Agregar comida' })).toHaveLength(1)
 
     fireEvent.click(tab('Hoy'))
-    fireEvent.click(screen.getByRole('button', { name: /Ver detalle/ }))
+    const activity = screen.getByRole('button', { name: /^Actividad.*Ver detalle/ })
+    expect(within(activity).getByText('4.310')).toBeTruthy()
+    expect(within(activity).getByText('6 h 30 min')).toBeTruthy()
+    fireEvent.click(activity)
+    expect(tab('Actividad').getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('heading', { name: 'Pasos' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Sueño' })).toBeTruthy()
+
+    fireEvent.click(tab('Hoy'))
+    fireEvent.click(screen.getByRole('button', { name: /^Peso.*Ver detalle/ }))
     expect(screen.getByRole('heading', { name: 'Peso objetivo' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Agregar comida' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Registrar medición' })).toBeNull()
@@ -112,7 +121,7 @@ describe('HealthPhone', () => {
   it('draws the month line that Rust sends', async () => {
     serve({ ...FULL, weightTrend: { changeLabel: '-1,2 kg en 30 días', goalLabel: 'Objetivo 76 kg, faltan 6,4', line: 'M0,22.73L100,77.27' } })
     render(<HealthDashboardView library={LIBRARY} />)
-    const weight = await screen.findByRole('button', { name: /Ver detalle/ })
+    const weight = await screen.findByRole('button', { name: /^Peso.*Ver detalle/ })
     expect(within(weight).getByText(/^-1,2 kg en 30 días/).querySelector('br')).toBeTruthy()
     expect(weight.querySelector('.hl-spark path')?.getAttribute('d')).toBe('M0,22.73L100,77.27')
   })

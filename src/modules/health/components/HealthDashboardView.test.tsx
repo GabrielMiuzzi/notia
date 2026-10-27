@@ -47,8 +47,11 @@ describe('HealthDashboardView', () => {
       mutation: { kind: 'addWater', date: '2026-09-28', deltaMl: 250 },
     })))
 
-    fireEvent.click(screen.getByRole('button', { name: '30 días' }))
-    await vi.waitFor(() => expect(callBackend).toHaveBeenCalledWith('health_dashboard', { context: CONTEXT, query: { foodDate: null, weightRange: '30', measurementDate: null } }))
+    fireEvent.click(within(screen.getByRole('group', { name: 'Período del gráfico' })).getByRole('button', { name: '30 días' }))
+    await vi.waitFor(() => expect(callBackend).toHaveBeenCalledWith('health_dashboard', {
+      context: CONTEXT,
+      query: { foodDate: null, weightRange: '30', measurementDate: null, stepsRange: '30', sleepRange: '30' },
+    }))
 
     fireEvent.change(screen.getByLabelText('Peso (kg)'), { target: { value: '82,1' } })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Agregar peso' })) })
@@ -59,6 +62,31 @@ describe('HealthDashboardView', () => {
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generar plan con IA' })) })
     await vi.waitFor(() => expect(callBackend).toHaveBeenCalledWith('health_generate_plan', expect.objectContaining({ context: CONTEXT })))
+  })
+
+  it('shows steps and sleep with their history and sends what was typed to Rust', async () => {
+    render(<HealthDashboardView library={LIBRARY} />)
+    const steps = await screen.findByRole('region', { name: 'Pasos' })
+    expect(within(steps).getByText('4.310')).toBeTruthy()
+    expect(within(steps).getByText(/Promedio de la semana: 7\.890 pasos/)).toBeTruthy()
+    const sleep = screen.getByRole('region', { name: 'Sueño' })
+    expect(within(sleep).getByText('6 h 30 min')).toBeTruthy()
+    expect(within(sleep).getByText('Anoche')).toBeTruthy()
+
+    fireEvent.change(within(steps).getByLabelText('Pasos'), { target: { value: '9.120' } })
+    await act(async () => { fireEvent.click(within(steps).getByRole('button', { name: 'Agregar pasos' })) })
+    expect(callBackend).toHaveBeenCalledWith('health_apply', expect.objectContaining({ mutation: { kind: 'setSteps', date: '2026-09-28', steps: '9.120' } }))
+
+    fireEvent.change(within(sleep).getByLabelText('Horas'), { target: { value: '7:30' } })
+    await act(async () => { fireEvent.click(within(sleep).getByRole('button', { name: 'Agregar sueño' })) })
+    expect(callBackend).toHaveBeenCalledWith('health_apply', expect.objectContaining({ mutation: { kind: 'setSleep', date: '2026-09-28', duration: '7:30' } }))
+
+    fireEvent.click(within(sleep).getByRole('button', { name: /Ver registros/ }))
+    await act(async () => { fireEvent.click(within(sleep).getByRole('button', { name: 'Eliminar el sueño del 27 sept 2026' })) })
+    expect(callBackend).toHaveBeenCalledWith('health_apply', expect.objectContaining({ mutation: { kind: 'deleteSleep', date: '2026-09-27' } }))
+
+    fireEvent.click(within(within(sleep).getByRole('group')).getByRole('button', { name: '90 días' }))
+    await vi.waitFor(() => expect(callBackend).toHaveBeenCalledWith('health_dashboard', expect.objectContaining({ query: expect.objectContaining({ sleepRange: '90', stepsRange: '30' }) })))
   })
 
   it('logs a meal with the AI estimate and shows what Rust rejects', async () => {

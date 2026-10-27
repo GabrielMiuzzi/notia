@@ -10,6 +10,7 @@ function areObservableNodeFieldsEqual(left: NotiaFileNode, right: NotiaFileNode)
     && Boolean(left.hasChildren) === Boolean(right.hasChildren)
     && left.createdAt === right.createdAt
     && left.modifiedAt === right.modifiedAt
+    && left.context === right.context
 }
 
 function reconcileNode(previous: NotiaFileNode | undefined, next: NotiaFileNode): NotiaFileNode {

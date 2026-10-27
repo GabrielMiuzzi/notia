@@ -1,4 +1,5 @@
 import type { MermaidRenderResult } from '../types/mermaidTypes'
+import { adaptBlockColours, buildMermaidThemeVariables } from './mermaidTheme'
 
 // ── Cancelación ─────────────────────────────────────────────
 export class MermaidRenderCancelledError extends Error {
@@ -15,88 +16,6 @@ export function isMermaidRenderCancelledError(error: unknown): error is MermaidR
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new MermaidRenderCancelledError()
-  }
-}
-
-// ── Theme variables that harmonise with Notia dark/light ────
-export interface MermaidThemeVariables {
-  background: string
-  primaryColor: string
-  primaryTextColor: string
-  primaryBorderColor: string
-  secondaryColor: string
-  secondaryTextColor: string
-  secondaryBorderColor: string
-  tertiaryColor: string
-  tertiaryTextColor: string
-  tertiaryBorderColor: string
-  lineColor: string
-  textColor: string
-  nodeBorder: string
-  clusterBkg: string
-  clusterBorder: string
-  defaultLinkColor: string
-  titleColor: string
-  edgeLabelBackground: string
-  nodeTextColor: string
-  darkMode: boolean
-}
-
-export function buildMermaidInitConfig(appTheme: string): Record<string, unknown> {
-  return {
-    startOnLoad: false,
-    securityLevel: 'loose',
-    theme: 'base',
-    themeVariables: buildMermaidThemeVariables(appTheme),
-  }
-}
-
-export function buildMermaidThemeVariables(appTheme: string): MermaidThemeVariables {
-  if (appTheme === 'light') {
-    return {
-      background: '#eef1f6',
-      primaryColor: '#ffffff',
-      primaryTextColor: '#16202e',
-      primaryBorderColor: '#0d9488',
-      secondaryColor: '#f7f9fc',
-      secondaryTextColor: '#16202e',
-      secondaryBorderColor: '#3b5fe0',
-      tertiaryColor: '#f7f9fc',
-      tertiaryTextColor: '#16202e',
-      tertiaryBorderColor: '#7c3aed',
-      lineColor: '#6b7686',
-      textColor: '#16202e',
-      nodeBorder: '#0d9488',
-      clusterBkg: '#f7f9fc',
-      clusterBorder: '#dce1ea',
-      defaultLinkColor: '#6b7686',
-      titleColor: '#16202e',
-      edgeLabelBackground: '#f7f9fc',
-      nodeTextColor: '#16202e',
-      darkMode: false,
-    }
-  }
-  return {
-    background: '#0f1420',
-    primaryColor: '#1b2438',
-    primaryTextColor: '#edf0f5',
-    primaryBorderColor: '#4fd1c5',
-    secondaryColor: '#29334a',
-    secondaryTextColor: '#edf0f5',
-    secondaryBorderColor: '#6c8eff',
-    tertiaryColor: '#161d2e',
-    tertiaryTextColor: '#edf0f5',
-    tertiaryBorderColor: '#a78bfa',
-    lineColor: '#8892a6',
-    textColor: '#edf0f5',
-    nodeBorder: '#4fd1c5',
-    clusterBkg: '#161d2e',
-    clusterBorder: '#29334a',
-    defaultLinkColor: '#8892a6',
-    titleColor: '#edf0f5',
-    edgeLabelBackground: '#29334a',
-    nodeTextColor: '#edf0f5',
-    darkMode: true,
   }
 }
 
@@ -413,7 +332,10 @@ export async function renderMermaid({
 
   // 4. Render
   const id = `notia-md-${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
-  const { svg, bindFunctions } = await mermaidInstance.render(id, trimmed)
+  const rendered = await mermaidInstance.render(id, trimmed)
+  // Blocks the author coloured for a white page stay readable on the dark one.
+  const svg = adaptBlockColours(rendered.svg, theme === 'dark' || theme === 'mermaid-dark')
+  const bindFunctions = rendered.bindFunctions
 
   throwIfAborted(abortSignal)
 

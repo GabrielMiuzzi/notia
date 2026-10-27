@@ -367,6 +367,11 @@ const TreeRow = memo(function TreeRow({
               {extension}
             </span>
           ) : null}
+          {isFolder && node.context ? (
+            <span className="notia-tree-extension notia-tree-folder-context" title={`Contexto de la carpeta: ${node.context}`}>
+              {node.context}
+            </span>
+          ) : null}
           {showTouchRowMenu && !isRenaming ? (
             <span
               role="button"

@@ -1447,11 +1447,14 @@ fn write_note_here(
     export: Option<ExportFormat>,
     archive: Option<MeetingArchive>,
 ) -> Result<StoredNote, BackendError> {
-    let logical_path = crate::library_documents::with_documents(app, library_id, |documents| {
+    // A folder with a context gives it to the note.
+    let content_at = |path: &str| crate::folder_contexts::enforce(app, library_id, path, content.to_string());
+    let (logical_path, content) = crate::library_documents::with_documents(app, library_id, |documents| {
         if let Some(previous) = previous {
             let locator = documents.locator(&previous.logical_path)?;
-            match documents.adapter.write_locator(&locator, content, Some(previous.revision.as_str())) {
-                Ok(()) => return Ok(previous.logical_path.clone()),
+            let content = content_at(&previous.logical_path);
+            match documents.adapter.write_locator(&locator, &content, Some(previous.revision.as_str())) {
+                Ok(()) => return Ok((previous.logical_path.clone(), content)),
                 Err(error) if error.code == BackendErrorCode::NotFound => {}
                 Err(error) if error.code == BackendErrorCode::Conflict => {
                     return Err(BackendError::new(
@@ -1466,8 +1469,9 @@ fn write_note_here(
         for number in 1..=MAX_NOTE_NAME_ATTEMPTS {
             let path = in_folder(folder, &meeting::numbered_file_name(file_name, number));
             if documents.read(&path)?.is_none() {
-                documents.write(&path, None, content)?;
-                return Ok(path);
+                let content = content_at(&path);
+                documents.write(&path, None, &content)?;
+                return Ok((path, content));
             }
         }
         Err(BackendError::invalid_input("Ya hay demasiadas notas de reunión con este nombre en la carpeta."))
@@ -1491,7 +1495,7 @@ fn write_note_here(
     let stored = StoredNote {
         visible_path: crate::library_session::visible_path(app, library_id, &logical_path),
         logical_path,
-        revision: crate::filesystem::types::content_revision(content),
+        revision: crate::filesystem::types::content_revision(&content),
         export_path,
     };
     if let Some(mut archive) = archive {
