@@ -1,12 +1,12 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, Circle, Copy, Files, LoaderCircle, OctagonX, Sparkles, User2 } from 'lucide-react'
+import { Bot, Check, Circle, Copy, Files, LoaderCircle, OctagonX, Sparkles, SquareTerminal, User2 } from 'lucide-react'
 import { ChatMarkdownMessage } from './ChatMarkdownMessage'
 import type { StoredChatAttachment, StoredChatMessage } from '../../../../services/chat/chatDocumentStorage'
 import type { TaskExecutionStep } from '../../../../services/chat/chatAgentTypes'
 import { agentToolLabel } from '../../../../services/ai/agentToolLabels'
 import type { MutationPreview } from '../../../../types/ai/agentContracts'
 import type { AiOperationHistoryEntry } from '../../../../services/ai/aiOperationHistory'
-import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
+import type { ChatAgentSpeaker, ChatTerminalRun } from '../../../../services/chat/aiChatRuntime'
 import { ChatAgentAvatar } from './ChatAgentPanel'
 import type { ChatAgentLook } from './useChatAgentSettings'
 
@@ -24,6 +24,8 @@ interface ChatThreadProps {
   agentLooks?: Record<string, ChatAgentLook>
   /** Agent whose answer is streaming; `null` while Notia answers. */
   streamingAgent?: ChatAgentSpeaker | null
+  /** Command running in the terminal of the host PC, shown live. */
+  streamingTerminal?: ChatTerminalRun | null
   pendingAgentQuestion?: { question: string; choices: string[] } | null
   pendingAgentAnswer?: string | null
   pendingAgentConfirmation?: string | null
@@ -119,6 +121,59 @@ function CopyMessageButton({ source }: { source: string }) {
   )
 }
 
+/** Distance from the bottom under which the live output keeps following new lines. */
+const TERMINAL_FOLLOW_PX = 48
+
+/** A command running in the terminal of the host PC; the turn saves it once it ends. */
+function TerminalRunBlock({ run }: { run: ChatTerminalRun }) {
+  const outputRef = useRef<HTMLPreElement | null>(null)
+  const followRef = useRef(true)
+  const shown = run.output + run.partial
+
+  useLayoutEffect(() => {
+    const output = outputRef.current
+    if (output && followRef.current) output.scrollTop = output.scrollHeight
+  }, [shown])
+
+  return (
+    <article className="notia-chat-message notia-chat-message--assistant">
+      <div className="notia-chat-message-avatar" aria-hidden="true">
+        <SquareTerminal size={16} />
+      </div>
+      <div className="notia-chat-message-bubble notia-chat-terminal">
+        <span className="notia-chat-message-role">
+          <LoaderCircle size={12} className="notia-chat-terminal-spinner" aria-hidden="true" />
+          Terminal · ejecutando
+        </span>
+        <div className="notia-chat-terminal-command">
+          <span className="notia-chat-terminal-shell">{run.shell}</span>
+          <code>{run.command}</code>
+        </div>
+        {run.cwd ? <small className="notia-chat-terminal-cwd">{run.cwd}</small> : null}
+        {run.status ? (
+          <p className="notia-chat-terminal-status" role="status">
+            <Sparkles size={13} aria-hidden="true" />
+            <span>{run.status}</span>
+          </p>
+        ) : null}
+        <pre
+          ref={outputRef}
+          className="notia-chat-terminal-output"
+          tabIndex={0}
+          aria-label="Salida de la terminal"
+          aria-live="polite"
+          onScroll={(event) => {
+            const output = event.currentTarget
+            followRef.current = output.scrollHeight - output.scrollTop - output.clientHeight < TERMINAL_FOLLOW_PX
+          }}
+        >
+          {shown || 'Todavía sin salida…'}
+        </pre>
+      </div>
+    </article>
+  )
+}
+
 function ChatThreadComponent({
   messages,
   isSubmitting,
@@ -131,6 +186,7 @@ function ChatThreadComponent({
   streamingAssistantMessage,
   agentLooks = NO_AGENT_LOOKS,
   streamingAgent = null,
+  streamingTerminal = null,
   pendingAgentQuestion,
   pendingAgentAnswer,
   pendingAgentConfirmation,
@@ -556,7 +612,8 @@ function ChatThreadComponent({
                   </div>
                 </article>
               ) : null}
-              {!pendingAgentQuestion && !pendingAgentConfirmation ? (
+              {streamingTerminal ? <TerminalRunBlock run={streamingTerminal} /> : null}
+              {!pendingAgentQuestion && !pendingAgentConfirmation && !streamingTerminal ? (
               <article className="notia-chat-message notia-chat-message--assistant">
                 <AssistantAvatar agent={streamingAgentLook} />
                 <div className="notia-chat-message-bubble notia-chat-message-bubble--thinking">

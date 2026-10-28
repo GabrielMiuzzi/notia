@@ -1167,6 +1167,12 @@ struct TauriBackendToolExecutor {
     /// the agent made) by the reference a note inserts them with
     /// (`![…](reference)`) and an edit names, as base64.
     attachment_images: Vec<(String, String)>,
+    /// Events of the request, for the tools that stream what they do (the
+    /// terminal's output); `None` outside a run.
+    events: Option<TauriBackendEventSink>,
+    /// Whether someone follows the run live (a chat or Telegram, not an AI
+    /// task), so the terminal asks the light agent for its status.
+    live_status: bool,
 }
 
 impl TauriBackendToolExecutor {
@@ -1190,6 +1196,7 @@ impl TauriBackendToolExecutor {
             "add_agent_improvement",
             "generate_image",
             "edit_image",
+            "run_terminal_command",
             "read_library_documents",
             "search_library_documents",
             "search_library_context",
@@ -2880,6 +2887,28 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if notia_backend_core::terminal::is_terminal_tool(&call.name) {
+            // The person sees the whole command and where it runs.
+            let (summary, detail) = crate::terminal::preview(&self.app, context, &call.arguments)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary,
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: "terminal".to_string(),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: detail,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         if crate::agenda_tools::is_agenda_write_tool(&call.name) {
             // Validation runs in a rolled-back transaction; any rejection
             // other than storage (an overlap, a bad time) goes back to the model.
@@ -3152,17 +3181,19 @@ impl ToolExecutor for TauriBackendToolExecutor {
                         &context.library_id,
                         &context.actor.library_user_id,
                     )?;
-                    task_mutation_summary(
+                    let arguments = notia_backend_core::task_manager_tool_input::expand_section_edit(&call.name, &call.arguments, &snapshot.tickets)?;
+                    let summary = task_mutation_summary(
                         &notia_backend_core::task_mutation_from_tool(
                             &call.name,
-                            &call.arguments,
+                            &arguments,
                             &snapshot.groups,
                             &mut || "preview".to_string(),
                             0,
                         )?,
                         &snapshot.groups,
                         &snapshot.comments,
-                    )
+                    );
+                    notia_backend_core::task_manager_tool_input::section_edit_summary(&call.name, &call.arguments, &snapshot.tickets).unwrap_or(summary)
                 },
                 documents: Vec::new(),
                 hunks: vec![PreviewHunk {
@@ -4558,6 +4589,15 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     .map_err(crate::gym::tool_error)?
             }
             name if notia_backend_core::image_generation::is_image_tool(name) => self.image_tool(context, call)?,
+            name if notia_backend_core::terminal::is_terminal_tool(name) => crate::terminal::execute_tool(
+                &self.app,
+                &self.control,
+                self.events.clone().map(|sink| Arc::new(sink) as Arc<dyn notia_backend_core::BackendEventSink>),
+                self.live_status,
+                context,
+                &call.id,
+                &call.arguments,
+            )?,
             name if crate::recipes::is_recipe_tool(name) => {
                 crate::recipes::execute_tool(&self.app, &context.library_id, &call.id, name, &call.arguments, &self.request_images)
                     .map_err(crate::recipes::tool_error)?
@@ -4606,7 +4646,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
         Ok(ToolResult {
             call_id: call.id.clone(),
             ok: reported_ok,
-            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::ai_task_runner::is_ai_task_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::meeting_tools::is_meeting_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || matches!(
+            changed: reported_changed.unwrap_or(reported_ok) && (crate::routine_tools::is_routine_write_tool(&call.name) || crate::ai_actions::is_ai_action_write_tool(&call.name) || crate::ai_task_runner::is_ai_task_write_tool(&call.name) || crate::recipes::is_recipe_write_tool(&call.name) || crate::health::is_health_write_tool(&call.name) || crate::gym::is_gym_write_tool(&call.name) || crate::agenda_tools::is_agenda_write_tool(&call.name) || notia_backend_core::meeting_tools::is_meeting_write_tool(&call.name) || notia_backend_core::mail_tools::is_mail_write_tool(&call.name) || notia_backend_core::terminal::is_terminal_tool(&call.name) || matches!(
                 call.name.as_str(),
                 "create_library_note"
                     | "replace_library_document"
@@ -4797,11 +4837,14 @@ pub(crate) fn execute_backend_request(
     // account, and the image tools when this device has the image model.
     let mail_connected = crate::mail_tools::has_connected_account(app, &request.context.library_id);
     let images_available = crate::image_generation::is_available(app);
+    // The terminal only on the host PC (never Android nor a client device).
+    let terminal_available = crate::terminal::is_available(app);
     let available_tool_names = TauriBackendToolExecutor::supported_tool_names()
         .iter()
         .copied()
         .filter(|name| mail_connected || !notia_backend_core::mail_tools::is_mail_tool(name))
         .filter(|name| images_available || !notia_backend_core::image_generation::is_image_tool(name))
+        .filter(|name| terminal_available || !notia_backend_core::terminal::is_terminal_tool(name))
         .collect::<Vec<_>>();
     let requested_tool_names = if requested_tool_names.is_empty() {
         available_tool_names
@@ -4913,6 +4956,7 @@ pub(crate) fn execute_backend_request(
     // The run works until the task is done: no overall deadline. Each model
     // call and each tool keeps its own timeout, and the person can cancel.
     let control = RequestControl::new(None);
+    let sink = TauriBackendEventSink::for_request(app.clone(), Arc::clone(&state.events), &request.context);
     let executor = TauriBackendToolExecutor {
         app: app.clone(),
         snapshot: request.snapshot.clone(),
@@ -4922,10 +4966,11 @@ pub(crate) fn execute_backend_request(
         idempotency_key: request.idempotency_key.clone(),
         request_images: last_user_images(&request),
         attachment_images: conversation_images(&request),
+        events: Some(sink.clone()),
+        live_status: request.ai_task.is_none(),
     };
     let revisions = TauriRevisionPort { app: app.clone() };
     let interactions = state.interactions(Some(&revisions));
-    let sink = TauriBackendEventSink::for_request(app.clone(), Arc::clone(&state.events), &request.context);
     let result = if let Some((operation_id, decision)) = resume_decision {
         interactions.register_control(&request.context, control.clone())?;
         interactions
@@ -5686,6 +5731,8 @@ mod tests {
             control: RequestControl::new(None),
             journal: Arc::new(Default::default()),
             idempotency_key: "key-1".into(),
+            events: None,
+            live_status: false,
             request_images: Vec::new(),
             attachment_images: vec![("telegram-AgAC_1.jpg".into(), photo)],
         };
@@ -5782,6 +5829,8 @@ mod tests {
             control: RequestControl::new(None),
             journal: Arc::new(Default::default()),
             idempotency_key: "key-1".into(),
+            events: None,
+            live_status: false,
             request_images: Vec::new(),
             attachment_images: Vec::new(),
         };
@@ -5869,6 +5918,8 @@ mod tests {
             control: RequestControl::new(None),
             journal: Arc::new(Default::default()),
             idempotency_key: "key-1".into(),
+            events: None,
+            live_status: false,
             request_images: Vec::new(),
             attachment_images: Vec::new(),
         };
@@ -5943,6 +5994,8 @@ mod tests {
             control: RequestControl::new(None),
             journal: Arc::new(Default::default()),
             idempotency_key: "key-1".into(),
+            events: None,
+            live_status: false,
             request_images: Vec::new(),
             attachment_images: Vec::new(),
         };

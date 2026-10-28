@@ -21,6 +21,31 @@ const MAX_FALLBACK_CANCEL_WORDS: usize = 5;
 pub const CANCELLED_REPLY: &str =
     "Cancelé la solicitud en curso a pedido tuyo. Lo que ya se había aplicado antes de cancelar queda hecho.";
 
+/// Longest part of the findings a cancel reply keeps.
+const MAX_FINDINGS_CHARS: usize = 3_000;
+
+/// The reply of a cancelled request with what the agent had found so far
+/// (its notes, in order), so the request can be picked up again.
+pub fn cancelled_reply(notes: &[String]) -> String {
+    let findings = notes.iter().map(|note| note.trim()).filter(|note| !note.is_empty()).collect::<Vec<_>>().join("
+
+");
+    if findings.is_empty() {
+        return CANCELLED_REPLY.to_string();
+    }
+    let total = findings.chars().count();
+    let kept = if total > MAX_FINDINGS_CHARS {
+        format!("…{}", findings.chars().skip(total - MAX_FINDINGS_CHARS).collect::<String>())
+    } else {
+        findings
+    };
+    format!("{CANCELLED_REPLY}
+
+Lo que había averiguado antes de cancelar:
+
+{kept}")
+}
+
 /// What to do with a message sent while a request runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -127,6 +152,18 @@ pub fn fallback_decision(message: &str) -> InterruptDecision {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_cancel_keeps_what_the_agent_had_found() {
+        assert_eq!(cancelled_reply(&[]), CANCELLED_REPLY);
+        assert_eq!(cancelled_reply(&[" ".into()]), CANCELLED_REPLY);
+        let reply = cancelled_reply(&["La etapa 2 salta a la 4.".into(), "Falta la 3 en el índice.".into()]);
+        assert!(reply.starts_with(CANCELLED_REPLY) && reply.ends_with("La etapa 2 salta a la 4.
+
+Falta la 3 en el índice."), "{reply}");
+        let long = cancelled_reply(&["x".repeat(5_000)]);
+        assert!(long.ends_with(&"x".repeat(100)) && long.chars().count() < CANCELLED_REPLY.chars().count() + 3_100);
+    }
     use super::*;
 
     #[test]

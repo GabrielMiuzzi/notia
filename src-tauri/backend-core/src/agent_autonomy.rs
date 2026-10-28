@@ -78,6 +78,7 @@ pub fn autonomous_guidance() -> String {
         format!("Tu respuesta final es el mensaje que le llega por Telegram, breve y directo. Si nada vale un mensaje, respondé exactamente {SILENCE_MARKER} y nada más."),
         "Escribilo en Markdown simple (**negrita**, *cursiva*, listas con guiones), nunca en HTML: Notia lo pasa al formato de Telegram.".to_string(),
         "No repitas avisos, preguntas ni propuestas que tus pensamientos dicen que ya hiciste, salvo que haya novedades o se acerque el momento.".to_string(),
+        crate::ai_actions::prompts::PENDING_PROPOSALS.to_string(),
         format!("Respetá sus reglas con la fecha y hora local (por ejemplo, horarios en que no quiere mensajes): si ahora no corresponde escribirle, respondé {SILENCE_MARKER}."),
         "Solo podés leer: no crees, cambies ni borres nada. Si algo conviene cambiarlo, proponelo en el mensaje; si te responde que sí, lo hacés en ese chat con su confirmación.".to_string(),
         "Para preguntarle algo, escribí la pregunta en tu respuesta; no uses request_user_clarification.".to_string(),

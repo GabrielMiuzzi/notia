@@ -98,7 +98,21 @@ impl BackendEventStore {
         };
         history.events.push_back(envelope.clone());
         while history.events.len() > MAX_REPLAY_EVENTS_PER_REQUEST {
-            history.events.pop_front();
+            // A long command prints for hours: its old output goes first, so
+            // the agent's notes and steps stay for the chat and the replay
+            // (the finished command carries its transcript).
+            let oldest_output = history
+                .events
+                .iter()
+                .position(|stored| matches!(stored.event, BackendEvent::TerminalOutput { .. }));
+            match oldest_output {
+                Some(index) => {
+                    history.events.remove(index);
+                }
+                None => {
+                    history.events.pop_front();
+                }
+            }
         }
         Ok(envelope)
     }
@@ -274,6 +288,29 @@ mod tests {
         BackendEvent::RequestReceived {
             request_id: request_id.to_string(),
         }
+    }
+
+    #[test]
+    fn a_long_command_drops_its_old_output_before_the_agent_notes() {
+        let store = BackendEventStore::default();
+        let key = EventStreamKey::from_parts("library-a", "user-1", "request-1");
+        store
+            .append(&key, BackendEvent::AssistantNote { request_id: "request-1".into(), text: "Compilo el proyecto.".into() })
+            .expect("note");
+        for index in 0..MAX_REPLAY_EVENTS_PER_REQUEST + 20 {
+            let event = BackendEvent::TerminalOutput {
+                request_id: "request-1".into(),
+                call_id: "call-1".into(),
+                text: format!("línea {index}
+"),
+                partial: String::new(),
+            };
+            store.append(&key, event).expect("output");
+        }
+        let replay = store.replay_since(&key, 0).expect("replay");
+        assert_eq!(replay.len(), MAX_REPLAY_EVENTS_PER_REQUEST);
+        assert!(matches!(replay[0].event, BackendEvent::AssistantNote { .. }));
+        assert!(replay.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
     }
 
     #[test]

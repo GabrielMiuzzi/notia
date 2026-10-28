@@ -190,6 +190,19 @@ Cada biblioteca mantiene además `.agent/memory/` con `rules.md` (las instruccio
 `rules.md` siempre conserva las reglas mínimas de Notia y permite agregar reglas personalizadas sin perderlas durante la inicialización.
 Las instrucciones permanentes dadas al agente se guardan automáticamente en su bloque interno de `rules.md`, sin pedir confirmación adicional.
 `.agent/memory/improve.md` es el registro de automejora del asistente: cuando una herramienta le falla o responde mal, le falta una herramienta para lo que pediste o nota algo de Notia que podría funcionar mejor, lo anota solo, sin avisarte, con fecha y tipo (`error`, `herramienta` o `mejora`). Al terminar cada pedido, el repaso de Notia también anota lo que haya que mejorar. Este archivo es para leerlo vos (o quien desarrolle Notia): el asistente no lo lee ni lo usa como contexto. No repite una mejora ya anotada y guarda las 300 más recientes.
+Cómo responde el asistente a lo que más se anotó en `improve.md`:
+
+- **Opciones antes que preguntas**: si pedís alternativas o corregís una propuesta («sin barra»), busca de nuevo con esa condición y te responde con las opciones, cada una con por qué sirve y su recomendación. Usa una pregunta con botones solo para un dato que le falta.
+- **Búsqueda por palabras** en ejercicios de Gimnasio y en recetas: cada palabra se busca por separado, sin acentos, conectores ni plurales («mancuernas glúteo», «yogur granola»). Si ninguna ficha tiene todas, trae las que tienen alguna, primero las que más tienen.
+- **Confirmaciones más cortas**: al cambiar una rutina se ve solo lo que cambia («reemplazar «Hip thrust» (3 × 7 reps con 100 kg) por «Puente de glúteos a una pierna» (3 × 10 reps)»), y las series iguales se juntan. En Telegram, una confirmación que no toca documentos ya no dice «Documentos afectados: 0».
+- **Tickets por sección**: puede sumar ítems a una sección del cuerpo, como «Pendientes», o reemplazar solo esa sección, sin reescribir el resto. Los tickets atrasados se buscan por la prioridad «Atrasado», aunque se pidan como estado.
+- **Adjuntos de Gmail**: lee el texto de un adjunto PDF, HTML o de texto (una factura, un resumen) para cargar el gasto. No lee imágenes ni PDF escaneados.
+- **Salud**: después de registrar pasos, agua o una comida responde con el resumen del día ya actualizado.
+- **Reunión de recién**: desde cualquier chat o Telegram lee las Notas IA y el final de la transcripción de la reunión abierta en Meeting.
+- **Acciones IA y revisión horaria**: cada ejecución lee lo que mandaron sus últimas tres, para no repetir el enfoque. Una propuesta sin respuesta no vuelve en el mismo día y al día siguiente se recuerda una sola vez. Dos pensamientos que dicen casi lo mismo quedan en uno.
+- **Cancelar por Telegram**: el mensaje de cancelación trae lo que el agente había averiguado hasta ese momento, así «seguí» lo retoma.
+- **Terminal y red doméstica**: sabe que la PC host suele estar en tu red y la usa para diagnosticarla (`ipconfig`, `Get-NetNeighbor`, un barrido de ping). También sabe que es Windows PowerShell 5.1, que no tiene `ForEach-Object -Parallel`.
+
 Los archivos de `.agent/memory/` que escribe solo la IA (`rules.md`, `memory.md`, `thoughts.md`, `biography.md`, `talk.md`, `people.md` e `improve.md`) tienen el contexto `#System`: los abrís con el editor para leerlos, con un aviso de solo lectura arriba, pero no podés escribir en ellos, cambiar sus propiedades ni renombrarlos, moverlos, copiarlos o borrarlos (tampoco las carpetas `.agent` y `.agent/memory`). Los cambian la IA con sus herramientas, el repaso de cada pedido y la revisión de sus archivos; **Borrar memoria** en el panel del chat sigue vaciando `memory.md`. Los prompts, las habilidades y las dinámicas de `.agent` siguen siendo tuyos y editables (`#Confidencial`).
 Los datos personales, preferencias y contextos duraderos que mencionás en una conversación los guarda el agente en `.agent/memory/memory.md` en ese mismo turno, sin pedir confirmación, y se reutilizan como contexto en los chats persistentes del Owner y en Telegram cuando está vinculado al Owner. Esto aplica al chat IA principal y a los chats laterales de notas y Task Manager: todos usan las mismas `rules.md` y `memory.md` del motor global. Finanzas y Graph View no guardan memorias.
 También garantiza la carpeta `.agent/skills/` para las habilidades del agente: cada archivo `.md` que pongas ahí (también dentro de subcarpetas) se suma al contexto del asistente como una habilidad, es decir, instrucciones para un tipo de tarea que sigue cuando tu pedido coincide. Si el archivo empieza con un frontmatter con `name` y `description`, el asistente ve ese nombre y cuándo usarla. Entran hasta 16 habilidades y 100.000 caracteres entre todas; una habilidad nueva agregada desde fuera de Notia aparece cuando la biblioteca se vuelve a indexar (al abrirla o refrescar su árbol).
@@ -409,6 +422,22 @@ El asistente puede **generar** una imagen nueva a partir de lo que le pidas («d
 - **Comando `/image`** (también `/imagen`): escribí `/image` y lo que querés ver, por ejemplo `/image un faro al atardecer`, en el chat de la app o por Telegram. Tu texto va tal cual al modelo de imágenes, sin pasar por el modelo de chat, que es el que a veces se niega o cambia el pedido; además es más rápido. Podés empezar con una proporción (`/image 16:9 un bosque`; también 1:1, 9:16, 4:3, 3:4, 3:2 y 2:3) y, si adjuntás una imagen, la edita según tu texto. Se cancela como cualquier pedido. El resultado se guarda y se envía igual que el resto de las imágenes del asistente.
 - Notia no filtra el contenido de las imágenes, salvo uno: rechaza los pedidos sexuales o de desnudos con menores, por cualquier camino.
 - Si la placa de video se queda sin memoria, el asistente te avisa; cerrá lo que la esté usando (por ejemplo Meeting) o pedí una imagen más chica. Si el modelo del chat corre en tu PC con Ollama, Notia lo saca de la placa mientras dibuja y Ollama lo vuelve a cargar para la respuesta siguiente.
+
+### Terminal de la PC host
+
+El asistente puede **ejecutar comandos en una terminal de la PC host** (la computadora donde corre Notia con tu biblioteca): ver archivos fuera de la biblioteca, correr un script, usar git, compilar, instalar algo, revisar procesos, el espacio en disco o la red.
+
+- **Quién puede**: solo el **Owner**, desde los chats de la app (el principal, el lateral, el de una nota o el del tablero de tareas), desde su Telegram y desde las **Tareas IA**. Ningún otro usuario de la biblioteca, Meeting ni el **Task Manager publicado** pueden usarla, aunque el Owner haya iniciado sesión en la publicación.
+- **Confirmación**: cada comando te pide confirmación y muestra el comando completo, la carpeta y el tiempo máximo. **Confirmar todos** deja que el resto de ese pedido corra sin volver a preguntar.
+- **Estado en vivo con IA**: mientras el comando corre, un agente liviano (el mismo modelo, sin razonamiento ni herramientas) lee lo que va saliendo y escribe un estado corto: qué está haciendo, cuánto avanzó y si aparecen errores. El primero llega a los 15 segundos y después se renueva cada 30 segundos si salió algo nuevo. Un comando que termina antes no lo necesita.
+- **En el chat de la app**: mientras corre, un recuadro **Terminal · ejecutando** muestra el comando, el estado de la IA y la salida en vivo, siguiendo las últimas líneas (si subís para leer, deja de seguir hasta que vuelvas abajo). Al terminar queda en el chat como un mensaje con el comando, cómo terminó, cuánto tardó y el final de la salida.
+- **En Telegram**: cada comando tiene su propio mensaje que se actualiza con el estado de la IA y lo que va saliendo. Mientras corre, **cada minuto** el mensaje se vuelve a publicar abajo con el tiempo que lleva, el último estado y las últimas líneas, así te llega un aviso aunque la IA esté esperando un comando largo. Al terminar dice cómo terminó y en cuánto tiempo. Esto pasa aunque tengas apagado el mensaje de progreso.
+- **En las Tareas IA** no hay estado en vivo, porque nadie mira la salida mientras corre; la tarea lee el resultado al terminar.
+- **Shell y carpeta**: en Windows usa PowerShell (o `cmd` si el asistente lo elige); en Linux y macOS, `sh`. Si no se indica otra carpeta, corre en la carpeta de la biblioteca.
+- **Tiempo máximo**: 10 minutos por defecto, hasta 4 horas si el asistente lo pide para algo largo. Al pasarlo, el comando se corta junto con todo lo que haya abierto. **Cancelar** el pedido también lo corta.
+- **Sin entrada**: los comandos no pueden preguntarte nada; el asistente usa opciones como `-y` o `--yes`.
+- **Celular y clientes**: en Android no hay terminal. Conectado como cliente a tu PC, los comandos corren en la PC host; una copia sin conexión no ejecuta comandos.
+- **Cuidado**: el asistente no ejecuta nada destructivo (borrar, formatear, desinstalar, reiniciar) si no se lo pediste explícitamente, pero revisá cada confirmación: el comando corre con tu usuario de Windows.
 
 ### Acciones IA
 
@@ -699,6 +728,17 @@ El botón Atrás de Android todavía no cierra las hojas ni las pantallas comple
 | **Entradas esperadas** | Las escribe el asistente: un título (hasta 120 caracteres) y el objetivo completo (hasta 12.000). |
 | **Salidas / Resultado** | El paso a paso con el informe de cada paso, las revisiones, el diagrama del flujo y el resultado; mientras trabaja, el razonamiento en vivo de la fase en curso; por Telegram, el resultado al terminar. |
 | **Errores comunes** | **Una espera que no avanza**: la tarea solo revisa con Notia abierta y con esa biblioteca elegida; si el correo falla, la tarjeta de espera muestra el error. **Seguir sin esperar** la hace continuar enseguida. **«El paso N no se pudo terminar»**: leé su informe y reanudala. **«La revisión pidió rehacer la tarea demasiadas veces»** (5): revisala, corregí lo que haga falta y reanudala o pedile otra revisión. **«Notia se cerró mientras la tarea trabajaba»**: tocá **Reanudar**. Una aprobación sin respuesta durante un día detiene la tarea. |
+
+### Terminal de la PC host: comandos del asistente
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | El asistente ejecuta comandos en una terminal de la PC host y te muestra la salida en vivo. |
+| **Cuándo usarlo** | Para lo que necesita la computadora: archivos fuera de la biblioteca, scripts, git, compilar, instalar, procesos, disco o red. Pedíselo al asistente como siempre. |
+| **Pasos para consumir** | 1. Pedir la tarea en un chat de la app, por Telegram o como Tarea IA (solo el Owner). 2. Revisar el comando en la confirmación y tocar **Confirmar** (o **Confirmar todos**). 3. Seguir la salida en el chat o en el mensaje de Telegram. |
+| **Entradas esperadas** | Las escribe el asistente: el comando (hasta 8.000 caracteres), la shell, la carpeta y el tiempo máximo (de 5 segundos a 4 horas). |
+| **Salidas / Resultado** | La salida en vivo con un estado corto de la IA; en el chat, un mensaje con el comando, cómo terminó, cuánto tardó y el final de la salida; en Telegram, un mensaje por comando que se vuelve a publicar cada minuto mientras corre. |
+| **Errores comunes** | **«La terminal existe solo en la PC host»**: estás en Android o en una copia sin conexión. **«se cortó al pasar su tiempo máximo»**: pedile que lo vuelva a correr con más tiempo. **Un comando que espera una respuesta** termina sin ella: pedile que use opciones no interactivas. |
 
 ### Recetas: recetario con información nutricional
 

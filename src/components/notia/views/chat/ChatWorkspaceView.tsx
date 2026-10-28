@@ -34,7 +34,7 @@ import { useChatState } from './useChatState'
 import { useChatSubmitMessage } from './useChatSubmitMessage'
 import { useChatAgentSettings } from './useChatAgentSettings'
 import { ChatAgentPanelSections } from './ChatAgentPanel'
-import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
+import type { ChatAgentSpeaker, ChatTerminalRun } from '../../../../services/chat/aiChatRuntime'
 import { useChatAttachmentMenu } from './useChatAttachmentMenu'
 import { beginPhantomClickSuppression } from '../../../../utils/interactions/phantomClickSuppression'
 import { notiaTimer } from '../../../../services/runtime/notiaLogger'
@@ -291,6 +291,7 @@ export function ChatWorkspaceViewComponent({
   })
   // The agent of the chat whose answer is streaming; `null` while Notia answers.
   const [streamingAgent, setStreamingAgent] = useState<ChatAgentSpeaker | null>(null)
+  const [streamingTerminal, setStreamingTerminal] = useState<ChatTerminalRun | null>(null)
 
   // Views ask the side chat to fill its composer (Finanzas), to send a
   // message with an agent or to open a chat (Home). The request waits here
@@ -581,6 +582,7 @@ export function ChatWorkspaceViewComponent({
       setStreamingThinking,
       setStreamingAssistantMessage,
       setStreamingAgent,
+      setStreamingTerminal,
       setSelectedChatFilePath,
       setActiveChatDocument,
       setChatTitleOverrides,
@@ -922,6 +924,7 @@ export function ChatWorkspaceViewComponent({
       streamingAssistantMessage={streamingAssistantMessage}
       agentLooks={agentSettings.agentLooks}
       streamingAgent={streamingAgent}
+      streamingTerminal={streamingTerminal}
       pendingAgentQuestion={pendingAgentQuestion}
       pendingAgentAnswer={pendingAgentAnswer}
       pendingAgentConfirmation={pendingAgentConfirmation}

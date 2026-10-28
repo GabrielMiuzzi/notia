@@ -87,6 +87,7 @@ mod meeting_history;
 mod mermaid_editor;
 mod meeting_media;
 mod home;
+mod terminal;
 mod weather;
 mod image_generation;
 mod recent_documents;

@@ -59,6 +59,50 @@ pub enum BackendEvent {
         #[serde(rename = "operationId", default, skip_serializing_if = "Option::is_none")]
         operation_id: Option<String>,
     },
+    /// A command starts in the terminal of the host PC (`run_terminal_command`).
+    TerminalStarted {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "callId")]
+        call_id: String,
+        command: String,
+        shell: String,
+        cwd: String,
+    },
+    /// Output of the command: whole lines to append and the line being
+    /// written, which replaces the previous one.
+    TerminalOutput {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "callId")]
+        call_id: String,
+        text: String,
+        partial: String,
+    },
+    /// What the light status agent says of the command while it runs.
+    TerminalStatus {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "callId")]
+        call_id: String,
+        status: String,
+    },
+    /// The command ended; `markdown` is the message the chat keeps.
+    TerminalFinished {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "callId")]
+        call_id: String,
+        /// `succeeded`, `failed`, `timed-out` or `cancelled`.
+        status: String,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i32>,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        /// How it ended, in words.
+        summary: String,
+        markdown: String,
+    },
     ClarificationRequired {
         #[serde(rename = "requestId")]
         request_id: String,
@@ -110,6 +154,10 @@ impl BackendEvent {
             | Self::AssistantNote { request_id, .. }
             | Self::ToolStarted { request_id, .. }
             | Self::ToolCompleted { request_id, .. }
+            | Self::TerminalStarted { request_id, .. }
+            | Self::TerminalOutput { request_id, .. }
+            | Self::TerminalStatus { request_id, .. }
+            | Self::TerminalFinished { request_id, .. }
             | Self::ClarificationRequired { request_id, .. }
             | Self::ConfirmationRequired { request_id, .. }
             | Self::Progress { request_id, .. }

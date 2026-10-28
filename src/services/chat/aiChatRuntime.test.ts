@@ -63,6 +63,30 @@ describe('startChatTurn', () => {
     resolveSend({ answer: 'Hola', dataChanged: false })
     await expect(turn.promise).resolves.toEqual({ answer: 'Hola', dataChanged: false })
   })
+
+  it('forwards the commands of the terminal as they run and end', async () => {
+    const onTerminalStarted = vi.fn()
+    const onTerminalOutput = vi.fn()
+    const onTerminalStatus = vi.fn()
+    const onTerminalFinished = vi.fn()
+    const turn = startChatTurn(
+      { libraryId: 'library', mode: 'chat', message: 'Compilá', chat: { kind: 'saved', path: 'chat/chats/a.md' } },
+      { onTerminalStarted, onTerminalOutput, onTerminalStatus, onTerminalFinished },
+    )
+    await flush()
+    const backendEvent = listeners.get('notia:backend-event')!
+    const event = (sequence: number, value: Record<string, unknown>) => backendEvent({ requestId: turn.requestId, sequence, event: value })
+    event(1, { type: 'terminal-started', callId: 'c1', command: 'npm run build', shell: 'powershell', cwd: 'C:\\repo' })
+    event(2, { type: 'terminal-output', callId: 'c1', text: 'compilando\n', partial: '50%' })
+    event(3, { type: 'terminal-status', callId: 'c1', status: 'Compila el módulo 3 de 10.' })
+    event(4, { type: 'terminal-finished', callId: 'c1', status: 'succeeded', exitCode: 0, durationMs: 1200, summary: 'terminó bien', markdown: '**Terminal**' })
+    expect(onTerminalStarted).toHaveBeenCalledWith({ callId: 'c1', command: 'npm run build', shell: 'powershell', cwd: 'C:\\repo' })
+    expect(onTerminalOutput).toHaveBeenCalledWith('c1', 'compilando\n', '50%')
+    expect(onTerminalStatus).toHaveBeenCalledWith('c1', 'Compila el módulo 3 de 10.')
+    expect(onTerminalFinished).toHaveBeenCalledWith('c1', '**Terminal**')
+    resolveSend({ answer: 'Listo', dataChanged: true })
+    await turn.promise
+  })
 })
 
 describe('interjectChatTurn', () => {

@@ -602,16 +602,33 @@ pub fn thought_text(thought: &str) -> &str {
 }
 
 /// Thoughts with `stamped` added last. A thought that says the same (apart
-/// from its date) is replaced, so a repeated note only refreshes its date.
+/// from its date, or in almost the same words) is replaced, so a repeated
+/// note only refreshes its date.
 pub fn with_thought(thoughts: &[String], stamped: String) -> Vec<String> {
     let text = thought_text(&stamped).to_string();
     let mut next = thoughts
         .iter()
-        .filter(|known| !thought_text(known).eq_ignore_ascii_case(&text))
+        .filter(|known| !same_thought(thought_text(known), &text))
         .cloned()
         .collect::<Vec<_>>();
     next.push(stamped);
     next
+}
+
+/// Share of words two thoughts must have in common to be the same note.
+const SAME_THOUGHT_SHARE: f64 = 0.8;
+
+/// Two thoughts say the same: equal text, or at least 80 % of their words
+/// in common (without accents, connectors or plurals).
+fn same_thought(left: &str, right: &str) -> bool {
+    if left.trim().eq_ignore_ascii_case(right.trim()) {
+        return true;
+    }
+    let left = crate::text_search::query_terms(left);
+    let right = crate::text_search::query_terms(right);
+    let shared = left.iter().filter(|word| right.contains(word)).count();
+    let union = left.len() + right.len() - shared;
+    union > 0 && shared as f64 >= union as f64 * SAME_THOUGHT_SHARE
 }
 
 /// Document whose frontmatter marks it as confidential; the body is kept.
@@ -836,7 +853,12 @@ mod tests {
         let other = stamp_thought("2026-09-27 10:05", "Propuse ordenar la rutina.").expect("thought");
         let again = stamp_thought("2026-09-27 11:00", "le avisé del turno del lunes.").expect("thought");
         let thoughts = with_thought(&with_thought(&[first], other.clone()), again.clone());
-        assert_eq!(thoughts, vec![other, again]);
+        assert_eq!(thoughts, vec![other.clone(), again.clone()]);
+        // Almost the same words is the same note; another subject is not.
+        let reworded = stamp_thought("2026-09-27 12:00", "Le avisé del turno de los lunes").expect("thought");
+        assert_eq!(with_thought(&thoughts, reworded.clone()), vec![other.clone(), reworded]);
+        let unrelated = stamp_thought("2026-09-27 12:00", "Le avisé del turno del dentista el martes.").expect("thought");
+        assert_eq!(with_thought(&thoughts, unrelated).len(), 3);
 
         let rendered = render_thoughts(&thoughts);
         assert!(rendered.starts_with(THOUGHTS_VERSION_MARKER));

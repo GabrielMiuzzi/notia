@@ -5560,6 +5560,105 @@ table { width: 100%; border-collapse: collapse; } th, td { padding: 11px 8px; te
   gap: 8px;
 }
 
+/* Live terminal of the host PC: an Ink panel inside the assistant bubble. */
+.notia-chat-terminal {
+  gap: 8px;
+}
+
+.notia-chat-terminal .notia-chat-message-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notia-chat-terminal-spinner {
+  color: var(--color-accent-text);
+  animation: notia-chat-agent-plan-spin 1s linear infinite;
+}
+
+.notia-chat-terminal-command {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.notia-chat-terminal-shell {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  color: var(--color-subtle-text);
+  font-size: 11px;
+}
+
+.notia-chat-terminal-command code {
+  min-width: 0;
+  color: var(--color-accent-text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-terminal-cwd {
+  color: var(--color-subtle-text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-terminal-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--color-accent-text);
+  border-radius: 4px;
+  background: var(--color-accent-bg);
+  color: var(--color-app-text);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.notia-chat-terminal-status svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-accent-text);
+}
+
+.notia-chat-terminal-output {
+  margin: 0;
+  max-height: min(320px, 45vh);
+  min-height: 72px;
+  padding: 10px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-app-bg);
+  color: var(--color-app-text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.notia-chat-terminal-output:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notia-chat-terminal-spinner {
+    animation: none;
+  }
+}
+
 @keyframes notia-chat-agent-plan-spin {
   to { transform: rotate(360deg); }
 }

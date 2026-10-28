@@ -735,7 +735,10 @@ pub(crate) fn execute_tool(app: &AppHandle, context: &HealthContext, call_id: &s
         Ready::Meal { basis, .. } => Some(basis.clone()),
         _ => None,
     };
-    Ok(serde_json::json!({ "ok": true, "summary": change.summary, "mealId": change.meal_id, "recipeId": recipe_id, "basis": basis }))
+    // The day as it stands after the change (steps, water, what is left to
+    // eat), so the answer does not need another get_health_summary.
+    let health_today = read(app, context, |data| Ok(summary_view(data, today)))?;
+    Ok(serde_json::json!({ "ok": true, "summary": change.summary, "mealId": change.meal_id, "recipeId": recipe_id, "basis": basis, "healthToday": health_today }))
 }
 
 #[cfg(test)]

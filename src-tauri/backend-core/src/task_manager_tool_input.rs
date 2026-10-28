@@ -10,8 +10,122 @@ use serde_json::{json, Value};
 use crate::error::{BackendError, BackendErrorCode};
 use crate::task_manager_tools::{
     TaskColumnKind, TaskGroupDto, TaskManagerContextDto, TaskManagerReadPort, TaskMutationDto, TaskPriority, TaskState,
-    TaskTicketReadRequest, TaskUpdateFieldsDto, MAX_TASK_RESULTS,
+    TaskTicketDto, TaskTicketListRequest, TaskTicketReadRequest, TaskUpdateFieldsDto, MAX_TASK_RESULTS,
 };
+
+const STATE_NAMES: &str = "Pendiente, En progreso, Bloqueada, Finalizada o Cancelada";
+const PRIORITY_NAMES: &str = "Baja, Media, Alta, Urgente o Atrasado";
+
+/// The filters of `search_task_tickets` / `read_all_task_tickets` (with
+/// its `context`). A priority given as a state («Atrasado» is a priority:
+/// the tickets past their date) moves to `priorities`; any other wrong
+/// value says which lists are valid.
+pub fn ticket_list_request(payload: &Value) -> Result<TaskTicketListRequest, BackendError> {
+    let mut payload = payload.clone();
+    if let Some(object) = payload.as_object_mut() {
+        let states = object.get("states").and_then(Value::as_array).cloned().unwrap_or_default();
+        let (priorities, states): (Vec<Value>, Vec<Value>) =
+            states.into_iter().partition(|value| serde_json::from_value::<TaskPriority>(value.clone()).is_ok());
+        if !priorities.is_empty() {
+            object.insert("states".to_string(), Value::Array(states));
+            let mut merged = object.get("priorities").and_then(Value::as_array).cloned().unwrap_or_default();
+            merged.extend(priorities.into_iter().filter(|value| !merged.contains(value)).collect::<Vec<_>>());
+            object.insert("priorities".to_string(), Value::Array(merged));
+        }
+    }
+    serde_json::from_value::<TaskTicketListRequest>(payload).map_err(|_| {
+        BackendError::invalid_input(format!(
+            "Los filtros de Task Manager no son válidos: states admite {STATE_NAMES}; priorities admite {PRIORITY_NAMES} (Atrasado son los tickets vencidos)."
+        ))
+    })
+}
+
+/// `replace_task_content` with `section`: the ticket's whole body with only
+/// that section changed. `mode` `append` adds `content` at the end of the
+/// section, `replace` swaps its text; a missing section is added at the end
+/// as `## section`. Any other call comes back as it is.
+pub fn expand_section_edit(name: &str, arguments: &Value, tickets: &[TaskTicketDto]) -> Result<Value, BackendError> {
+    let Some(section) = optional(arguments, "section") else {
+        return Ok(arguments.clone());
+    };
+    if name != "replace_task_content" {
+        return Ok(arguments.clone());
+    }
+    let ticket_id = required(arguments, "ticketId")?;
+    let ticket = tickets
+        .iter()
+        .find(|ticket| ticket.summary.ticket_id == ticket_id)
+        .ok_or_else(|| BackendError::invalid_input("El ticket no existe o no está a tu alcance; buscalo con search_task_tickets."))?;
+    let append = match optional(arguments, "mode").as_deref() {
+        None | Some("append") => true,
+        Some("replace") => false,
+        Some(_) => return Err(BackendError::invalid_input("mode es append (agrega al final de la sección) o replace (reemplaza su texto).")),
+    };
+    let text = required(arguments, "content")?;
+    let mut expanded = arguments.clone();
+    if let Some(object) = expanded.as_object_mut() {
+        object.remove("section");
+        object.remove("mode");
+        object.insert("content".to_string(), json!(section_edited(&ticket.content, &section, text.trim_end(), append)));
+    }
+    Ok(expanded)
+}
+
+/// What a section edit does, in the words of its confirmation.
+pub fn section_edit_summary(name: &str, arguments: &Value, tickets: &[TaskTicketDto]) -> Option<String> {
+    let section = optional(arguments, "section").filter(|_| name == "replace_task_content")?;
+    let ticket_id = optional(arguments, "ticketId").unwrap_or_default();
+    let title = tickets.iter().find(|ticket| ticket.summary.ticket_id == ticket_id).map_or(ticket_id, |ticket| ticket.summary.title.clone());
+    let verb = if optional(arguments, "mode").as_deref() == Some("replace") { "Reemplazar el texto de" } else { "Agregar a" };
+    Some(format!("{verb} la sección «{}» del ticket «{title}»:
+{}", section.trim().trim_start_matches('#').trim(), optional(arguments, "content").unwrap_or_default()))
+}
+
+/// The level and folded title of a Markdown heading line.
+fn heading(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|character| *character == '#').count();
+    let title = trimmed.get(level..)?;
+    if !(1..=6).contains(&level) || !title.starts_with(' ') {
+        return None;
+    }
+    Some((level, crate::text_search::fold(title.trim().trim_end_matches(':').trim())))
+}
+
+fn section_edited(content: &str, section: &str, text: &str, append: bool) -> String {
+    let wanted = crate::text_search::fold(section.trim().trim_start_matches('#').trim().trim_end_matches(':').trim());
+    let lines = content.lines().collect::<Vec<_>>();
+    let Some((start, level)) = lines.iter().enumerate().find_map(|(index, line)| heading(line).filter(|(_, title)| *title == wanted).map(|(level, _)| (index, level))) else {
+        let body = content.trim_end();
+        let title = section.trim().trim_start_matches('#').trim();
+        return if body.is_empty() { format!("## {title}
+
+{text}
+") } else { format!("{body}
+
+## {title}
+
+{text}
+") };
+    };
+    let end = lines[start + 1..].iter().position(|line| heading(line).is_some_and(|(other, _)| other <= level)).map_or(lines.len(), |offset| start + 1 + offset);
+    let kept = lines[start + 1..end].iter().rev().skip_while(|line| line.trim().is_empty()).collect::<Vec<_>>();
+    let mut body = if append { kept.into_iter().rev().map(|line| line.to_string()).collect::<Vec<_>>() } else { Vec::new() };
+    while body.first().is_some_and(|line| line.trim().is_empty()) {
+        body.remove(0);
+    }
+    body.extend(text.lines().map(str::to_string));
+    let mut result = lines[..=start].iter().map(|line| line.to_string()).collect::<Vec<_>>();
+    result.push(String::new());
+    result.extend(body);
+    if end < lines.len() {
+        result.push(String::new());
+        result.extend(lines[end..].iter().map(|line| line.to_string()));
+    }
+    format!("{}
+", result.join("
+").trim_end())
+}
 
 /// Maximum tickets read by one `read_task_tickets` call.
 pub const MAX_TASK_TOOL_READ_TICKETS: usize = 20;
@@ -302,6 +416,80 @@ pub fn read_tickets_by_id(port: &dyn TaskManagerReadPort, context: &TaskManagerC
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_section_of_the_body_is_appended_or_replaced_alone() {
+        let body = "Contexto del ticket.
+
+## Pendientes
+
+- [ ] Llamar a André
+
+## Notas
+
+Nada más.
+";
+        assert_eq!(
+            section_edited(body, "pendientes:", "- [ ] Probar el SN 0449530", true),
+            "Contexto del ticket.
+
+## Pendientes
+
+- [ ] Llamar a André
+- [ ] Probar el SN 0449530
+
+## Notas
+
+Nada más.
+"
+        );
+        assert_eq!(
+            section_edited(body, "## Pendientes", "- [x] Listo", false),
+            "Contexto del ticket.
+
+## Pendientes
+
+- [x] Listo
+
+## Notas
+
+Nada más.
+"
+        );
+        assert_eq!(section_edited("Texto.", "Pendientes", "- [ ] Uno", true), "Texto.
+
+## Pendientes
+
+- [ ] Uno
+");
+        // A deeper heading belongs to the section.
+        assert_eq!(
+            section_edited("## Pendientes
+- a
+### Detalle
+- b
+## Fin", "Pendientes", "- c", true),
+            "## Pendientes
+
+- a
+### Detalle
+- b
+- c
+
+## Fin
+"
+        );
+    }
+
+    #[test]
+    fn a_priority_given_as_a_state_is_searched_as_a_priority() {
+        let context = json!({ "libraryId": "library", "libraryUserId": "owner" });
+        let request = ticket_list_request(&json!({ "context": context, "states": ["Atrasado", "En progreso"], "priorities": ["Urgente"] })).expect("request");
+        assert_eq!(request.states, [TaskState::InProgress]);
+        assert_eq!(request.priorities, [TaskPriority::Urgent, TaskPriority::Overdue]);
+        let wrong = ticket_list_request(&json!({ "context": context, "states": ["Vencido"] })).expect_err("unknown");
+        assert!(wrong.message.contains("Atrasado son los tickets vencidos"), "{}", wrong.message);
+    }
     use super::*;
 
     fn ids() -> impl FnMut() -> String {

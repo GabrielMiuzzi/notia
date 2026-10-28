@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_autonomy::SILENCE_MARKER;
 
-use super::AiActionKind;
+use super::{AiActionKind, AiActionRun, RunStatus};
 
 /// Prefix of the message of a test run («Probar ahora»).
 pub const TEST_PREFIX: &str = "[Prueba]";
@@ -15,6 +15,8 @@ pub const TEST_PREFIX: &str = "[Prueba]";
 /// action's name.
 const MAX_SENT_CHARS: usize = 800;
 const MAX_SUMMARY_CHARS: usize = 300;
+/// Messages of earlier runs a run reads, so it does not repeat them.
+const RECENT_MESSAGES: usize = 3;
 
 /// The prompt of the hourly review Notia sets up in every library.
 pub const HOURLY_REVIEW_PROMPT: &str = "Revisá mi agenda, mis tareas, mi rutina, mi correo y mis finanzas, y comparalo con tus pensamientos. Decidí si hay algo para recordarme, preguntarme o proponerme ahora: un recordatorio, una pregunta o una propuesta concreta para organizar mi rutina, agenda, tareas o correo. No cambies nada por tu cuenta: si algo conviene cambiarlo, proponelo y lo hacemos si te digo que sí. No repitas avisos, preguntas ni propuestas que tus pensamientos dicen que ya me hiciste, salvo que haya novedades o se acerque el momento, y respetá mis reglas de horarios. Si nada vale un mensaje, respondé exactamente [SIN_MENSAJE].";
@@ -22,6 +24,9 @@ pub const HOURLY_REVIEW_PROMPT: &str = "Revisá mi agenda, mis tareas, mi rutina
 /// A run that finds something with an end proposes a task instead of
 /// chasing it run after run.
 const TASK_FROM_A_RUN: &str = "Si en esta ejecución encontrás algo que tiene un final y lleva muchos pasos o esperar a otros (por ejemplo, un correo que pide gestionar algo hasta resolverlo), no lo resuelvas acá ni lo sigas de ejecución en ejecución: revisá con list_ai_tasks que no haya ya una Tarea IA para eso y, si no la hay, proponela con create_ai_task (el Owner la confirma por Telegram, así que no cambia nada por su cuenta) y contalo en tu mensaje. Lo que se repite sigue siendo trabajo de esta acción.";
+
+/// A proposal nobody answered waits, instead of coming back every run.
+pub const PENDING_PROPOSALS: &str = "Una propuesta o pregunta que tus pensamientos dicen que ya le hiciste y no respondió queda pendiente: no la repitas en las ejecuciones siguientes del mismo día, salvo que haya novedades o se acerque su plazo, y al día siguiente recordala una sola vez, junta con las demás bajo «Pendiente de antes». Si contestó (sí, no o más tarde), anotalo con add_agent_thought para darla por resuelta. Si lo que proponés lo podés hacer vos sin cambiar datos (leer, revisar, buscar), hacelo y contá el resultado en lugar de ofrecerlo.";
 
 /// What the system prompt needs to know about the action that runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +37,22 @@ pub struct ScheduledActionPrompt {
     /// When it runs, as its card says it («Cada 3 h · 09 a 21 h»).
     pub when: String,
     pub test: bool,
+    /// What its last runs sent, newest first.
+    #[serde(default)]
+    pub recent_messages: Vec<String>,
+}
+
+/// What the last runs of an action sent (`runs` oldest first, as stored),
+/// newest first; runs that sent nothing are skipped.
+pub fn recent_messages(runs: &[AiActionRun]) -> Vec<String> {
+    runs.iter()
+        .rev()
+        .filter(|run| run.status == RunStatus::Success)
+        .filter_map(|run| run.output_summary.as_deref())
+        .filter(|summary| !summary.trim().is_empty() && *summary != SILENT_SUMMARY)
+        .take(RECENT_MESSAGES)
+        .map(str::to_string)
+        .collect()
 }
 
 /// System prompt section of a run.
@@ -61,6 +82,15 @@ pub fn action_guidance(action: &ScheduledActionPrompt) -> String {
             lines.push(TASK_FROM_A_RUN.to_string());
         }
     }
+    if !action.recent_messages.is_empty() {
+        lines.push(format!(
+            "Lo que mandaron las últimas ejecuciones de esta acción, de la más nueva a la más vieja. No repitas su texto ni su enfoque; si la acción pide algo nuevo cada vez (una frase, una idea), cambiá de tema y de forma:
+{}",
+            action.recent_messages.iter().map(|message| format!("- {message}")).collect::<Vec<_>>().join("
+")
+        ));
+    }
+    lines.push(PENDING_PROPOSALS.to_string());
     lines.push("Antes de terminar, guardá con add_agent_thought lo que hiciste o decidiste, así la próxima ejecución no repite lo mismo.".to_string());
     if action.test {
         lines.push("Es una prueba pedida desde el panel de Acciones IA: hacé lo mismo que en una ejecución real.".to_string());

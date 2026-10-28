@@ -48,6 +48,9 @@ pub enum ToolPolicy {
     /// Images generated or edited with the local model: the Owner's, in
     /// the app chats and Telegram.
     Images,
+    /// Commands in the terminal of the host PC: the Owner's, in the app
+    /// chats, Telegram and the AI tasks; never a published board.
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +265,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     catalog.extend(plan_tools());
     catalog.extend(super::mail_tools::mail_tool_contracts());
     catalog.extend(image_tools());
+    catalog.push(terminal_tool());
     catalog.into_iter().map(with_canonical_schema).collect()
 }
 
@@ -304,6 +308,19 @@ fn image_tools() -> Vec<ToolDefinition> {
             requires_confirmation: false,
         })
         .collect()
+}
+
+/// The terminal may change anything on the PC: every command asks for
+/// confirmation («Confirmar todos» lets the rest of the request run).
+fn terminal_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: super::terminal::TERMINAL_TOOL.to_string(),
+        description: "Ejecuta un comando en la terminal de la PC host.".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+        scopes: vec![BackendScope::Library, BackendScope::Document, BackendScope::TaskManager],
+        read_only: false,
+        requires_confirmation: true,
+    }
 }
 
 /// Plan tools open an approval interaction; they never mutate by themselves.
@@ -627,6 +644,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::meeting_tools::MEETING_READ_TOOLS.contains(&name) => ToolPolicy::MeetingRead,
         name if super::meeting_tools::is_meeting_write_tool(name) => ToolPolicy::MeetingWrite,
         name if super::image_generation::is_image_tool(name) => ToolPolicy::Images,
+        name if super::terminal::is_terminal_tool(name) => ToolPolicy::Terminal,
         "list_agenda" => ToolPolicy::AgendaRead,
         "create_agenda_event"
         | "delete_agenda_event"
@@ -795,6 +813,22 @@ pub fn authorize_tool_call(
         ToolPolicy::Images => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "Las imágenes las genera solo el Owner, en los chats de la app o en Telegram.",
+            false,
+        )),
+        // The terminal is the host PC's: only the Owner, from the app chats
+        // (an AI task runs as one) or their Telegram. A published board,
+        // Meeting and any other user never reach it, whoever logs in there.
+        ToolPolicy::Terminal
+            if context.actor.is_library_owner()
+                && matches!(context.channel, BackendChannel::App | BackendChannel::Telegram)
+                && !matches!(projection, ToolCatalogProjection::PublishedTaskManager)
+                && context.persistence_policy != super::context::PersistencePolicy::PublishedNoMemory =>
+        {
+            Ok(())
+        }
+        ToolPolicy::Terminal => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "La terminal de la PC host la usa solo el Owner, desde los chats de la app o su Telegram.",
             false,
         )),
         // The actions answer only the Owner, by Telegram.
@@ -977,6 +1011,44 @@ mod tests {
         if let Ok(board) = board {
             assert!(board.iter().all(|tool| !crate::meeting_tools::is_meeting_tool(&tool.name)));
         }
+    }
+
+    #[test]
+    fn the_terminal_is_the_owners_in_the_app_and_telegram_and_never_published() {
+        let has_terminal = |context: &BackendRequestContext, principal: &AuthorizationPrincipal, projection| {
+            project_tool_catalog(context, principal, &canonical_tool_catalog(), projection)
+                .map(|tools| tools.iter().any(|tool| crate::terminal::is_terminal_tool(&tool.name)))
+                .unwrap_or(false)
+        };
+        let terminal = canonical_tool_catalog().into_iter().find(|tool| crate::terminal::is_terminal_tool(&tool.name)).expect("terminal");
+        assert!(terminal.requires_confirmation && !terminal.read_only);
+        assert_eq!(crate::tool_routing::tool_area(&terminal.name), None);
+        for scope in [BackendScope::Library, BackendScope::Document, BackendScope::TaskManager] {
+            assert!(has_terminal(&context(scope.clone()), &principal(), ToolCatalogProjection::Full), "{scope:?}");
+        }
+        let mut telegram = context(BackendScope::Library);
+        telegram.channel = BackendChannel::Telegram;
+        telegram.actor.external_identity =
+            Some(crate::context::ExternalIdentity { provider: "telegram".into(), user_id: "1".into(), chat_id: Some(1) });
+        assert!(has_terminal(&telegram, &principal(), ToolCatalogProjection::Full));
+        // Another user, even with every context, never gets it.
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), all_contexts: true, ..principal() };
+        assert!(!has_terminal(&guest, &guest_principal, ToolCatalogProjection::Full));
+        // The published board, even with the Owner logged in, and Meeting.
+        let mut published = context(BackendScope::TaskManager);
+        published.channel = BackendChannel::Published;
+        published.persistence_policy = super::super::PersistencePolicy::PublishedNoMemory;
+        assert!(!has_terminal(&published, &principal(), ToolCatalogProjection::PublishedTaskManager));
+        assert!(!has_terminal(&published, &principal(), ToolCatalogProjection::Full));
+        assert!(!has_terminal(&context(BackendScope::TaskManager), &principal(), ToolCatalogProjection::PublishedTaskManager));
+        let mut meeting = context(BackendScope::Library);
+        meeting.channel = BackendChannel::Meeting;
+        assert!(!has_terminal(&meeting, &principal(), ToolCatalogProjection::Full));
+        // Read-only chats and runs (the hourly review) leave it out.
+        let read_only = restrict_tool_access(vec![terminal], ToolAccess::ReadOnly, true);
+        assert!(read_only.is_empty());
     }
 
     #[test]

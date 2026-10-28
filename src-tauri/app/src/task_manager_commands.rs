@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use notia_backend_core::pomodoro::{PomodoroAction, PomodoroState};
 use notia_backend_core::{
-    BackendError, BackendErrorCode, PersistentTaskManager, PomodoroEvent, TaskBoardIntent, TaskBoardViewDto, TaskContextSearchRequest, TaskManagerContextDto, TaskManagerMutationPort, TaskManagerReadPort, TaskManagerSnapshotReadDto, TaskManagerSnapshotStore, TaskMutationApplyRequestDto, TaskMutationDto, TaskMutationRequestDto, TaskTicketListRequest,
+    BackendError, BackendErrorCode, PersistentTaskManager, PomodoroEvent, TaskBoardIntent, TaskBoardViewDto, TaskContextSearchRequest, TaskManagerContextDto, TaskManagerMutationPort, TaskManagerReadPort, TaskManagerSnapshotReadDto, TaskManagerSnapshotStore, TaskMutationApplyRequestDto, TaskMutationDto, TaskMutationRequestDto,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,15 +53,10 @@ pub(crate) fn execute_backend_read_tool(
         BackendError::new(BackendErrorCode::Internal, "No se pudo preparar el contexto de Task Manager.", true)
     })?);
     let payload = Value::Object(object);
-    let decode = |value: &Value| {
-        serde_json::from_value::<TaskTicketListRequest>(value.clone()).map_err(|_| {
-            BackendError::invalid_input("Los parámetros de lectura de Task Manager no son válidos.")
-        })
-    };
 
     match name {
         "search_task_tickets" | "read_all_task_tickets" => {
-            let mut request = decode(&payload)?;
+            let mut request = notia_backend_core::task_manager_tool_input::ticket_list_request(&payload)?;
             if name == "read_all_task_tickets" {
                 request.query.clear();
                 request.include_archived = true;
@@ -145,7 +140,11 @@ pub(crate) fn execute_backend_mutation_tool(
 ) -> Result<Value, BackendError> {
     let manager = manager(app, state, registry, library_id, library_user_id)?;
     let context = scoped_context(library_id, library_user_id, allowed_board_ids)?;
-    let groups = manager.read_snapshot(&context)?.groups;
+    let snapshot = manager.read_snapshot(&context)?;
+    let groups = snapshot.groups;
+    // A section edit becomes the whole body, read now so the store's revision
+    // check still guards what changed since.
+    let arguments = &notia_backend_core::task_manager_tool_input::expand_section_edit(name, arguments, &snapshot.tickets)?;
     let preview_request = TaskMutationRequestDto {
         context: context.clone(),
         operation_id: operation_id.to_string(),

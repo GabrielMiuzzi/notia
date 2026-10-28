@@ -499,18 +499,21 @@ fn exchange_messages(question: &str, answer: &str, speaker: Option<String>) -> [
 }
 
 /// Keeps, in order, what the agent wrote while it worked (the notes that
-/// come with its tool calls). The thread showed them live; the turn saves
-/// them among the questions and before the answer, so they stay.
+/// come with its tool calls) and the commands it ran in the terminal, with
+/// their output. The thread showed them live; the turn saves them among the
+/// questions and before the answer, so they stay.
 fn keep_notes(state: &AiChatState, runtime: &BackendRuntimeState, turn_id: &str, identity: &RequestIdentity, seen: &mut u64) {
     let Ok(events) = runtime.request_events(&identity.context, *seen) else { return };
     let mut notes = Vec::new();
     for envelope in events {
         *seen = (*seen).max(envelope.sequence);
-        if let BackendEvent::AssistantNote { text, .. } = envelope.event {
-            let text = text.trim();
-            if !text.is_empty() {
-                notes.push(text.to_string());
-            }
+        let text = match envelope.event {
+            BackendEvent::AssistantNote { text, .. } | BackendEvent::TerminalFinished { markdown: text, .. } => text,
+            _ => continue,
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            notes.push(text.to_string());
         }
     }
     if notes.is_empty() {

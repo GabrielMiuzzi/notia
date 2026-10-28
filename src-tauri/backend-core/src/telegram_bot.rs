@@ -199,14 +199,11 @@ const MAX_NOTE_CHARS: usize = 300;
 /// Confirmation text for a prepared mutation, as the HTML of one or more
 /// messages; the buttons go with the last one.
 pub fn confirmation_parts(preview: &MutationPreview) -> Vec<String> {
-    let detail = [
-        redact_detail(&preview.summary),
-        format!(
-            "Documentos afectados: {}. Cambios preparados: {}.",
-            preview.documents.len(),
-            preview.hunks.len()
-        ),
-    ]
+    // A change outside the documents (a routine, a ticket) has no count to give.
+    let counts = (!preview.documents.is_empty())
+        .then(|| format!("Documentos afectados: {}. Cambios preparados: {}.", preview.documents.len(), preview.hunks.len()))
+        .unwrap_or_default();
+    let detail = [redact_detail(&preview.summary), counts]
     .into_iter()
     .filter(|line| !line.is_empty())
     .collect::<Vec<_>>()
@@ -342,6 +339,7 @@ pub fn tool_label(tool: &str) -> &'static str {
         "list_ai_tasks" | "get_ai_task" => "revisando tus tareas IA",
         "cancel_ai_task" | "resume_ai_task" | "review_ai_task" | "delete_ai_task" => "preparando el cambio en la tarea",
         "wait_ai_task" => "dejando la tarea esperando",
+        crate::terminal::TERMINAL_TOOL => "ejecutando un comando en la terminal",
         "generate_image" => "generando la imagen",
         "edit_image" => "editando la imagen",
         "list_gmail_messages" | "read_gmail_message" | "list_gmail_labels" => "revisando tu correo",
@@ -432,6 +430,52 @@ pub fn progress_message(events: &[BackendEvent]) -> Option<String> {
         Some(activity) => format!("<b>{phase}</b>{step}{note}\nAhora: {activity}."),
         None => format!("<b>{phase}</b>{step}{note}"),
     })
+}
+
+/// The progress keeps every event but the streamed text; the output of a
+/// command joins the previous one, so a long command stays one event.
+pub fn keep_progress_event(seen: &mut Vec<BackendEvent>, event: BackendEvent) {
+    if matches!(event, BackendEvent::ThinkingSummary { .. } | BackendEvent::AssistantDelta { .. }) {
+        return;
+    }
+    if let Some(last) = seen.last_mut() {
+        if crate::terminal::join_output(last, &event) {
+            return;
+        }
+    }
+    seen.push(event);
+}
+
+/// The worker posts a command's message again (below, so it notifies)
+/// this often while the command runs; in between it is edited.
+pub const TERMINAL_REPOST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Lines and characters of output a command's message shows.
+const TERMINAL_TAIL_LINES: usize = 15;
+const TERMINAL_TAIL_CHARS: usize = 1_500;
+
+/// The message (HTML) that follows a command of the terminal: what runs,
+/// for how long and the last lines it printed; how it ended once it did.
+pub fn terminal_message(run: &crate::terminal::TerminalRun, elapsed: std::time::Duration) -> String {
+    let command = run.command.trim();
+    let command = if command.chars().count() > 300 { format!("{}…", command.chars().take(300).collect::<String>()) } else { command.to_string() };
+    let title = match (&run.ended, run.duration) {
+        (Some(summary), Some(duration)) => format!("Terminal: {summary} en {}", crate::terminal::duration_text(duration)),
+        (Some(summary), None) => format!("Terminal: {summary}"),
+        (None, _) => format!("Terminal: ejecutando hace {}", crate::terminal::duration_text(elapsed)),
+    };
+    // What the light agent read in the live output, while it runs.
+    let status = match (&run.status, &run.ended) {
+        (Some(status), None) => format!("\n<i>{}</i>", escape_telegram_html(status)),
+        _ => String::new(),
+    };
+    let tail = run.tail(TERMINAL_TAIL_LINES, TERMINAL_TAIL_CHARS);
+    let output = if tail.trim().is_empty() {
+        if run.ended.is_some() { "<i>Sin salida.</i>".to_string() } else { "<i>Todavía sin salida.</i>".to_string() }
+    } else {
+        format!("<pre>{}</pre>", escape_telegram_html(tail.trim_end()))
+    };
+    format!("<b>{}</b>{status}\n<code>{}</code>\n{output}", escape_telegram_html(&title), escape_telegram_html(&command))
 }
 
 /// Markdown as one line of plain text: without headings, emphasis, code
@@ -615,6 +659,49 @@ mod tests {
 
     fn said(role: MessageRole, content: &str, attachments: Vec<MessageAttachment>) -> BackendMessage {
         BackendMessage { role, content: content.into(), images: Vec::new(), attachments }
+    }
+
+    #[test]
+    fn a_command_shows_what_runs_its_last_lines_and_how_it_ended() {
+        let started = BackendEvent::TerminalStarted {
+            request_id: "r".into(),
+            call_id: "c".into(),
+            command: "npm run build <prod>".into(),
+            shell: "powershell".into(),
+            cwd: "C:\\repo".into(),
+        };
+        let output = |text: &str| BackendEvent::TerminalOutput { request_id: "r".into(), call_id: "c".into(), text: text.into(), partial: "60%".into() };
+        let mut seen = Vec::new();
+        keep_progress_event(&mut seen, started);
+        keep_progress_event(&mut seen, BackendEvent::ThinkingSummary { request_id: "r".into(), summary: "pienso".into() });
+        for index in 0..40 {
+            keep_progress_event(&mut seen, output(&format!("paso {index}\n")));
+        }
+        // The output joined into one event after the start.
+        assert_eq!(seen.len(), 2);
+        let runs = crate::terminal::terminal_runs(&seen);
+        let running = terminal_message(&runs[0], std::time::Duration::from_secs(185));
+        assert!(running.starts_with("<b>Terminal: ejecutando hace 3 min 5 s</b>\n<code>npm run build &lt;prod&gt;</code>"));
+        assert!(running.contains("paso 39\n60%</pre>"));
+        keep_progress_event(&mut seen, BackendEvent::TerminalStatus { request_id: "r".into(), call_id: "c".into(), status: "Va por el paso 39 & sin errores.".into() });
+        let runs = crate::terminal::terminal_runs(&seen);
+        let with_status = terminal_message(&runs[0], std::time::Duration::from_secs(190));
+        assert!(with_status.starts_with("<b>Terminal: ejecutando hace 3 min 10 s</b>\n<i>Va por el paso 39 &amp; sin errores.</i>\n<code>"));
+        assert!(!running.contains("paso 20\n"));
+        keep_progress_event(&mut seen, BackendEvent::TerminalFinished {
+            request_id: "r".into(),
+            call_id: "c".into(),
+            status: "failed".into(),
+            exit_code: Some(1),
+            duration_ms: 200_000,
+            summary: "terminó con código 1".into(),
+            markdown: String::new(),
+        });
+        let runs = crate::terminal::terminal_runs(&seen);
+        let ended = terminal_message(&runs[0], std::time::Duration::from_secs(999));
+        assert!(ended.starts_with("<b>Terminal: terminó con código 1 en 3 min 20 s</b>"));
+        assert!(ended.contains("paso 39</pre>"));
+        assert!(!ended.contains("<i>"));
     }
 
     #[test]

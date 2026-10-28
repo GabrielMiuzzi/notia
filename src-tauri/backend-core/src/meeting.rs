@@ -28,6 +28,8 @@ const MAX_MARK_LABEL_CHARS: usize = 300;
 const NOTES_QUERY_CHARS: usize = 1_500;
 const MAX_QUESTION_CHARS: usize = 300;
 const MIN_QUESTION_WORDS: usize = 3;
+/// The end of the transcript `get_meeting_overview` returns, in bytes.
+const OVERVIEW_TRANSCRIPT_CHARS: usize = 12_000;
 const MAX_SUGGESTED_QUESTIONS: usize = 3;
 const MAX_SUGGESTED_QUESTION_CHARS: usize = 60;
 const RECENT_CONTEXT_CHARS: usize = 6_000;
@@ -1003,11 +1005,16 @@ impl MeetingRecord {
 
     /// The end of the transcript (with the person's notes) a notes pass reads.
     fn notes_transcript(&self) -> String {
+        self.transcript_tail(meeting_ai::NOTES_TRANSCRIPT_CHARS)
+    }
+
+    /// The last `max` bytes of the transcript, from a whole line.
+    fn transcript_tail(&self, max: usize) -> String {
         let text = self.context_text();
-        if text.len() <= meeting_ai::NOTES_TRANSCRIPT_CHARS {
+        if text.len() <= max {
             return text;
         }
-        let mut start = text.len() - meeting_ai::NOTES_TRANSCRIPT_CHARS;
+        let mut start = text.len() - max;
         while !text.is_char_boundary(start) {
             start += 1;
         }
@@ -1539,6 +1546,9 @@ impl MeetingRecord {
             "liveLines": self.lines.len(),
             "turns": self.segments.len(),
             "notes": serde_json::to_value(&self.ai_notes.notes).unwrap_or(Value::Null),
+            // What was said, so «la reunión de recién» is answered from any chat.
+            "transcriptTail": self.transcript_tail(OVERVIEW_TRANSCRIPT_CHARS),
+            "transcriptChars": self.context_text().chars().count(),
         })
     }
 
@@ -2405,6 +2415,15 @@ mod tests {
         assert_eq!(live, vec![MeetingQuestionDto { question: "¿Por qué renunciaste a tu trabajo?".into(), at_ms: 160_000 }]);
         record.complete(vec![segment(158_500, 165_000, "speaker-1", "Y una pregunta, ¿por qué renunciaste a tu trabajo?")], 165_000);
         assert_eq!(record.snapshot(&MeetingFilter::default()).suggested_questions[0].at_ms, 158_500);
+    }
+
+    #[test]
+    fn the_agent_overview_carries_the_end_of_what_was_said() {
+        let mut record = record();
+        record.push_line(0, 2_000, "Arrancamos con el SN 0449530.");
+        let overview = record.agent_overview(None);
+        assert!(overview["transcriptTail"].as_str().is_some_and(|tail| tail.contains("SN 0449530")), "{overview}");
+        assert!(overview["transcriptChars"].as_u64().is_some_and(|chars| chars > 0));
     }
 
     #[test]

@@ -6,9 +6,10 @@
 
 use serde_json::{json, Value};
 
-use super::dashboard::build_detail;
+use super::dashboard::{self, build_detail};
 use super::{fold, format_number, MealTime, Recipe, RecipeInput, NUTRIENTS};
 use crate::error::{BackendError, BackendErrorCode};
+use crate::text_search;
 
 pub const RECIPE_READ_TOOLS: [&str; 2] = ["list_recipes", "get_recipe"];
 pub const RECIPE_WRITE_TOOLS: [&str; 3] = ["create_recipe", "update_recipe", "delete_recipe"];
@@ -218,12 +219,12 @@ pub fn delete_summary(recipe: &Recipe) -> String {
 
 /// What `list_recipes` returns.
 pub fn list_view(recipes: &[Recipe], arguments: &Value) -> Value {
-    let query = text(arguments, "query").map(|query| fold(&query)).unwrap_or_default();
+    let terms = text_search::query_terms(&text(arguments, "query").unwrap_or_default());
     let meal = text(arguments, "meal").and_then(|meal| MealTime::parse(&meal));
-    let items = recipes
-        .iter()
-        .filter(|recipe| meal.is_none_or(|meal| recipe.meal == meal))
-        .filter(|recipe| query.is_empty() || fold(&recipe.name).contains(&query) || recipe.ingredients.iter().any(|line| fold(line).contains(&query)))
+    let found = text_search::rank(recipes.iter().filter(|recipe| meal.is_none_or(|meal| recipe.meal == meal)), &terms, dashboard::search_text);
+    let items = found
+        .items
+        .into_iter()
         .take(MAX_LISTED)
         .map(|recipe| {
             json!({
@@ -238,7 +239,12 @@ pub fn list_view(recipes: &[Recipe], arguments: &Value) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    json!({ "total": recipes.len(), "recipes": items })
+    let mut result = json!({ "total": recipes.len(), "recipes": items });
+    if found.partial {
+        result["partialMatch"] = json!(true);
+        result["note"] = json!("Ninguna receta tiene todas las palabras; estas tienen alguna, las que más primero.");
+    }
+    result
 }
 
 /// What `get_recipe` returns: the whole recipe with its values per serving.

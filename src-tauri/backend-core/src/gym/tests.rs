@@ -370,7 +370,7 @@ fn the_tools_resolve_names_and_change_routines_sessions_and_workouts() {
 
     // Un entrenamiento pasado y su borrado.
     let logged = run(&mut data, "log_gym_workout", json!({ "date": "2026-09-29", "minutes": 40, "exercises": [{ "exercise": "Curl con mancuernas", "sets": 3, "reps": 12, "weight": 14 }] }));
-    assert!(logged.contains("del 2026-09-29, 40 min: Curl con mancuernas (12 reps con 14 kg"), "{logged}");
+    assert!(logged.contains("del 2026-09-29, 40 min: Curl con mancuernas (3 × 12 reps con 14 kg)"), "{logged}");
     let workout = data.workouts.iter().find(|workout| workout.date == "2026-09-29").expect("workout").clone();
     assert_eq!((workout.sets, workout.volume, workout.routine_name.as_str()), (3, 504.0, "Entrenamiento libre"));
     let future = tool_action("log_gym_workout", &json!({ "date": "2026-10-09", "minutes": 40, "routine": "Pecho en casa" }), &data, &catalog, today).expect("arguments");
@@ -399,6 +399,66 @@ fn the_tools_resolve_names_and_change_routines_sessions_and_workouts() {
     assert!(missing.is_some());
     let unknown = read_tool("get_gym_exercise", &json!({ "exercise": "press" }), &data, &catalog, today, 0).expect_err("ambiguous");
     assert!(unknown.message.contains("Press de banca con barra"), "{}", unknown.message);
+}
+
+#[test]
+fn a_routine_change_shows_only_what_changes_and_the_search_reads_every_word() {
+    use super::tools::{action_summary, read_tool, tool_action, GymToolAction};
+    use serde_json::json;
+    let catalog = catalog();
+    let mut data = GymData::default();
+    let today_text = "2026-10-01";
+    let today = parse_date(today_text).expect("date");
+    let save = |data: &mut GymData, arguments: serde_json::Value| -> String {
+        let action = tool_action("save_gym_routine", &arguments, data, &catalog, today).expect("routine");
+        let summary = action_summary(&action, data, &catalog);
+        let GymToolAction::Change(mutation) = action else { panic!("a change") };
+        apply(data, &catalog, mutation, 1_000_000, today_text);
+        summary
+    };
+    save(
+        &mut data,
+        json!({ "name": "Piernas", "exercises": [
+            { "exercise": "bench_press", "sets": 3, "reps": 7, "weight": 100 },
+            { "exercise": "dumbbell_curl", "sets": 3, "reps": 10, "weight": 20 },
+            { "exercise": "plank", "sets": 3, "reps": 30 }
+        ] }),
+    );
+    // The whole list comes back with one exercise swapped: only the swap shows.
+    let summary = save(
+        &mut data,
+        json!({ "routine": "Piernas", "exercises": [
+            { "exercise": "push_ups", "sets": 3, "reps": 10 },
+            { "exercise": "dumbbell_curl", "sets": 3, "reps": 10, "weight": 20 },
+            { "exercise": "plank", "sets": 3, "reps": 30 }
+        ] }),
+    );
+    assert_eq!(
+        summary,
+        "Cambiar la rutina «Piernas»: reemplazar «Press de banca con barra» (3 × 7 reps con 100 kg) por «Flexiones de brazos» (3 × 10 reps)."
+    );
+    let summary = save(
+        &mut data,
+        json!({ "routine": "Piernas", "exercises": [
+            { "exercise": "plank", "sets": 3, "reps": 30 },
+            { "exercise": "dumbbell_curl", "sets": [{ "reps": 10, "weight": 20 }, { "reps": 8, "weight": 22.5 }], "restSeconds": 45 }
+        ] }),
+    );
+    assert_eq!(
+        summary,
+        "Cambiar la rutina «Piernas»: quitar «Flexiones de brazos» (3 × 10 reps); «Curl con mancuernas»: 3 × 10 reps con 20 kg → 10 reps con 20 kg, 8 reps con 22,5 kg; descanso de «Curl con mancuernas»: 90 s → 45 s; nuevo orden: Plancha, Curl con mancuernas."
+    );
+    let summary = save(&mut data, json!({ "routine": "Piernas", "exercises": ["plank", "dumbbell_curl"] }));
+    assert_eq!(summary, "Cambiar la rutina «Piernas»: los ejercicios quedan igual.");
+
+    // Each word is searched apart, in the name, the muscles and the equipment.
+    let search = |query: &str| read_tool("search_gym_exercises", &json!({ "query": query }), &data, &catalog, today, 0).expect("search");
+    let found = search("mancuernas bíceps");
+    assert_eq!(found["exercises"][0]["name"], "Curl con mancuernas");
+    assert!(found.get("partialMatch").is_none());
+    let found = search("curl plancha");
+    assert_eq!(found["partialMatch"], true);
+    assert_eq!(found["total"], 2, "{found}");
 }
 
 #[test]

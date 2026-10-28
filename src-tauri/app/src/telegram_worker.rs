@@ -591,6 +591,19 @@ impl Worker {
         sent
     }
 
+    /// The cancel reply of a request with every note its agent wrote.
+    fn cancelled_reply(&self, runtime: &crate::backend_runtime::BackendRuntimeState, context: &BackendRequestContext) -> String {
+        let events = runtime.request_events(context, 0).unwrap_or_default().into_iter().map(|envelope| envelope.event).collect::<Vec<_>>();
+        let notes = events
+            .iter()
+            .filter_map(|event| match event {
+                crate::backend::BackendEvent::AssistantNote { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        crate::backend::turn_interrupts::cancelled_reply(&notes)
+    }
+
     /// Deletes messages of the chat: the agent's notes once its answer is there.
     fn delete_messages(&self, chat_id: i64, ids: &[i64]) {
         for id in ids {
@@ -1405,8 +1418,15 @@ impl Worker {
             if let Ok(mut current) = self.current.lock() {
                 *current = None;
             }
-            if let Err(message) = result {
-                self.send(chat_id, &message);
+            match result {
+                // A cancel may carry the agent's findings, written in Markdown.
+                Err(message) if message.starts_with(bot::CANCELLED_MESSAGE) => {
+                    self.send_markdown_checked(chat_id, &message);
+                }
+                Err(message) => {
+                    self.send(chat_id, &message);
+                }
+                Ok(()) => {}
             }
             if let Ok(mut active) = self.active.lock() {
                 *active = None;
@@ -1544,7 +1564,7 @@ impl Worker {
         let (text, attachments) = self.prepare_input(job)?;
         let files = attachments.clone();
         let (run, request) = self.begin_run(job, &text, attachments);
-        let progress = Progress::start(self, chat_id, progress_enabled, edit_progress);
+        let progress = Progress::start(self, chat_id, progress_enabled, edit_progress).with_terminal();
         let mut seen_events = 0;
         let mut notes = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
@@ -1582,9 +1602,11 @@ impl Worker {
             (Err(_), false) => progress.finish(self, "<b>No pude completar la operación</b>"),
         }
         if stopped && outcome.is_err() {
-            // The next request of the chat knows what was cancelled.
-            self.remember_with_files(chat_id, text, files, bot::CANCELLED_MESSAGE.to_string());
-            return Err(bot::CANCELLED_MESSAGE.to_string());
+            // The next request of the chat knows what was cancelled and what
+            // the agent had found, so «seguí» picks it up again.
+            let reply = self.cancelled_reply(&runtime, &run.context);
+            self.remember_with_files(chat_id, text, files, reply.clone());
+            return Err(reply);
         }
         // A failed request stays in the chat's history too, so «seguí» or
         // «¿qué pasó?» has its context.
@@ -1729,7 +1751,8 @@ impl Worker {
         let (run, request) = self.begin_run(job, &job.text, Vec::new());
         // Every hour a progress message would be noise: only the answer,
         // the notes before a question and the questions reach the chat.
-        let progress = Progress::start(self, chat_id, false, false);
+        // A command it runs in the terminal is followed all the same.
+        let progress = Progress::start(self, chat_id, false, false).with_terminal();
         let mut seen_events = 0;
         let mut notes = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
@@ -2114,6 +2137,73 @@ impl Worker {
     }
 }
 
+/// The messages that follow the commands of the terminal in the chat, one
+/// per command: sent when it starts, edited with what it prints, posted
+/// again below every [`bot::TERMINAL_REPOST_INTERVAL`] while it runs (so
+/// the person gets a notification each minute, even when the agent waits
+/// for a long command) and left with how it ended.
+#[derive(Default)]
+struct TerminalMessages {
+    by_call: HashMap<String, TerminalMessage>,
+}
+
+struct TerminalMessage {
+    message_id: Option<i64>,
+    started: Instant,
+    posted: Instant,
+    edited: Instant,
+    shown: String,
+    ended: bool,
+}
+
+/// A running command's message is edited at most this often: Telegram
+/// limits the edits of a chat.
+const TERMINAL_EDIT_INTERVAL: Duration = Duration::from_secs(5);
+
+impl TerminalMessages {
+    fn update(&mut self, token: &str, chat_id: i64, runs: &[notia_backend_core::terminal::TerminalRun]) {
+        for run in runs {
+            let now = Instant::now();
+            let message = self.by_call.entry(run.call_id.clone()).or_insert_with(|| TerminalMessage {
+                message_id: None,
+                started: now,
+                posted: now,
+                edited: now,
+                shown: String::new(),
+                ended: false,
+            });
+            if message.ended {
+                continue;
+            }
+            let ended = run.ended.is_some();
+            let html = bot::terminal_message(run, message.started.elapsed());
+            match message.message_id {
+                Some(id) if !ended && message.posted.elapsed() >= bot::TERMINAL_REPOST_INTERVAL => {
+                    let _ = block_on(telegram::delete_message(token, chat_id, id));
+                    message.message_id = block_on(telegram::send_message(token, chat_id, &html, Vec::new(), Some("HTML"))).ok();
+                    message.posted = now;
+                    message.edited = now;
+                }
+                Some(id) if html != message.shown && (ended || message.edited.elapsed() >= TERMINAL_EDIT_INTERVAL) => {
+                    let _ = block_on(telegram::edit_message(token, chat_id, id, &html, Vec::new(), Some("HTML")));
+                    message.edited = now;
+                }
+                Some(_) => {
+                    message.ended = ended;
+                    continue;
+                }
+                None => {
+                    message.message_id = block_on(telegram::send_message(token, chat_id, &html, Vec::new(), Some("HTML"))).ok();
+                    message.posted = now;
+                    message.edited = now;
+                }
+            }
+            message.shown = html;
+            message.ended = ended;
+        }
+    }
+}
+
 /// Longest question text (HTML) the progress goes on below; a longer one
 /// leaves no room for the progress in a Telegram message.
 const MAX_ADOPTED_TEXT_CHARS: usize = 3_400;
@@ -2131,9 +2221,20 @@ struct Progress {
     header: Arc<Mutex<Option<String>>>,
     last_sequence: Arc<Mutex<u64>>,
     events: Arc<Mutex<Vec<crate::backend::BackendEvent>>>,
+    /// Whether the commands of the terminal get their own messages, even
+    /// with the progress off: the person follows what runs on the PC.
+    terminal: bool,
+    terminal_messages: Arc<Mutex<TerminalMessages>>,
 }
 
 impl Progress {
+    /// Follows the commands the agent runs in the terminal (see
+    /// [`TerminalMessages`]).
+    fn with_terminal(mut self) -> Progress {
+        self.terminal = true;
+        self
+    }
+
     fn start(worker: &Worker, chat_id: i64, enabled: bool, edit: bool) -> Progress {
         let message_id = if enabled { worker.send_html(chat_id, "<b>Preparando la solicitud</b>", Vec::new()) } else { None };
         Progress {
@@ -2145,6 +2246,8 @@ impl Progress {
             header: Arc::new(Mutex::new(None)),
             last_sequence: Arc::new(Mutex::new(0)),
             events: Arc::new(Mutex::new(Vec::new())),
+            terminal: false,
+            terminal_messages: Arc::new(Mutex::new(TerminalMessages::default())),
         }
     }
 
@@ -2155,7 +2258,7 @@ impl Progress {
         context: &BackendRequestContext,
         running: Arc<AtomicBool>,
     ) -> Option<std::thread::JoinHandle<()>> {
-        if !self.enabled {
+        if !self.enabled && !self.terminal {
             return None;
         }
         let runtime = runtime.clone();
@@ -2164,38 +2267,43 @@ impl Progress {
         let header = Arc::clone(&self.header);
         let last_sequence = Arc::clone(&self.last_sequence);
         let events = Arc::clone(&self.events);
-        let (token, chat_id, edit) = (self.token.clone(), self.chat_id, self.edit);
+        let terminal_messages = Arc::clone(&self.terminal_messages);
+        let (token, chat_id, edit, enabled, terminal) = (self.token.clone(), self.chat_id, self.edit, self.enabled, self.terminal);
+        let token_for_terminal = self.token.clone();
+        // Reads the new events; with them, the progress text and the
+        // commands of the terminal.
+        let read = move || -> Option<(Option<String>, Vec<notia_backend_core::terminal::TerminalRun>)> {
+            let after = last_sequence.lock().map(|value| *value).unwrap_or_default();
+            let batch = runtime.request_events(&context, after).ok()?;
+            let mut seen = events.lock().ok()?;
+            for envelope in batch {
+                if let Ok(mut last) = last_sequence.lock() {
+                    *last = (*last).max(envelope.sequence);
+                }
+                // Stream fragments do not change the progress message and a
+                // long answer has thousands; a command's output joins.
+                bot::keep_progress_event(&mut seen, envelope.event);
+            }
+            Some((bot::progress_message(&seen), notia_backend_core::terminal::terminal_runs(&seen)))
+        };
+        let follow_terminal = move |runs: &[notia_backend_core::terminal::TerminalRun]| {
+            if terminal {
+                if let Ok(mut messages) = terminal_messages.lock() {
+                    messages.update(&token_for_terminal, chat_id, runs);
+                }
+            }
+        };
         std::thread::Builder::new()
             .name("notia-telegram-progress".into())
             .spawn(move || {
                 let mut shown = String::new();
                 while running.load(Ordering::SeqCst) {
                     std::thread::sleep(PROGRESS_INTERVAL);
-                    let after = last_sequence.lock().map(|value| *value).unwrap_or_default();
-                    let Ok(batch) = runtime.request_events(&context, after) else {
+                    let Some((message, runs)) = read() else {
                         continue;
                     };
-                    let message = {
-                        let Ok(mut seen) = events.lock() else {
-                            return;
-                        };
-                        for envelope in batch {
-                            if let Ok(mut last) = last_sequence.lock() {
-                                *last = (*last).max(envelope.sequence);
-                            }
-                            // Stream fragments do not change the progress
-                            // message and a long answer has thousands.
-                            if !matches!(
-                                envelope.event,
-                                notia_backend_core::BackendEvent::ThinkingSummary { .. }
-                                    | notia_backend_core::BackendEvent::AssistantDelta { .. }
-                            ) {
-                                seen.push(envelope.event);
-                            }
-                        }
-                        bot::progress_message(&seen)
-                    };
-                    let Some(message) = message.filter(|message| *message != shown) else {
+                    follow_terminal(&runs);
+                    let Some(message) = message.filter(|message| enabled && *message != shown) else {
                         continue;
                     };
                     shown = message.clone();
@@ -2215,6 +2323,10 @@ impl Progress {
                             }
                         }
                     }
+                }
+                // A command that ended with the run still shows how.
+                if let Some((_, runs)) = read() {
+                    follow_terminal(&runs);
                 }
             })
             .ok()

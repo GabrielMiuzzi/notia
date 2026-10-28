@@ -19,6 +19,9 @@ import type {
 } from './ChatWorkspaceViewTypes'
 import { describeAiFeedbackError } from '../../../../services/ai/aiFeedbackRuntime'
 
+/** The live terminal view keeps the end of a long output; the turn saves the transcript. */
+const TERMINAL_VIEW_CHARS = 200_000
+
 /**
  * Sends the composer's message as a chat turn. The backend picks the
  * messages the agent sees, runs it, saves the turn and names new chats; this
@@ -76,6 +79,7 @@ export function useChatSubmitMessage(
     setStreamingThinking,
     setStreamingAssistantMessage,
     setStreamingAgent,
+    setStreamingTerminal,
     setSelectedChatFilePath,
     setActiveChatDocument,
     setChatTitleOverrides,
@@ -286,6 +290,20 @@ export function useChatSubmitMessage(
         },
         onThinkingDelta: (delta) => setStreamingThinking((current) => current + delta),
         onMessageDelta: (delta) => setStreamingAssistantMessage((current) => current + delta),
+        onTerminalStarted: (run) => setStreamingTerminal?.({ ...run, output: '', partial: '', status: '' }),
+        onTerminalStatus: (callId, status) => setStreamingTerminal?.((current) => (current?.callId === callId ? { ...current, status } : current)),
+        onTerminalOutput: (callId, text, partial) => setStreamingTerminal?.((current) => {
+          if (current?.callId !== callId) return current
+          const output = current.output + text
+          return { ...current, output: output.length > TERMINAL_VIEW_CHARS ? output.slice(-TERMINAL_VIEW_CHARS) : output, partial }
+        }),
+        // The finished command stays in the thread as the message the turn saves.
+        onTerminalFinished: (callId, markdown) => {
+          agentMessageCount += 1
+          turnMessages = [...turnMessages, { role: 'assistant', content: markdown }]
+          setOptimisticThreadMessages(turnMessages)
+          setStreamingTerminal?.((current) => (current?.callId === callId ? null : current))
+        },
         onAgentProgress,
         requestClarification: requestAgentClarification,
         requestConfirmation: requestAgentConfirmation,
@@ -376,6 +394,7 @@ export function useChatSubmitMessage(
     } finally {
       if (mountedRef.current) {
         setStreamingAgent?.(null)
+        setStreamingTerminal?.(null)
         setIsSubmitting(false)
         // The submit button ended a tap; registering the window here lets the
         // tap-to-mount path suppress the phantom native click that follows.

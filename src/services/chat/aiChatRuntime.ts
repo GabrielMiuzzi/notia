@@ -61,6 +61,21 @@ type AgentEvent =
   | { requestId: string; phase: 'message'; runRequestId: string; message: StoredChatMessage }
   | { requestId: string; phase: 'silent'; runRequestId: string }
 
+/**
+ * A command the agent runs in the terminal of the host PC, as its events
+ * tell it: `output` holds whole lines and `partial` the line being written.
+ */
+export interface ChatTerminalRun {
+  callId: string
+  command: string
+  shell: string
+  cwd: string
+  output: string
+  partial: string
+  /** What the light agent read in the live output; empty until it speaks. */
+  status: string
+}
+
 export interface ChatTurnOutcome {
   /** Notia's answer, or the last agent's message. */
   answer: string
@@ -83,6 +98,14 @@ export interface ChatTurnHandlers {
   onMessageDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
   onAgentProgress?: (event: AgentProgressEvent) => void
+  /** A command starts in the terminal of the host PC. */
+  onTerminalStarted?: (run: Pick<ChatTerminalRun, 'callId' | 'command' | 'shell' | 'cwd'>) => void
+  /** The light agent's status of the running command. */
+  onTerminalStatus?: (callId: string, status: string) => void
+  /** Output of the command: lines to append and the line being written. */
+  onTerminalOutput?: (callId: string, text: string, partial: string) => void
+  /** The command ended; `markdown` is the message the turn saves for it. */
+  onTerminalFinished?: (callId: string, markdown: string) => void
   requestClarification?: (question: string, signal: AbortSignal, choices?: string[]) => Promise<string>
   requestConfirmation?: (question: string, signal: AbortSignal, preview?: MutationPreview) => Promise<boolean | AgentConfirmationDecision>
   requestExecutionPlanApproval?: (steps: TaskExecutionStep[], signal: AbortSignal) => Promise<{ approved: boolean; steps?: TaskExecutionStep[]; suggestion?: string; approveAll?: boolean }>
@@ -126,6 +149,23 @@ function forwardEvent(requestId: string, envelope: BackendEventEnvelope, handler
   if (event.type === 'assistant-delta' && typeof event.delta === 'string') handlers.onMessageDelta?.(event.delta)
   if (event.type === 'assistant-note' && typeof event.text === 'string') handlers.onAssistantNote?.(event.text)
   if (event.type === 'thinking-summary' && typeof event.summary === 'string') handlers.onThinkingDelta?.(event.summary)
+  if (event.type === 'terminal-started' && typeof event.callId === 'string') {
+    handlers.onTerminalStarted?.({
+      callId: event.callId,
+      command: typeof event.command === 'string' ? event.command : '',
+      shell: typeof event.shell === 'string' ? event.shell : '',
+      cwd: typeof event.cwd === 'string' ? event.cwd : '',
+    })
+  }
+  if (event.type === 'terminal-output' && typeof event.callId === 'string') {
+    handlers.onTerminalOutput?.(event.callId, typeof event.text === 'string' ? event.text : '', typeof event.partial === 'string' ? event.partial : '')
+  }
+  if (event.type === 'terminal-status' && typeof event.callId === 'string' && typeof event.status === 'string') {
+    handlers.onTerminalStatus?.(event.callId, event.status)
+  }
+  if (event.type === 'terminal-finished' && typeof event.callId === 'string' && typeof event.markdown === 'string') {
+    handlers.onTerminalFinished?.(event.callId, event.markdown)
+  }
   if (event.type === 'tool-completed' && typeof event.toolName === 'string') {
     handlers.onAgentProgress?.({
       type: 'tool-completed',

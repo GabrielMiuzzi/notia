@@ -12,7 +12,7 @@ import type { ChatAgentScope, TaskExecutionStep } from '../../../../services/cha
 import type { MarkdownSelectionContext } from '../../../../types/views/markdownSelection'
 import type { AgentConfirmationDecision, AgentProgressEvent, MutationPreview, WorkspaceAiSnapshot } from '../../../../types/ai/agentContracts'
 import type { ChatSettings } from '../../../../services/chat/chatAgentsRuntime'
-import type { ChatAgentSpeaker } from '../../../../services/chat/aiChatRuntime'
+import type { ChatAgentSpeaker, ChatTerminalRun } from '../../../../services/chat/aiChatRuntime'
 
 /** The open file or view the side chat works on, shown as a chip in its composer. */
 export interface ChatComposerContext {
@@ -206,6 +206,8 @@ export interface UseChatSubmitMessageState {
   setStreamingAssistantMessage: React.Dispatch<React.SetStateAction<string>>
   /** The agent of the chat whose answer is streaming; `null` for Notia. */
   setStreamingAgent?: (agent: ChatAgentSpeaker | null) => void
+  /** The command running in the terminal of the host PC, shown live. */
+  setStreamingTerminal?: React.Dispatch<React.SetStateAction<ChatTerminalRun | null>>
   setOptimisticThreadMessages: React.Dispatch<React.SetStateAction<StoredChatMessage[] | null>>
   setSelectedChatFilePath: React.Dispatch<React.SetStateAction<string | null>>
   setActiveChatDocument: React.Dispatch<React.SetStateAction<StoredChatDocument | null>>

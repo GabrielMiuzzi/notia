@@ -128,8 +128,9 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         return None;
     }
     match tool_policy(name) {
-        // A task can be created from any request, whatever its areas.
-        ToolPolicy::Public | ToolPolicy::Memory | ToolPolicy::AiTaskRead | ToolPolicy::AiTaskWrite => None,
+        // A task can be created from any request, whatever its areas, and
+        // the terminal serves any of them.
+        ToolPolicy::Public | ToolPolicy::Memory | ToolPolicy::AiTaskRead | ToolPolicy::AiTaskWrite | ToolPolicy::Terminal => None,
         ToolPolicy::Mail => Some(ToolArea::Mail),
         ToolPolicy::FinanceRead | ToolPolicy::FinanceWrite => Some(ToolArea::Finance),
         ToolPolicy::RoutineRead | ToolPolicy::RoutineWrite => Some(ToolArea::Routine),

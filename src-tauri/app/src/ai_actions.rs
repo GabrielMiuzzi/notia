@@ -891,9 +891,16 @@ fn start_run(
         runs.insert(run.id.clone());
     }
     emit(app, RUN_UPDATED_EVENT, library_id);
+    // A test of a form not saved yet has no earlier runs.
+    let recent_messages = match &run.action_id {
+        Some(action_id) => read(app, database, |connection| query_runs(connection, "action_id = ?1", action_id))
+            .map(|runs| crate::backend::ai_actions::prompts::recent_messages(&runs))
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     let job = ActionJob {
         run_id: run.id.clone(),
-        prompt: ScheduledActionPrompt { name: name.to_string(), kind, when: when.to_string(), test },
+        prompt: ScheduledActionPrompt { name: name.to_string(), kind, when: when.to_string(), test, recent_messages },
         request: action_request(name, prompt, &crate::local_time::local_now().1, test),
     };
     if enqueue_action(app, library_id, job) == ActionEnqueue::Queued {

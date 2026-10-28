@@ -352,7 +352,9 @@ fn the_prompts_explain_the_run_and_silence_never_mutes_a_reminder() {
         kind: AiActionKind::Recurring,
         when: "Cada 3 h · 09 a 21 h".into(),
         test: true,
+        recent_messages: vec!["El que madruga…".into()],
     });
+    assert!(guidance.contains("- El que madruga…") && guidance.contains("Pendiente de antes"));
     assert!(guidance.contains("«Registrar gastos»") && guidance.contains("[SIN_MENSAJE]") && guidance.contains("add_agent_thought"));
     assert!(guidance.contains("prueba"));
     // What has an end becomes a task, once.
@@ -362,7 +364,9 @@ fn the_prompts_explain_the_run_and_silence_never_mutes_a_reminder() {
         kind: AiActionKind::Reminder,
         when: "Mañana · 10:00".into(),
         test: false,
+        recent_messages: Vec::new(),
     });
+    assert!(!reminder.contains("últimas ejecuciones"));
     assert!(!reminder.contains("create_ai_task"));
     assert!(prompts::is_silent(AiActionKind::Recurring, "[SIN_MENSAJE]"));
     assert!(!prompts::is_silent(AiActionKind::Reminder, "[SIN_MENSAJE]"));

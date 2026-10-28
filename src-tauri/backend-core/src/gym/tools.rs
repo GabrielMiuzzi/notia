@@ -7,6 +7,8 @@
 use jiff::civil::Date;
 use serde_json::{json, Value};
 
+use crate::text_search;
+
 use super::change::{ItemInput, SetField};
 use super::view::{build_view, exercise_detail, missing_equipment, GymQuery};
 use super::{
@@ -529,15 +531,83 @@ pub fn tool_action(name: &str, arguments: &Value, data: &GymData, catalog: &Cata
     })
 }
 
+/// Las series en pocas palabras: las iguales seguidas van juntas
+/// («3 × 10 reps con 20 kg»).
 fn sets_text(sets: &[SetPlan], timed: bool) -> String {
     let unit = if timed { "s" } else { "reps" };
-    sets.iter()
-        .map(|set| match set.weight.filter(|weight| *weight > 0.0) {
-            Some(weight) => format!("{} {unit} con {} kg", fmt(set.reps.unwrap_or(0.0), 1), fmt(weight, 2)),
-            None => format!("{} {unit}", fmt(set.reps.unwrap_or(0.0), 1)),
-        })
+    let one = |set: &SetPlan| match set.weight.filter(|weight| *weight > 0.0) {
+        Some(weight) => format!("{} {unit} con {} kg", fmt(set.reps.unwrap_or(0.0), 1), fmt(weight, 2)),
+        None => format!("{} {unit}", fmt(set.reps.unwrap_or(0.0), 1)),
+    };
+    let mut runs = Vec::<(usize, &SetPlan)>::new();
+    for set in sets {
+        match runs.last_mut() {
+            Some((count, last)) if *last == set => *count += 1,
+            _ => runs.push((1, set)),
+        }
+    }
+    runs.iter()
+        .map(|(count, set)| if *count > 1 { format!("{count} × {}", one(set)) } else { one(set) })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Qué cambia en los ejercicios de una rutina que ya existe: solo lo
+/// distinto, no la lista entera.
+fn routine_items_change(routine: &Routine, items: &[ItemInput], catalog: &Catalog) -> String {
+    let name = |id: &str| catalog.exercise(id).map(|exercise| exercise.name.clone()).unwrap_or_else(|| id.to_string());
+    let timed = |id: &str| catalog.exercise(id).is_some_and(|exercise| exercise.tracking.timed());
+    let described = |id: &str, sets: Option<&[SetPlan]>| match sets {
+        Some(sets) if !sets.is_empty() => format!("«{}» ({})", name(id), sets_text(sets, timed(id))),
+        _ => format!("«{}»", name(id)),
+    };
+    // Cada ejercicio nuevo se empareja con el primero igual que no se usó,
+    // como al guardar.
+    let mut used = vec![false; routine.items.len()];
+    let mut added = Vec::new();
+    let mut kept = Vec::new();
+    for (position, item) in items.iter().enumerate() {
+        match routine.items.iter().enumerate().find(|(index, current)| !used[*index] && current.exercise == item.exercise_id) {
+            Some((index, current)) => {
+                used[index] = true;
+                kept.push((index, item, current));
+            }
+            None => added.push((position, item)),
+        }
+    }
+    let removed = routine.items.iter().enumerate().filter(|(index, _)| !used[*index]).collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    match (removed.as_slice(), added.as_slice()) {
+        ([(_, old)], [(_, new)]) => parts.push(format!(
+            "reemplazar {} por {}",
+            described(&old.exercise, Some(&old.sets)),
+            described(&new.exercise_id, new.sets.as_deref())
+        )),
+        _ => {
+            if !removed.is_empty() {
+                parts.push(format!("quitar {}", removed.iter().map(|(_, old)| described(&old.exercise, Some(&old.sets))).collect::<Vec<_>>().join(", ")));
+            }
+            if !added.is_empty() {
+                parts.push(format!("agregar {}", added.iter().map(|(_, new)| described(&new.exercise_id, new.sets.as_deref())).collect::<Vec<_>>().join(", ")));
+            }
+        }
+    }
+    for (_, item, current) in &kept {
+        if let Some(sets) = item.sets.as_ref().filter(|sets| **sets != current.sets) {
+            parts.push(format!("«{}»: {} → {}", name(&current.exercise), sets_text(&current.sets, timed(&current.exercise)), sets_text(sets, timed(&current.exercise))));
+        }
+        if let Some(rest) = item.rest_s.filter(|rest| *rest != current.rest_s) {
+            parts.push(format!("descanso de «{}»: {} s → {rest} s", name(&current.exercise), current.rest_s));
+        }
+    }
+    if kept.windows(2).any(|pair| pair[0].0 > pair[1].0) {
+        parts.push(format!("nuevo orden: {}", items.iter().map(|item| name(&item.exercise_id)).collect::<Vec<_>>().join(", ")));
+    }
+    if parts.is_empty() {
+        "los ejercicios quedan igual".to_string()
+    } else {
+        parts.join("; ")
+    }
 }
 
 /// Lo que se confirma, en palabras.
@@ -564,7 +634,9 @@ pub fn action_summary(action: &GymToolAction, data: &GymData, catalog: &Catalog)
                 if let Some(color) = color {
                     parts.push(format!("color {color}"));
                 }
-                if let Some(items) = items {
+                if let Some(routine) = items.as_ref().and(routine_id.as_ref()).and_then(|id| data.routine(id)) {
+                    parts.push(routine_items_change(routine, items.as_deref().unwrap_or_default(), catalog));
+                } else if let Some(items) = items {
                     let list = items
                         .iter()
                         .map(|item| {
@@ -697,6 +769,16 @@ fn days_text(days: &[u8]) -> Vec<&'static str> {
     days.iter().filter_map(|day| DAY_NAMES.get(*day as usize)).copied().collect()
 }
 
+/// Lo que la búsqueda mira de un ejercicio: nombre, alias, grupo,
+/// músculos y equipamiento.
+fn exercise_search_text(exercise: &Exercise, catalog: &Catalog) -> String {
+    let mut parts = vec![exercise.name.clone(), group_label(&exercise.group).to_string()];
+    parts.extend(exercise.aliases.iter().cloned());
+    parts.extend(exercise.primary.iter().chain(&exercise.secondary).filter_map(|key| muscle_label(key)).map(str::to_string));
+    parts.extend(exercise.equipment.iter().filter_map(|id| catalog.equipment_name(id)).map(str::to_string));
+    text_search::fold(&parts.join(" | "))
+}
+
 fn exercise_row(exercise: &Exercise, catalog: &Catalog, data: &GymData) -> Value {
     let names = |keys: &[String]| keys.iter().filter_map(|key| muscle_label(key)).collect::<Vec<_>>();
     json!({
@@ -787,27 +869,26 @@ pub fn read_tool(name: &str, arguments: &Value, data: &GymData, catalog: &Catalo
             routine_json(resolve_routine(data, &reference)?, catalog, data)
         }
         "search_gym_exercises" => {
-            let query = fold(&text(arguments, "query").unwrap_or_default());
+            let terms = text_search::query_terms(&text(arguments, "query").unwrap_or_default());
             let group = text(arguments, "group").map(|group| fold(&group));
             let muscle = text(arguments, "muscle").map(|muscle| muscle_key(&muscle).ok_or_else(|| invalid(format!("El músculo «{muscle}» no existe.")))).transpose()?;
             let only_available = optional_bool(arguments, "onlyAvailable").unwrap_or(false);
-            let matches = catalog
+            let candidates = catalog
                 .exercises
                 .iter()
                 .filter(|exercise| group.as_ref().is_none_or(|group| &exercise.group == group))
                 .filter(|exercise| muscle.is_none_or(|muscle| exercise.muscle_level(muscle) > 0))
-                .filter(|exercise| {
-                    query.is_empty()
-                        || fold(&exercise.name).contains(&query)
-                        || exercise.aliases.iter().any(|alias| fold(alias).contains(&query))
-                        || exercise.equipment.iter().filter_map(|id| catalog.equipment_name(id)).any(|name| fold(name).contains(&query))
-                })
-                .filter(|exercise| !only_available || missing_equipment(exercise, catalog, &data.owned).is_empty())
-                .collect::<Vec<_>>();
-            json!({
-                "total": matches.len(),
-                "exercises": matches.iter().take(limit(arguments)).map(|exercise| exercise_row(exercise, catalog, data)).collect::<Vec<_>>(),
-            })
+                .filter(|exercise| !only_available || missing_equipment(exercise, catalog, &data.owned).is_empty());
+            let found = text_search::rank(candidates, &terms, |exercise| exercise_search_text(exercise, catalog));
+            let mut result = json!({
+                "total": found.items.len(),
+                "exercises": found.items.iter().take(limit(arguments)).map(|exercise| exercise_row(exercise, catalog, data)).collect::<Vec<_>>(),
+            });
+            if found.partial {
+                result["partialMatch"] = json!(true);
+                result["note"] = json!("Ningún ejercicio tiene todas las palabras; estos tienen alguna, los que más primero.");
+            }
+            result
         }
         "get_gym_exercise" => {
             let reference = text(arguments, "exercise").ok_or_else(|| invalid("Falta exercise (id o nombre)."))?;

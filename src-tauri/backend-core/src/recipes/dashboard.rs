@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::text_search;
+
 use super::{fold, format_number, MealTime, NutrientGroup, Recipe, RecipeInput, NUTRIENTS, REFERENCE_KCAL};
 
 /// A limited nutrient (sodium) from this share of its limit is high.
@@ -170,9 +172,15 @@ fn macro_shares(recipe: &Recipe) -> Vec<MacroShare> {
         .collect()
 }
 
+/// Every word of the query is in the name or in some ingredient.
 fn matches_query(recipe: &Recipe, query: &str) -> bool {
-    let query = fold(query.trim());
-    query.is_empty() || fold(&recipe.name).contains(&query) || recipe.ingredients.iter().any(|ingredient| fold(ingredient).contains(&query))
+    let terms = text_search::query_terms(query);
+    terms.is_empty() || text_search::hits(&terms, &search_text(recipe)) == terms.len()
+}
+
+/// What a recipe search reads: the name and the ingredients, folded.
+pub fn search_text(recipe: &Recipe) -> String {
+    text_search::fold(&format!("{} | {}", recipe.name, recipe.ingredients.join(" | ")))
 }
 
 fn count_label(total: usize) -> String {

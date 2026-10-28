@@ -18,6 +18,7 @@ use crate::backend::mail_tools::{
     account_refs, batch_modify_body, batch_modify_url, calendar_bound, change_preview, check_movable,
     compose_raw_message, create_event_url, create_label_body, event_body, event_summary, events_url, events_view,
     is_calendar_tool, label_changes, labels_url, labels_view, list_messages_url, message_detail, message_full_url,
+    attachment_bytes, attachment_url, attachment_view, find_attachment,
     message_line, message_metadata_url, message_summary, parse_labels, parse_mail_tool, reply_context, resolve_labels,
     select_accounts, send_body, send_url, trash_url, with_account, AccountSelection, GmailLabel, MailAccountRef,
     MailToolRequest, CALENDAR_API,
@@ -368,6 +369,12 @@ async fn run(session: &Session, request: MailToolRequest) -> Result<Value, Backe
             let known = account_labels(session).await?;
             let message = get(session, &message_full_url(&message_id)).await?;
             Ok(json!({ "ok": true, "message": message_detail(&message, &known) }))
+        }
+        MailToolRequest::ReadAttachment { message_id, filename } => {
+            let message = get(session, &message_full_url(&message_id)).await?;
+            let attachment = find_attachment(&message, &filename)?;
+            let bytes = attachment_bytes(&get(session, &attachment_url(&message_id, &attachment.attachment_id)).await?)?;
+            Ok(json!({ "ok": true, "attachment": attachment_view(&attachment, &bytes, crate::services::telegram_service::extract_pdf_text)? }))
         }
         MailToolRequest::Trash { message_ids } => {
             for id in &message_ids {
