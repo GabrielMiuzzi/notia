@@ -355,6 +355,15 @@ fn the_prompts_explain_the_run_and_silence_never_mutes_a_reminder() {
     });
     assert!(guidance.contains("«Registrar gastos»") && guidance.contains("[SIN_MENSAJE]") && guidance.contains("add_agent_thought"));
     assert!(guidance.contains("prueba"));
+    // What has an end becomes a task, once.
+    assert!(guidance.contains("create_ai_task") && guidance.contains("list_ai_tasks"));
+    let reminder = prompts::action_guidance(&prompts::ScheduledActionPrompt {
+        name: "Pagar la luz".into(),
+        kind: AiActionKind::Reminder,
+        when: "Mañana · 10:00".into(),
+        test: false,
+    });
+    assert!(!reminder.contains("create_ai_task"));
     assert!(prompts::is_silent(AiActionKind::Recurring, "[SIN_MENSAJE]"));
     assert!(!prompts::is_silent(AiActionKind::Reminder, "[SIN_MENSAJE]"));
     assert_eq!(prompts::outgoing_message(" Hecho ", true), "[Prueba] Hecho");

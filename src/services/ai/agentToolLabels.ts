@@ -70,6 +70,7 @@ const TOOL_LABELS: Record<string, string> = {
   resume_ai_task: 'preparando el cambio en la tarea',
   review_ai_task: 'preparando el cambio en la tarea',
   delete_ai_task: 'preparando el cambio en la tarea',
+  wait_ai_task: 'dejando la tarea esperando',
   generate_image: 'generando la imagen',
   edit_image: 'editando la imagen',
   create_agenda_event: 'agendando el evento',

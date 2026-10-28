@@ -19,6 +19,10 @@ const MAX_SUMMARY_CHARS: usize = 300;
 /// The prompt of the hourly review Notia sets up in every library.
 pub const HOURLY_REVIEW_PROMPT: &str = "Revisá mi agenda, mis tareas, mi rutina, mi correo y mis finanzas, y comparalo con tus pensamientos. Decidí si hay algo para recordarme, preguntarme o proponerme ahora: un recordatorio, una pregunta o una propuesta concreta para organizar mi rutina, agenda, tareas o correo. No cambies nada por tu cuenta: si algo conviene cambiarlo, proponelo y lo hacemos si te digo que sí. No repitas avisos, preguntas ni propuestas que tus pensamientos dicen que ya me hiciste, salvo que haya novedades o se acerque el momento, y respetá mis reglas de horarios. Si nada vale un mensaje, respondé exactamente [SIN_MENSAJE].";
 
+/// A run that finds something with an end proposes a task instead of
+/// chasing it run after run.
+const TASK_FROM_A_RUN: &str = "Si en esta ejecución encontrás algo que tiene un final y lleva muchos pasos o esperar a otros (por ejemplo, un correo que pide gestionar algo hasta resolverlo), no lo resuelvas acá ni lo sigas de ejecución en ejecución: revisá con list_ai_tasks que no haya ya una Tarea IA para eso y, si no la hay, proponela con create_ai_task (el Owner la confirma por Telegram, así que no cambia nada por su cuenta) y contalo en tu mensaje. Lo que se repite sigue siendo trabajo de esta acción.";
+
 /// What the system prompt needs to know about the action that runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +58,7 @@ pub fn action_guidance(action: &ScheduledActionPrompt) -> String {
             lines.push(format!(
                 "Si el prompt pide avisar solo cuando haya algo y no hay nada que valga un mensaje, respondé exactamente {SILENCE_MARKER} y nada más."
             ));
+            lines.push(TASK_FROM_A_RUN.to_string());
         }
     }
     lines.push("Antes de terminar, guardá con add_agent_thought lo que hiciste o decidiste, así la próxima ejecución no repite lo mismo.".to_string());

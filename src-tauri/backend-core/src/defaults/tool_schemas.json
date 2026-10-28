@@ -4821,6 +4821,62 @@
       }
     }
   },
+  "wait_ai_task": {
+    "description": "Solo en el Ejecutor de una Tarea IA: deja el paso esperando algo que todavía no pasó y Notia lo retoma solo, en este mismo paso, cuando pasa o vence el plazo (sin gastar corridas mientras espera, salvo los controles de kind check). Después de llamarla, terminá tu respuesta con lo que hiciste hasta ahora. kind mail espera un correo nuevo que no mandaste vos: en el hilo threadId (el que devolvió send_gmail_message, para esperar la respuesta) o que coincida con query; time espera hasta until o afterMinutes; check te vuelve a llamar cada checkEveryMinutes para que verifiques con tus herramientas si ya pasó.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "reason",
+        "kind"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Qué esperás, en una frase para la persona: «Respuesta de soporte@empresa.com sobre el acceso»."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "mail",
+            "time",
+            "check"
+          ],
+          "description": "mail: un correo nuevo; time: un momento; check: algo que verificás vos cada tanto."
+        },
+        "account": {
+          "type": "string",
+          "description": "mail: la cuenta de Gmail que recibe el correo; se puede omitir si hay una sola."
+        },
+        "threadId": {
+          "type": "string",
+          "description": "mail: el hilo del que esperás respuesta (threadId de send_gmail_message o list_gmail_messages)."
+        },
+        "query": {
+          "type": "string",
+          "description": "mail: búsqueda de Gmail del correo esperado, por ejemplo «from:soporte@empresa.com» (solo cuentan los que llegan desde ahora)."
+        },
+        "until": {
+          "type": "string",
+          "description": "time: fecha y hora hasta la que esperar, en hora local «2026-11-03T10:00» o con zona."
+        },
+        "afterMinutes": {
+          "type": "number",
+          "description": "time: minutos a esperar, en lugar de until."
+        },
+        "checkEveryMinutes": {
+          "type": "integer",
+          "minimum": 10,
+          "description": "check: cada cuántos minutos verificar (al menos 10; por defecto 60)."
+        },
+        "maxWaitHours": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 720,
+          "description": "mail y check: cuánto esperar como máximo antes de seguir igual (por defecto 72 horas, hasta 720)."
+        }
+      }
+    }
+  },
   "create_ai_action": {
     "description": "Crea una Acción IA: un recordatorio, una tarea a una hora o una tarea recurrente que la IA va a ejecutar sola y responder por Telegram al Owner. Requiere confirmación visible.",
     "parameters": {

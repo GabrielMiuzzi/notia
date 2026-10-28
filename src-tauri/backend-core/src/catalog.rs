@@ -243,6 +243,9 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     // The AI tasks reach the same chats as the actions.
     catalog.extend(ai_action_tools(&super::ai_tasks::tools::AI_TASK_READ_TOOLS, true));
     catalog.extend(ai_action_tools(&super::ai_tasks::tools::AI_TASK_WRITE_TOOLS, false));
+    // Only the executor of a task keeps it (`phase_tools`); it needs no
+    // confirmation: it only leaves the task waiting.
+    catalog.extend(ai_action_tools(&[super::ai_tasks::waits::WAIT_TOOL], true));
     catalog.extend(meeting_tools(&super::meeting_tools::MEETING_READ_TOOLS, true));
     catalog.extend(meeting_tools(&super::meeting_tools::MEETING_WRITE_TOOLS, false));
     catalog.extend(alias_tools(
@@ -618,7 +621,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::gym::tools::GYM_READ_TOOLS.contains(&name) => ToolPolicy::GymRead,
         name if super::gym::tools::is_gym_write_tool(name) => ToolPolicy::GymWrite,
         name if super::ai_actions::tools::AI_ACTION_READ_TOOLS.contains(&name) => ToolPolicy::AiActionRead,
-        name if super::ai_tasks::tools::AI_TASK_READ_TOOLS.contains(&name) => ToolPolicy::AiTaskRead,
+        name if super::ai_tasks::tools::AI_TASK_READ_TOOLS.contains(&name) || name == super::ai_tasks::waits::WAIT_TOOL => ToolPolicy::AiTaskRead,
         name if super::ai_tasks::tools::is_ai_task_write_tool(name) => ToolPolicy::AiTaskWrite,
         name if super::ai_actions::tools::is_ai_action_write_tool(name) => ToolPolicy::AiActionWrite,
         name if super::meeting_tools::MEETING_READ_TOOLS.contains(&name) => ToolPolicy::MeetingRead,

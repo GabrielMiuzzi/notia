@@ -16,7 +16,7 @@ pub const AI_TASK_WRITE_TOOLS: [&str; 5] = ["create_ai_task", "cancel_ai_task", 
 const TOOL_REPORT_CHARS: usize = 3_000;
 
 pub fn is_ai_task_tool(name: &str) -> bool {
-    AI_TASK_READ_TOOLS.contains(&name) || is_ai_task_write_tool(name)
+    AI_TASK_READ_TOOLS.contains(&name) || is_ai_task_write_tool(name) || name == super::waits::WAIT_TOOL
 }
 
 pub fn is_ai_task_write_tool(name: &str) -> bool {
@@ -29,16 +29,23 @@ fn text(arguments: &Value, name: &str) -> Option<String> {
 
 /// The tools of a phase's run: no task tool that creates or changes tasks
 /// and none of the agent's own plan tools (the task has its plan); the
-/// planner and the review only read.
+/// planner and the review only read; only the executor waits.
 pub fn phase_tools(tools: Vec<crate::ToolDefinition>, phase: super::AiTaskPhase, library_search: bool) -> Vec<crate::ToolDefinition> {
     let tools = if phase.writes() { tools } else { crate::catalog::restrict_tool_access(tools, crate::ToolAccess::ReadOnly, library_search) };
     tools
         .into_iter()
         .filter(|tool| {
             !is_ai_task_write_tool(&tool.name)
+                && (phase == super::AiTaskPhase::Executor || tool.name != super::waits::WAIT_TOOL)
                 && !matches!(tool.name.as_str(), "set_agent_execution_plan" | "set_task_execution_plan" | "create_agent_plan" | "update_agent_plan")
         })
         .collect()
+}
+
+/// The tools of a run that is not a task's: `wait_ai_task` only makes sense
+/// inside one.
+pub fn without_task_wait(tools: Vec<crate::ToolDefinition>) -> Vec<crate::ToolDefinition> {
+    tools.into_iter().filter(|tool| tool.name != super::waits::WAIT_TOOL).collect()
 }
 
 /// What `create_ai_task` asks for.
@@ -102,11 +109,20 @@ pub fn list_view(tasks: &[AiTask]) -> Value {
                 "steps": format!("{done}/{total}"),
                 "origin": task.origin.label(),
                 "approveAll": task.approve_all,
-                "waitingFor": task.pending.as_ref().filter(|_| task.status == AiTaskStatus::AwaitingApproval).map(|pending| pending.title.clone()),
+                "waitingFor": waiting_for(task),
             })
         }).collect::<Vec<_>>(),
         "note": "Las tareas se guardan una semana desde que se crean.",
     })
+}
+
+/// What a task waits for: the person's approval or something to happen.
+fn waiting_for(task: &AiTask) -> Option<String> {
+    match task.status {
+        AiTaskStatus::AwaitingApproval => task.pending.as_ref().map(|pending| pending.title.clone()),
+        AiTaskStatus::Waiting => task.wait.as_ref().map(|wait| wait.reason.clone()),
+        _ => None,
+    }
 }
 
 /// What `get_ai_task` returns: the goal, each step with its report, the
@@ -128,6 +144,7 @@ pub fn detail_view(task: &AiTask) -> Value {
             "detail": step.detail,
             "status": step.status.label(),
             "report": step.report.as_deref().map(|report| clipped(report, TOOL_REPORT_CHARS)),
+            "notes": step.notes.iter().map(|note| clipped(note, TOOL_REPORT_CHARS)).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "reviews": task.reviews.iter().map(|review| json!({
             "round": review.round,
@@ -135,6 +152,7 @@ pub fn detail_view(task: &AiTask) -> Value {
             "feedback": review.feedback,
         })).collect::<Vec<_>>(),
         "waitingFor": task.pending.as_ref().map(|pending| json!({ "kind": pending.kind, "title": pending.title, "options": pending.options })),
+        "wait": task.wait.as_ref().map(|wait| json!({ "reason": wait.reason, "for": wait.wait_for, "deadlineMs": wait.deadline_ms })),
         "result": task.result,
         "error": task.error,
     })
@@ -154,6 +172,9 @@ pub fn cancel_summary(task: &AiTask) -> String {
 }
 
 pub fn resume_summary(task: &AiTask) -> String {
+    if let (AiTaskStatus::Waiting, Some(wait)) = (task.status, task.wait.as_ref()) {
+        return format!("Seguir la Tarea IA «{}» sin esperar más «{}».", task.title, wait.reason);
+    }
     let (done, total) = task.progress();
     format!("Reanudar la Tarea IA «{}» desde donde quedó ({done} de {total} pasos hechos).", task.title)
 }
@@ -174,7 +195,7 @@ pub fn check_resumable(task: &AiTask) -> Result<(), BackendError> {
     if task.status.is_resumable() {
         Ok(())
     } else {
-        Err(BackendError::invalid_input(format!("La tarea está {}: solo se reanuda una tarea fallida, cancelada o interrumpida.", task.status.label().to_lowercase())))
+        Err(BackendError::invalid_input(format!("La tarea está {}: solo se reanuda una tarea fallida, cancelada, interrumpida o que espera.", task.status.label().to_lowercase())))
     }
 }
 

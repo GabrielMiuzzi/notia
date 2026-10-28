@@ -155,6 +155,7 @@ fn route(command: &str) -> Option<Route> {
         "ai_action_test" => ai_action_test,
         "ai_tasks_list" => ai_tasks_list,
         "ai_task_get" => ai_task_get,
+        "ai_task_thinking" => ai_task_thinking,
         "ai_task_answer" => ai_task_answer,
         "ai_task_cancel" => ai_task_cancel,
         "ai_task_resume" => ai_task_resume,
@@ -459,6 +460,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "ai_action_test",
     "ai_tasks_list",
     "ai_task_get",
+    "ai_task_thinking",
     "ai_task_answer",
     "ai_task_cancel",
     "ai_task_resume",
@@ -1350,6 +1352,11 @@ fn ai_tasks_list(app: &AppHandle, _window_label: &str, command: &str, args: &Val
 fn ai_task_get(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
     let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
     Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_get(arg0, arg1, arg2).await) })))
+}
+
+fn ai_task_thinking(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {
+    let (arg0, arg1, arg2) = (app.clone(), arg(command, args, "context")?, arg(command, args, "taskId")?);
+    Ok(Dispatch::Pending(Box::pin(async move { reply_result(crate::ai_task_runner::ai_task_thinking(arg0, arg1, arg2).await) })))
 }
 
 fn ai_task_answer(app: &AppHandle, _window_label: &str, command: &str, args: &Value) -> Result<Dispatch, Value> {

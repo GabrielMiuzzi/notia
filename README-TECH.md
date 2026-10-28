@@ -12903,3 +12903,69 @@ Pedido: ajustar la barra superior del Task Manager publicado al board «Web publ
   - `tsc -b` sin errores.
   - `cargo check` Android: 59 warnings, los mismos que la línea base.
 - **Pendiente.** Probar en la app y por Telegram con el modelo real: la revisión horaria con las cinco áreas, una tanda de `nextPage` con `inspect_page_chain`, un ticket con productos anulados y el cambio de categoría de una comida sin id.
+
+## Tareas IA: thinking en vivo de la fase en curso (2026-10-27)
+
+- **Pedido.** Ver el «thinking» de la IA mientras la tarea ejecuta sus pasos.
+- **Rust.** El `Runner` de `ai_task_runner.rs` guarda la corrida actual como `CurrentRun` (contexto, clave de idempotencia, fase y paso), que también usa `cancel`. El comando nuevo `ai_task_thinking { context, taskId }` devuelve `null` cuando no corre ninguna fase. Si corre una, devuelve `views::thinking` (core): toma los eventos de esa corrida del almacén de replay (`request_events`), une los `ThinkingSummary`, separa cada ronda con una línea en blanco y se queda con el final (`MAX_THINKING_CHARS` = 20.000). Responde `{ requestId, phase, stepId, label, text, sequence, maxChars }`, con la etiqueta «Ejecutor · paso 2 · pensando».
+- **Frontend.** `useAiTaskThinking` pide la foto con cada recarga del detalle mientras la tarea está activa. Además escucha `notia:backend-event` y suma los `thinking-summary` del mismo `requestId` con `sequence` mayor, recortando visualmente al final según `maxChars`. `AiTaskThinkingBlock` lo muestra debajo de la aprobación y del error, con scroll propio que sigue el final, puntos animados mientras no llegó texto, `aria-live` y color según la fase. Funciona igual en Windows y Android: es la misma vista, con alto máximo `min(320px, 45vh)`.
+- **Límite.** El almacén de replay guarda 512 eventos por corrida. En una fase muy larga, al abrir el panel tarde se ve solo lo más reciente; desde ahí sigue en vivo.
+- **Validaciones.** Prueba core nueva: `the_thinking_of_a_run_joins_its_fragments_round_by_round`. Prueba Vitest nueva: `streams the thinking of the step that runs`. `cargo check -p notia-app` y `tsc -b` sin errores.
+- **Pendiente.** Probarlo con el modelo real y thinking activado.
+
+## Tareas IA: esperas de un paso (2026-10-27)
+
+- **Pedido.** Que el agente de una Tarea IA pueda «esperar cosas». Ejemplo: gestionar por correo con una empresa una falta de acceso, mandando correos y esperando respuestas hasta lograrlo. Tiene que servir para cualquier tarea, no solo las de correo.
+- **Herramienta `wait_ai_task`** (`ai_tasks/waits.rs`; política `AiTaskRead`, sin confirmación). Solo la recibe el Ejecutor de una tarea: `phase_tools` se la saca al Planificador y al Review, y `without_task_wait` a cualquier corrida que no sea de una tarea. Argumentos: `reason`, `kind` y, según el tipo:
+  - `mail`: `account` (se puede omitir si hay una sola cuenta) y `threadId` o `query`. Al pedir la espera se comprueba que el hilo exista.
+  - `time`: `until`, en hora local de la biblioteca o con zona, o `afterMinutes`.
+  - `check`: `checkEveryMinutes`, de al menos 10 y 60 por defecto.
+  - `mail` y `check` aceptan `maxWaitHours`: 72 por defecto, 720 como máximo.
+  - `wait_request` valida todo y arma `AiTaskWait` con `step_id`, `wake_at_ms`, `deadline_ms` y `last_error`.
+- **Ciclo.**
+  - El adaptador encuentra la corrida que llamó la herramienta por su `request_id` (`CurrentRun` del runner) y guarda `task.wait`.
+  - Cuando termina la corrida del Ejecutor, `work` ve la espera de ese paso y llama a `begin_wait`: la respuesta va a `step.notes`, el paso queda `waiting`, la tarea queda `AiTaskStatus::Waiting` y el hilo del runner termina.
+  - El hilo `notia-ai-task-waits` corre `watch_waits` cada minuto sobre la biblioteca elegida; no corre en un cliente Host/Client. `waits::due` decide:
+    - `time` despierta al llegar el momento;
+    - `check` despierta en cada control o al vencer el plazo;
+    - `mail` mira Gmail: `threads.get` con metadatos del hilo, o `messages.list` con `query after:<inicio>`. Solo cuentan los mensajes posteriores al inicio y que no sean enviados, borradores, spam ni papelera (`new_messages`).
+  - Sin novedades, la espera vuelve a mirar en `MAIL_POLL_MS` (5 min) y guarda el error si Gmail falló. Al vencer el plazo, despierta con `deadline_note`.
+  - `wake` guarda en `task.wake` «Esperabas: … / qué pasó», deja el paso `pending` y la tarea `running`, y lanza el runner. `executor_request` suma las notas del paso y cómo terminó la espera, y `task.wake` se borra al terminar esa corrida.
+  - Solo se toca la espera si sigue siendo la misma (`task.wait == wait`), así que un cambio concurrente no se pisa.
+- **Reanudar y cancelar.**
+  - `Waiting` cuenta como activa (se puede cancelar, no se puede volver a revisar) y como reanudable.
+  - `resume` sobre una tarea que espera la despierta con `RESUMED_NOTE`, y el panel muestra `resumeLabel` «Seguir sin esperar».
+  - `finish` limpia la espera y marca fallido el paso que esperaba.
+  - La limpieza del arranque no interrumpe las tareas que esperan: siguen esperando después de reiniciar.
+- **Retención.** `delete_expired` borra por `updated_at` (una semana sin cambios), nunca con `status = 'waiting'`. `expires_label` dice «No se borra mientras espera».
+- **Vista y herramientas.**
+  - `AiTaskDetail.wait` (`AiTaskWaitView`): `reason`, `kindLabel`, `sinceLabel`, `nextLabel`, `deadlineLabel` y `error`.
+  - `AiTaskStepView.notes`, la etiqueta de fase «Paso N de M · motivo» y la clase `waiting` del diagrama.
+  - `list_ai_tasks.waitingFor` y `get_ai_task.wait`/`notes`.
+  - Guías: el Planificador planifica pasos que esperan, el Ejecutor espera en lugar de dar el paso por terminado o fallido, y el chat crea tareas para lo que depende de otros o del tiempo, con el id, el `threadId` y la cuenta del correo en el goal.
+  - `agent_prompt_executor.md` suma la regla, pero solo para las bibliotecas nuevas; las existentes la reciben por `phase_guidance`.
+- **Frontend.** `WaitCard` (borde y estado en oro de la paleta: `#D9B44A` oscuro, `#B08900` claro), notas del paso en la lista de pasos e ícono de reloj de arena. No pide thinking mientras la tarea espera.
+- **Límites.**
+  - Solo se vigila la biblioteca elegida y con Notia abierta: una tarea de otra biblioteca sigue esperando hasta que se la elija.
+  - Cada control de `check` es una corrida del Ejecutor.
+  - Mandar correos sigue pidiendo confirmación, salvo que la tarea se haya creado con «Confirmar todos».
+- **Validaciones.**
+  - `notia-backend-core`: 743 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba. Pruebas nuevas: `a_wait_is_read_from_the_tool_and_refuses_what_cannot_wait`, `a_waiting_step_wakes_with_what_happened_and_the_executor_reads_it`, `a_time_or_check_wait_wakes_on_its_own_and_at_the_deadline`, `only_the_executor_of_a_task_may_wait` y `the_panel_says_what_a_waiting_task_waits_for`.
+  - `notia-app`: 526/526, con retención de tareas que esperan en `tasks_survive_a_round_trip_and_expire_after_a_week`.
+  - Vitest: 752/752, con la prueba nueva `says what a waiting task waits for and goes on without waiting`.
+  - `tsc -b` sin errores.
+  - `cargo check` Android: 59 warnings, los mismos que la línea base.
+- **Pendiente.** Probarlo con el modelo real y una cuenta de Gmail real: mandar un correo, esperar la respuesta en el hilo y seguir la conversación. También una espera `time` que cruce un reinicio de Notia.
+
+## Tareas IA y Acciones IA: cuándo cada una (2026-10-27)
+
+- **Pedido.** Agregar las reglas que distinguen una Tarea IA de una Acción IA.
+- **Chat** (`prompt_guidance::TASK_OR_ACTION`, solo cuando el turno tiene `create_ai_task` y `create_ai_action`). Un pedido con final («hasta que…», «conseguí…», «avisame cuando me respondan») es una tarea, aunque tarde días o dependa de otros. Lo que se repite sin final, o un aviso a hora fija, es una acción. Una acción recurrente nunca persigue algo hasta que termine, y una tarea nunca hace algo que se repite. La guía de `list_ai_tasks` ya dice la retención nueva.
+- **Ejecuciones de acciones** (`ai_actions::prompts::TASK_FROM_A_RUN`, en las acciones de una vez y recurrentes; no en los recordatorios). Si la ejecución encuentra algo con final que lleva muchos pasos o esperar a otros, revisa con `list_ai_tasks` que no exista ya una tarea y la propone con `create_ai_task`.
+  - El Owner la confirma por Telegram, así que la revisión horaria («no cambies nada por tu cuenta») sigue sin cambiar nada sola.
+  - La tarea nace con origen Telegram: las aprobaciones y el resultado llegan por ahí.
+  - Las corridas autónomas del vigilante de Gmail siguen siendo de solo lectura y no crean tareas.
+- **Validaciones.**
+  - `notia-backend-core`: 744 pasan, 7 ignoradas, y falla solo `image_generation::only_sexual_content_with_minors_is_refused`, que ya fallaba.
+  - Prueba nueva: `a_goal_with_an_end_is_a_task_and_what_repeats_is_an_action`.
+  - Se amplió `the_prompts_explain_the_run_and_silence_never_mutes_a_reminder`.

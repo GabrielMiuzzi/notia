@@ -687,6 +687,14 @@ pub fn message_metadata_url(id: &str) -> String {
     )
 }
 
+/// A thread with the headers of its messages, to see who answered.
+pub fn thread_metadata_url(id: &str) -> String {
+    format!(
+        "{GMAIL_API}/threads/{}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date",
+        percent_encode(id)
+    )
+}
+
 pub fn message_full_url(id: &str) -> String {
     format!("{GMAIL_API}/messages/{}?format=full", percent_encode(id))
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Workflow, Zap } from 'lucide-react'
 import type { NotiaLibrary } from '../../../types/notia'
 import { useAiTasks } from '../hooks/useAiTasks'
+import { useAiTaskThinking } from '../hooks/useAiTaskThinking'
 import { aiTasksErrorMessage, answerAiTask, cancelAiTask, deleteAiTask, resumeAiTask } from '../services/aiTasksService'
 import type { AiTaskAnswer, AiTaskCard } from '../types/aiTasksTypes'
 import { AiTaskDetailPanel } from './AiTaskDetailPanel'
@@ -58,6 +59,7 @@ export function AiTasksView({ library }: { library: NotiaLibrary }) {
   }, [reload])
 
   const selected = detail && detail.id === selectedId ? detail : null
+  const thinking = useAiTaskThinking(library, selected)
 
   return (
     <main className="notia-main ai-tasks-view" data-has-selection={Boolean(selectedId)}>
@@ -86,6 +88,7 @@ export function AiTasksView({ library }: { library: NotiaLibrary }) {
           {selected ? (
             <AiTaskDetailPanel
               task={selected}
+              thinking={thinking}
               busy={busy}
               onBack={() => setSelectedId(null)}
               onAnswer={(approvalId: string, answer: AiTaskAnswer) => { void run(() => answerAiTask(library, selected.id, approvalId, answer)) }}

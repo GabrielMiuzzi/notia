@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { ArrowLeft, CheckCircle2, CircleDot, CircleX, Play, Square, Trash2, Zap } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, CircleDot, CircleX, Hourglass, Play, Square, Trash2, Zap } from 'lucide-react'
 import { ChatMarkdownMessage } from '../../../components/notia/views/chat/ChatMarkdownMessage'
-import type { AiTaskAnswer, AiTaskDetail, AiTaskStepView } from '../types/aiTasksTypes'
+import type { AiTaskAnswer, AiTaskDetail, AiTaskStepView, AiTaskThinking, AiTaskWaitView } from '../types/aiTasksTypes'
 import { AiTaskApprovalCard } from './AiTaskApprovalCard'
+import { AiTaskThinkingBlock } from './AiTaskThinkingBlock'
 import { AiTaskWorkflowGraph } from './AiTaskWorkflowGraph'
 
 interface AiTaskDetailPanelProps {
   task: AiTaskDetail
+  /** El thinking de la fase en curso, mientras trabaja. */
+  thinking?: AiTaskThinking | null
   busy: boolean
   onBack: () => void
   onAnswer: (approvalId: string, answer: AiTaskAnswer) => void
@@ -18,11 +21,12 @@ interface AiTaskDetailPanelProps {
 function StepIcon({ step }: { step: AiTaskStepView }) {
   if (step.status === 'done') return <CheckCircle2 size={16} aria-hidden="true" />
   if (step.status === 'failed') return <CircleX size={16} aria-hidden="true" />
+  if (step.status === 'waiting') return <Hourglass size={16} aria-hidden="true" />
   return <CircleDot size={16} aria-hidden="true" />
 }
 
 function StepItem({ step }: { step: AiTaskStepView }) {
-  const [open, setOpen] = useState(step.status === 'running' || step.status === 'failed')
+  const [open, setOpen] = useState(step.status === 'running' || step.status === 'waiting' || step.status === 'failed')
   return (
     <li className="ait-step" data-status={step.status}>
       <button type="button" className="ait-step__head" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
@@ -35,6 +39,11 @@ function StepItem({ step }: { step: AiTaskStepView }) {
         <div className="ait-step__body">
           <p className="ait-step__meta">{step.roundLabel}{step.timeLabel ? ` · ${step.timeLabel}` : ''}</p>
           {step.detail ? <p className="ait-step__detail">{step.detail}</p> : null}
+          {step.notes.length > 0 ? (
+            <ol className="ait-step__notes" aria-label="Avance del paso">
+              {step.notes.map((note, index) => <li key={index}><ChatMarkdownMessage source={note} /></li>)}
+            </ol>
+          ) : null}
           {step.report ? <div className="ait-step__report"><ChatMarkdownMessage source={step.report} /></div> : null}
         </div>
       ) : null}
@@ -42,7 +51,23 @@ function StepItem({ step }: { step: AiTaskStepView }) {
   )
 }
 
-export function AiTaskDetailPanel({ task, busy, onBack, onAnswer, onCancel, onResume, onDelete }: AiTaskDetailPanelProps) {
+function WaitCard({ wait }: { wait: AiTaskWaitView }) {
+  return (
+    <section className="ait-section ait-wait" aria-labelledby="ait-wait-title" role="status">
+      <h3 id="ait-wait-title"><Hourglass size={14} aria-hidden="true" /> Esperando</h3>
+      <p className="ait-wait__reason">{wait.reason}</p>
+      <p className="ait-wait__meta">
+        <span>{wait.kindLabel}</span>
+        <span>{wait.sinceLabel}</span>
+        {wait.nextLabel ? <span>{wait.nextLabel}</span> : null}
+        <span>{wait.deadlineLabel}</span>
+      </p>
+      {wait.error ? <p className="ait-wait__error">{wait.error}</p> : null}
+    </section>
+  )
+}
+
+export function AiTaskDetailPanel({ task, thinking = null, busy, onBack, onAnswer, onCancel, onResume, onDelete }: AiTaskDetailPanelProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const pending = task.pending
 
@@ -64,7 +89,7 @@ export function AiTaskDetailPanel({ task, busy, onBack, onAnswer, onCancel, onRe
         <div className="ait-detail__actions">
           {task.canResume ? (
             <button type="button" className="ait-button ait-button--primary" disabled={busy} onClick={onResume}>
-              <Play size={14} aria-hidden="true" /> Reanudar
+              <Play size={14} aria-hidden="true" /> {task.resumeLabel}
             </button>
           ) : null}
           {task.canCancel ? (
@@ -88,6 +113,10 @@ export function AiTaskDetailPanel({ task, busy, onBack, onAnswer, onCancel, onRe
       {pending ? <AiTaskApprovalCard key={pending.id} approval={pending} busy={busy} onAnswer={(answer) => onAnswer(pending.id, answer)} /> : null}
 
       {task.error ? <p className="ait-error" role="alert">{task.error}</p> : null}
+
+      {task.wait ? <WaitCard wait={task.wait} /> : null}
+
+      {thinking ? <AiTaskThinkingBlock thinking={thinking} /> : null}
 
       {task.result ? (
         <section className="ait-section ait-result" aria-labelledby="ait-result-title">

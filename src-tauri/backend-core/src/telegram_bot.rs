@@ -341,6 +341,7 @@ pub fn tool_label(tool: &str) -> &'static str {
         "create_ai_task" => "preparando la tarea",
         "list_ai_tasks" | "get_ai_task" => "revisando tus tareas IA",
         "cancel_ai_task" | "resume_ai_task" | "review_ai_task" | "delete_ai_task" => "preparando el cambio en la tarea",
+        "wait_ai_task" => "dejando la tarea esperando",
         "generate_image" => "generando la imagen",
         "edit_image" => "editando la imagen",
         "list_gmail_messages" | "read_gmail_message" | "list_gmail_labels" => "revisando tu correo",

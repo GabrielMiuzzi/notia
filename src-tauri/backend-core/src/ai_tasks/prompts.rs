@@ -18,10 +18,12 @@ pub fn phase_guidance(phase: AiTaskPhase) -> String {
     let common = "Esta corrida es parte de una Tarea IA de Notia: trabajás fuera del chat, sobre una tarea guardada que la persona sigue en el panel «Tareas IA». No ves la conversación donde se pidió: todo lo que necesitás está en el pedido. No crees otras tareas.";
     let specific = match phase {
         AiTaskPhase::Planner => {
-            "Sos el PLANIFICADOR. Mirá lo que haga falta con herramientas de lectura y respondé SOLO con el plan, con este formato exacto:\nPASOS:\n1. Título corto del paso — qué hacer, sobre qué y cuándo está terminado\n2. …\nUn paso por línea, numerados, sin texto antes ni después."
+            "Sos el PLANIFICADOR. Mirá lo que haga falta con herramientas de lectura y respondé SOLO con el plan, con este formato exacto:\nPASOS:\n1. Título corto del paso — qué hacer, sobre qué y cuándo está terminado\n2. …\nUn paso por línea, numerados, sin texto antes ni después.
+Si el objetivo depende de otros (que respondan un correo, que alguien haga algo) o de una fecha, planificá también esos pasos: el Ejecutor puede esperar respuestas, una fecha o controlar cada tanto, y seguir cuando pase. Un paso así dice qué esperar y qué hacer con la respuesta (por ejemplo «Mandar el pedido de acceso a soporte y esperar su respuesta — seguir la conversación hasta que confirmen el acceso»)."
         }
         AiTaskPhase::Executor => {
-            "Sos el EJECUTOR. Hacé solo el paso que te toca, con tus herramientas, hasta terminarlo. Tu respuesta final es el informe del paso: qué hiciste, sobre qué y qué quedó pendiente. Si no pudiste terminarlo, empezá el informe con «NO TERMINADO:» y explicá por qué."
+            "Sos el EJECUTOR. Hacé solo el paso que te toca, con tus herramientas, hasta terminarlo. Tu respuesta final es el informe del paso: qué hiciste, sobre qué y qué quedó pendiente. Si no pudiste terminarlo, empezá el informe con «NO TERMINADO:» y explicá por qué.
+Si el paso depende de algo que todavía no pasó (la respuesta a un correo que mandaste, una fecha, que alguien haga algo), no lo des por terminado ni por fallido: llamá wait_ai_task con qué esperás y terminá tu respuesta con lo que hiciste hasta ahora. Notia deja la tarea esperando sin gastar corridas y te vuelve a llamar en este mismo paso cuando llegue lo esperado, en cada control o cuando venza el plazo, con lo que pasó. Para esperar la respuesta a un correo usá kind mail con el threadId que devolvió send_gmail_message. Así seguís la conversación (responder, insistir, volver a esperar) hasta lograr el objetivo del paso."
         }
         AiTaskPhase::Review => {
             "Sos el REVIEW. Verificá el trabajo con herramientas de lectura y respondé con este formato exacto:\nVEREDICTO: aprobada | rehacer\nCOMENTARIOS:\nqué está bien y qué falta o está mal\nPASOS:\n1. Paso para corregir — qué hacer (solo si el veredicto es rehacer)\nRESULTADO:\nel resultado para la persona: qué se hizo y dónde quedó (solo si el veredicto es aprobada)"
@@ -54,6 +56,18 @@ pub fn executor_request(task: &AiTask, index: usize) -> String {
         if let Some(review) = task.reviews.iter().rev().find(|review| !review.approved) {
             text.push_str(&format!("\n\nLa revisión pidió rehacer:\n{}", review.feedback.trim()));
         }
+    }
+    if !step.notes.is_empty() {
+        text.push_str(&format!("
+
+Lo que ya hiciste en este paso, antes de esperar:
+{}", super::waits::notes_for_request(&step.notes)));
+    }
+    if let Some(wake) = task.wake.as_deref() {
+        text.push_str(&format!("
+
+Cómo terminó la espera:
+{}", wake.trim()));
     }
     if step.status == StepStatus::Failed {
         if let Some(report) = step.report.as_deref() {

@@ -16,6 +16,7 @@
   --ait-violet: #a78bfa;
   --ait-periwinkle: #6c8eff;
   --ait-slate: #64748b;
+  --ait-gold: #d9b44a;
   --ait-tint: 18%;
   --ait-touch: 44px;
   --ait-font-display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
@@ -27,6 +28,7 @@
   --ait-success: #16a34a;
   --ait-error: #dc2626;
   --ait-amber: #d97706;
+  --ait-gold: #b08900;
   --ait-violet: #7c3aed;
   --ait-periwinkle: #3b5fe0;
   --ait-tint: 10%;
@@ -177,6 +179,7 @@
 .ai-tasks-view [data-status='running'] { --ait-state: var(--ait-teal); }
 .ai-tasks-view [data-status='reviewing'] { --ait-state: var(--ait-violet); }
 .ai-tasks-view [data-status='awaiting-approval'] { --ait-state: var(--ait-amber); }
+.ai-tasks-view [data-status='waiting'] { --ait-state: var(--ait-gold); }
 .ai-tasks-view [data-status='completed'],
 .ai-tasks-view [data-status='done'] { --ait-state: var(--ait-success); }
 .ai-tasks-view [data-status='failed'] { --ait-state: var(--ait-error); }
@@ -587,4 +590,100 @@
   .ait-detail .ait-detail__back {
     display: inline-flex;
   }
+}
+
+/* Thinking de la fase en curso: el final del texto, con su propio scroll. */
+.ait-thinking {
+  border-left: 3px solid var(--ait-state, var(--ait-teal));
+}
+
+.ait-thinking[data-phase='planner'] { --ait-state: var(--ait-periwinkle); }
+.ait-thinking[data-phase='executor'] { --ait-state: var(--ait-teal); }
+.ait-thinking[data-phase='review'] { --ait-state: var(--ait-violet); }
+
+.ait-thinking h3 {
+  align-items: center;
+  color: var(--ait-muted);
+}
+
+.ait-thinking__content {
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  color: var(--ait-muted);
+  font-size: 13px;
+}
+
+.ait-thinking__content:focus-visible {
+  outline: 2px solid var(--ait-teal);
+  outline-offset: 2px;
+}
+
+.ait-thinking__dots {
+  display: inline-flex;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.ait-thinking__dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ait-state, var(--ait-teal));
+  opacity: 0.45;
+  animation: ait-thinking-pulse 900ms ease-in-out infinite;
+}
+
+.ait-thinking__dots span:nth-child(2) { animation-delay: 120ms; }
+.ait-thinking__dots span:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes ait-thinking-pulse {
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ait-thinking__dots span { animation: none; }
+}
+
+/* Espera: qué espera la tarea, desde cuándo y hasta cuándo. */
+.ait-wait {
+  border-left: 3px solid var(--ait-gold);
+}
+
+.ait-wait h3 {
+  align-items: center;
+}
+
+.ait-wait__reason {
+  margin: 0 0 6px;
+  color: var(--ait-ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ait-wait__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--ait-muted);
+  font-size: 12.5px;
+}
+
+.ait-wait__error {
+  margin: 8px 0 0;
+  color: var(--ait-error);
+  font-size: 12.5px;
+}
+
+.ait-step__notes {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--ait-line);
+  list-style: none;
+  color: var(--ait-muted);
+  font-size: 13px;
 }

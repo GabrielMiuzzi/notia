@@ -428,12 +428,18 @@ El acceso **Acciones IA** (ícono del cuervo, Munin) aparece debajo de **Rutina*
 
 El acceso **Tareas IA** (ícono de flujo) aparece debajo de **Acciones IA** en la barra izquierda. Cuando le pedís al asistente algo largo o de muchos pasos (desde un chat de Notia o por Telegram), en lugar de hacerlo en la misma respuesta crea una **Tarea IA** y la trabaja aparte, mientras seguís usando Notia.
 
-- **Cómo se crea**: solo la crea el asistente, y antes te pide confirmación. Con **Confirmar todos** la tarea aplica sus cambios sin volver a preguntarte (las preguntas te las sigue haciendo).
+- **Cómo se crea**: solo la crea el asistente, y antes te pide confirmación. Usa una tarea cuando el pedido tiene un final («conseguí…», «hasta que…»), aunque tarde días; lo que se repite o un aviso a hora fija va en **Acciones IA**. Si una acción programada (como la revisión de cada hora) encuentra algo con final, te propone crear una tarea por Telegram en lugar de perseguirlo hora tras hora. Con **Confirmar todos** la tarea aplica sus cambios sin volver a preguntarte (las preguntas te las sigue haciendo).
 - **Cómo trabaja**: tres agentes, cada uno con su prompt en `.agent/promps`: el **Planificador** (`planificador.md`) arma el plan paso a paso; el **Ejecutor** (`ejecutor.md`) hace cada paso hasta terminar; el **Review** (`review.md`) revisa el trabajo y lo aprueba o pide rehacer lo que falte, y entonces el Ejecutor sigue con esas correcciones. Notia crea esos tres prompts si no existen y podés editarlos.
-- **Qué ves**: la lista de tareas (las que esperan tu respuesta arriba), y en cada una el flujo como diagrama de nodos (pedido, plan, pasos, revisiones y resultado, coloreados según su estado), el objetivo, el paso a paso con el informe de cada paso, las revisiones y el resultado final.
+- **Qué ves**: la lista de tareas (las que esperan tu respuesta arriba), y en cada una el flujo como diagrama de nodos (pedido, plan, pasos, revisiones y resultado, coloreados según su estado), el objetivo, el paso a paso con el informe de cada paso, las revisiones y el resultado final. Mientras el Planificador, un paso del Ejecutor o el Review trabajan, un recuadro **pensando** muestra en vivo lo que va razonando la IA («Ejecutor · paso 2 · pensando»), siguiendo el final del texto.
+- **Esperar a otros o al tiempo**: si un paso depende de algo que todavía no pasó, la tarea queda **Esperando** en lugar de fallar, y sigue sola cuando pasa. Por ejemplo, le pasás un correo de una empresa y le pedís «gestioname con ellos que no tengo acceso»: la tarea les escribe, espera la respuesta en ese hilo, la lee, contesta o insiste, y vuelve a esperar hasta conseguir el acceso. Puede esperar:
+  - un correo nuevo en un hilo, o uno que coincida con una búsqueda de Gmail (Notia revisa el correo cada 5 minutos sin usar la IA);
+  - una fecha y hora;
+  - algo que solo la IA puede comprobar, revisándolo cada cierto tiempo (por ejemplo, cada hora).
+
+  Cada espera tiene un plazo: 72 horas por defecto y hasta 30 días como máximo. Si vence sin novedades, la IA decide si insiste o termina el paso explicando qué falta. En la tarea ves qué espera, desde cuándo, cuándo vuelve a revisar y hasta cuándo, además de lo que hizo antes de cada espera. **Seguir sin esperar** la hace continuar enseguida. La espera sigue aunque cierres Notia, pero solo avanza con Notia abierta y con esa biblioteca elegida.
 - **Aprobaciones**: si un paso necesita confirmación o te hace una pregunta, la tarea queda **Esperando aprobación** con las opciones **Confirmar**, **Confirmar todos**, **Proponer otra cosa** y **Cancelar**. Si la pediste por Telegram, también te llega por ahí con botones, y al terminar te manda el resultado.
 - **Acciones**: **Cancelar** una tarea en curso, **Reanudar** una que falló, se canceló o quedó interrumpida porque Notia se cerró (sigue desde el paso donde quedó), y borrarla. El asistente también las administra: «¿cómo va la tarea de la wiki?», «cancelá la tarea», «revisala de nuevo».
-- **Cuánto duran**: cada tarea se guarda una semana desde que se crea y después se borra sola.
+- **Cuánto duran**: cada tarea se borra sola una semana después de su último movimiento; mientras espera no se borra.
 
 ### Recetas
 
@@ -688,11 +694,11 @@ El botón Atrás de Android todavía no cierra las hojas ni las pantallas comple
 | Campo | Descripción |
 |---|---|
 | **Qué hace** | Convierte un pedido largo en una tarea que el asistente trabaja aparte: plan, pasos y revisión, con el resultado y el diagrama del flujo. |
-| **Cuándo usarlo** | Para pedidos de muchos pasos: cambiar o revisar muchos documentos, investigar y escribir, ordenar mucha información. Pedíselo al asistente como siempre; él decide crear la tarea. |
+| **Cuándo usarlo** | Para pedidos de muchos pasos (cambiar o revisar muchos documentos, investigar y escribir, ordenar mucha información) y para lo que depende de otros o del tiempo, como gestionar algo por correo hasta resolverlo. Pedíselo al asistente como siempre; él decide crear la tarea. |
 | **Pasos para consumir** | 1. Pedirle el trabajo al asistente en un chat o por Telegram. 2. Confirmar la creación (o **Confirmar todos** para que no vuelva a preguntar). 3. Abrir **Tareas IA** en la barra izquierda para seguirla. 4. Responder las aprobaciones que pida. |
 | **Entradas esperadas** | Las escribe el asistente: un título (hasta 120 caracteres) y el objetivo completo (hasta 12.000). |
-| **Salidas / Resultado** | El paso a paso con el informe de cada paso, las revisiones, el diagrama del flujo y el resultado; por Telegram, el resultado al terminar. |
-| **Errores comunes** | **«El paso N no se pudo terminar»**: leé su informe y reanudala. **«La revisión pidió rehacer la tarea demasiadas veces»** (5): revisala, corregí lo que haga falta y reanudala o pedile otra revisión. **«Notia se cerró mientras la tarea trabajaba»**: tocá **Reanudar**. Una aprobación sin respuesta durante un día detiene la tarea. |
+| **Salidas / Resultado** | El paso a paso con el informe de cada paso, las revisiones, el diagrama del flujo y el resultado; mientras trabaja, el razonamiento en vivo de la fase en curso; por Telegram, el resultado al terminar. |
+| **Errores comunes** | **Una espera que no avanza**: la tarea solo revisa con Notia abierta y con esa biblioteca elegida; si el correo falla, la tarjeta de espera muestra el error. **Seguir sin esperar** la hace continuar enseguida. **«El paso N no se pudo terminar»**: leé su informe y reanudala. **«La revisión pidió rehacer la tarea demasiadas veces»** (5): revisala, corregí lo que haga falta y reanudala o pedile otra revisión. **«Notia se cerró mientras la tarea trabajaba»**: tocá **Reanudar**. Una aprobación sin respuesta durante un día detiene la tarea. |
 
 ### Recetas: recetario con información nutricional
 

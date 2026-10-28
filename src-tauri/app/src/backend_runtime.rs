@@ -1371,6 +1371,7 @@ impl TauriBackendToolExecutor {
             "resume_ai_task",
             "review_ai_task",
             "delete_ai_task",
+            "wait_ai_task",
             "list_agenda",
             "create_agenda_event",
             "delete_agenda_event",
@@ -4851,6 +4852,8 @@ pub(crate) fn execute_backend_request(
             return Err(BackendError::new(BackendErrorCode::Forbidden, "Las Tareas IA solo corren para el Owner.", false));
         }
         request.tools = notia_backend_core::ai_tasks::tools::phase_tools(std::mem::take(&mut request.tools), turn.phase, request.library_search);
+    } else {
+        request.tools = notia_backend_core::ai_tasks::tools::without_task_wait(std::mem::take(&mut request.tools));
     }
     // `thoughts.md`, `biography.md`, `talk.md` and `people.md` are always
     // present for the runs that read them, even when deleted during the

@@ -19,6 +19,7 @@ fn step_class(status: StepStatus) -> &'static str {
     match status {
         StepStatus::Done => "done",
         StepStatus::Running => "running",
+        StepStatus::Waiting => "waiting",
         StepStatus::Pending => "pending",
         StepStatus::Failed => "failed",
     }

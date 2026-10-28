@@ -8,6 +8,9 @@
 //! 3. the **review** checks the work and approves it, or asks for more
 //!    steps, which the executor runs before another review.
 //!
+//! A step that depends on something that has not happened yet (a reply by
+//! mail, a date) leaves the task waiting until it happens (`waits`).
+//!
 //! This module holds the model, what comes next, how the answers of the
 //! planner and the review are read, the requests of each phase, the
 //! workflow drawn as Mermaid and the agent's tools. The adapter
@@ -17,12 +20,15 @@
 pub mod prompts;
 pub mod tools;
 pub mod views;
+pub mod waits;
 pub mod workflow;
 
 #[cfg(test)]
 mod tests;
 
 use serde::{Deserialize, Serialize};
+
+pub use waits::AiTaskWait;
 
 /// Default prompt files of the three phases, written to `.agent/promps`
 /// when missing; the person may edit them.
@@ -49,6 +55,8 @@ pub enum AiTaskStatus {
     Running,
     Reviewing,
     AwaitingApproval,
+    /// A step waits for something to happen (`waits`); no runner holds it.
+    Waiting,
     Completed,
     Failed,
     Cancelled,
@@ -63,6 +71,7 @@ impl AiTaskStatus {
             Self::Running => "running",
             Self::Reviewing => "reviewing",
             Self::AwaitingApproval => "awaiting-approval",
+            Self::Waiting => "waiting",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -76,6 +85,7 @@ impl AiTaskStatus {
             Self::Running,
             Self::Reviewing,
             Self::AwaitingApproval,
+            Self::Waiting,
             Self::Completed,
             Self::Failed,
             Self::Cancelled,
@@ -91,6 +101,7 @@ impl AiTaskStatus {
             Self::Running => "Ejecutando",
             Self::Reviewing => "En revisión",
             Self::AwaitingApproval => "Esperando aprobación",
+            Self::Waiting => "Esperando",
             Self::Completed => "Completada",
             Self::Failed => "Falló",
             Self::Cancelled => "Cancelada",
@@ -98,14 +109,15 @@ impl AiTaskStatus {
         }
     }
 
-    /// A runner works on it now.
+    /// It has not ended: a runner works on it, or it waits.
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Planning | Self::Running | Self::Reviewing | Self::AwaitingApproval)
+        matches!(self, Self::Planning | Self::Running | Self::Reviewing | Self::AwaitingApproval | Self::Waiting)
     }
 
-    /// It stopped before ending well and can go on from where it was.
+    /// It stopped before ending well and can go on from where it was, or it
+    /// waits and can go on without waiting more.
     pub fn is_resumable(self) -> bool {
-        matches!(self, Self::Failed | Self::Cancelled | Self::Interrupted)
+        matches!(self, Self::Failed | Self::Cancelled | Self::Interrupted | Self::Waiting)
     }
 }
 
@@ -175,6 +187,8 @@ impl AiTaskOrigin {
 pub enum StepStatus {
     Pending,
     Running,
+    /// It waits for something to happen before it goes on.
+    Waiting,
     Done,
     Failed,
 }
@@ -184,6 +198,7 @@ impl StepStatus {
         match self {
             Self::Pending => "Pendiente",
             Self::Running => "En curso",
+            Self::Waiting => "Esperando",
             Self::Done => "Hecho",
             Self::Failed => "Falló",
         }
@@ -203,6 +218,10 @@ pub struct AiTaskStep {
     pub status: StepStatus,
     #[serde(default)]
     pub report: Option<String>,
+    /// What the executor did before each wait of the step, and how each
+    /// wait ended.
+    #[serde(default)]
+    pub notes: Vec<String>,
     #[serde(default)]
     pub started_at_ms: Option<i64>,
     #[serde(default)]
@@ -276,6 +295,13 @@ pub struct AiTask {
     pub review_request: Option<String>,
     #[serde(default)]
     pub pending: Option<AiTaskApproval>,
+    /// What a step waits for, while the task waits or after the executor
+    /// asked for it in the run that works now.
+    #[serde(default)]
+    pub wait: Option<AiTaskWait>,
+    /// How the last wait ended, for the executor's next run of the step.
+    #[serde(default)]
+    pub wake: Option<String>,
     #[serde(default)]
     pub result: Option<String>,
     #[serde(default)]
@@ -321,6 +347,8 @@ impl AiTask {
             reviews: Vec::new(),
             review_request: None,
             pending: None,
+            wait: None,
+            wake: None,
             result: None,
             error: None,
             created_at_ms: now_ms,
@@ -438,6 +466,7 @@ fn numbered_steps(planned: Vec<PlannedStep>, round: u32, start: usize) -> Vec<Ai
             detail: clipped(&step.detail, MAX_STEP_DETAIL_CHARS),
             status: StepStatus::Pending,
             report: None,
+            notes: Vec::new(),
             started_at_ms: None,
             finished_at_ms: None,
         })

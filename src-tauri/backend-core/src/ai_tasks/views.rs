@@ -4,8 +4,11 @@
 use jiff::tz::TimeZone;
 use serde::Serialize;
 
+use super::waits;
 use super::workflow::workflow_mermaid;
-use super::{AiTask, AiTaskApproval, AiTaskOrigin, AiTaskStatus, ApprovalKind, RETENTION_MS};
+use super::{AiTask, AiTaskApproval, AiTaskOrigin, AiTaskPhase, AiTaskStatus, ApprovalKind, RETENTION_MS};
+use crate::events::BackendEvent;
+use crate::protocol::BackendEventEnvelope;
 use crate::ai_actions::labels::moment_label;
 use crate::ai_actions::schedule::local_date;
 
@@ -40,7 +43,23 @@ pub struct AiTaskStepView {
     pub status: super::StepStatus,
     pub status_label: String,
     pub report: Option<String>,
+    /// What it did before each wait and how each wait ended.
+    pub notes: Vec<String>,
     pub time_label: Option<String>,
+}
+
+/// What a waiting task waits for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTaskWaitView {
+    pub reason: String,
+    /// «Respuesta por correo en el hilo (ana@x.com)», «Controla cada hora»…
+    pub kind_label: String,
+    pub since_label: String,
+    pub next_label: Option<String>,
+    pub deadline_label: String,
+    /// Why the last look at the mail failed.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -74,14 +93,25 @@ pub struct AiTaskDetail {
     pub steps: Vec<AiTaskStepView>,
     pub reviews: Vec<AiTaskReviewView>,
     pub pending: Option<AiTaskApprovalView>,
+    pub wait: Option<AiTaskWaitView>,
     pub result: Option<String>,
     pub error: Option<String>,
     /// The workflow as a Mermaid flowchart.
     pub workflow: String,
     pub can_cancel: bool,
     pub can_resume: bool,
+    /// «Reanudar», or «Seguir sin esperar» for a waiting task.
+    pub resume_label: String,
     /// «Se borra el sáb 1 nov · 21:40».
     pub expires_label: String,
+}
+
+/// A task is deleted a week after its last change; one that waits is kept.
+fn expires_label(task: &AiTask, zone: &TimeZone, now_ms: i64) -> String {
+    if task.status == AiTaskStatus::Waiting {
+        return "No se borra mientras espera".to_string();
+    }
+    format!("Se borra {}", when(zone, task.updated_at_ms + RETENTION_MS, now_ms).to_lowercase())
 }
 
 fn when(zone: &TimeZone, ms: i64, now_ms: i64) -> String {
@@ -101,6 +131,10 @@ fn phase_label(task: &AiTask) -> String {
             Some(ApprovalKind::Clarification) => "Tiene una pregunta para vos".to_string(),
             Some(ApprovalKind::Plan) => "Espera que apruebes un plan".to_string(),
             _ => "Espera tu confirmación".to_string(),
+        },
+        AiTaskStatus::Waiting => match task.wait.as_ref() {
+            Some(wait) => format!("Paso {} de {total} · {}", task.steps.iter().position(|step| step.id == wait.step_id).map_or(done + 1, |index| index + 1), wait.reason),
+            None => format!("{done} de {total} pasos"),
         },
         AiTaskStatus::Completed => format!("{total} pasos · {} revisiones", task.reviews.len()),
         AiTaskStatus::Failed | AiTaskStatus::Cancelled | AiTaskStatus::Interrupted => format!("{done} de {total} pasos hechos"),
@@ -169,6 +203,7 @@ pub fn detail(task: &AiTask, zone: &TimeZone, now_ms: i64) -> AiTaskDetail {
             status: step.status,
             status_label: step.status.label().to_string(),
             report: step.report.clone(),
+            notes: step.notes.clone(),
             time_label: step.finished_at_ms.or(step.started_at_ms).map(|ms| when(zone, ms, now_ms)),
         })
         .collect();
@@ -190,11 +225,74 @@ pub fn detail(task: &AiTask, zone: &TimeZone, now_ms: i64) -> AiTaskDetail {
         steps,
         reviews,
         pending: task.pending.as_ref().filter(|_| task.status == AiTaskStatus::AwaitingApproval).map(|approval| approval_view(task, approval)),
+        wait: task.wait.as_ref().filter(|_| task.status == AiTaskStatus::Waiting).map(|wait| AiTaskWaitView {
+            reason: wait.reason.clone(),
+            kind_label: waits::kind_label(wait, zone, now_ms),
+            since_label: format!("Desde {}", when(zone, wait.started_at_ms, now_ms).to_lowercase()),
+            next_label: waits::next_label(wait, zone, now_ms),
+            deadline_label: waits::deadline_label(wait, zone, now_ms),
+            error: wait.last_error.clone(),
+        }),
         result: task.result.clone(),
         error: task.error.clone(),
         workflow: workflow_mermaid(task),
         can_cancel: task.status.is_active(),
         can_resume: task.status.is_resumable(),
-        expires_label: format!("Se borra {}", when(zone, task.created_at_ms + RETENTION_MS, now_ms).to_lowercase()),
+        resume_label: if task.status == AiTaskStatus::Waiting { "Seguir sin esperar".to_string() } else { "Reanudar".to_string() },
+        expires_label: expires_label(task, zone, now_ms),
     }
+}
+
+/// What the panel keeps of a phase's thinking: the tail, so a long run
+/// does not grow the page without end.
+pub const MAX_THINKING_CHARS: usize = 20_000;
+
+/// The thinking of the phase that runs now, as it streamed so far. The
+/// panel shows it and adds the `thinking-summary` events of `request_id`
+/// that come after `sequence`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTaskThinking {
+    pub request_id: String,
+    pub phase: AiTaskPhase,
+    /// The step the executor works, to show the thinking inside it.
+    pub step_id: Option<String>,
+    /// «Ejecutor · paso 2 · pensando».
+    pub label: String,
+    pub text: String,
+    pub sequence: u64,
+    pub max_chars: usize,
+}
+
+/// The thinking of a run from its events: the fragments joined, each round
+/// apart, within `MAX_THINKING_CHARS`.
+pub fn thinking(task: &AiTask, request_id: &str, phase: AiTaskPhase, step_id: Option<String>, events: &[BackendEventEnvelope]) -> AiTaskThinking {
+    let mut text = String::new();
+    let mut sequence = 0;
+    for envelope in events {
+        sequence = sequence.max(envelope.sequence);
+        match &envelope.event {
+            BackendEvent::ThinkingSummary { summary, .. } => text.push_str(summary),
+            BackendEvent::RoundStarted { .. } if !text.trim().is_empty() && !text.ends_with("
+
+") => text.push_str("
+
+"),
+            _ => {}
+        }
+    }
+    let step = step_id.as_deref().and_then(|id| task.steps.iter().position(|step| step.id == id));
+    let label = match step {
+        Some(index) => format!("{} · paso {} · pensando", phase.label(), index + 1),
+        None => format!("{} · pensando", phase.label()),
+    };
+    AiTaskThinking { request_id: request_id.to_string(), phase, step_id, label, text: thinking_tail(&text), sequence, max_chars: MAX_THINKING_CHARS }
+}
+
+fn thinking_tail(text: &str) -> String {
+    let count = text.chars().count();
+    if count <= MAX_THINKING_CHARS {
+        return text.to_string();
+    }
+    format!("…{}", text.chars().skip(count - MAX_THINKING_CHARS + 1).collect::<String>())
 }

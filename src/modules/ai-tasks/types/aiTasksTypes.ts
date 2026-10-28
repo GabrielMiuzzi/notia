@@ -5,12 +5,13 @@ export type AiTaskStatus =
   | 'running'
   | 'reviewing'
   | 'awaiting-approval'
+  | 'waiting'
   | 'completed'
   | 'failed'
   | 'cancelled'
   | 'interrupted'
 
-export type AiTaskStepStatus = 'pending' | 'running' | 'done' | 'failed'
+export type AiTaskStepStatus = 'pending' | 'running' | 'waiting' | 'done' | 'failed'
 
 export type AiTaskApprovalKind = 'confirmation' | 'clarification' | 'plan'
 
@@ -44,7 +45,19 @@ export interface AiTaskStepView {
   status: AiTaskStepStatus
   statusLabel: string
   report: string | null
+  /** Lo que hizo antes de cada espera y cómo terminó cada una. */
+  notes: string[]
   timeLabel: string | null
+}
+
+/** Qué espera una tarea en estado «Esperando» (`views::AiTaskWaitView`). */
+export interface AiTaskWaitView {
+  reason: string
+  kindLabel: string
+  sinceLabel: string
+  nextLabel: string | null
+  deadlineLabel: string
+  error: string | null
 }
 
 export interface AiTaskReviewView {
@@ -69,12 +82,15 @@ export interface AiTaskDetail extends AiTaskCard {
   steps: AiTaskStepView[]
   reviews: AiTaskReviewView[]
   pending: AiTaskApprovalView | null
+  wait: AiTaskWaitView | null
   result: string | null
   error: string | null
   /** El flujo de la tarea como diagrama Mermaid, armado por Rust. */
   workflow: string
   canCancel: boolean
   canResume: boolean
+  /** «Reanudar» o «Seguir sin esperar». */
+  resumeLabel: string
   expiresLabel: string
 }
 
@@ -84,4 +100,18 @@ export interface AiTaskAnswer {
   choice: AiTaskAnswerChoice
   text?: string
   optionIndex?: number
+}
+
+export type AiTaskPhase = 'planner' | 'executor' | 'review'
+
+/** El thinking de la fase que corre ahora, como llegó hasta el momento (`views::thinking`). */
+export interface AiTaskThinking {
+  requestId: string
+  phase: AiTaskPhase
+  stepId: string | null
+  label: string
+  text: string
+  sequence: number
+  /** Cuánto del final del texto se muestra. */
+  maxChars: number
 }

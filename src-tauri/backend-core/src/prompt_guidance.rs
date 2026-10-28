@@ -79,10 +79,15 @@ fn ai_task_tools(guidance: &mut Guidance) {
     if !guidance.has("create_ai_task") {
         return;
     }
-    guidance.push("Tareas IA: cuando el pedido es complejo o de muchos pasos (cambiar o revisar muchos documentos, investigar y después escribir, ordenar mucha información, un trabajo de varias etapas), no lo hagas en este turno: creá una Tarea IA con create_ai_task. Un Planificador arma el plan, un Ejecutor hace cada paso y un Review lo revisa y pide rehacer lo que falte. Los pedidos simples o de uno o dos pasos se hacen directamente, sin tarea.");
-    guidance.push("El goal de una Tarea IA lo leen agentes que no ven esta conversación: escribilo completo, con qué lograr, sobre qué (rutas, nombres, ids), cómo saber que está terminado y todo lo que la persona dijo que importa. Después de crearla, respondé en una o dos oraciones que la tarea quedó creada y que la puede seguir en Tareas IA (y que, si la pidió por Telegram, las aprobaciones y el resultado le llegan por ahí). No empieces a hacer la tarea vos.");
-    guidance.push_if(&["list_ai_tasks"], "Para seguir, leer, cancelar, reanudar, volver a revisar o borrar una tarea, buscala con list_ai_tasks (get_ai_task para su detalle, pasos e informes) y usá su id. Las tareas se guardan una semana.");
+    guidance.push("Tareas IA: cuando el pedido es complejo o de muchos pasos (cambiar o revisar muchos documentos, investigar y después escribir, ordenar mucha información, un trabajo de varias etapas), no lo hagas en este turno: creá una Tarea IA con create_ai_task. Un Planificador arma el plan, un Ejecutor hace cada paso y un Review lo revisa y pide rehacer lo que falte. Los pedidos simples o de uno o dos pasos se hacen directamente, sin tarea. También creá una tarea cuando el pedido depende de otros o del tiempo, como gestionar algo por correo hasta resolverlo («escribiles a soporte que no tengo acceso y seguilo hasta que lo resuelvan») o esperar a que pase algo: la tarea manda lo que haga falta, espera las respuestas o la fecha sin que la persona tenga que volver a pedirlo, y sigue sola hasta lograr el objetivo.");
+    guidance.push("El goal de una Tarea IA lo leen agentes que no ven esta conversación: escribilo completo, con qué lograr, sobre qué (rutas, nombres, ids; para un correo, su id, su threadId y la cuenta), cómo saber que está terminado y todo lo que la persona dijo que importa. Después de crearla, respondé en una o dos oraciones que la tarea quedó creada y que la puede seguir en Tareas IA (y que, si la pidió por Telegram, las aprobaciones y el resultado le llegan por ahí). No empieces a hacer la tarea vos.");
+    guidance.push_if(&["create_ai_action"], TASK_OR_ACTION);
+    guidance.push_if(&["list_ai_tasks"], "Para seguir, leer, cancelar, reanudar, volver a revisar o borrar una tarea, buscala con list_ai_tasks (get_ai_task para su detalle, pasos e informes) y usá su id. Una tarea se borra una semana después de su último movimiento, nunca mientras espera.");
 }
+
+/// What tells a task (a goal with an end) from an action (what repeats or
+/// comes at a fixed time).
+const TASK_OR_ACTION: &str = "Tarea IA o Acción IA: si el pedido tiene un final (lograr, conseguir o resolver algo, «hasta que…», «avisame cuando me respondan»), es una Tarea IA aunque tarde días o dependa de otros: la tarea espera y sigue sola hasta cumplirlo. Si se repite sin final («todos los días…», «cada lunes…», «cada 3 horas revisá…») o es un aviso a una hora fija («recordame mañana a las 10…»), es una Acción IA. No crees una acción recurrente para perseguir algo hasta que termine, ni una tarea para algo que se repite.";
 
 /// Gimnasio: the user's routines, training session and workouts, and the
 /// library's exercise and equipment files.
@@ -392,6 +397,19 @@ mod tests {
                 requires_confirmation: false,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_goal_with_an_end_is_a_task_and_what_repeats_is_an_action() {
+        let both = scope_guidance(
+            &context(BackendScope::Library, BackendChannel::App),
+            &tools(&["create_ai_task", "list_ai_tasks", "create_ai_action"]),
+            None,
+            "2026-10-27",
+        );
+        assert!(both.contains("Tarea IA o Acción IA: si el pedido tiene un final"), "{both}");
+        let tasks_only = scope_guidance(&context(BackendScope::Library, BackendChannel::App), &tools(&["create_ai_task"]), None, "2026-10-27");
+        assert!(!tasks_only.contains("Tarea IA o Acción IA"));
     }
 
     #[test]

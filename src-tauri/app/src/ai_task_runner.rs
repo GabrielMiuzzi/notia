@@ -10,6 +10,12 @@
 //! in the Owner's chat. With «Confirmar todos» chosen when the task was
 //! created, changes are applied without asking.
 //!
+//! A step that waits for something (`wait_ai_task`: a reply by mail, a
+//! moment, a periodic check) ends the runner's thread and leaves the task
+//! waiting in the database; the watch looks at the waiting tasks every
+//! minute and starts the runner again when the wait ends. A waiting task
+//! keeps waiting across restarts.
+//!
 //! Every change emits `TASK_CHANGED_EVENT` with the library id, and the
 //! panel reloads. A task that was working when Notia closed is marked
 //! interrupted at the next start and can be resumed.
@@ -30,7 +36,8 @@ use crate::backend::ai_tasks::prompts::{
     approval_message, executor_request, finished_message, parse_plan, parse_review, planner_request, review_request, step_unfinished,
 };
 use crate::backend::ai_tasks::tools::{self, NewTask};
-use crate::backend::ai_tasks::views::{self, AiTaskCard, AiTaskDetail};
+use crate::backend::ai_tasks::views::{self, AiTaskCard, AiTaskDetail, AiTaskThinking};
+use crate::backend::ai_tasks::waits::{self, AiTaskWait, Due, WaitFor};
 use crate::backend::ai_tasks::{
     clipped, clipped_report, AiTask, AiTaskApproval, AiTaskOrigin, AiTaskPhase, AiTaskStatus, AiTaskTurn, ApprovalKind, NextWork,
     ReviewEffect, StepStatus, RETENTION_MS,
@@ -54,6 +61,8 @@ const APPROVAL_POLL: Duration = Duration::from_secs(1);
 /// The first clean-up waits for the app to open its library.
 const FIRST_CLEANUP_DELAY: Duration = Duration::from_secs(30);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// How often the watch looks at the waiting tasks.
+const WAIT_WATCH_INTERVAL: Duration = Duration::from_secs(60);
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
@@ -156,10 +165,11 @@ fn load_tasks(connection: &Connection) -> Result<Vec<AiTask>, BackendError> {
     Ok(texts.iter().filter_map(|text| task_from_json(text).ok()).collect())
 }
 
-/// Deletes the tasks created more than a week ago that no runner holds.
+/// Deletes the tasks that did not change for a week and no runner holds;
+/// a waiting task is kept while it waits.
 fn delete_expired(connection: &Connection, now: i64) -> Result<usize, BackendError> {
     let held = runners().lock().map(|runners| runners.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-    let mut statement = connection.prepare("SELECT id FROM ai_tasks WHERE created_at < ?1").map_err(storage)?;
+    let mut statement = connection.prepare("SELECT id FROM ai_tasks WHERE updated_at < ?1 AND status <> 'waiting'").map_err(storage)?;
     let expired = statement
         .query_map([now - RETENTION_MS], |row| row.get::<_, String>(0))
         .map_err(storage)?
@@ -190,10 +200,18 @@ fn library_zone(app: &AppHandle, library_id: &str) -> jiff::tz::TimeZone {
 /// What this process knows of a task it works.
 struct Runner {
     cancel: Arc<AtomicBool>,
-    /// The request of the phase that runs now, to cancel it.
-    current: Option<(BackendRequestContext, String)>,
+    /// The run of the phase that works now, to cancel it and show its thinking.
+    current: Option<CurrentRun>,
     /// The approval it waits for and where its answer goes.
     waiting: Option<(String, mpsc::Sender<ApprovalAnswer>)>,
+}
+
+#[derive(Clone)]
+struct CurrentRun {
+    context: BackendRequestContext,
+    idempotency_key: String,
+    phase: AiTaskPhase,
+    step_id: Option<String>,
 }
 
 fn runners() -> &'static Mutex<HashMap<String, Runner>> {
@@ -429,7 +447,8 @@ fn finish(app: &AppHandle, library_id: &str, database: &LibraryDatabaseContext, 
     task.pending = None;
     task.error = error;
     task.finished_at_ms = Some(now_ms());
-    if let Some(step) = task.steps.iter_mut().find(|step| step.status == StepStatus::Running) {
+    task.wait = None;
+    if let Some(step) = task.steps.iter_mut().find(|step| matches!(step.status, StepStatus::Running | StepStatus::Waiting)) {
         step.status = if status == AiTaskStatus::Completed { StepStatus::Done } else { StepStatus::Failed };
     }
     if !save(app, library_id, database, task)? {
@@ -502,6 +521,15 @@ fn work(app: &AppHandle, library_id: &str, task_id: &str, cancel: &AtomicBool) -
                 Err(error) => return finish(app, library_id, &database, &mut task, AiTaskStatus::Failed, Some(error)),
             },
             NextWork::Execute(index) => {
+                // The note of the last wait went in this run's request.
+                task.wake = None;
+                if task.wait.as_ref().is_some_and(|wait| wait.step_id == task.steps[index].id) {
+                    // The step waits: the thread ends and the watch wakes it.
+                    waits::begin_wait(&mut task, index, &answer);
+                    save(app, library_id, &database, &mut task)?;
+                    return Ok(());
+                }
+                task.wait = None;
                 let step = &mut task.steps[index];
                 step.report = Some(clipped_report(&answer));
                 step.finished_at_ms = Some(now);
@@ -560,7 +588,9 @@ fn run_phase(
     }
     let context = phase_context(library_id);
     let idempotency_key = format!("{library_id}:{}", context.request_id);
-    with_runner(task_id, |runner| runner.current = Some((context.clone(), idempotency_key.clone())));
+    with_runner(task_id, |runner| {
+        runner.current = Some(CurrentRun { context: context.clone(), idempotency_key: idempotency_key.clone(), phase, step_id: step_id.clone() })
+    });
     let mut request = BackendRequest::Run(AgentRequest {
         context: context.clone(),
         messages: vec![BackendMessage { role: MessageRole::User, content: text, images: Vec::new(), attachments: Vec::new() }],
@@ -769,10 +799,10 @@ fn cancel(app: &AppHandle, library_id: &str, task_id: &str) -> Result<(), Backen
         runner.current.clone()
     });
     match current {
-        Some(Some((context, idempotency_key))) => {
+        Some(Some(run)) => {
             let runtime = app.state::<crate::backend_runtime::BackendRuntimeState>().inner().clone();
             let registry = app.state::<LibraryBindingRegistry>();
-            let _ = crate::backend_runtime::execute_backend_request(app, cancel_envelope(&context, &idempotency_key, None), &runtime, registry.inner());
+            let _ = crate::backend_runtime::execute_backend_request(app, cancel_envelope(&run.context, &run.idempotency_key, None), &runtime, registry.inner());
         }
         Some(None) => {}
         None => {
@@ -783,10 +813,14 @@ fn cancel(app: &AppHandle, library_id: &str, task_id: &str) -> Result<(), Backen
     Ok(())
 }
 
-/// Goes on with a task that stopped, from its first step not done.
+/// Goes on with a task that stopped, from its first step not done; a
+/// waiting one goes on without waiting more.
 fn resume(app: &AppHandle, library_id: &str, task_id: &str) -> Result<AiTask, BackendError> {
     let mut task = load(app, library_id, task_id)?;
     tools::check_resumable(&task)?;
+    if task.status == AiTaskStatus::Waiting {
+        waits::wake(&mut task, waits::RESUMED_NOTE);
+    }
     task.status = if task.steps.is_empty() { AiTaskStatus::Planning } else { AiTaskStatus::Running };
     task.error = None;
     task.finished_at_ms = None;
@@ -881,6 +915,22 @@ pub async fn ai_task_get(app: AppHandle, context: AiTasksContext, task_id: Strin
     .await
 }
 
+/// The thinking of the phase the task works now, as it streamed so far;
+/// `None` when no phase runs.
+pub async fn ai_task_thinking(app: AppHandle, context: AiTasksContext, task_id: String) -> Result<Option<AiTaskThinking>, BackendError> {
+    blocking(move || {
+        let library_id = context.library()?.to_string();
+        let task = load(&app, &library_id, &task_id)?;
+        let Some(run) = with_runner(&task_id, |runner| runner.current.clone()).flatten() else {
+            return Ok(None);
+        };
+        let runtime = app.state::<crate::backend_runtime::BackendRuntimeState>();
+        let events = runtime.request_events(&run.context, 0).unwrap_or_default();
+        Ok(Some(views::thinking(&task, &run.context.request_id, run.phase, run.step_id, &events)))
+    })
+    .await
+}
+
 pub async fn ai_task_answer(app: AppHandle, context: AiTasksContext, task_id: String, approval_id: String, answer_input: ApprovalAnswer) -> Result<(), BackendError> {
     blocking(move || {
         let library_id = context.library()?.to_string();
@@ -968,6 +1018,9 @@ pub(crate) fn execute_tool(app: &AppHandle, context: &BackendRequestContext, nam
         return Err(owner_only());
     }
     let library_id = context.library_id.as_str();
+    if name == waits::WAIT_TOOL {
+        return start_wait(app, context, arguments);
+    }
     if name == "create_ai_task" {
         let approve_all = arguments.get("approveAll").and_then(Value::as_bool).unwrap_or(false);
         let task = create(app, library_id, context, tools::new_task(arguments)?, approve_all)?;
@@ -1005,6 +1058,187 @@ pub(crate) fn execute_tool(app: &AppHandle, context: &BackendRequestContext, nam
 }
 
 // ---------------------------------------------------------------------------
+// Waits
+// ---------------------------------------------------------------------------
+
+/// `wait_ai_task`: the executor's run that calls it is found by its
+/// request; the wait is saved on the task and begins when the run ends.
+fn start_wait(app: &AppHandle, context: &BackendRequestContext, arguments: &Value) -> Result<Value, BackendError> {
+    let library_id = context.library_id.as_str();
+    let run = runners().lock().ok().and_then(|runners| {
+        runners.iter().find_map(|(task_id, runner)| {
+            runner.current.as_ref().filter(|run| run.context.request_id == context.request_id).map(|run| (task_id.clone(), run.phase, run.step_id.clone()))
+        })
+    });
+    let Some((task_id, AiTaskPhase::Executor, Some(step_id))) = run else {
+        return Err(BackendError::invalid_input("wait_ai_task solo se usa en el Ejecutor de una Tarea IA, mientras hace un paso."));
+    };
+    let accounts = crate::mail_tools::gmail_accounts(app, library_id).into_iter().map(|account| account.email).collect::<Vec<_>>();
+    let zone = library_zone(app, library_id);
+    let now = now_ms();
+    let wait = waits::wait_request(arguments, &step_id, &accounts, &zone, now)?;
+    if let WaitFor::Mail { account, thread_id: Some(thread_id), .. } = &wait.wait_for {
+        // A thread that does not exist would wait for nothing.
+        mail_thread(app, library_id, account, thread_id)?;
+    }
+    let database = database(app, library_id)?;
+    let saved = write(app, &database, |connection| {
+        let Some(mut task) = load_task(connection, &task_id)? else {
+            return Ok(false);
+        };
+        task.wait = Some(wait.clone());
+        update_task(connection, &task)
+    })?;
+    if !saved {
+        return Err(not_found());
+    }
+    Ok(json!({
+        "waiting": true,
+        "reason": wait.reason,
+        "kind": waits::kind_label(&wait, &zone, now),
+        "until": waits::deadline_label(&wait, &zone, now),
+        "note": "Listo: al terminar esta respuesta la tarea queda esperando. Terminá ahora con el informe de lo que hiciste hasta acá en este paso; Notia te vuelve a llamar en este mismo paso con lo que pase.",
+    }))
+}
+
+fn gmail_account(app: &AppHandle, library_id: &str, email: &str) -> Result<crate::backend::mail_tools::MailAccountRef, BackendError> {
+    crate::mail_tools::gmail_accounts(app, library_id)
+        .into_iter()
+        .find(|account| account.email.eq_ignore_ascii_case(email))
+        .ok_or_else(|| BackendError::invalid_input(format!("La cuenta de Gmail {email} ya no está conectada en la biblioteca.")))
+}
+
+/// The messages of a Gmail thread, with their dates and labels.
+fn mail_thread(app: &AppHandle, library_id: &str, email: &str, thread_id: &str) -> Result<Vec<Value>, BackendError> {
+    // Getting the session may refresh the token, which blocks by itself.
+    let session = crate::mail_tools::gmail_session(app, library_id, &gmail_account(app, library_id, email)?)?;
+    let thread = crate::host::async_runtime::block_on(session.get(&crate::backend::mail_tools::thread_metadata_url(thread_id))).map_err(|error| {
+        if error.code == BackendErrorCode::NotFound {
+            BackendError::invalid_input(format!("No hay un hilo {thread_id} en {email}: usá el threadId que devolvió send_gmail_message o list_gmail_messages."))
+        } else {
+            error
+        }
+    })?;
+    Ok(thread.get("messages").and_then(Value::as_array).cloned().unwrap_or_default())
+}
+
+/// The new messages a mail wait was waiting for, as summaries.
+fn new_mail(app: &AppHandle, library_id: &str, wait: &AiTaskWait) -> Result<Vec<Value>, BackendError> {
+    let WaitFor::Mail { account, thread_id, query } = &wait.wait_for else {
+        return Ok(Vec::new());
+    };
+    let messages = match (thread_id, query) {
+        (Some(thread_id), _) => mail_thread(app, library_id, account, thread_id)?,
+        (None, Some(query)) => {
+            let session = crate::mail_tools::gmail_session(app, library_id, &gmail_account(app, library_id, account)?)?;
+            let search = waits::mail_search(query, wait.started_at_ms);
+            crate::host::async_runtime::block_on(async {
+                let url = crate::backend::mail_tools::list_messages_url(&search, &[], waits::MAX_WAKE_MESSAGES as u64, None);
+                let list = session.get(&url).await?;
+                let mut messages = Vec::new();
+                for id in list.get("messages").and_then(Value::as_array).into_iter().flatten().filter_map(|item| item.get("id").and_then(Value::as_str)) {
+                    messages.push(session.get(&crate::backend::mail_tools::message_metadata_url(id)).await?);
+                }
+                Ok::<_, BackendError>(messages)
+            })?
+        }
+        (None, None) => Vec::new(),
+    };
+    Ok(waits::new_messages(&messages, wait.started_at_ms).iter().map(|message| crate::backend::mail_tools::message_summary(message, &[])).collect())
+}
+
+/// What the watch decided for a waiting task.
+enum WaitStep {
+    Wake(String),
+    /// Look again later; with why the look failed, if it did.
+    Later { error: Option<String> },
+}
+
+fn wait_step(app: &AppHandle, library_id: &str, wait: &AiTaskWait, zone: &jiff::tz::TimeZone, now: i64) -> Option<WaitStep> {
+    match waits::due(wait, zone, now) {
+        Due::NotYet => None,
+        Due::Wake(note) => Some(WaitStep::Wake(note)),
+        Due::LookAtMail => {
+            let WaitFor::Mail { account, .. } = &wait.wait_for else { return None };
+            let looked = new_mail(app, library_id, wait);
+            Some(match looked {
+                Ok(messages) if !messages.is_empty() => WaitStep::Wake(waits::mail_note(account, &messages)),
+                _ if now >= wait.deadline_ms => {
+                    let mut wait = wait.clone();
+                    if let Err(error) = &looked {
+                        wait.last_error = Some(error.message.clone());
+                    }
+                    WaitStep::Wake(waits::deadline_note(&wait, zone, now))
+                }
+                Ok(_) => WaitStep::Later { error: None },
+                Err(error) => {
+                    log::warn!("[notia:ai-tasks] no se pudo mirar el correo de una espera: {:?}", error.code);
+                    WaitStep::Later { error: Some(error.message) }
+                }
+            })
+        }
+    }
+}
+
+/// Looks at the waiting tasks of the open library and starts again the
+/// ones whose wait ended.
+fn watch_waits(app: &AppHandle) -> Result<(), BackendError> {
+    // The host works the tasks of a client's library.
+    if crate::connection::is_client(app) {
+        return Ok(());
+    }
+    let Some(library) = crate::library_catalog::selected_library(app) else {
+        return Ok(());
+    };
+    let Ok(database) = database(app, &library.id) else {
+        return Ok(());
+    };
+    let held = runners().lock().map(|runners| runners.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let waiting = read(app, &database, load_tasks)?
+        .into_iter()
+        .filter(|task| task.status == AiTaskStatus::Waiting && !held.contains(&task.id))
+        .collect::<Vec<_>>();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    let zone = library_zone(app, &library.id);
+    for task in waiting {
+        let Some(wait) = task.wait.clone() else { continue };
+        let now = now_ms();
+        let Some(step) = wait_step(app, &library.id, &wait, &zone, now) else { continue };
+        // The task may have changed while the mail was read: only the same
+        // wait is touched.
+        let woke = write(app, &database, |connection| {
+            let Some(mut task) = load_task(connection, &task.id)? else {
+                return Ok(false);
+            };
+            if task.status != AiTaskStatus::Waiting || task.wait.as_ref() != Some(&wait) {
+                return Ok(false);
+            }
+            match &step {
+                WaitStep::Wake(note) => {
+                    waits::wake(&mut task, note);
+                    task.updated_at_ms = now;
+                    update_task(connection, &task)
+                }
+                WaitStep::Later { error } => {
+                    if let Some(current) = task.wait.as_mut() {
+                        current.wake_at_ms = (now + waits::MAIL_POLL_MS).min(current.deadline_ms);
+                        current.last_error = error.clone();
+                    }
+                    update_task(connection, &task).map(|_| false)
+                }
+            }
+        })?;
+        if woke {
+            emit(app, &library.id);
+            spawn(app, &library.id, &task.id);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Start and clean-up
 // ---------------------------------------------------------------------------
 
@@ -1026,7 +1260,9 @@ fn clean_up(app: &AppHandle, first: bool) -> Result<(), BackendError> {
     let changed = write(app, &database, |connection| {
         let mut changed = delete_expired(connection, now)? > 0;
         if first {
-            for mut task in load_tasks(connection)?.into_iter().filter(|task| task.status.is_active() && !held.contains(&task.id)) {
+            // A waiting task keeps waiting: the watch goes on with it.
+            let stopped = |task: &AiTask| task.status.is_active() && task.status != AiTaskStatus::Waiting && !held.contains(&task.id);
+            for mut task in load_tasks(connection)?.into_iter().filter(stopped) {
                 task.status = AiTaskStatus::Interrupted;
                 task.pending = None;
                 task.phase = None;
@@ -1049,6 +1285,7 @@ fn clean_up(app: &AppHandle, first: bool) -> Result<(), BackendError> {
 pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
     crate::host::plugin::Builder::new("ai-tasks")
         .setup(|app, _api| {
+            let watcher = app.clone();
             let app = app.clone();
             let _ = std::thread::Builder::new().name("notia-ai-tasks-cleanup".into()).spawn(move || {
                 std::thread::sleep(FIRST_CLEANUP_DELAY);
@@ -1059,6 +1296,17 @@ pub(crate) fn init() -> crate::host::plugin::TauriPlugin<crate::host::Wry> {
                     }
                     first = false;
                     std::thread::sleep(CLEANUP_INTERVAL);
+                }
+            });
+            let app = watcher;
+            let _ = std::thread::Builder::new().name("notia-ai-task-waits".into()).spawn(move || {
+                // After the first clean-up, so an interrupted task is marked first.
+                std::thread::sleep(FIRST_CLEANUP_DELAY + WAIT_WATCH_INTERVAL);
+                loop {
+                    if let Err(error) = watch_waits(&app) {
+                        log::error!("[notia:ai-tasks] no se pudieron revisar las esperas: {:?}", error.code);
+                    }
+                    std::thread::sleep(WAIT_WATCH_INTERVAL);
                 }
             });
             Ok(())
@@ -1091,7 +1339,12 @@ mod tests {
         recent.set_plan(vec![crate::backend::ai_tasks::PlannedStep { title: "A".into(), detail: String::new() }]);
         assert!(update_task(&connection, &recent).expect("update"));
         assert_eq!(load_task(&connection, "new").expect("load"), Some(recent.clone()));
+        // A task that waits is kept however old.
+        let mut waiting = task("waiting", now - 3 * RETENTION_MS);
+        waiting.status = AiTaskStatus::Waiting;
+        insert_task(&connection, &waiting).expect("waiting");
         assert_eq!(delete_expired(&connection, now).expect("expire"), 1);
+        connection.execute("DELETE FROM ai_tasks WHERE id='waiting'", []).expect("delete waiting");
         assert_eq!(load_tasks(&connection).expect("tasks").iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), ["new"]);
         // A deleted task is not written again by its runner.
         connection.execute("DELETE FROM ai_tasks WHERE id='new'", []).expect("delete");
