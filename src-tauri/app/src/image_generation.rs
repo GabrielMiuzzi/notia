@@ -41,11 +41,13 @@ fn internal(message: &str) -> BackendError {
 // Images of each request
 // ---------------------------------------------------------------------------
 
-/// An image a request made, as PNG in Base64, named by its reference.
+/// An image a request made (PNG) or another tool kept for the person (a
+/// browser screenshot, JPEG), in Base64, named by its reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedImage {
     pub name: String,
     pub base64: String,
+    pub media_type: &'static str,
 }
 
 fn generated() -> &'static Mutex<VecDeque<(String, Vec<GeneratedImage>)>> {
@@ -62,6 +64,15 @@ fn keep_generated(request_id: &str, image: GeneratedImage) {
     while kept.len() > MAX_KEPT_REQUESTS {
         kept.pop_front();
     }
+}
+
+/// Keeps an image another tool made for the person, to go with the
+/// generated ones: before the agent's next question on Telegram, or with
+/// its reply. Returns its name.
+pub(crate) fn keep_for_reply(request_id: &str, stem: &str, extension: &str, media_type: &'static str, base64: String) -> String {
+    let name = format!("{stem}-{}.{extension}", generated_count(request_id) + 1);
+    keep_generated(request_id, GeneratedImage { name: name.clone(), base64, media_type });
+    name
 }
 
 /// The images `request_id` made, in order, removed from memory: the reply
@@ -551,7 +562,7 @@ pub(crate) fn generate(
     let png = png?;
     let stamp = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S").to_string();
     let name = images::image_file_name(&stamp, generated_count(request_id) + 1);
-    keep_generated(request_id, GeneratedImage { name: name.clone(), base64: base64::engine::general_purpose::STANDARD.encode(&png) });
+    keep_generated(request_id, GeneratedImage { name: name.clone(), base64: base64::engine::general_purpose::STANDARD.encode(&png), media_type: "image/png" });
     Ok(images::tool_result(&name, size, job.seed, job.reference.as_deref()))
 }
 
@@ -620,7 +631,7 @@ mod tests {
 
     #[test]
     fn a_request_keeps_its_images_until_its_reply_takes_them() {
-        let image = |name: &str| GeneratedImage { name: name.into(), base64: format!("b64-{name}") };
+        let image = |name: &str| GeneratedImage { name: name.into(), base64: format!("b64-{name}"), media_type: "image/png" };
         keep_generated("req-images-1", image("a.png"));
         keep_generated("req-images-1", image("b.png"));
         assert_eq!(generated_count("req-images-1"), 2);

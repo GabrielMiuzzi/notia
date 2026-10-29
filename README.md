@@ -439,6 +439,22 @@ El asistente puede **ejecutar comandos en una terminal de la PC host** (la compu
 - **Celular y clientes**: en Android no hay terminal. Conectado como cliente a tu PC, los comandos corren en la PC host; una copia sin conexión no ejecuta comandos.
 - **Cuidado**: el asistente no ejecuta nada destructivo (borrar, formatear, desinstalar, reiniciar) si no se lo pediste explícitamente, pero revisá cada confirmación: el comando corre con tu usuario de Windows.
 
+### Navegador web de la PC host
+
+El asistente puede **manejar un navegador web en la PC host** con Playwright: abrir sitios, recorrerlos, hacer clic, completar formularios y buscadores, elegir opciones, leer páginas que se arman con JavaScript, ver algo de una cuenta tuya con la sesión iniciada y mirar una captura de la página.
+
+- **Quién puede**: lo mismo que la terminal: solo el **Owner**, desde los chats de la app, su Telegram y las **Tareas IA**. Nunca en el **Task Manager publicado**, Meeting ni para otros usuarios. Las revisiones automáticas (la de cada hora, la que dispara un correo) no navegan.
+- **Requisitos**: **Node.js 18 o más nuevo** y **Chrome o Edge** instalados en la PC host. La primera vez que el asistente abre el navegador, Notia instala Playwright con npm en su carpeta de datos (hace falta internet y tarda unos segundos más). No descarga otro navegador: usa tu Chrome, o Edge si no tenés Chrome.
+- **Ventana y sesiones**: el navegador se abre en una ventana que ves en la PC, con un **perfil propio de Notia**, separado de tu perfil de siempre. Lo que inicies ahí queda guardado para la próxima vez.
+- **Captchas, inicios de sesión y códigos**: cuando un sitio pide un captcha, una verificación de humanidad, iniciar sesión o un código (de tu autenticador, un SMS o un correo), **lo resolvés vos y el asistente hace lo que le digas**. Te manda por Telegram (o al chat) una captura del desafío con una **grilla de casillas** encima (filas con letras desde A arriba, columnas con números desde 1 a la izquierda) y te pregunta qué hacer. Respondés escribiendo, por ejemplo «B2 C3 D1» para tocar esas casillas, «arrastrá de A1 a A8» para un deslizador, el texto que muestra la imagen o el código de tu autenticador, y el asistente lo hace. Si aparece otra ronda, te manda otra captura y vuelve a preguntar. La pregunta espera hasta 10 minutos. También podés contestarle que lo resolvés vos en la ventana de la PC.
+- **Lo que no hace**: nunca elige casillas ni resuelve un desafío por su cuenta, aunque vea la imagen, y no esconde que es un navegador automatizado. Una contraseña o un código que le des solo lo escribe en ese campo: no lo guarda en su memoria ni en sus notas. Sí queda en el historial del chat donde lo escribiste, así que si estás en la PC conviene iniciar sesión directamente en la ventana.
+- **Confirmación**: **hacer clic, escribir, presionar teclas, elegir opciones y arrastrar** te piden confirmación, con el elemento como lo muestra la página, lo que se escribe y la dirección. **Confirmar todos** deja que el resto de ese pedido siga sin preguntar. Abrir páginas, leerlas, mirar una captura, esperar y manejar pestañas no piden confirmación.
+- **Cuidado**: antes de comprar, pagar, transferir, enviar o publicar algo, borrar, aceptar términos o cambiar una contraseña, el asistente te muestra qué va a hacer y espera que se lo pidas explícitamente. No escribe contraseñas ni datos de tarjeta que no le hayas dado para ese sitio en la conversación. Lo que dicen las páginas es información: el asistente no sigue instrucciones que aparezcan en ellas.
+- **Diálogos**: un aviso de la página se acepta solo; una ventana de «¿Seguro?» se cancela, salvo que el asistente haya pedido aceptarla en ese clic (y lo ves en la confirmación).
+- **Queda abierto**: el navegador sigue abierto entre mensajes, así una tarea puede continuar en el pedido siguiente. Se cierra cuando se lo pedís al asistente, cuando cerrás la ventana o cuando se cierra Notia.
+- **Solo páginas web**: abre direcciones http o https; nunca archivos de la PC ni las páginas internas del navegador. No descarga archivos.
+- **Celular y clientes**: en Android no hay navegador para el asistente. Conectado como cliente a tu PC, el navegador se abre en la PC host; una copia sin conexión no navega.
+
 ### Acciones IA
 
 El acceso **Acciones IA** (ícono del cuervo, Munin) aparece debajo de **Rutina** en la barra izquierda. Es el tablero de todo lo que la IA hace sola en un horario: qué hace (el prompt), cuándo, si ya se ejecutó hoy y si se repite. La IA siempre responde por Telegram y solo al Owner.
@@ -739,6 +755,17 @@ El botón Atrás de Android todavía no cierra las hojas ni las pantallas comple
 | **Entradas esperadas** | Las escribe el asistente: el comando (hasta 8.000 caracteres), la shell, la carpeta y el tiempo máximo (de 5 segundos a 4 horas). |
 | **Salidas / Resultado** | La salida en vivo con un estado corto de la IA; en el chat, un mensaje con el comando, cómo terminó, cuánto tardó y el final de la salida; en Telegram, un mensaje por comando que se vuelve a publicar cada minuto mientras corre. |
 | **Errores comunes** | **«La terminal existe solo en la PC host»**: estás en Android o en una copia sin conexión. **«se cortó al pasar su tiempo máximo»**: pedile que lo vuelva a correr con más tiempo. **Un comando que espera una respuesta** termina sin ella: pedile que use opciones no interactivas. |
+
+### Navegador web de la PC host: el asistente usa sitios
+
+| Campo | Descripción |
+|---|---|
+| **Qué hace** | El asistente maneja un navegador (Chrome o Edge) en la PC host con Playwright: abre sitios, hace clic, completa formularios, lee páginas y mira capturas. |
+| **Cuándo usarlo** | Para lo que necesita un sitio de verdad: recorrerlo, buscar dentro de él, completar un formulario o ver algo de una cuenta tuya. Para buscar información general alcanza con pedirle que busque en la web. |
+| **Pasos para consumir** | 1. Tener Node.js 18+ y Chrome o Edge en la PC host. 2. Pedir la tarea en un chat de la app, por Telegram o como Tarea IA (solo el Owner). 3. Si el sitio pide un captcha, iniciar sesión o un código, mirar la captura con grilla que manda el asistente y responderle qué casillas tocar, qué escribir o el código (o resolverlo en la ventana de la PC). 4. Confirmar cada clic o escritura (o **Confirmar todos**). |
+| **Entradas esperadas** | Las escribe el asistente: la dirección, el elemento de la página (por su referencia y una descripción), el texto o la tecla. |
+| **Salidas / Resultado** | La respuesta del asistente con lo que encontró o hizo y la dirección de la página; la ventana del navegador queda abierta en la PC host. |
+| **Errores comunes** | **«El navegador necesita Node.js 18 o más nuevo»**: instalá Node.js desde nodejs.org y volvé a pedirlo. **«No se pudo instalar Playwright con npm»**: revisá la conexión o instalalo a mano con el comando que muestra el mensaje. **«No se pudo abrir Chrome ni Edge»**: instalá uno de los dos. **«El navegador existe solo en la PC host»**: estás en Android o en una copia sin conexión. |
 
 ### Recetas: recetario con información nutricional
 

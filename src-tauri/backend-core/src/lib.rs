@@ -14,6 +14,7 @@ pub mod ai_tasks;
 pub mod ai_settings;
 pub mod audio_devices;
 pub mod audio_resample;
+pub mod browser;
 pub mod speaker_clustering;
 pub mod timed_transcript;
 pub mod catalog;

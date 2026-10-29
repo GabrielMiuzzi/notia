@@ -1022,7 +1022,7 @@ fn generated_attachments(request_id: &str) -> Vec<StoredChatAttachment> {
         .into_iter()
         .map(|image| StoredChatAttachment {
             name: image.name,
-            mime_type: "image/png".to_string(),
+            mime_type: image.media_type.to_string(),
             base64: image.base64,
             additional_base64: Vec::new(),
             kind: ChatAttachmentKind::Image,

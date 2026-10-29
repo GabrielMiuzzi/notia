@@ -63,10 +63,11 @@ pub enum ToolArea {
     Health,
     Gym,
     Images,
+    Browser,
 }
 
 impl ToolArea {
-    pub const ALL: [ToolArea; 12] = [
+    pub const ALL: [ToolArea; 13] = [
         ToolArea::Library,
         ToolArea::Meeting,
         ToolArea::Tasks,
@@ -79,6 +80,7 @@ impl ToolArea {
         ToolArea::Health,
         ToolArea::Gym,
         ToolArea::Images,
+        ToolArea::Browser,
     ];
 
     pub fn id(self) -> &'static str {
@@ -95,6 +97,7 @@ impl ToolArea {
             Self::Health => "salud",
             Self::Gym => "gimnasio",
             Self::Images => "imagenes",
+            Self::Browser => "navegador",
         }
     }
 
@@ -112,6 +115,7 @@ impl ToolArea {
             Self::Health => "Salud: registrar lo que comió la persona (también desde la foto de su plato), calorías y macros del día, peso, agua, pasos diarios, horas de sueño, mediciones de la balanza, perfil, peso objetivo y plan de calorías",
             Self::Gym => "Gimnasio: rutinas de entrenamiento (días, ejercicios, series, peso, descanso), entrenar ahora (empezar, marcar series, pausar, terminar), historial de entrenamientos, músculos trabajados, equipamiento disponible y las fichas de los ejercicios",
             Self::Images => "Imágenes: generar una imagen nueva a partir de una descripción (foto, ilustración, dibujo, logo, cartel, ícono) o editar una imagen de la conversación (cambiarle algo, agregarle o quitarle elementos o texto, sacarle el fondo)",
+            Self::Browser => "Navegador web de la PC host: abrir y recorrer sitios, hacer clic, completar formularios y buscadores, usar una cuenta con la sesión iniciada, leer o capturar una página que necesita interacción (no para una búsqueda simple en la web)",
             Self::Actions => "Acciones IA: lo que la IA hace sola en un horario y te responde por Telegram (recordatorios, tareas a una hora o que se repiten, la revisión de cada hora): ver, crear, cambiar, pausar, borrar, ejecutar ahora o reintentar",
         }
     }
@@ -141,6 +145,7 @@ pub fn tool_area(name: &str) -> Option<ToolArea> {
         ToolPolicy::HealthRead | ToolPolicy::HealthWrite => Some(ToolArea::Health),
         ToolPolicy::GymRead | ToolPolicy::GymWrite => Some(ToolArea::Gym),
         ToolPolicy::Images => Some(ToolArea::Images),
+        ToolPolicy::Browser => Some(ToolArea::Browser),
         _ if matches!(name, "set_agent_execution_plan" | "create_agent_plan" | "update_agent_plan") => None,
         _ if name.contains("task") => Some(ToolArea::Tasks),
         _ => Some(ToolArea::Library),
@@ -483,6 +488,13 @@ pub fn parse_router_answer(answer: &str, offered: &[ToolArea]) -> RouterDecision
     RouterDecision { areas: (!areas.is_empty()).then_some(areas), thinking: value.get("thinking").and_then(Value::as_bool), conversational }
 }
 
+/// Whether a message names the browser or a site to work on.
+fn is_browser_request(message: &str) -> bool {
+    const WORDS: [&str; 6] = ["navegador", "browser", "playwright", "página web", "pagina web", "sitio web"];
+    let lowered = message.to_lowercase();
+    WORDS.iter().any(|word| lowered.contains(word))
+}
+
 /// Whether a message asks to draw or change an image.
 fn is_image_request(message: &str) -> bool {
     const WORDS: [&str; 9] = ["imagen", "imágen", "dibuj", "ilustr", "logo", "generá una foto", "generame una foto", "foto de un", "foto de una"];
@@ -501,6 +513,8 @@ pub fn fallback_areas(message: &str, offered: &[ToolArea], with_attachments: boo
         &[ToolArea::Finance, ToolArea::Routine]
     } else if is_image_request(message) {
         &[ToolArea::Images, ToolArea::Library]
+    } else if is_browser_request(message) {
+        &[ToolArea::Browser, ToolArea::Library]
     } else {
         &[ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health, ToolArea::Gym]
     };
@@ -551,6 +565,7 @@ mod tests {
         assert_eq!(tool_area("save_routine_task"), Some(ToolArea::Routine));
         assert_eq!(tool_area("create_finance_transaction"), Some(ToolArea::Finance));
         assert_eq!(tool_area("trash_gmail_messages"), Some(ToolArea::Mail));
+        assert_eq!(tool_area("browser_click"), Some(ToolArea::Browser));
     }
 
     #[test]
@@ -708,6 +723,7 @@ mod tests {
         );
         assert_eq!(fallback_areas("pagué la cuenta de la luz", &all, false, None), vec![ToolArea::Finance, ToolArea::Routine]);
         assert_eq!(fallback_areas("dibujame un gato astronauta", &all, false, None), vec![ToolArea::Images, ToolArea::Library]);
+        assert_eq!(fallback_areas("abrí el navegador y entrá a mi homebanking", &all, false, None), vec![ToolArea::Browser, ToolArea::Library]);
         assert_eq!(
             fallback_areas("resumí la nota de ayer", &all, false, None),
             vec![ToolArea::Library, ToolArea::Tasks, ToolArea::Routine, ToolArea::Agenda, ToolArea::Mail, ToolArea::Actions, ToolArea::Health, ToolArea::Gym]

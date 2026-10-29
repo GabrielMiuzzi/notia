@@ -88,6 +88,7 @@ mod mermaid_editor;
 mod meeting_media;
 mod home;
 mod terminal;
+mod browser;
 mod weather;
 mod image_generation;
 mod recent_documents;
@@ -172,6 +173,7 @@ pub fn create_app(paths: AppPaths, ports: HostPorts) -> AppContext {
     app.manage(task_manager_publication::TaskManagerPublicationState::default());
     app.manage(task_manager_commands::TaskManagerBackendState::default());
     app.manage(backend_runtime::BackendRuntimeState::default());
+    app.manage(browser::BrowserState::default());
     app.manage(library_registry::LibraryBindingRegistry::default());
     app.manage(library_session::LibrarySessionState::default());
     app.manage(ai_chat::AiChatState::default());

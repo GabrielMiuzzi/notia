@@ -1197,6 +1197,17 @@ impl TauriBackendToolExecutor {
             "generate_image",
             "edit_image",
             "run_terminal_command",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_type",
+            "browser_press_key",
+            "browser_select_option",
+            "browser_screenshot",
+            "browser_tabs",
+            "browser_wait",
+            "browser_close",
+            "browser_drag",
             "read_library_documents",
             "search_library_documents",
             "search_library_context",
@@ -2909,6 +2920,28 @@ impl ToolExecutor for TauriBackendToolExecutor {
                 ],
             }));
         }
+        if notia_backend_core::browser::is_browser_interaction_tool(&call.name) {
+            // The element as the page shows it, what goes into it and where.
+            let (summary, detail) = crate::browser::preview(&self.app, &call.name, &call.arguments)?;
+            return Ok(Some(MutationPreview {
+                operation_id: call.id.clone(),
+                summary,
+                documents: Vec::new(),
+                hunks: vec![PreviewHunk {
+                    id: call.id.clone(),
+                    document_path: "browser".to_string(),
+                    start_line: 1,
+                    end_line: 1,
+                    old_text: String::new(),
+                    new_text: detail,
+                }],
+                allowed_actions: vec![
+                    MutationPreviewAction::ApplyAll,
+                    MutationPreviewAction::Reject,
+                    MutationPreviewAction::Cancel,
+                ],
+            }));
+        }
         if crate::agenda_tools::is_agenda_write_tool(&call.name) {
             // Validation runs in a rolled-back transaction; any rejection
             // other than storage (an overlap, a bad time) goes back to the model.
@@ -4589,6 +4622,7 @@ impl ToolExecutor for TauriBackendToolExecutor {
                     .map_err(crate::gym::tool_error)?
             }
             name if notia_backend_core::image_generation::is_image_tool(name) => self.image_tool(context, call)?,
+            name if notia_backend_core::browser::is_browser_tool(name) => crate::browser::execute_tool(&self.app, &self.control, context, name, &call.arguments)?,
             name if notia_backend_core::terminal::is_terminal_tool(name) => crate::terminal::execute_tool(
                 &self.app,
                 &self.control,
@@ -4837,14 +4871,17 @@ pub(crate) fn execute_backend_request(
     // account, and the image tools when this device has the image model.
     let mail_connected = crate::mail_tools::has_connected_account(app, &request.context.library_id);
     let images_available = crate::image_generation::is_available(app);
-    // The terminal only on the host PC (never Android nor a client device).
+    // The terminal and the browser only on the host PC (never Android nor
+    // a client device).
     let terminal_available = crate::terminal::is_available(app);
+    let browser_available = crate::browser::is_available(app);
     let available_tool_names = TauriBackendToolExecutor::supported_tool_names()
         .iter()
         .copied()
         .filter(|name| mail_connected || !notia_backend_core::mail_tools::is_mail_tool(name))
         .filter(|name| images_available || !notia_backend_core::image_generation::is_image_tool(name))
         .filter(|name| terminal_available || !notia_backend_core::terminal::is_terminal_tool(name))
+        .filter(|name| browser_available || !notia_backend_core::browser::is_browser_tool(name))
         .collect::<Vec<_>>();
     let requested_tool_names = if requested_tool_names.is_empty() {
         available_tool_names

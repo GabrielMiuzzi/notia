@@ -546,7 +546,7 @@ impl Worker {
             match block_on(telegram::send_photo(&self.token, chat_id, &image.name, png)) {
                 Ok(_) => sent.push(MessageAttachment {
                     name: image.name,
-                    media_type: "image/png".to_string(),
+                    media_type: image.media_type.to_string(),
                     kind: MessageAttachmentKind::Image,
                     pages: vec![image.base64],
                     text_content: None,
@@ -1567,10 +1567,14 @@ impl Worker {
         let progress = Progress::start(self, chat_id, progress_enabled, edit_progress).with_terminal();
         let mut seen_events = 0;
         let mut notes = Vec::new();
+        // Images for the person (a browser screenshot of a captcha) go
+        // right before the question that asks about them.
+        let mut shown = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
             // What the agent wrote in the round it asks is the context of
             // the question: it goes whole before it.
             notes.extend(self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events));
+            shown.extend(self.send_generated_images(chat_id, &run.context.request_id));
             match self.ask(chat_id, interaction, operation) {
                 Some(answer) => {
                     match answer.message {
@@ -1619,7 +1623,8 @@ impl Worker {
         }
         // The images the agent made go right before its text, and the
         // answer replaces the notes it wrote on the way.
-        let drawn = self.send_generated_images(chat_id, &run.context.request_id);
+        let mut drawn = shown;
+        drawn.extend(self.send_generated_images(chat_id, &run.context.request_id));
         if self.send_markdown_checked(chat_id, &response.response.markdown) {
             self.delete_messages(chat_id, &notes);
         }
@@ -1755,8 +1760,12 @@ impl Worker {
         let progress = Progress::start(self, chat_id, false, false).with_terminal();
         let mut seen_events = 0;
         let mut notes = Vec::new();
+        // Images for the person (a browser screenshot of a captcha) go
+        // right before the question that asks about them.
+        let mut shown = Vec::new();
         let outcome = self.drive(&runtime, &run, request, &progress, |interaction, operation| {
             notes.extend(self.deliver_notes(chat_id, &runtime, &run.context, &mut seen_events));
+            shown.extend(self.send_generated_images(chat_id, &run.context.request_id));
             match self.ask(chat_id, interaction, operation) {
                 Some(answer) => Ok(answer.decision),
                 None if run.cancelled.load(Ordering::SeqCst) => {
@@ -1785,7 +1794,8 @@ impl Worker {
             self.delete_messages(chat_id, &notes);
             return Ok(prompts::SILENT_SUMMARY.to_string());
         }
-        let drawn = self.send_generated_images(chat_id, &run.context.request_id);
+        let mut drawn = shown;
+        drawn.extend(self.send_generated_images(chat_id, &run.context.request_id));
         if !self.send_markdown_checked(chat_id, &prompts::outgoing_message(&answer, action.prompt.test)) {
             return Err("No se pudo enviar por Telegram.".to_string());
         }

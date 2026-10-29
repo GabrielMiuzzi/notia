@@ -51,6 +51,9 @@ pub enum ToolPolicy {
     /// Commands in the terminal of the host PC: the Owner's, in the app
     /// chats, Telegram and the AI tasks; never a published board.
     Terminal,
+    /// The web browser of the host PC (Playwright): the Owner's, where the
+    /// terminal is.
+    Browser,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +269,7 @@ pub fn canonical_tool_catalog() -> Vec<ToolDefinition> {
     catalog.extend(super::mail_tools::mail_tool_contracts());
     catalog.extend(image_tools());
     catalog.push(terminal_tool());
+    catalog.extend(browser_tools());
     catalog.into_iter().map(with_canonical_schema).collect()
 }
 
@@ -321,6 +325,25 @@ fn terminal_tool() -> ToolDefinition {
         read_only: false,
         requires_confirmation: true,
     }
+}
+
+/// The browser writes nothing to the library, but a click or a key may buy,
+/// send or delete on a site: those ask for confirmation («Confirmar todos»
+/// lets the rest of the request run); opening and reading pages does not.
+/// None is read-only, so read-only chats and Notia's own runs (the hourly
+/// review, a mail that arrived) never browse.
+fn browser_tools() -> Vec<ToolDefinition> {
+    super::browser::BROWSER_TOOLS
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "Maneja el navegador web de la PC host.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            scopes: vec![BackendScope::Library, BackendScope::Document, BackendScope::TaskManager],
+            read_only: false,
+            requires_confirmation: super::browser::is_browser_interaction_tool(name),
+        })
+        .collect()
 }
 
 /// Plan tools open an approval interaction; they never mutate by themselves.
@@ -645,6 +668,7 @@ pub fn tool_policy(tool_name: &str) -> ToolPolicy {
         name if super::meeting_tools::is_meeting_write_tool(name) => ToolPolicy::MeetingWrite,
         name if super::image_generation::is_image_tool(name) => ToolPolicy::Images,
         name if super::terminal::is_terminal_tool(name) => ToolPolicy::Terminal,
+        name if super::browser::is_browser_tool(name) => ToolPolicy::Browser,
         "list_agenda" => ToolPolicy::AgendaRead,
         "create_agenda_event"
         | "delete_agenda_event"
@@ -815,10 +839,11 @@ pub fn authorize_tool_call(
             "Las imágenes las genera solo el Owner, en los chats de la app o en Telegram.",
             false,
         )),
-        // The terminal is the host PC's: only the Owner, from the app chats
-        // (an AI task runs as one) or their Telegram. A published board,
-        // Meeting and any other user never reach it, whoever logs in there.
-        ToolPolicy::Terminal
+        // The terminal and the browser are the host PC's: only the Owner,
+        // from the app chats (an AI task runs as one) or their Telegram. A
+        // published board, Meeting and any other user never reach them,
+        // whoever logs in there.
+        ToolPolicy::Terminal | ToolPolicy::Browser
             if context.actor.is_library_owner()
                 && matches!(context.channel, BackendChannel::App | BackendChannel::Telegram)
                 && !matches!(projection, ToolCatalogProjection::PublishedTaskManager)
@@ -829,6 +854,11 @@ pub fn authorize_tool_call(
         ToolPolicy::Terminal => Err(BackendError::new(
             BackendErrorCode::Forbidden,
             "La terminal de la PC host la usa solo el Owner, desde los chats de la app o su Telegram.",
+            false,
+        )),
+        ToolPolicy::Browser => Err(BackendError::new(
+            BackendErrorCode::Forbidden,
+            "El navegador de la PC host lo usa solo el Owner, desde los chats de la app o su Telegram.",
             false,
         )),
         // The actions answer only the Owner, by Telegram.
@@ -1049,6 +1079,41 @@ mod tests {
         // Read-only chats and runs (the hourly review) leave it out.
         let read_only = restrict_tool_access(vec![terminal], ToolAccess::ReadOnly, true);
         assert!(read_only.is_empty());
+    }
+
+    #[test]
+    fn the_browser_is_the_owners_where_the_terminal_is_and_its_clicks_ask_first() {
+        let browser_tools = |context: &BackendRequestContext, principal: &AuthorizationPrincipal, projection| {
+            project_tool_catalog(context, principal, &canonical_tool_catalog(), projection)
+                .map(|tools| tools.into_iter().filter(|tool| crate::browser::is_browser_tool(&tool.name)).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        let owner = browser_tools(&context(BackendScope::Library), &principal(), ToolCatalogProjection::Full);
+        assert_eq!(owner.len(), crate::browser::BROWSER_TOOLS.len());
+        for tool in &owner {
+            assert!(!tool.read_only, "{}", tool.name);
+            assert_eq!(tool.requires_confirmation, crate::browser::is_browser_interaction_tool(&tool.name), "{}", tool.name);
+            assert!(tool_schemas().contains_key(&tool.name), "{} has no schema", tool.name);
+            assert_eq!(crate::tool_routing::tool_area(&tool.name), Some(crate::tool_routing::ToolArea::Browser), "{}", tool.name);
+        }
+        let mut telegram = context(BackendScope::Library);
+        telegram.channel = BackendChannel::Telegram;
+        telegram.actor.external_identity =
+            Some(crate::context::ExternalIdentity { provider: "telegram".into(), user_id: "1".into(), chat_id: Some(1) });
+        assert_eq!(browser_tools(&telegram, &principal(), ToolCatalogProjection::Full).len(), owner.len());
+        let mut guest = context(BackendScope::Library);
+        guest.actor.library_user_id = "user-ana".into();
+        let guest_principal = AuthorizationPrincipal { library_user_id: "user-ana".into(), all_contexts: true, ..principal() };
+        assert!(browser_tools(&guest, &guest_principal, ToolCatalogProjection::Full).is_empty());
+        let mut published = context(BackendScope::TaskManager);
+        published.channel = BackendChannel::Published;
+        published.persistence_policy = super::super::PersistencePolicy::PublishedNoMemory;
+        assert!(browser_tools(&published, &principal(), ToolCatalogProjection::PublishedTaskManager).is_empty());
+        assert!(browser_tools(&published, &principal(), ToolCatalogProjection::Full).is_empty());
+        let mut meeting = context(BackendScope::Library);
+        meeting.channel = BackendChannel::Meeting;
+        assert!(browser_tools(&meeting, &principal(), ToolCatalogProjection::Full).is_empty());
+        assert!(restrict_tool_access(owner, ToolAccess::ReadOnly, true).is_empty());
     }
 
     #[test]
